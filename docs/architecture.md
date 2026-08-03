@@ -1,0 +1,335 @@
+# Runtime architecture
+
+Status: normative for the initial vertical slice. The repository and component
+names are provisional.
+
+## Product boundary
+
+The runtime is a consumer-indexed present-confidence evaluator, not a health
+oracle. It receives bounded observation occurrences, adds receiver-owned facts,
+maintains a small ephemeral evidence window, and derives a categorical judgment
+with exact reasons. When a configured reliance bound ceases to hold, it may
+emit one deduplicated request for a predeclared deeper diagnostic.
+
+```text
+observer                         monitor plane
+--------                         -------------
+bounded acquisition
+  -> PulseFrameV1 ==compact==> receiver annotation
+                                -> admission / continuity tracking
+                                -> ephemeral evidence window
+                                -> consumer policy evaluation
+                                -> PresentStateJudgmentV1
+                                -> sparse transition event
+                                -> optional DiagnosticEscalationRequestV1
+                                             |
+                                             v
+                                  closed local L3 bridge stub
+                                  -> disposition + mock receipt
+```
+
+Transport, runtime interpretation, sparse event custody, and presentation are
+separate. A transport adapter cannot assign a judgment, and a renderer cannot
+change one.
+
+## Terms
+
+### Subject
+
+The entity or exact scope about which observations are made. It has a stable
+identity and a subject-incarnation identity. A subject restart creates a new
+incarnation; evidence from the old incarnation cannot silently describe the
+new one.
+
+### Observer
+
+The producer occurrence that acquired and emitted an observation. An observer
+has a stable identity and a fresh incarnation identity for each process
+lifespan. Observer identity is provenance, not proof of honesty or
+independence.
+
+### Observation profile
+
+A versioned semantic identity defining the bounded signal vocabulary, coverage
+tags, units, and collection limits for a pulse. It is not an NQ diagnostic
+profile, a dynamic plugin, a rule engine, or authority.
+
+### Pulse
+
+One compact, bounded `PulseFrameV1`. It carries observer-local monotonic time,
+but no sender time is trusted as the primary freshness source. Receipt proves
+only an observation occurrence and its declared contents.
+
+### Incarnation
+
+A process- or subject-lifespan identity. Sequence continuity is meaningful only
+within one observer incarnation. A newer incarnation supersedes prior
+incarnations for current evidence but does not erase their historical events or
+contradictions.
+
+### Sequence continuity
+
+The receiver-observed relation between monotonic sequence numbers for one
+`(subject, observer, observer incarnation, profile, policy generation)` stream.
+It distinguishes first, continuous, gapped, duplicate, replayed/out-of-order,
+and restarted streams. It is evidence about delivery continuity, not subject
+health.
+
+### Receiver-observed arrival time
+
+A monotonic time assigned by the receiver under an identified receiver clock
+generation. It is the primary basis for local freshness. Receiver wall-clock
+labels may be recorded for display but do not extend validity.
+
+### Validity or freshness bound
+
+The maximum interval for which an admitted pulse may support a positive
+present-state judgment. Effective validity is the lesser of the pulse's
+declared validity and the consumer policy maximum. A pulse expires at:
+
+```text
+receiver_arrival + effective_validity
+```
+
+Evaluation at or after expiry treats the pulse as expired. Queueing, retry, or
+re-delivery never resets the original admitted arrival time.
+
+### Coverage
+
+The policy-owned inventory of required observation tags and the active evidence
+count for each tag. Pulse-declared coverage may narrow what that pulse supports;
+it cannot shrink policy requirements. Aggregates retain expected, active,
+missing, and expired tags plus per-observer contribution.
+
+### Missingness
+
+An explicit absence of the current evidence count required by policy. Missing
+is not a negative subject observation and not a weak positive. It ordinarily
+produces `UNKNOWN` unless a stronger retained contradiction or violation
+applies.
+
+### Contradiction
+
+Two or more independently admitted evidence items with incompatible subject
+incarnation, signal assessment, or profile-defined value relation. A
+`ContradictionRecordV1` names its grounding evidence. It persists until an
+explicit resolution, supersession, or expiry under a named policy rule.
+Majority agreement is not a resolution rule.
+
+### Observer disagreement
+
+The current distribution of observer testimony, including compatible,
+incompatible, and insufficient-to-compare states. Disagreement can ground a
+contradiction; it is kept as a distinct confidence dimension so a resolved
+record does not rewrite what observers actually reported.
+
+### Confidence dimensions
+
+The non-scalar evaluation axes:
+
+- freshness;
+- sequence continuity;
+- observer availability;
+- cross-observer coherence;
+- coverage;
+- provenance/authentication;
+- transport degradation; and
+- subject signal consistency.
+
+No weighted sum or hidden score may replace them.
+
+### Present-state judgment
+
+A versioned evaluation record indexed by subject scope, consumer/reliance
+class, observation-policy generation, aggregate coverage, evaluation time, and
+evidence-window identity. It contains one category, every confidence
+dimension, exact reasons, and explicit nonclaims.
+
+### Escalation threshold
+
+A consumer policy rule stating which transition away from `CURRENT` requests a
+named deeper diagnostic. It is a request trigger, not an authorization rule.
+
+### Diagnostic escalation request
+
+A bounded, expiring request for one predeclared diagnostic profile, correlated
+to the evidence window and causal judgment transition. It contains no command
+or mutation authority.
+
+### Supersession
+
+An explicit statement that a newer identity or named rule replaces an older
+record for a particular use. Supersession preserves the older record and its
+reason; it is not deletion or retroactive correction.
+
+### Resolution
+
+An explicit disposition of a contradiction with a resolver identity, time,
+named rule, and explanation. Resolution stops that record from blocking future
+judgments only according to the named rule. New current evidence is still
+required for `CURRENT`.
+
+## Identities and generations
+
+These identities are deliberately not interchangeable:
+
+| identity | minted when | meaning |
+|---|---|---|
+| subject | configuration admits a scope | stable logical observation target |
+| subject incarnation | subject lifecycle begins | one concrete lifecycle of the target |
+| observer | configuration admits a producer | stable producer role |
+| observer incarnation | producer process starts | one sequence-number namespace |
+| observation profile | profile semantics are defined | exact pulse field/coverage meaning |
+| policy generation | reliance policy changes | exact consumer evaluation law |
+| evidence window | evaluator selects current inputs | exact bounded evaluation basis |
+| transition | semantically relevant judgment changes | causal before/after occurrence |
+| escalation request | threshold crossing is admitted | one bounded diagnostic request |
+| diagnostic run | bridge accepts a request | one bounded execution occurrence |
+
+A change in semantic policy creates a new policy generation. Old evidence may
+remain inspectable but cannot be evaluated under a new generation unless that
+policy explicitly admits the profile and generation relationship.
+
+## Receiver admission
+
+The receiver validates the closed schema and bounds before evaluation. It then
+annotates the frame with receiver identity/incarnation, receiver monotonic
+arrival, sequence gap, duplicate/replay classification, transport path, and
+authentication result.
+
+For a known stream:
+
+- the same sequence is a duplicate and cannot refresh evidence;
+- a lower sequence is a replay/out-of-order occurrence and cannot replace a
+  newer accepted frame;
+- a jump records the exact sequence gap even if the new frame is usable;
+- a new observer incarnation starts a new continuity lineage and marks
+  continuity `RESTARTED`; and
+- a frame from an older incarnation cannot become current after a newer
+  incarnation has been admitted.
+
+Receiver arrival cannot reveal every pre-receipt network delay. A first-seen
+packet delayed entirely before the receiver, with no comparable clock or
+transport proof, can be indistinguishable from a prompt packet. This is a
+known nonclaim, not something sender wall time is allowed to conceal.
+
+## Evidence window and evaluation
+
+The evaluator holds only the latest admitted evidence required for the current
+bounded window, retained contradiction records, active escalation deduplication
+entries, recent diagnostic receipt correlations, and metrics. It is
+deterministic over `(prior state, input record, evaluation time, policy)`.
+
+For each policy-required coverage tag, active coverage is the count of fresh,
+admitted, policy-compatible observer contributions. The required count is
+consumer policy. Expired contributions are reported separately. A union that
+contains every tag but lacks the required observer count is incomplete.
+
+Category precedence preserves adverse evidence:
+
+1. `CONTRADICTED` when an unresolved applicable contradiction exists.
+2. `SUSPECT` when current admitted evidence grounds a declared bound violation.
+3. `UNKNOWN` when freshness, observer count, coverage, provenance, or monitor
+   blindness prevents the named reliance judgment.
+4. `DEGRADED` when current evidence exists but a non-fatal continuity or
+   transport degradation means the exact `CURRENT` contract is not met.
+5. `CURRENT` only when every named positive reliance condition is presently
+   satisfied.
+
+The precedence selects a headline; it never removes lower-dimensional facts.
+For example, a retained contradiction can remain the headline while transport
+is simultaneously blind.
+
+The exact required explanation for an incomplete but otherwise non-violating
+window is:
+
+```text
+No violating observation is currently known, but coverage is incomplete and reliance is therefore UNKNOWN.
+```
+
+## Categorical semantics
+
+| category | exact claim | important nonclaim |
+|---|---|---|
+| `CURRENT` | This consumer's named reliance conditions are satisfied at this evaluation time by this evidence window. | The subject is healthy, truthful, globally known, or safe to mutate. |
+| `DEGRADED` | Current evidence exists, and a named observation-quality dimension is degraded. | Reliance remains granted merely because some evidence is fresh. |
+| `SUSPECT` | Current admitted evidence contains a named subject-bound violation. | The observation is necessarily truthful or causal. |
+| `UNKNOWN` | Available evidence cannot support the named reliance judgment. | Healthy, failed, or approximately current. |
+| `CONTRADICTED` | Incompatible grounded evidence remains applicable and unresolved. | The majority is correct or the minority can be discarded. |
+
+`ESCALATED` is not a category. `not_requested`, `requested`, `accepted`,
+`refused`, `narrowed`, `deferred`, and `completed` are escalation lifecycle
+states recorded beside the unchanged evidence judgment.
+
+## Consumer-indexed outcomes
+
+Policies name their required coverage, observer count, authentication posture,
+maximum validity, tolerated transport state, signal relations, and escalation
+profile. Thus the same pulse window may produce:
+
+```text
+CURRENT for capacity-display/v1
+UNKNOWN for destructive-automation-preflight/v3
+```
+
+Neither judgment authorizes mutation. The second policy may demand two
+authenticated independent observers while the first requires one identified
+local observer. The explanation must make that difference visible.
+
+## Contradiction lifecycle
+
+Coherent later pulses do not silently delete a contradiction. A record becomes
+non-blocking only through:
+
+- explicit resolution under a named rule;
+- explicit supersession by a named, identity-bound record; or
+- expiry under a named contradiction-expiry rule that the policy already
+  contains.
+
+The initial runtime supports explicit resolution. It does not enable implicit
+quorum resolution. Resolution is a sparse durable event and does not itself
+supply current coverage.
+
+## Diagnostic receipt handling
+
+A successful diagnostic receipt is correlated to its request and evidence
+window and retained as bounded auxiliary evidence. It can explain what deeper
+observation occurred. It does not automatically resolve a contradiction,
+replace pulse coverage, reset a pulse's arrival time, or produce `CURRENT`.
+After its own named applicability expires, it remains history only.
+
+## Persistence split
+
+The vertical slice keeps pulse state in memory. It emits JSONL-compatible
+`SparseDurableEventV1` records only for:
+
+- semantic judgment transitions;
+- contradiction creation/resolution/supersession;
+- escalation request/disposition/deduplication;
+- diagnostic receipt correlation; and
+- monitor-plane degradation/recovery.
+
+It does not implement distributed storage or long-term pulse retention.
+
+## Experimental metrics
+
+The evaluator exposes:
+
+- pulse-to-evaluation latency;
+- maximum observed stale-positive duration;
+- failure-to-`UNKNOWN` latency;
+- failure-to-`CONTRADICTED` latency;
+- failure-to-escalation latency;
+- false escalation count in declared normal traces;
+- active and expired coverage;
+- dropped stale pulse count;
+- duplicate count;
+- sequence gap count; and
+- escalation deduplication count.
+
+Failure-to-transition metrics require an externally supplied fault marker in a
+replay or controlled experiment; otherwise they remain `not measured` rather
+than inventing a failure start time. No metric is a hard real-time guarantee.
+The evaluator tick interval plus effective validity bounds how long a cached
+positive judgment can outlive its evidence; observed overshoot is recorded as
+maximum stale-positive duration.
