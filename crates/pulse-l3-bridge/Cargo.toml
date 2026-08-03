@@ -1,0 +1,13 @@
+[package]
+name = "pulse-l3-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pulse-types = { path = "../pulse-types" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
