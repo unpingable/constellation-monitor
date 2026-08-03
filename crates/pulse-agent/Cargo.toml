@@ -8,7 +8,6 @@ license.workspace = true
 [dependencies]
 ctrlc.workspace = true
 pulse-types = { path = "../pulse-types" }
-serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -11,14 +11,18 @@ word "positive" refers only to the `CURRENT` category.
    occurrence and receiver facts only. No runtime type exposes `healthy=true`.
 2. **Positive judgments expire.** Every `CURRENT` judgment depends on evidence
    with a finite receiver-owned expiry. At or after the earliest required
-   support expiry, reevaluation cannot return `CURRENT` from that support.
+   support expiry, reevaluation cannot return `CURRENT` from that support. The
+   judgment exposes that support deadline on the receiver clock.
 3. **Missingness cannot preserve a positive.** Missing, expired, refused, or
    insufficiently replicated required coverage makes the named reliance
    conditions unsatisfied.
 4. **Unknown is not weak health.** `UNKNOWN` makes no positive subject claim.
 5. **Adverse findings are sticky by named law.** A negative or contradictory
    record remains visible until explicit resolution, explicit supersession, or
-   expiry under a policy rule identified before the transition.
+   expiry under a policy rule identified before the transition. The initial
+   single-observer rules are `same_observer_newer_sequence/v1`,
+   `observer_incarnation_replacement/v1`, and
+   `receiver_freshness_expiry/v1`; supersession is a sparse event.
 6. **Quorum does not erase contradiction.** Any independently grounded,
    applicable contradiction remains in the evidence model regardless of how
    many other observers agree.
@@ -77,9 +81,12 @@ word "positive" refers only to the `CURRENT` category.
     monotonic time are provenance only unless a separate named clock
     qualification exists. The initial evaluator has no such qualification.
 25. **Clock generations do not mix silently.** Receiver monotonic times are
-    comparable only inside the same identified receiver-clock generation.
-26. **Expiry is inclusive.** Evidence evaluated at `arrival + validity` is
-    expired, not current.
+    comparable only inside the same identified receiver-clock generation. An
+    evaluation-time regression within one generation is clamped to the last
+    evaluation point, marks monitoring `BLIND`, and cannot restore reliance.
+26. **Expiry is inclusive.** Evidence evaluated at `arrival + effective
+    validity - receiver-verifiable pre-arrival delay` is expired, not current;
+    the delay is zero when no qualified delay fact exists.
 
 ## Coverage, provenance, and contradiction
 

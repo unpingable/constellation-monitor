@@ -122,11 +122,13 @@ pub enum TraceMonitorStateV1 {
     Blind,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplayTransitionV1 {
     pub transition: JudgmentTransitionV1,
     pub category: JudgmentCategoryV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub positive_support_expires_at_monotonic_ms: Option<u64>,
     pub summary: String,
     pub reason_codes: Vec<String>,
     pub active_coverage: Vec<String>,
@@ -134,7 +136,7 @@ pub struct ReplayTransitionV1 {
     pub dimensions: pulse_types::ConfidenceDimensionsV1,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReplayReportV1 {
     pub schema_version: u16,
@@ -296,13 +298,15 @@ pub fn run_records(records: Vec<TraceRecordV1>) -> Result<ReplayReportV1, Replay
                     memory_value,
                     authentication,
                 );
-                let annotation = receiver.annotate(
-                    &frame,
-                    at_ms,
-                    transport,
-                    transport_delay_ms,
-                    authentication_result(authentication),
-                );
+                let annotation = receiver
+                    .annotate(
+                        &frame,
+                        at_ms,
+                        transport,
+                        transport_delay_ms,
+                        authentication_result(authentication),
+                    )
+                    .map_err(|error| ReplayError::new(error.to_string()))?;
                 let output = evaluator
                     .ingest(
                         ReceivedPulseV1 {
@@ -439,14 +443,18 @@ pub fn run_records(records: Vec<TraceRecordV1>) -> Result<ReplayReportV1, Replay
         && final_judgment.category != JudgmentCategoryV1::Current
     {
         collector.terminal_lines.push(format!(
-            "[{last_at:06}ms] CAUTION diagnostic receipt correlated; judgment remains {:?}",
-            final_judgment.category
+            "[{last_at:06}ms] CAUTION diagnostic receipt correlated; judgment remains {}",
+            final_judgment.category,
         ));
     }
     collector.terminal_lines.push(format!(
-        "[{last_at:06}ms] METRICS max_stale_positive={}ms pulse_to_eval={}ms active_coverage={} expired_coverage={} stale_drop={} duplicate={} gap={} escalation_dedup={}",
+        "[{last_at:06}ms] METRICS max_stale_positive={}ms pulse_to_eval={}ms failure_to_unknown={} failure_to_contradicted={} failure_to_escalation={} false_escalation={} active_coverage={} expired_coverage={} stale_drop={} duplicate={} gap={} escalation_dedup={}",
         evaluator.metrics().maximum_stale_positive_duration_ms,
         evaluator.metrics().pulse_to_evaluation_latency_ms,
+        metric_duration(evaluator.metrics().failure_to_unknown_latency_ms),
+        metric_duration(evaluator.metrics().failure_to_contradicted_latency_ms),
+        metric_duration(evaluator.metrics().failure_to_escalation_latency_ms),
+        evaluator.metrics().false_escalation_count,
         evaluator.metrics().active_coverage,
         evaluator.metrics().expired_coverage,
         evaluator.metrics().dropped_stale_pulse_count,
@@ -485,22 +493,32 @@ impl ReplayCollector {
                 .map(|reason| reason.code.clone())
                 .collect::<Vec<_>>();
             self.terminal_lines.push(format!(
-                "[{:06}ms] JUDGMENT {:?} -> {:?} coverage={}/{} missing=[{}] freshness={:?} continuity={:?} coherence={:?} transport={:?} reasons=[{}]",
+                "[{:06}ms] JUDGMENT {} -> {} coverage={}/{} missing=[{}] support_expires={} freshness={:?} continuity={:?} availability={:?} coherence={:?} coverage_state={:?} provenance={:?} transport={:?} signals={:?} reasons=[{}]",
                 transition.at_monotonic_ms,
-                transition.from,
+                transition
+                    .from
+                    .map_or("NONE", pulse_types::JudgmentCategoryV1::as_str),
                 transition.to,
                 output.judgment.coverage.active.len(),
                 output.judgment.coverage.required.len(),
                 output.judgment.coverage.missing.join(","),
+                support_deadline(output.judgment.positive_support_expires_at_monotonic_ms),
                 output.judgment.dimensions.freshness,
                 output.judgment.dimensions.sequence_continuity,
+                output.judgment.dimensions.observer_availability,
                 output.judgment.dimensions.cross_observer_coherence,
+                output.judgment.dimensions.coverage,
+                output.judgment.dimensions.provenance,
                 output.judgment.dimensions.transport,
+                output.judgment.dimensions.subject_signal_consistency,
                 reason_codes.join(","),
             ));
             self.transitions.push(ReplayTransitionV1 {
                 transition: transition.clone(),
                 category: output.judgment.category,
+                positive_support_expires_at_monotonic_ms: output
+                    .judgment
+                    .positive_support_expires_at_monotonic_ms,
                 summary: output.judgment.explanation.summary.clone(),
                 reason_codes,
                 active_coverage: output.judgment.coverage.active.clone(),
@@ -524,9 +542,9 @@ fn collect_with_bridge(
         return Ok(());
     };
     collector.terminal_lines.push(format!(
-        "[{at_ms:06}ms] ESCALATION request={} trigger={:?} profile={}/{} expires={}ms bounds={:?}",
+        "[{at_ms:06}ms] ESCALATION request={} trigger={} profile={}/{} expires={}ms bounds={:?}",
         request.request_id,
-        request.trigger_class,
+        request.trigger_class.as_str(),
         request.diagnostic_profile.name,
         request.diagnostic_profile.version,
         request.expires_at_monotonic_ms,
@@ -715,6 +733,14 @@ fn disposition_name(disposition: &EscalationDispositionV1) -> &'static str {
         pulse_types::EscalationDispositionKindV1::Narrow { .. } => "narrow",
         pulse_types::EscalationDispositionKindV1::Defer { .. } => "defer",
     }
+}
+
+fn metric_duration(value: Option<u64>) -> String {
+    value.map_or_else(|| "not-measured".to_owned(), |value| format!("{value}ms"))
+}
+
+fn support_deadline(value: Option<u64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| format!("{value}ms"))
 }
 
 fn require_nondecreasing_time(prior: u64, current: u64) -> Result<(), ReplayError> {

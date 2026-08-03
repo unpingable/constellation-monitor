@@ -92,10 +92,10 @@ pub struct Evaluator {
     last_judgment: Option<PresentStateJudgmentV1>,
     last_positive_support_deadline_ms: Option<u64>,
     last_receiver_arrival_ms: Option<u64>,
+    last_evaluation_ms: Option<u64>,
     transition_counter: u64,
     request_counter: u64,
     event_counter: u64,
-    receipt_event_count: u64,
     metrics: ExperimentalMetricsV1,
     fault_started_at_ms: Option<u64>,
     normal_trace: bool,
@@ -142,10 +142,10 @@ impl Evaluator {
             last_judgment: None,
             last_positive_support_deadline_ms: None,
             last_receiver_arrival_ms: None,
+            last_evaluation_ms: None,
             transition_counter: 0,
             request_counter: 0,
             event_counter: 0,
-            receipt_event_count: 0,
             metrics: ExperimentalMetricsV1::empty(),
             fault_started_at_ms: None,
             normal_trace: false,
@@ -186,6 +186,7 @@ impl Evaluator {
         received: ReceivedPulseV1,
         evaluated_at_monotonic_ms: u64,
     ) -> Result<EvaluationOutput, EvaluatorError> {
+        let event_log_start = self.event_log.len();
         received
             .validate()
             .map_err(|error| EvaluatorError::new("invalid_pulse", error.to_string()))?;
@@ -207,14 +208,12 @@ impl Evaluator {
                 detail: "receiver monotonic arrival regressed within one clock generation"
                     .to_owned(),
             };
-            let event = self.monitor_event(
+            self.monitor_event(
                 evaluated_at_monotonic_ms,
                 "blind",
                 "receiver monotonic arrival regressed within one clock generation",
             );
-            let mut output = self.evaluate(evaluated_at_monotonic_ms)?;
-            output.sparse_events.insert(0, event);
-            return Ok(output);
+            return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
         }
         self.last_receiver_arrival_ms = Some(
             self.last_receiver_arrival_ms
@@ -227,32 +226,31 @@ impl Evaluator {
         if expected.0 != received.receiver.disposition
             || expected.1 != received.receiver.sequence_gap
         {
-            self.monitor_capability = MonitorCapabilityV1::Degraded {
-                detail: format!(
-                    "receiver annotation mismatch: expected {:?}, received {:?}",
-                    expected.0, received.receiver.disposition
-                ),
+            let detail = format!(
+                "receiver annotation mismatch: expected {:?}, received {:?}",
+                expected.0, received.receiver.disposition
+            );
+            self.monitor_capability = MonitorCapabilityV1::Blind {
+                detail: detail.clone(),
             };
-            return Err(EvaluatorError::new(
-                "receiver_annotation_mismatch",
-                "receiver sequence annotation disagrees with evaluator state",
-            ));
+            self.monitor_event(evaluated_at_monotonic_ms, "blind", &detail);
+            return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
         }
 
         match received.receiver.disposition {
             ArrivalDispositionV1::Duplicate => {
                 self.metrics.duplicate_count = self.metrics.duplicate_count.saturating_add(1);
-                return self.evaluate(evaluated_at_monotonic_ms);
+                return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
             }
             ArrivalDispositionV1::Replay => {
                 self.metrics.dropped_stale_pulse_count =
                     self.metrics.dropped_stale_pulse_count.saturating_add(1);
-                return self.evaluate(evaluated_at_monotonic_ms);
+                return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
             }
             ArrivalDispositionV1::Stale => {
                 self.metrics.dropped_stale_pulse_count =
                     self.metrics.dropped_stale_pulse_count.saturating_add(1);
-                return self.evaluate(evaluated_at_monotonic_ms);
+                return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
             }
             ArrivalDispositionV1::Gap => {
                 self.metrics.sequence_gap_count = self.metrics.sequence_gap_count.saturating_add(1);
@@ -262,6 +260,22 @@ impl Evaluator {
             | ArrivalDispositionV1::Restarted => {}
         }
 
+        let effective_validity = received
+            .frame
+            .validity_ms
+            .min(self.policy.maximum_validity_ms);
+        let receiver_observed_delay = received.receiver.transport_observed_delay_ms.unwrap_or(0);
+        if receiver_observed_delay >= effective_validity {
+            // The receiver's sequence fact remains valid even when this
+            // consumer's narrower freshness policy cannot use the occurrence.
+            // Advancing the evaluator's receiver lineage keeps later receiver
+            // annotations comparable without admitting this pulse as evidence.
+            self.update_lineage(&received.frame, &received.receiver.disposition);
+            self.metrics.dropped_stale_pulse_count =
+                self.metrics.dropped_stale_pulse_count.saturating_add(1);
+            return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
+        }
+
         if received.frame.subject_incarnation != self.current_subject_incarnation {
             if self
                 .retired_subject_incarnations
@@ -269,31 +283,28 @@ impl Evaluator {
             {
                 self.metrics.dropped_stale_pulse_count =
                     self.metrics.dropped_stale_pulse_count.saturating_add(1);
-                return self.evaluate(evaluated_at_monotonic_ms);
+                return self.evaluate_since(evaluated_at_monotonic_ms, event_log_start);
             }
             self.record_subject_incarnation_change(&received, evaluated_at_monotonic_ms);
         }
 
         self.update_lineage(&received.frame, &received.receiver.disposition);
         self.detect_signal_contradictions(&received, evaluated_at_monotonic_ms);
+        self.record_adverse_supersession(&received, evaluated_at_monotonic_ms);
         let continuity = match received.receiver.disposition {
             ArrivalDispositionV1::Gap => SequenceContinuityDimensionV1::Gapped,
             ArrivalDispositionV1::Restarted => SequenceContinuityDimensionV1::Restarted,
-            ArrivalDispositionV1::First | ArrivalDispositionV1::Continuous => {
-                SequenceContinuityDimensionV1::Continuous
-            }
+            ArrivalDispositionV1::First => SequenceContinuityDimensionV1::FirstSeen,
+            ArrivalDispositionV1::Continuous => SequenceContinuityDimensionV1::Continuous,
             ArrivalDispositionV1::Duplicate
             | ArrivalDispositionV1::Replay
             | ArrivalDispositionV1::Stale => unreachable!("returned before evidence update"),
         };
-        let effective_validity = received
-            .frame
-            .validity_ms
-            .min(self.policy.maximum_validity_ms);
+        let remaining_validity = effective_validity - receiver_observed_delay;
         let expires_at_ms = received
             .receiver
             .arrival_monotonic_ms
-            .saturating_add(effective_validity);
+            .saturating_add(remaining_validity);
         self.observers.insert(
             received.frame.observer.clone(),
             ObserverEvidence {
@@ -302,7 +313,7 @@ impl Evaluator {
                 continuity,
             },
         );
-        self.evaluate(evaluated_at_monotonic_ms)
+        self.evaluate_since(evaluated_at_monotonic_ms, event_log_start)
     }
 
     pub fn tick(
@@ -477,7 +488,6 @@ impl Evaluator {
             nonclaims: receipt.nonclaims.clone(),
         };
         self.diagnostic_evidence.push(evidence_reference.clone());
-        self.receipt_event_count = self.receipt_event_count.saturating_add(1);
         self.escalation_state = EscalationStateV1::Completed {
             request_id: receipt.request_id.to_string(),
             receipt_id: receipt.receipt_id.clone(),
@@ -530,10 +540,9 @@ impl Evaluator {
         frame: &PulseFrameV1,
         annotation: &pulse_types::ReceiverAnnotationV1,
     ) -> (ArrivalDispositionV1, Option<pulse_types::SequenceGapV1>) {
-        let effective_validity = frame.validity_ms.min(self.policy.maximum_validity_ms);
         if annotation
             .transport_observed_delay_ms
-            .is_some_and(|delay| delay >= effective_validity)
+            .is_some_and(|delay| delay >= frame.validity_ms)
         {
             return (ArrivalDispositionV1::Stale, None);
         }
@@ -620,11 +629,15 @@ impl Evaluator {
     }
 
     fn detect_signal_contradictions(&mut self, received: &ReceivedPulseV1, at_monotonic_ms: u64) {
+        if !self.received_provenance_is_eligible(received) {
+            return;
+        }
         let mut candidates = Vec::new();
         for evidence in self.observers.values() {
             if evidence.received.frame.observer == received.frame.observer
                 || evidence.received.frame.subject_incarnation != received.frame.subject_incarnation
                 || at_monotonic_ms >= evidence.expires_at_ms
+                || !self.provenance_is_eligible(evidence)
             {
                 continue;
             }
@@ -662,6 +675,53 @@ impl Evaluator {
         }
         for (signal, references, statements) in candidates {
             self.create_contradiction(&signal, references, statements, at_monotonic_ms);
+        }
+    }
+
+    fn record_adverse_supersession(&mut self, received: &ReceivedPulseV1, at_monotonic_ms: u64) {
+        let supersession = self
+            .observers
+            .get(&received.frame.observer)
+            .and_then(|prior| {
+                let mut adverse_signals = prior
+                    .received
+                    .frame
+                    .signals
+                    .iter()
+                    .filter(|signal| signal.assessment == SignalAssessmentV1::OutsideDeclaredBound)
+                    .map(|signal| signal.name.clone())
+                    .collect::<Vec<_>>();
+                if adverse_signals.is_empty() {
+                    return None;
+                }
+                adverse_signals.sort();
+                let rule = if prior.received.frame.observer_incarnation
+                    == received.frame.observer_incarnation
+                {
+                    "same_observer_newer_sequence/v1"
+                } else {
+                    "observer_incarnation_replacement/v1"
+                };
+                Some((
+                    evidence_ref(&prior.received.frame),
+                    evidence_ref(&received.frame),
+                    adverse_signals,
+                    rule.to_owned(),
+                ))
+            });
+        if let Some((prior_evidence_ref, superseding_evidence_ref, adverse_signals, rule)) =
+            supersession
+        {
+            self.sparse_event(
+                at_monotonic_ms,
+                SparseDurableEventKindV1::AdverseObservationSuperseded {
+                    observer: received.frame.observer.clone(),
+                    prior_evidence_ref,
+                    superseding_evidence_ref,
+                    adverse_signals,
+                    rule,
+                },
+            );
         }
     }
 
@@ -715,8 +775,35 @@ impl Evaluator {
         );
     }
 
-    fn evaluate(&mut self, now: u64) -> Result<EvaluationOutput, EvaluatorError> {
+    fn evaluate_since(
+        &mut self,
+        now: u64,
+        event_log_start: usize,
+    ) -> Result<EvaluationOutput, EvaluatorError> {
+        let mut output = self.evaluate(now)?;
+        output.sparse_events = self.event_log[event_log_start..].to_vec();
+        Ok(output)
+    }
+
+    fn evaluate(&mut self, requested_now: u64) -> Result<EvaluationOutput, EvaluatorError> {
         let event_log_start = self.event_log.len();
+        let now = if let Some(prior) = self.last_evaluation_ms {
+            if requested_now < prior {
+                let detail = format!(
+                    "evaluation monotonic time regressed from {prior}ms to {requested_now}ms within one clock generation"
+                );
+                self.monitor_capability = MonitorCapabilityV1::Blind {
+                    detail: detail.clone(),
+                };
+                self.monitor_event(prior, "blind", &detail);
+                prior
+            } else {
+                requested_now
+            }
+        } else {
+            requested_now
+        };
+        self.last_evaluation_ms = Some(now);
         self.active_escalations
             .retain(|_, active| now < active.expires_at_ms);
         self.diagnostic_evidence
@@ -734,9 +821,9 @@ impl Evaluator {
             &derived.dimensions,
             &derived.coverage,
             &derived.active_contradictions,
-            derived.has_violation,
+            &derived.violation_evidence_refs,
             &self.monitor_capability,
-            self.receipt_event_count,
+            u64::try_from(self.diagnostic_evidence.len()).unwrap_or(u64::MAX),
         );
         let mut judgment = PresentStateJudgmentV1 {
             schema_version: SCHEMA_VERSION_V1,
@@ -745,6 +832,7 @@ impl Evaluator {
             policy_generation: self.policy.generation.clone(),
             coverage: derived.coverage,
             evaluated_at_monotonic_ms: now,
+            positive_support_expires_at_monotonic_ms: derived.support_deadline_ms,
             receiver_clock_id: self.clock_id.to_string(),
             evidence_window_id,
             category: derived.category,
@@ -814,21 +902,25 @@ impl Evaluator {
             .collect();
 
         let active_domains = unique_domains(&eligible_fresh, &self.policy.observer_failure_domains);
-        let raw_fresh_domains = unique_domains(&fresh, &self.policy.observer_failure_domains);
         let coverage = self.coverage_summary(&eligible_fresh, &expired);
         let active_contradictions: Vec<&ContradictionRecordV1> = self
             .contradictions
             .values()
             .filter(|record| record.is_active())
             .collect();
-        let has_violation = eligible_fresh.iter().any(|evidence| {
-            evidence
-                .received
-                .frame
-                .signals
-                .iter()
-                .any(|signal| signal.assessment == SignalAssessmentV1::OutsideDeclaredBound)
-        });
+        let violation_evidence_refs = eligible_fresh
+            .iter()
+            .filter(|evidence| {
+                evidence
+                    .received
+                    .frame
+                    .signals
+                    .iter()
+                    .any(|signal| signal.assessment == SignalAssessmentV1::OutsideDeclaredBound)
+            })
+            .map(|evidence| evidence_ref(&evidence.received.frame))
+            .collect::<Vec<_>>();
+        let has_violation = !violation_evidence_refs.is_empty();
 
         let freshness = if relevant.is_empty() {
             FreshnessDimensionV1::NoEvidence
@@ -851,6 +943,11 @@ impl Evaluator {
             .any(|evidence| evidence.continuity == SequenceContinuityDimensionV1::Restarted)
         {
             SequenceContinuityDimensionV1::Restarted
+        } else if fresh
+            .iter()
+            .any(|evidence| evidence.continuity == SequenceContinuityDimensionV1::FirstSeen)
+        {
+            SequenceContinuityDimensionV1::FirstSeen
         } else {
             SequenceContinuityDimensionV1::Continuous
         };
@@ -865,7 +962,7 @@ impl Evaluator {
         };
         let coherence = if !active_contradictions.is_empty() {
             CrossObserverCoherenceDimensionV1::Disagreement
-        } else if raw_fresh_domains.len() >= 2 {
+        } else if active_domains.len() >= 2 {
             CrossObserverCoherenceDimensionV1::Coherent
         } else {
             CrossObserverCoherenceDimensionV1::Insufficient
@@ -917,8 +1014,12 @@ impl Evaluator {
             JudgmentCategoryV1::Suspect
         } else if reliance_unknown {
             JudgmentCategoryV1::Unknown
-        } else if sequence_continuity != SequenceContinuityDimensionV1::Continuous
-            || transport == TransportDimensionV1::Degraded
+        } else if matches!(
+            sequence_continuity,
+            SequenceContinuityDimensionV1::Gapped
+                | SequenceContinuityDimensionV1::Restarted
+                | SequenceContinuityDimensionV1::Unknown
+        ) || transport == TransportDimensionV1::Degraded
         {
             JudgmentCategoryV1::Degraded
         } else {
@@ -937,20 +1038,24 @@ impl Evaluator {
                 .iter()
                 .map(|record| record.contradiction_id.to_string())
                 .collect(),
-            has_violation,
+            violation_evidence_refs,
             support_deadline_ms,
         }
     }
 
     fn provenance_is_eligible(&self, evidence: &ObserverEvidence) -> bool {
+        self.received_provenance_is_eligible(&evidence.received)
+    }
+
+    fn received_provenance_is_eligible(&self, received: &ReceivedPulseV1) -> bool {
         if !self.policy.require_verified_authentication {
             return !matches!(
-                evidence.received.receiver.authentication,
+                received.receiver.authentication,
                 AuthenticationResultV1::Failed { .. }
             );
         }
         matches!(
-            evidence.received.receiver.authentication,
+            received.receiver.authentication,
             AuthenticationResultV1::Verified { .. }
         )
     }
@@ -1083,6 +1188,16 @@ impl Evaluator {
             .filter(|record| record.is_active())
         {
             owned.push(record.contradiction_id.as_str().as_bytes().to_vec());
+        }
+        for evidence in &self.diagnostic_evidence {
+            owned.push(evidence.receipt_id.as_str().as_bytes().to_vec());
+            owned.push(evidence.result_digest.as_str().as_bytes().to_vec());
+            owned.push(
+                evidence
+                    .applicable_until_monotonic_ms
+                    .to_be_bytes()
+                    .to_vec(),
+            );
         }
         let parts: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
         EvidenceWindowId::new(digest_parts("evidence.window.v1", &parts).to_string())
@@ -1306,7 +1421,7 @@ struct DerivedState {
     dimensions: ConfidenceDimensionsV1,
     coverage: CoverageSummaryV1,
     active_contradictions: Vec<String>,
-    has_violation: bool,
+    violation_evidence_refs: Vec<String>,
     support_deadline_ms: Option<u64>,
 }
 
@@ -1440,11 +1555,12 @@ fn explanation_for(
     dimensions: &ConfidenceDimensionsV1,
     coverage: &CoverageSummaryV1,
     active_contradictions: &[String],
-    has_violation: bool,
+    violation_evidence_refs: &[String],
     monitor: &MonitorCapabilityV1,
     receipt_count: u64,
 ) -> JudgmentExplanationV1 {
     let mut reasons = Vec::new();
+    let has_violation = !violation_evidence_refs.is_empty();
     if !active_contradictions.is_empty() {
         reasons.push(JudgmentReasonV1 {
             code: "contradiction_retained".to_owned(),
@@ -1460,7 +1576,7 @@ fn explanation_for(
             code: "subject_bound_violated".to_owned(),
             detail: "current admitted evidence contains an outside-declared-bound observation"
                 .to_owned(),
-            evidence_refs: Vec::new(),
+            evidence_refs: violation_evidence_refs.to_vec(),
         });
     }
     match dimensions.freshness {
@@ -1526,7 +1642,9 @@ fn explanation_for(
                 .to_owned(),
             evidence_refs: Vec::new(),
         }),
-        SequenceContinuityDimensionV1::Continuous | SequenceContinuityDimensionV1::Unknown => {}
+        SequenceContinuityDimensionV1::FirstSeen
+        | SequenceContinuityDimensionV1::Continuous
+        | SequenceContinuityDimensionV1::Unknown => {}
     }
     match monitor {
         MonitorCapabilityV1::Degraded { detail } => reasons.push(JudgmentReasonV1 {

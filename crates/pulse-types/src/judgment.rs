@@ -21,8 +21,25 @@ pub enum JudgmentCategoryV1 {
 
 impl JudgmentCategoryV1 {
     #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "CURRENT",
+            Self::Degraded => "DEGRADED",
+            Self::Suspect => "SUSPECT",
+            Self::Unknown => "UNKNOWN",
+            Self::Contradicted => "CONTRADICTED",
+        }
+    }
+
+    #[must_use]
     pub const fn supports_present_reliance(self) -> bool {
         matches!(self, Self::Current)
+    }
+}
+
+impl std::fmt::Display for JudgmentCategoryV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -38,6 +55,7 @@ pub enum FreshnessDimensionV1 {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SequenceContinuityDimensionV1 {
+    FirstSeen,
     Continuous,
     Gapped,
     Restarted,
@@ -187,6 +205,8 @@ pub struct PresentStateJudgmentV1 {
     pub policy_generation: PolicyGenerationId,
     pub coverage: CoverageSummaryV1,
     pub evaluated_at_monotonic_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub positive_support_expires_at_monotonic_ms: Option<u64>,
     pub receiver_clock_id: String,
     pub evidence_window_id: EvidenceWindowId,
     pub category: JudgmentCategoryV1,

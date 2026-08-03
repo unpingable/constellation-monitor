@@ -52,13 +52,15 @@ divergence, escalation, diagnostic receipt correlation, and continued caution.
 
 Property-based tests permute:
 
-- delivery order around a fixed highest sequence;
-- arbitrary duplicate multiplicity;
-- evaluation times immediately before, at, and after expiry;
-- observer-incarnation changes with sequence resets;
-- subject-incarnation disagreement;
-- repeated equivalent escalation triggers; and
-- repeated replay runs over identical input bytes.
+- lower delivery sequences after an arbitrary accepted high-water sequence;
+- arbitrary duplicate multiplicity and pre-expiry duplicate arrival times;
+- arbitrary validity bounds and evaluation overshoot at inclusive expiry; and
+- observer-incarnation changes with arbitrary sequence resets.
+
+Generated ordering cases are replayed twice to check deterministic output.
+Subject-incarnation disagreement, repeated equivalent escalation triggers, and
+the remaining named faults use deterministic corpus tests rather than claiming
+broader generated coverage.
 
 The oracle is not a scalar expected score. It asserts the invariants: old
 evidence never replaces newer, expiry is inclusive, a new incarnation never

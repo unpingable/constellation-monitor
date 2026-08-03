@@ -100,8 +100,11 @@ for later `CURRENT`.
 ### Monitor-plane overload
 
 Input flood, full queues, oversized frames, excess signal fields, or excessive
-observer cardinality may impair observation. Wire and collection sizes are
-bounded. Rejected/dropped inputs increment separate counters and degrade the
+observer cardinality may impair observation. Wire frames and per-frame
+collections are bounded. The vertical slice does not yet impose a production
+bound on total admitted observer identities or JSONL trace size; an enclosing
+receiver must bound those resources and report admission loss. Reported
+rejected/dropped inputs increment separate counters and degrade the
 transport/monitor dimension. Overload cannot make prior evidence appear
 current.
 

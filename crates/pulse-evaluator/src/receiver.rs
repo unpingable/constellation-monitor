@@ -1,9 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pulse_types::{
-    ArrivalDispositionV1, AuthenticationResultV1, ClockId, IncarnationId, ObserverId, PulseFrameV1,
-    ReceiverAnnotationV1, ReceiverId, SCHEMA_VERSION_V1, SequenceGapV1,
+    ArrivalDispositionV1, AuthenticationResultV1, ClockId, IncarnationId, ObservationProfileIdV1,
+    ObserverId, PolicyGenerationId, PulseError, PulseFrameV1, ReceiverAnnotationV1, ReceiverId,
+    SCHEMA_VERSION_V1, SequenceGapV1, SubjectId,
 };
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReceiverStreamKey {
+    subject: SubjectId,
+    observer: ObserverId,
+    profile: ObservationProfileIdV1,
+    policy_generation: PolicyGenerationId,
+}
 
 #[derive(Clone, Debug)]
 struct ReceiverStream {
@@ -17,8 +26,10 @@ pub struct ReceiverTracker {
     receiver: ReceiverId,
     receiver_incarnation: IncarnationId,
     clock_id: ClockId,
-    streams: BTreeMap<ObserverId, ReceiverStream>,
-    retired: BTreeSet<(ObserverId, IncarnationId)>,
+    streams: BTreeMap<ReceiverStreamKey, ReceiverStream>,
+    retired: BTreeSet<(ReceiverStreamKey, IncarnationId)>,
+    subject_incarnations: BTreeMap<SubjectId, IncarnationId>,
+    retired_subject_incarnations: BTreeSet<(SubjectId, IncarnationId)>,
 }
 
 impl ReceiverTracker {
@@ -34,10 +45,11 @@ impl ReceiverTracker {
             clock_id,
             streams: BTreeMap::new(),
             retired: BTreeSet::new(),
+            subject_incarnations: BTreeMap::new(),
+            retired_subject_incarnations: BTreeSet::new(),
         }
     }
 
-    #[must_use]
     pub fn annotate(
         &mut self,
         frame: &PulseFrameV1,
@@ -45,11 +57,12 @@ impl ReceiverTracker {
         transport_path: impl Into<String>,
         transport_observed_delay_ms: Option<u64>,
         authentication: AuthenticationResultV1,
-    ) -> ReceiverAnnotationV1 {
+    ) -> Result<ReceiverAnnotationV1, PulseError> {
+        frame.validate()?;
         let effective_stale =
             transport_observed_delay_ms.is_some_and(|delay| delay >= frame.validity_ms);
         if effective_stale {
-            return ReceiverAnnotationV1 {
+            return Ok(ReceiverAnnotationV1 {
                 schema_version: SCHEMA_VERSION_V1,
                 receiver: self.receiver.clone(),
                 receiver_incarnation: self.receiver_incarnation.clone(),
@@ -60,54 +73,77 @@ impl ReceiverTracker {
                 transport_path: transport_path.into(),
                 transport_observed_delay_ms,
                 authentication,
-            };
+            });
         }
-        let (disposition, sequence_gap) =
-            if let Some(stream) = self.streams.get_mut(&frame.observer) {
-                if stream.incarnation == frame.observer_incarnation {
-                    if frame.sequence == stream.sequence {
-                        (ArrivalDispositionV1::Duplicate, None)
-                    } else if frame.sequence < stream.sequence {
-                        (ArrivalDispositionV1::Replay, None)
-                    } else if frame.sequence == stream.sequence.saturating_add(1) {
-                        stream.sequence = frame.sequence;
-                        (ArrivalDispositionV1::Continuous, None)
-                    } else {
-                        let expected_next = stream.sequence.saturating_add(1);
-                        stream.sequence = frame.sequence;
-                        (
-                            ArrivalDispositionV1::Gap,
-                            Some(SequenceGapV1 {
-                                expected_next,
-                                received: frame.sequence,
-                                missing_count: frame.sequence - expected_next,
-                            }),
-                        )
-                    }
-                } else if self
-                    .retired
-                    .contains(&(frame.observer.clone(), frame.observer_incarnation.clone()))
-                {
-                    (ArrivalDispositionV1::Replay, None)
-                } else {
-                    self.retired
-                        .insert((frame.observer.clone(), stream.incarnation.clone()));
-                    stream.incarnation = frame.observer_incarnation.clone();
-                    stream.sequence = frame.sequence;
-                    (ArrivalDispositionV1::Restarted, None)
+        let subject_key = (frame.subject.clone(), frame.subject_incarnation.clone());
+        let retired_subject = self.retired_subject_incarnations.contains(&subject_key);
+        if !retired_subject {
+            if let Some(prior) = self.subject_incarnations.get(&frame.subject).cloned() {
+                if prior != frame.subject_incarnation {
+                    self.retired_subject_incarnations
+                        .insert((frame.subject.clone(), prior));
+                    self.subject_incarnations
+                        .insert(frame.subject.clone(), frame.subject_incarnation.clone());
                 }
             } else {
-                self.streams.insert(
-                    frame.observer.clone(),
-                    ReceiverStream {
-                        incarnation: frame.observer_incarnation.clone(),
-                        sequence: frame.sequence,
-                    },
-                );
-                (ArrivalDispositionV1::First, None)
-            };
+                self.subject_incarnations
+                    .insert(frame.subject.clone(), frame.subject_incarnation.clone());
+            }
+        }
+
+        let stream_key = ReceiverStreamKey {
+            subject: frame.subject.clone(),
+            observer: frame.observer.clone(),
+            profile: frame.profile.clone(),
+            policy_generation: frame.policy_generation.clone(),
+        };
+        let (disposition, sequence_gap) = if retired_subject {
+            (ArrivalDispositionV1::Replay, None)
+        } else if let Some(stream) = self.streams.get_mut(&stream_key) {
+            if stream.incarnation == frame.observer_incarnation {
+                if frame.sequence == stream.sequence {
+                    (ArrivalDispositionV1::Duplicate, None)
+                } else if frame.sequence < stream.sequence {
+                    (ArrivalDispositionV1::Replay, None)
+                } else if frame.sequence == stream.sequence.saturating_add(1) {
+                    stream.sequence = frame.sequence;
+                    (ArrivalDispositionV1::Continuous, None)
+                } else {
+                    let expected_next = stream.sequence.saturating_add(1);
+                    stream.sequence = frame.sequence;
+                    (
+                        ArrivalDispositionV1::Gap,
+                        Some(SequenceGapV1 {
+                            expected_next,
+                            received: frame.sequence,
+                            missing_count: frame.sequence - expected_next,
+                        }),
+                    )
+                }
+            } else if self
+                .retired
+                .contains(&(stream_key.clone(), frame.observer_incarnation.clone()))
+            {
+                (ArrivalDispositionV1::Replay, None)
+            } else {
+                self.retired
+                    .insert((stream_key, stream.incarnation.clone()));
+                stream.incarnation = frame.observer_incarnation.clone();
+                stream.sequence = frame.sequence;
+                (ArrivalDispositionV1::Restarted, None)
+            }
+        } else {
+            self.streams.insert(
+                stream_key,
+                ReceiverStream {
+                    incarnation: frame.observer_incarnation.clone(),
+                    sequence: frame.sequence,
+                },
+            );
+            (ArrivalDispositionV1::First, None)
+        };
         debug_assert!(!effective_stale);
-        ReceiverAnnotationV1 {
+        Ok(ReceiverAnnotationV1 {
             schema_version: SCHEMA_VERSION_V1,
             receiver: self.receiver.clone(),
             receiver_incarnation: self.receiver_incarnation.clone(),
@@ -118,6 +154,6 @@ impl ReceiverTracker {
             transport_path: transport_path.into(),
             transport_observed_delay_ms,
             authentication,
-        }
+        })
     }
 }

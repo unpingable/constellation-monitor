@@ -1,0 +1,6 @@
+{"event":"config","minimum_observers":2,"auto_bridge":false}
+{"event":"pulse","at_ms":0,"observer":"observer:self","observer_incarnation":"self:1","sequence":1,"validity_ms":200,"load":"within","load_value":0.25}
+{"event":"pulse","at_ms":0,"observer":"observer:external","observer_incarnation":"external:1","sequence":1,"validity_ms":200,"load":"within","load_value":0.25}
+{"event":"fault","at_ms":10,"label":"subject self-report stays reassuring while external observation violates bound"}
+{"event":"pulse","at_ms":10,"observer":"observer:self","observer_incarnation":"self:1","sequence":2,"validity_ms":200,"load":"within","load_value":0.25}
+{"event":"pulse","at_ms":10,"observer":"observer:external","observer_incarnation":"external:1","sequence":2,"validity_ms":200,"load":"outside","load_value":1.25}

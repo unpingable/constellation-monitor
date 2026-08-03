@@ -85,14 +85,19 @@ labels may be recorded for display but do not extend validity.
 
 The maximum interval for which an admitted pulse may support a positive
 present-state judgment. Effective validity is the lesser of the pulse's
-declared validity and the consumer policy maximum. A pulse expires at:
+declared validity and the consumer policy maximum. With no receiver-verifiable
+pre-arrival delay, a pulse expires at:
 
 ```text
 receiver_arrival + effective_validity
 ```
 
-Evaluation at or after expiry treats the pulse as expired. Queueing, retry, or
-re-delivery never resets the original admitted arrival time.
+When the receiver can establish a pre-arrival transport delay, that delay is
+subtracted from effective validity. If it consumes the whole consumer-validity
+budget, the occurrence is stale for that consumer even if the sender declared
+a longer validity. Evaluation at or after expiry treats the pulse as expired.
+Queueing, retry, or re-delivery never resets the original admitted arrival
+time.
 
 ### Coverage
 
@@ -143,7 +148,10 @@ No weighted sum or hidden score may replace them.
 A versioned evaluation record indexed by subject scope, consumer/reliance
 class, observation-policy generation, aggregate coverage, evaluation time, and
 evidence-window identity. It contains one category, every confidence
-dimension, exact reasons, and explicit nonclaims.
+dimension, exact reasons, and explicit nonclaims. A `CURRENT` record also
+exposes the receiver-clock deadline at which its present support set can no
+longer sustain a positive result without replacement evidence; non-positive
+records carry no such deadline.
 
 ### Escalation threshold
 
@@ -168,6 +176,21 @@ An explicit disposition of a contradiction with a resolver identity, time,
 named rule, and explanation. Resolution stops that record from blocking future
 judgments only according to the named rule. New current evidence is still
 required for `CURRENT`.
+
+### Named negative-finding lifecycle rules
+
+The initial slice admits only two automatic applicability-ending rules for a
+single-observer negative signal occurrence:
+
+- `same_observer_newer_sequence/v1` (or the explicit
+  `observer_incarnation_replacement/v1` case) records a sparse supersession
+  event binding the prior and replacement evidence references; and
+- `receiver_freshness_expiry/v1` ends current applicability at the
+  receiver-owned inclusive expiry and preserves the earlier `SUSPECT`
+  transition as history.
+
+Neither rule resolves an independently grounded contradiction. Contradictions
+continue to require their separate lifecycle act.
 
 ## Identities and generations
 
@@ -305,6 +328,7 @@ The vertical slice keeps pulse state in memory. It emits JSONL-compatible
 
 - semantic judgment transitions;
 - contradiction creation/resolution/supersession;
+- named supersession of adverse single-observer observations;
 - escalation request/disposition/deduplication;
 - diagnostic receipt correlation; and
 - monitor-plane degradation/recovery.

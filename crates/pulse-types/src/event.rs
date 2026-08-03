@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ContradictionRecordV1, DiagnosticEscalationRequestV1, DiagnosticEvidenceReferenceV1,
     EscalationDispositionV1, ExperimentalMetricsV1, JudgmentTransitionV1, MockDiagnosticReceiptV1,
-    SCHEMA_VERSION_V1, SparseEventId,
+    ObserverId, SCHEMA_VERSION_V1, SparseEventId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -17,6 +17,13 @@ pub enum SparseDurableEventKindV1 {
     },
     ContradictionLifecycleChanged {
         contradiction: Box<ContradictionRecordV1>,
+    },
+    AdverseObservationSuperseded {
+        observer: ObserverId,
+        prior_evidence_ref: String,
+        superseding_evidence_ref: String,
+        adverse_signals: Vec<String>,
+        rule: String,
     },
     EscalationRequested {
         request: Box<DiagnosticEscalationRequestV1>,

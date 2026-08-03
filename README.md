@@ -93,8 +93,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 cargo run -p pulse-replay -- demo
 cargo run -p pulse-replay -- replay traces/packet-loss.jsonl
+cargo run -p pulse-replay -- replay-json traces/demo.jsonl
 cargo run -p pulse-agent -- --profile proc --count 3 --cadence-ms 250
 ```
+
+The optional replay-report path is created without overwriting an existing
+file. Its JSON contains sparse transition provenance, escalation dispositions,
+and diagnostic receipts; it is not a general event store. The qualification
+run's exact [demo report](artifacts/demo-report.json) is checked in as a golden
+regression artifact.
 
 No command performs remediation, invokes an arbitrary shell command, or grants
 mutation authority.

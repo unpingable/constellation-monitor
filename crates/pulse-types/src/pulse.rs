@@ -16,7 +16,7 @@ pub const MAX_VALIDITY_MS: u64 = 60 * 60 * 1_000;
 
 const WIRE_MAGIC: &[u8; 4] = b"PLS1";
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservationProfileIdV1 {
     pub name: String,
