@@ -456,6 +456,17 @@ impl ArtifactManifestBodyV1 {
                 .validate()
                 .map_err(|error| QualificationError::new("invalid_digest", error.to_string()))?;
         }
+        let corpus_artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.role == ArtifactRoleV1::QualificationCorpus)
+            .expect("complete ordered artifact inventory contains the corpus role");
+        if self.qualification_corpus_identities != vec![corpus_artifact.content_digest.clone()] {
+            return Err(QualificationError::new(
+                "qualification_corpus_mismatch",
+                "manifest corpus identity must exactly name its corpus artifact bytes",
+            ));
+        }
         validate_sorted_texts(
             "manifest.declared_claims",
             &self.declared_claims,
@@ -2458,15 +2469,25 @@ mod tests {
     }
 
     fn manifest() -> QualifiedArtifactManifestV1 {
+        let artifacts = ArtifactRoleV1::all()
+            .into_iter()
+            .map(artifact)
+            .collect::<Vec<_>>();
+        let corpus_digest = artifacts
+            .iter()
+            .find(|artifact| artifact.role == ArtifactRoleV1::QualificationCorpus)
+            .expect("fixture corpus role")
+            .content_digest
+            .clone();
         QualifiedArtifactManifestV1::new(ArtifactManifestBodyV1 {
             schema_version: SCHEMA_VERSION_V1,
             generation_set: generation_set(),
-            artifacts: ArtifactRoleV1::all().into_iter().map(artifact).collect(),
+            artifacts,
             source: source(),
             build: build(),
             semantic_contracts: Vec::new(),
             platform_assumptions: vec!["linux-proc-self-exe/v1".to_owned()],
-            qualification_corpus_identities: vec![digest_parts("corpus", &[b"fixture"])],
+            qualification_corpus_identities: vec![corpus_digest],
             declared_claims: vec!["canonical_manifest/v1".to_owned()],
             nonclaims: vec!["not_remote_attestation".to_owned()],
             supersedes_manifest_digests: Vec::new(),

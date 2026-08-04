@@ -230,6 +230,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulse-qualification"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "pulse-evaluator",
+ "pulse-l3-bridge",
+ "pulse-runtime",
+ "pulse-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pulse-replay"
 version = "0.1.0"
 dependencies = [

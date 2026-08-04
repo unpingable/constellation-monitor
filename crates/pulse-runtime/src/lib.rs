@@ -279,6 +279,15 @@ pub struct RuntimeBindingActivationOutputV1 {
     pub runtime_output: RuntimeCycleOutputV1,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivationQualificationPointV1 {
+    BeforeArtifactMeasurement,
+    DuringArtifactMeasurement,
+    AfterArtifactMeasurementBeforeBindingCommit,
+    AfterBindingCommitBeforeReturn,
+}
+
 impl RuntimeCycleOutputV1 {
     fn append(&mut self, mut other: Self) {
         self.certificates.append(&mut other.certificates);
@@ -500,6 +509,32 @@ impl ReceiverSchedulerRuntime {
         acceptance: LocalActivationAcceptanceV1,
         at_monotonic_ms: u64,
     ) -> Result<RuntimeBindingActivationOutputV1, RuntimeError> {
+        self.activate_qualified_binding_with_qualification_hook(
+            registration,
+            manifest_bytes,
+            certificate_bytes,
+            report_bytes,
+            acceptance,
+            at_monotonic_ms,
+            &mut |_| {},
+        )
+    }
+
+    /// Deterministic crash-injection seam. Production callers use
+    /// [`Self::activate_qualified_binding`]; this hook cannot alter a binding
+    /// value and exists only to stop a child process at named custody points.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn activate_qualified_binding_with_qualification_hook(
+        &mut self,
+        registration: &ConsumerRegistrationV1,
+        manifest_bytes: Option<&[u8]>,
+        certificate_bytes: Option<&[u8]>,
+        report_bytes: Option<&[u8]>,
+        acceptance: LocalActivationAcceptanceV1,
+        at_monotonic_ms: u64,
+        hook: &mut dyn FnMut(ActivationQualificationPointV1),
+    ) -> Result<RuntimeBindingActivationOutputV1, RuntimeError> {
         if self.history_exhausted {
             return Err(RuntimeError::new(
                 "sparse_history_capacity",
@@ -526,8 +561,10 @@ impl ReceiverSchedulerRuntime {
                 "qualified binding slot bound is full; no entry was evicted",
             ));
         }
+        hook(ActivationQualificationPointV1::BeforeArtifactMeasurement);
         let semantic_measurements = active_runtime_measurements(&self.config, registration)
             .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        hook(ActivationQualificationPointV1::DuringArtifactMeasurement);
         let expected_generation_set = QualifiedGenerationSetV1::from_context(
             registration.policy.subject.clone(),
             registration.policy.consumer.clone(),
@@ -553,6 +590,7 @@ impl ReceiverSchedulerRuntime {
             },
         )
         .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        hook(ActivationQualificationPointV1::AfterArtifactMeasurementBeforeBindingCommit);
         let receipt = attempt.receipt;
         let state = receipt.body.state;
         self.qualified_bindings.insert(
@@ -594,6 +632,7 @@ impl ReceiverSchedulerRuntime {
             key.consumer, receipt.receipt_digest
         ));
         output.append(std::mem::take(&mut self.pending_output));
+        hook(ActivationQualificationPointV1::AfterBindingCommitBeforeReturn);
         Ok(RuntimeBindingActivationOutputV1 {
             receipt,
             runtime_output: output,
@@ -2528,8 +2567,9 @@ pub use binding::{
     CanonicalEscalationPolicyV1, CanonicalFailureDomainV1, CanonicalReliancePolicyArtifactV1,
     CanonicalToleranceV1, ConsumerProfileArtifactV1, EvaluatorImplementationArtifactV1,
     LocalQualificationInputsV1, LocalQualificationPackageV1, ObservationPolicyArtifactV1,
-    ObserverSetArtifactV1, RuntimeArtifactPayloadV1, RuntimeConfigurationArtifactV1,
-    SemanticContractsArtifactV1, active_runtime_artifact_payloads, active_runtime_measurements,
+    ObserverSetArtifactV1, QualificationCorpusArtifactV1, QualificationResultsArtifactV1,
+    RuntimeArtifactPayloadV1, RuntimeConfigurationArtifactV1, SemanticContractsArtifactV1,
+    active_runtime_artifact_payloads, active_runtime_measurements,
     build_local_qualification_package, package_artifact_digests, qualification_fixture_inputs,
     runtime_semantic_contracts,
 };

@@ -3,6 +3,7 @@ members = [
     "crates/pulse-agent",
     "crates/pulse-evaluator",
     "crates/pulse-l3-bridge",
+    "crates/pulse-qualification",
     "crates/pulse-replay",
     "crates/pulse-runtime",
     "crates/pulse-types",
