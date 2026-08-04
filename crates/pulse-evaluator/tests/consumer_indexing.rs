@@ -4,9 +4,9 @@ use pulse_evaluator::{Evaluator, ReceiverTracker, ReliancePolicyV1};
 use pulse_types::{
     AuthenticationFieldV1, AuthenticationResultV1, BoundedSignalValueV1, ClockId, ConsumerId,
     CoverageDescriptorV1, IncarnationId, JudgmentCategoryV1, MutationAuthorityV1,
-    ObservationProfileIdV1, ObserverId, PolicyGenerationId, PulseFrameV1, ReceivedPulseV1,
-    ReceiverId, SCHEMA_VERSION_V1, SequenceContinuityDimensionV1, SignalAssessmentV1, SubjectId,
-    TransportDimensionV1, digest_parts,
+    ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId, PolicyGenerationId,
+    PulseFrameV1, ReceivedPulseV1, ReceiverId, SCHEMA_VERSION_V1, SequenceContinuityDimensionV1,
+    SignalAssessmentV1, SubjectId, TransportDimensionV1, digest_parts,
 };
 
 fn profile() -> ObservationProfileIdV1 {
@@ -24,6 +24,7 @@ fn policy(consumer: &str, generation: &str, minimum_observers: u32) -> RelianceP
         scope: "host".to_owned(),
         consumer: ConsumerId::new(consumer),
         generation: PolicyGenerationId::new(generation),
+        observation_policy_generation: ObservationPolicyGenerationId::new("policy:display-v1"),
         observation_profile: profile(),
         required_coverage: vec!["load".to_owned(), "memory".to_owned()],
         minimum_observers,
@@ -46,7 +47,7 @@ fn frame() -> PulseFrameV1 {
         observer_monotonic_ns: 0,
         validity_ms: 100,
         profile: profile(),
-        policy_generation: PolicyGenerationId::new("policy:display-v1"),
+        observation_policy_generation: ObservationPolicyGenerationId::new("policy:display-v1"),
         coverage: CoverageDescriptorV1 {
             expected: vec!["load".to_owned(), "memory".to_owned()],
             observed: vec!["load".to_owned(), "memory".to_owned()],

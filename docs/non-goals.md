@@ -1,6 +1,7 @@
 # Non-goals
 
-Status: normative scope boundary for the first campaign.
+Status: normative scope boundary for the qualified vertical slice and bounded
+receiver/scheduler campaign.
 
 The repository does not implement or claim:
 
@@ -33,8 +34,14 @@ The repository does not implement or claim:
 - diagnostic success as indefinite health;
 - escalation as authorization, repair, or mutation;
 - replacement of NQ-NG, Witness, Nightshift, Docket, or Synesthesia behavior;
-- Lean code, formalization, or claims of formal verification; or
-- hard real-time scheduling or latency guarantees.
+- Lean code, formalization, or claims of formal verification;
+- hard real-time scheduling or latency guarantees;
+- a production receiver, production transport, distributed scheduler,
+  leader election, or failover protocol;
+- crash-durable current standing or recovery of hot pulse windows;
+- unbounded policy/configuration history or a general configuration service;
+- a general query engine, plugin framework, or runtime rules engine; or
+- full contradiction-resolution or policy-supersession semantics.
 
 The Linux `/proc` producer is a narrow demonstration profile, not the start of
 a collector ecosystem. The JSONL replay corpus is a semantic test surface, not

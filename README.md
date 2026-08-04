@@ -74,13 +74,18 @@ policy generation.
 
 ## Workspace
 
-The minimal Rust workspace contains:
+The minimal Rust workspace contains six crates:
 
 - `pulse-types`: closed versioned records and compact bounded pulse encoding;
 - `pulse-agent`: synthetic and small Linux `/proc` pulse production;
 - `pulse-evaluator`: deterministic, multi-dimensional present-state logic;
 - `pulse-replay`: deterministic JSONL hostile-trace replay and terminal demo;
 - `pulse-l3-bridge`: closed-profile, harmless local diagnostic stub.
+
+The receiver/scheduler campaign adds `pulse-runtime`, a bounded local owner for
+receiver admission, exact context-generation barriers, per-consumer support
+certificates, and earliest-expiry reevaluation. It is not a production or
+distributed scheduler. See the [runtime contract](docs/runtime-contract.md).
 
 Pulses are hot, bounded, ephemeral records. JSONL is used for fixtures, replay,
 diagnostics, and sparse durable events, not as the assumed high-rate wire.
@@ -89,19 +94,23 @@ diagnostics, and sparse durable events, not as the assumed high-rate wire.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
 cargo run -p pulse-replay -- demo
 cargo run -p pulse-replay -- replay traces/packet-loss.jsonl
 cargo run -p pulse-replay -- replay-json traces/demo.jsonl
 cargo run -p pulse-agent -- --profile proc --count 3 --cadence-ms 250
+cargo run -p pulse-runtime -- demo
+cargo run -p pulse-runtime -- restart-demo
+cargo run -p pulse-runtime -- qualify
+cargo run -p pulse-runtime -- live-linux
 ```
 
-The optional replay-report path is created without overwriting an existing
-file. Its JSON contains sparse transition provenance, escalation dispositions,
-and diagnostic receipts; it is not a general event store. The qualification
-run's exact [demo report](artifacts/demo-report.json) is checked in as a golden
-regression artifact.
+Optional report paths are created without overwriting an existing file. Their
+JSON contains sparse transition provenance, support/deadline facts,
+escalation dispositions, and diagnostic receipts; it is not a general event
+store. Checked-in [qualification artifacts](artifacts/README.md) keep replay
+clock results separate from the one bounded wall-clock `/proc` exercise.
 
 No command performs remediation, invokes an arbitrary shell command, or grants
 mutation authority.
@@ -115,6 +124,10 @@ mutation authority.
 - [Escalation seam](docs/escalation-seam.md)
 - [Hostile scenarios](docs/hostile-scenarios.md)
 - [Focused reconnaissance](docs/reconnaissance.md)
+- [Receiver/scheduler contract](docs/runtime-contract.md)
+- [Receiver/scheduler campaign plan](docs/campaign-2-plan.md)
+- [Receiver/scheduler reconnaissance](docs/campaign-2-reconnaissance.md)
+- [Receiver/scheduler campaign report](docs/campaign-2-report.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.

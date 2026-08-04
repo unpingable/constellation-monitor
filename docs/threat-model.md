@@ -101,15 +101,27 @@ for later `CURRENT`.
 
 Input flood, full queues, oversized frames, excess signal fields, or excessive
 observer cardinality may impair observation. Wire frames and per-frame
-collections are bounded. The vertical slice does not yet impose a production
-bound on total admitted observer identities or JSONL trace size; an enclosing
-receiver must bound those resources and report admission loss. Reported
-rejected/dropped inputs increment separate counters and degrade the
-transport/monitor dimension. Overload cannot make prior evidence appear
-current.
+collections are bounded. The campaign receiver also bounds subjects,
+consumers, observers, stream/incarnation histories, pending inputs, schedules,
+context history, sparse custody, receipts, and active escalations. Saturation
+refuses the occurrence without eviction and withdraws positive standing where
+the lost premise affects observation capability. These are experimental local
+bounds, not production denial-of-service protection; JSONL replay-file size is
+still a harness concern. Overload cannot make prior evidence appear current.
 
 V1 is in-memory and single-process. It does not claim crash durability for
 current pulse state. Restart begins without inherited positive reliance.
+
+The bounded receiver runtime treats policy rollback, equal-content
+regeneration, identifier ABA, stale deadline callbacks, and deserialized
+historical `CURRENT` transitions as substitution attacks. Context activations
+and support certificates bind the complete generation set. Restart loads only
+history and installs `UNKNOWN`.
+
+Queue, observer, stream, incarnation, deadline, and history cardinality are
+hostile inputs. Saturation is a typed refusal and observation-capability loss,
+not an eviction hint. The campaign does not qualify behavior after process
+memory exhaustion, OS scheduler failure, or a compromised receiver clock.
 
 ### Escalation storms
 

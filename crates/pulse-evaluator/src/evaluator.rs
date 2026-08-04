@@ -38,6 +38,38 @@ pub enum MonitorCapabilityV1 {
     Blind { detail: String },
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReevaluationBarrierV1 {
+    GenerationTransition { detail: String },
+    SubjectIncarnationTransition { detail: String },
+    ReceiverRestart { detail: String },
+    MonitorCapabilityRestored { detail: String },
+}
+
+impl ReevaluationBarrierV1 {
+    const fn code(&self) -> &'static str {
+        match self {
+            Self::GenerationTransition { .. } => "generation_transition_requires_reevaluation",
+            Self::SubjectIncarnationTransition { .. } => {
+                "subject_incarnation_transition_requires_reevaluation"
+            }
+            Self::ReceiverRestart { .. } => "receiver_restart_requires_reevaluation",
+            Self::MonitorCapabilityRestored { .. } => {
+                "monitor_capability_restored_requires_reevaluation"
+            }
+        }
+    }
+
+    fn detail(&self) -> &str {
+        match self {
+            Self::GenerationTransition { detail }
+            | Self::SubjectIncarnationTransition { detail }
+            | Self::ReceiverRestart { detail }
+            | Self::MonitorCapabilityRestored { detail } => detail,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct ObserverEvidence {
     received: ReceivedPulseV1,
@@ -89,6 +121,7 @@ pub struct Evaluator {
     active_escalations: BTreeMap<DigestV1, ActiveEscalation>,
     monitor_capability: MonitorCapabilityV1,
     escalation_state: EscalationStateV1,
+    reevaluation_barrier: Option<ReevaluationBarrierV1>,
     last_judgment: Option<PresentStateJudgmentV1>,
     last_positive_support_deadline_ms: Option<u64>,
     last_receiver_arrival_ms: Option<u64>,
@@ -139,6 +172,7 @@ impl Evaluator {
             active_escalations: BTreeMap::new(),
             monitor_capability: MonitorCapabilityV1::Operational,
             escalation_state: EscalationStateV1::NotRequested,
+            reevaluation_barrier: None,
             last_judgment: None,
             last_positive_support_deadline_ms: None,
             last_receiver_arrival_ms: None,
@@ -171,6 +205,159 @@ impl Evaluator {
     #[must_use]
     pub fn event_log(&self) -> &[SparseDurableEventV1] {
         &self.event_log
+    }
+
+    #[must_use]
+    pub const fn current_subject_incarnation(&self) -> &IncarnationId {
+        &self.current_subject_incarnation
+    }
+
+    #[must_use]
+    pub fn active_contradiction_ids(&self) -> Vec<ContradictionId> {
+        self.contradictions
+            .values()
+            .filter(|record| record.is_active())
+            .map(|record| record.contradiction_id.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn supporting_evidence_refs(&self, now_monotonic_ms: u64) -> Vec<String> {
+        self.observers
+            .values()
+            .filter(|evidence| {
+                evidence.received.frame.subject_incarnation == self.current_subject_incarnation
+                    && now_monotonic_ms < evidence.expires_at_ms
+                    && self.provenance_is_eligible(evidence)
+            })
+            .map(|evidence| evidence_ref(&evidence.received.frame))
+            .collect()
+    }
+
+    /// Replace the exact consumer policy and install a non-inheriting barrier.
+    /// Existing compatible hot evidence may be reconsidered only by a later
+    /// explicit evaluation. Active contradictions remain in custody.
+    pub fn replace_policy(
+        &mut self,
+        policy: ReliancePolicyV1,
+        barrier: ReevaluationBarrierV1,
+        at_monotonic_ms: u64,
+    ) -> Result<EvaluationOutput, EvaluatorError> {
+        policy.validate().map_err(EvaluatorError::from_policy)?;
+        if policy.subject != self.policy.subject
+            || policy.scope != self.policy.scope
+            || policy.consumer != self.policy.consumer
+        {
+            return Err(EvaluatorError::new(
+                "policy_binding_mismatch",
+                "replacement policy changes evaluator subject, scope, or consumer",
+            ));
+        }
+        if policy.observation_profile != self.policy.observation_profile
+            || policy.observation_policy_generation != self.policy.observation_policy_generation
+        {
+            self.observers.clear();
+            self.observer_lineages.clear();
+            self.retired_observer_incarnations.clear();
+        }
+        self.policy = policy;
+        self.escalation_state = EscalationStateV1::NotRequested;
+        self.reevaluation_barrier = Some(barrier);
+        self.evaluate(at_monotonic_ms)
+    }
+
+    /// Install a barrier when a non-policy member of the reliance context
+    /// changes while keeping the policy body exact.
+    pub fn install_reevaluation_barrier(
+        &mut self,
+        barrier: ReevaluationBarrierV1,
+        at_monotonic_ms: u64,
+    ) -> Result<EvaluationOutput, EvaluatorError> {
+        self.escalation_state = EscalationStateV1::NotRequested;
+        self.reevaluation_barrier = Some(barrier);
+        self.evaluate(at_monotonic_ms)
+    }
+
+    /// Apply an explicitly configured subject replacement. Old-incarnation
+    /// contradictions remain historical but become inapplicable under exactly
+    /// one named rule. Merely receiving a disagreeing pulse does not call this.
+    pub fn replace_subject_incarnation(
+        &mut self,
+        replacement: IncarnationId,
+        at_monotonic_ms: u64,
+    ) -> Result<EvaluationOutput, EvaluatorError> {
+        replacement.validate().map_err(|_| {
+            EvaluatorError::new("invalid_subject", "invalid replacement incarnation")
+        })?;
+        if replacement == self.current_subject_incarnation {
+            return Err(EvaluatorError::new(
+                "duplicate_subject_incarnation",
+                "replacement incarnation is already active",
+            ));
+        }
+        let prior = self.current_subject_incarnation.clone();
+        let mut changed = Vec::new();
+        for record in self.contradictions.values_mut().filter(|record| {
+            record.is_active() && record.subject_scope.subject_incarnation == prior
+        }) {
+            record.status = ContradictionStatusV1::InapplicableBySubjectReplacement {
+                prior_subject_incarnation: prior.clone(),
+                replacement_subject_incarnation: replacement.clone(),
+                at_monotonic_ms,
+                rule: "subject_incarnation_replacement/v1".to_owned(),
+            };
+            changed.push(record.clone());
+        }
+        for contradiction in changed {
+            self.sparse_event(
+                at_monotonic_ms,
+                SparseDurableEventKindV1::ContradictionLifecycleChanged {
+                    contradiction: Box::new(contradiction),
+                },
+            );
+        }
+        self.retired_subject_incarnations.insert(prior.clone());
+        self.current_subject_incarnation = replacement.clone();
+        self.observers.clear();
+        self.observer_lineages.clear();
+        self.retired_observer_incarnations.clear();
+        self.diagnostic_evidence.clear();
+        self.escalation_state = EscalationStateV1::NotRequested;
+        self.reevaluation_barrier = Some(ReevaluationBarrierV1::SubjectIncarnationTransition {
+            detail: format!(
+                "configured subject incarnation changed from {prior} to {replacement}; old standing and hot evidence were not inherited"
+            ),
+        });
+        self.evaluate(at_monotonic_ms)
+    }
+
+    /// Restore contradiction custody only. This does not restore hot evidence,
+    /// a prior judgment, escalation state, or a schedule.
+    pub fn import_contradictions(
+        &mut self,
+        records: impl IntoIterator<Item = ContradictionRecordV1>,
+    ) -> Result<(), EvaluatorError> {
+        for record in records {
+            if record.schema_version != SCHEMA_VERSION_V1
+                || record.subject_scope.subject != self.policy.subject
+            {
+                return Err(EvaluatorError::new(
+                    "invalid_contradiction_history",
+                    "historical contradiction does not bind this evaluator subject",
+                ));
+            }
+            if let Some(existing) = self.contradictions.get(&record.contradiction_id)
+                && existing != &record
+            {
+                return Err(EvaluatorError::new(
+                    "contradiction_identity_rebound",
+                    "one contradiction identity names different historical content",
+                ));
+            }
+            self.contradictions
+                .insert(record.contradiction_id.clone(), record);
+        }
+        Ok(())
     }
 
     pub const fn set_normal_trace(&mut self, normal: bool) {
@@ -359,6 +546,26 @@ impl Evaluator {
         )
     }
 
+    /// Restore observation capability but retain a one-evaluation barrier so
+    /// cached evidence cannot become CURRENT in the restoration operation.
+    pub fn restore_monitor_capability(
+        &mut self,
+        at_monotonic_ms: u64,
+        detail: impl Into<String>,
+    ) -> Result<EvaluationOutput, EvaluatorError> {
+        let detail = detail.into();
+        self.monitor_capability = MonitorCapabilityV1::Operational;
+        let event = self.monitor_event(at_monotonic_ms, "operational", &detail);
+        self.reevaluation_barrier = Some(ReevaluationBarrierV1::MonitorCapabilityRestored {
+            detail: format!(
+                "monitor capability was explicitly restored ({detail}); a separate evaluation is required"
+            ),
+        });
+        let mut output = self.evaluate(at_monotonic_ms)?;
+        output.sparse_events.insert(0, event);
+        Ok(output)
+    }
+
     pub fn resolve_contradiction(
         &mut self,
         contradiction_id: &ContradictionId,
@@ -409,6 +616,7 @@ impl Evaluator {
     pub fn record_escalation_disposition(
         &mut self,
         disposition: EscalationDispositionV1,
+        evaluated_at_monotonic_ms: u64,
     ) -> Result<EvaluationOutput, EvaluatorError> {
         if disposition.schema_version != SCHEMA_VERSION_V1
             || disposition.bridge_id.as_str().is_empty()
@@ -423,6 +631,12 @@ impl Evaluator {
             return Err(EvaluatorError::new(
                 "unknown_request",
                 "disposition references an unknown request",
+            ));
+        }
+        if evaluated_at_monotonic_ms < disposition.decided_at_monotonic_ms {
+            return Err(EvaluatorError::new(
+                "evaluation_before_disposition",
+                "evaluation time precedes the bridge disposition occurrence",
             ));
         }
         self.escalation_state = match &disposition.kind {
@@ -447,7 +661,7 @@ impl Evaluator {
                 disposition: disposition.clone(),
             },
         );
-        let mut output = self.evaluate(at)?;
+        let mut output = self.evaluate(evaluated_at_monotonic_ms)?;
         output.sparse_events.insert(0, event);
         Ok(output)
     }
@@ -471,9 +685,11 @@ impl Evaluator {
             || receipt.subject_scope != request.subject_scope
             || receipt.consumer != request.consumer
             || receipt.policy_generation != request.policy_generation
+            || receipt.observation_policy_generation != request.observation_policy_generation
             || receipt.diagnostic_profile != request.diagnostic_profile
             || receipt.clock_id != self.clock_id
             || receipt.completed_at_monotonic_ms < receipt.started_at_monotonic_ms
+            || at_monotonic_ms < receipt.completed_at_monotonic_ms
         {
             return Err(EvaluatorError::new(
                 "receipt_binding_mismatch",
@@ -520,10 +736,11 @@ impl Evaluator {
                 "pulse subject differs from policy subject",
             ));
         }
-        if received.frame.policy_generation != self.policy.generation {
+        if received.frame.observation_policy_generation != self.policy.observation_policy_generation
+        {
             return Err(EvaluatorError::new(
-                "policy_generation_mismatch",
-                "pulse generation differs from evaluator policy",
+                "observation_policy_generation_mismatch",
+                "pulse observation-policy generation is not admitted by the reliance policy",
             ));
         }
         if received.frame.profile != self.policy.observation_profile {
@@ -809,7 +1026,12 @@ impl Evaluator {
         self.diagnostic_evidence
             .retain(|evidence| now < evidence.applicable_until_monotonic_ms);
 
-        let derived = self.derive(now);
+        let barrier = self.reevaluation_barrier.clone();
+        let mut derived = self.derive(now);
+        if barrier.is_some() {
+            derived.category = JudgmentCategoryV1::Unknown;
+            derived.support_deadline_ms = None;
+        }
         self.metrics.active_coverage =
             u32::try_from(derived.coverage.active.len()).unwrap_or(u32::MAX);
         self.metrics.expired_coverage =
@@ -824,6 +1046,7 @@ impl Evaluator {
             &derived.violation_evidence_refs,
             &self.monitor_capability,
             u64::try_from(self.diagnostic_evidence.len()).unwrap_or(u64::MAX),
+            barrier.as_ref(),
         );
         let mut judgment = PresentStateJudgmentV1 {
             schema_version: SCHEMA_VERSION_V1,
@@ -863,11 +1086,16 @@ impl Evaluator {
         self.update_failure_metrics(judgment.category, now);
         self.update_stale_positive_metric(&judgment, now, derived.support_deadline_ms);
 
-        let escalation_request = transition
-            .as_ref()
-            .and_then(|transition| self.maybe_escalate(transition, &judgment, now));
+        let escalation_request = if barrier.is_none() {
+            transition
+                .as_ref()
+                .and_then(|transition| self.maybe_escalate(transition, &judgment, now))
+        } else {
+            None
+        };
         judgment.escalation = self.escalation_state.clone();
         self.last_judgment = Some(judgment.clone());
+        self.reevaluation_barrier = None;
         let sparse_events = self.event_log[event_log_start..].to_vec();
         Ok(EvaluationOutput {
             judgment,
@@ -1270,6 +1498,7 @@ impl Evaluator {
             trigger_class: trigger,
             evidence_window_digest: DigestV1(judgment.evidence_window_id.to_string()),
             policy_generation: self.policy.generation.clone(),
+            observation_policy_generation: self.policy.observation_policy_generation.clone(),
             diagnostic_profile: escalation.diagnostic_profile.clone(),
             bounds: escalation.bounds,
             clock_id: self.clock_id.clone(),
@@ -1550,6 +1779,7 @@ fn provenance_dimension(evidence: &[&ObserverEvidence]) -> ProvenanceDimensionV1
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn explanation_for(
     category: JudgmentCategoryV1,
     dimensions: &ConfidenceDimensionsV1,
@@ -1558,8 +1788,16 @@ fn explanation_for(
     violation_evidence_refs: &[String],
     monitor: &MonitorCapabilityV1,
     receipt_count: u64,
+    barrier: Option<&ReevaluationBarrierV1>,
 ) -> JudgmentExplanationV1 {
     let mut reasons = Vec::new();
+    if let Some(barrier) = barrier {
+        reasons.push(JudgmentReasonV1 {
+            code: barrier.code().to_owned(),
+            detail: barrier.detail().to_owned(),
+            evidence_refs: Vec::new(),
+        });
+    }
     let has_violation = !violation_evidence_refs.is_empty();
     if !active_contradictions.is_empty() {
         reasons.push(JudgmentReasonV1 {
@@ -1676,7 +1914,10 @@ fn explanation_for(
             evidence_refs: Vec::new(),
         });
     }
-    let summary = if category == JudgmentCategoryV1::Unknown
+    let summary = if barrier.is_some() {
+        "UNKNOWN: an explicit runtime transition requires reevaluation; prior standing was not inherited."
+            .to_owned()
+    } else if category == JudgmentCategoryV1::Unknown
         && !coverage.missing.is_empty()
         && !has_violation
         && active_contradictions.is_empty()
@@ -1739,7 +1980,10 @@ fn judgment_semantically_changed(
     prior: &PresentStateJudgmentV1,
     current: &PresentStateJudgmentV1,
 ) -> bool {
-    prior.category != current.category
+    prior.subject_scope != current.subject_scope
+        || prior.consumer != current.consumer
+        || prior.policy_generation != current.policy_generation
+        || prior.category != current.category
         || prior.dimensions != current.dimensions
         || prior.coverage != current.coverage
         || prior

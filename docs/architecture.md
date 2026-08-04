@@ -1,7 +1,8 @@
 # Runtime architecture
 
-Status: normative for the initial vertical slice. The repository and component
-names are provisional.
+Status: normative for the qualified vertical slice and bounded
+receiver/scheduler campaign. The repository and component names are
+provisional.
 
 ## Product boundary
 
@@ -27,6 +28,22 @@ bounded acquisition
                                   closed local L3 bridge stub
                                   -> disposition + mock receipt
 ```
+
+The receiver/scheduler campaign adds one enclosing owner without changing the
+semantic jurisdiction:
+
+```text
+bounded ingress -> receiver annotation -> pending input order
+                                      -> exact generation barrier
+                                      -> per-consumer evaluator
+                                      -> support certificate
+                                      -> earliest-deadline scheduler
+                                      -> sparse history sink
+```
+
+`pulse-runtime` is a local single-process coordinator, not a distributed
+scheduler. Its full bound, ordering, restart, and generation contract is
+normative in [runtime-contract.md](runtime-contract.md).
 
 Transport, runtime interpretation, sparse event custody, and presentation are
 separate. A transport adapter cannot assign a judgment, and a renderer cannot
@@ -203,15 +220,23 @@ These identities are deliberately not interchangeable:
 | observer | configuration admits a producer | stable producer role |
 | observer incarnation | producer process starts | one sequence-number namespace |
 | observation profile | profile semantics are defined | exact pulse field/coverage meaning |
-| policy generation | reliance policy changes | exact consumer evaluation law |
+| observation-policy generation | collection law changes | exact pulse acquisition semantics admitted by a reliance policy |
+| reliance-policy generation | consumer evaluation law changes or is reissued | exact consumer evaluation law; content equality is insufficient |
+| consumer-profile generation | consumer premise/profile definition changes | exact reliance class semantics |
+| evaluator-semantic generation | evaluator interpretation changes | exact runtime derivation semantics |
+| observer-set generation | required observer/failure-domain configuration changes | exact coverage population law |
+| context activation | any relevant context is activated | single-use occurrence preventing rollback or ABA inheritance |
 | evidence window | evaluator selects current inputs | exact bounded evaluation basis |
 | transition | semantically relevant judgment changes | causal before/after occurrence |
 | escalation request | threshold crossing is admitted | one bounded diagnostic request |
 | diagnostic run | bridge accepts a request | one bounded execution occurrence |
 
-A change in semantic policy creates a new policy generation. Old evidence may
-remain inspectable but cannot be evaluated under a new generation unless that
-policy explicitly admits the profile and generation relationship.
+A change in semantic policy creates a new reliance-policy generation. A new
+generation is also required when an equal or rolled-back body is activated as
+a new law. Old evidence may remain inspectable, but it can be reconsidered
+only by an explicit evaluation whose support certificate names the new exact
+activation and whose policy explicitly admits the observation profile and
+observation-policy generation. No prior standing is copied.
 
 ## Receiver admission
 
@@ -309,9 +334,10 @@ non-blocking only through:
 - expiry under a named contradiction-expiry rule that the policy already
   contains.
 
-The initial runtime supports explicit resolution. It does not enable implicit
-quorum resolution. Resolution is a sparse durable event and does not itself
-supply current coverage.
+The evaluator kernel retains the existing explicit-resolution operation; the
+new receiver/scheduler does not expose a broader resolution command or policy
+language. It does not enable implicit quorum resolution. Resolution is a
+sparse durable event and does not itself supply current coverage.
 
 ## Diagnostic receipt handling
 
@@ -333,7 +359,18 @@ The vertical slice keeps pulse state in memory. It emits JSONL-compatible
 - diagnostic receipt correlation; and
 - monitor-plane degradation/recovery.
 
+The receiver runtime additionally emits sparse context activations, bounded
+support-certificate occurrences, deadline reevaluations, runtime refusals,
+contradiction-applicability changes, and restart facts.
+
 It does not implement distributed storage or long-term pulse retention.
+
+The receiver runtime may reopen an exactly serialized bounded history payload,
+contradiction custody, and receipts. A historical event may say that a
+certificate was `CURRENT` then; it is not an authoritative current projection.
+The runtime deliberately cannot reopen hot evidence, schedules, or positive
+standing. Restart installs `UNKNOWN` before any explicit current evaluation.
+No atomic storage or crash-durability implementation is qualified.
 
 ## Experimental metrics
 
@@ -357,3 +394,7 @@ than inventing a failure start time. No metric is a hard real-time guarantee.
 The evaluator tick interval plus effective validity bounds how long a cached
 positive judgment can outlive its evidence; observed overshoot is recorded as
 maximum stale-positive duration.
+
+The enclosing runtime separately exposes expected support expiry, actual
+reevaluation, scheduler lateness, policy-transition withdrawal latency,
+capacity refusals, escalation deduplication, and recovered-history counts.

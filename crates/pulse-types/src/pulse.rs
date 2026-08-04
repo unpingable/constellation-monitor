@@ -4,7 +4,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ClockId, DigestV1, IncarnationId, ObserverId, PolicyGenerationId, ReceiverId,
+    ClockId, DigestV1, IncarnationId, ObservationPolicyGenerationId, ObserverId, ReceiverId,
     SCHEMA_VERSION_V1, SubjectId, digest_parts,
 };
 
@@ -151,7 +151,7 @@ pub struct PulseFrameV1 {
     pub observer_monotonic_ns: u64,
     pub validity_ms: u64,
     pub profile: ObservationProfileIdV1,
-    pub policy_generation: PolicyGenerationId,
+    pub observation_policy_generation: ObservationPolicyGenerationId,
     pub coverage: CoverageDescriptorV1,
     pub signals: Vec<BoundedSignalValueV1>,
     pub observation_digest: DigestV1,
@@ -175,9 +175,9 @@ impl PulseFrameV1 {
         self.observer_incarnation
             .validate()
             .map_err(|error| PulseError::invalid("observer_incarnation", error.reason))?;
-        self.policy_generation
+        self.observation_policy_generation
             .validate()
-            .map_err(|error| PulseError::invalid("policy_generation", error.reason))?;
+            .map_err(|error| PulseError::invalid("observation_policy_generation", error.reason))?;
         if self.validity_ms == 0 || self.validity_ms > MAX_VALIDITY_MS {
             return Err(PulseError::invalid(
                 "validity_ms",
@@ -234,7 +234,10 @@ impl PulseFrameV1 {
             self.profile.name.as_bytes().to_vec(),
             self.profile.version.to_be_bytes().to_vec(),
             self.profile.semantic_digest.as_str().as_bytes().to_vec(),
-            self.policy_generation.as_str().as_bytes().to_vec(),
+            self.observation_policy_generation
+                .as_str()
+                .as_bytes()
+                .to_vec(),
         ];
         for tag in &self.coverage.expected {
             owned.push(b"expected".to_vec());
@@ -270,7 +273,7 @@ impl PulseFrameV1 {
         put_string(&mut output, &self.profile.name)?;
         put_u16(&mut output, self.profile.version);
         put_string(&mut output, self.profile.semantic_digest.as_str())?;
-        put_string(&mut output, self.policy_generation.as_str())?;
+        put_string(&mut output, self.observation_policy_generation.as_str())?;
         put_strings(&mut output, &self.coverage.expected)?;
         put_strings(&mut output, &self.coverage.observed)?;
         put_u16(
@@ -328,7 +331,8 @@ impl PulseFrameV1 {
             version: reader.u16()?,
             semantic_digest: DigestV1(reader.string("profile.semantic_digest")?),
         };
-        let policy_generation = PolicyGenerationId::new(reader.string("policy_generation")?);
+        let observation_policy_generation =
+            ObservationPolicyGenerationId::new(reader.string("observation_policy_generation")?);
         let coverage = CoverageDescriptorV1 {
             expected: reader.strings("coverage.expected", MAX_COVERAGE_TAGS)?,
             observed: reader.strings("coverage.observed", MAX_COVERAGE_TAGS)?,
@@ -374,7 +378,7 @@ impl PulseFrameV1 {
             observer_monotonic_ns,
             validity_ms,
             profile,
-            policy_generation,
+            observation_policy_generation,
             coverage,
             signals,
             observation_digest,
@@ -718,7 +722,7 @@ mod tests {
                 version: 1,
                 semantic_digest: digest_parts("profile", &[b"local.summary/v1"]),
             },
-            policy_generation: PolicyGenerationId::new("policy:1"),
+            observation_policy_generation: ObservationPolicyGenerationId::new("policy:1"),
             coverage: CoverageDescriptorV1 {
                 expected: vec!["load".to_owned(), "memory".to_owned()],
                 observed: vec!["load".to_owned(), "memory".to_owned()],

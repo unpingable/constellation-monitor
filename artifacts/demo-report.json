@@ -241,7 +241,7 @@
       "run_id": "run:ad6eb1254a0966f2ef9877c9ed6d6e3042a737e611378eea3bd0cc9e5ee3ae52",
       "request_id": "escalation:0000000000000001",
       "causal_transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
-      "deduplication_key": "sha256:812b2b86d5f2cc512611cd95aceab19a4c6b07b7724867ca8ee08205caff4eb6",
+      "deduplication_key": "sha256:39ff1cf8edf83148d5211cb3bcab5d343bc4bdff843945cde4439fb42853f206",
       "evidence_window_digest": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
       "subject_scope": {
         "subject": "subject:demo-host",
@@ -250,6 +250,7 @@
       },
       "consumer": "consumer:capacity-display/v1",
       "policy_generation": "policy:demo-v1",
+      "observation_policy_generation": "policy:demo-v1",
       "diagnostic_profile": {
         "name": "local.readonly.summary",
         "version": 1,
@@ -553,6 +554,7 @@
           "trigger_class": "contradiction_retained",
           "evidence_window_digest": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
           "policy_generation": "policy:demo-v1",
+          "observation_policy_generation": "policy:demo-v1",
           "diagnostic_profile": {
             "name": "local.readonly.summary",
             "version": 1,
@@ -566,7 +568,7 @@
           "clock_id": "clock:replay-v1",
           "created_at_monotonic_ms": 200,
           "expires_at_monotonic_ms": 400,
-          "deduplication_key": "sha256:812b2b86d5f2cc512611cd95aceab19a4c6b07b7724867ca8ee08205caff4eb6",
+          "deduplication_key": "sha256:39ff1cf8edf83148d5211cb3bcab5d343bc4bdff843945cde4439fb42853f206",
           "causal_transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
           "nonclaims": [
             "This request is not diagnostic evidence.",
@@ -613,7 +615,7 @@
           "run_id": "run:ad6eb1254a0966f2ef9877c9ed6d6e3042a737e611378eea3bd0cc9e5ee3ae52",
           "request_id": "escalation:0000000000000001",
           "causal_transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
-          "deduplication_key": "sha256:812b2b86d5f2cc512611cd95aceab19a4c6b07b7724867ca8ee08205caff4eb6",
+          "deduplication_key": "sha256:39ff1cf8edf83148d5211cb3bcab5d343bc4bdff843945cde4439fb42853f206",
           "evidence_window_digest": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
           "subject_scope": {
             "subject": "subject:demo-host",
@@ -622,6 +624,7 @@
           },
           "consumer": "consumer:capacity-display/v1",
           "policy_generation": "policy:demo-v1",
+          "observation_policy_generation": "policy:demo-v1",
           "diagnostic_profile": {
             "name": "local.readonly.summary",
             "version": 1,

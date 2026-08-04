@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pulse_types::{
-    ConsumerId, DiagnosticBoundsV1, DiagnosticProfileIdV1, EscalationTriggerClassV1,
-    ObservationProfileIdV1, PolicyGenerationId, SCHEMA_VERSION_V1, SubjectId,
+    ConsumerId, DiagnosticBoundsV1, DiagnosticProfileIdV1, DigestV1, EscalationTriggerClassV1,
+    ObservationPolicyGenerationId, ObservationProfileIdV1, PolicyGenerationId, SCHEMA_VERSION_V1,
+    SubjectId, digest_parts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,7 @@ pub struct ReliancePolicyV1 {
     pub scope: String,
     pub consumer: ConsumerId,
     pub generation: PolicyGenerationId,
+    pub observation_policy_generation: ObservationPolicyGenerationId,
     pub observation_profile: ObservationProfileIdV1,
     pub required_coverage: Vec<String>,
     pub minimum_observers: u32,
@@ -48,6 +50,9 @@ impl ReliancePolicyV1 {
         self.generation
             .validate()
             .map_err(|_| PolicyError("invalid policy generation"))?;
+        self.observation_policy_generation
+            .validate()
+            .map_err(|_| PolicyError("invalid observation policy generation"))?;
         self.observation_profile
             .validate()
             .map_err(|_| PolicyError("invalid observation profile"))?;
@@ -88,6 +93,81 @@ impl ReliancePolicyV1 {
             }
         }
         Ok(())
+    }
+
+    /// Exact digest of the consumer reliance-policy body. The generation is
+    /// deliberately excluded so equal bodies under distinct generations have
+    /// equal body digests but remain distinct reliance contexts.
+    #[must_use]
+    pub fn semantic_digest(&self) -> DigestV1 {
+        let mut parts = vec![
+            self.schema_version.to_be_bytes().to_vec(),
+            self.subject.as_str().as_bytes().to_vec(),
+            self.scope.as_bytes().to_vec(),
+            self.consumer.as_str().as_bytes().to_vec(),
+            self.observation_policy_generation
+                .as_str()
+                .as_bytes()
+                .to_vec(),
+            self.observation_profile.name.as_bytes().to_vec(),
+            self.observation_profile.version.to_be_bytes().to_vec(),
+            self.observation_profile
+                .semantic_digest
+                .as_str()
+                .as_bytes()
+                .to_vec(),
+            self.minimum_observers.to_be_bytes().to_vec(),
+            self.maximum_validity_ms.to_be_bytes().to_vec(),
+            vec![u8::from(self.require_verified_authentication)],
+        ];
+        for tag in &self.required_coverage {
+            parts.push(b"coverage".to_vec());
+            parts.push(tag.as_bytes().to_vec());
+        }
+        for (signal, tolerance) in &self.coherence_tolerances {
+            parts.push(b"coherence".to_vec());
+            parts.push(signal.as_bytes().to_vec());
+            parts.push(tolerance.to_bits().to_be_bytes().to_vec());
+        }
+        for (observer, domain) in &self.observer_failure_domains {
+            parts.push(b"failure-domain".to_vec());
+            parts.push(observer.as_bytes().to_vec());
+            parts.push(domain.as_bytes().to_vec());
+        }
+        if let Some(escalation) = &self.escalation {
+            parts.push(b"escalation".to_vec());
+            for trigger in &escalation.triggers {
+                parts.push(trigger.as_str().as_bytes().to_vec());
+            }
+            parts.push(escalation.diagnostic_profile.name.as_bytes().to_vec());
+            parts.push(escalation.diagnostic_profile.version.to_be_bytes().to_vec());
+            parts.push(
+                escalation
+                    .diagnostic_profile
+                    .semantic_digest
+                    .as_str()
+                    .as_bytes()
+                    .to_vec(),
+            );
+            parts.push(escalation.bounds.maximum_runtime_ms.to_be_bytes().to_vec());
+            parts.push(
+                escalation
+                    .bounds
+                    .maximum_output_bytes
+                    .to_be_bytes()
+                    .to_vec(),
+            );
+            parts.push(
+                escalation
+                    .bounds
+                    .maximum_observations
+                    .to_be_bytes()
+                    .to_vec(),
+            );
+            parts.push(escalation.request_ttl_ms.to_be_bytes().to_vec());
+        }
+        let references = parts.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        digest_parts("reliance.policy.body.v1", &references)
     }
 }
 

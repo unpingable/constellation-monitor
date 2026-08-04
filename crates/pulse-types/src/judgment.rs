@@ -264,6 +264,12 @@ pub enum ContradictionStatusV1 {
         at_monotonic_ms: u64,
         rule: String,
     },
+    InapplicableBySubjectReplacement {
+        prior_subject_incarnation: crate::IncarnationId,
+        replacement_subject_incarnation: crate::IncarnationId,
+        at_monotonic_ms: u64,
+        rule: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

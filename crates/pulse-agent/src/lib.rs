@@ -11,8 +11,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pulse_types::{
     AuthenticationFieldV1, BoundedSignalValueV1, CoverageDescriptorV1, DigestV1, IncarnationId,
-    ObservationProfileIdV1, ObserverId, PolicyGenerationId, PulseFrameV1, SCHEMA_VERSION_V1,
-    SignalAssessmentV1, SubjectId, digest_parts,
+    ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId, PulseFrameV1,
+    SCHEMA_VERSION_V1, SignalAssessmentV1, SubjectId, digest_parts,
 };
 
 static INCARNATION_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -28,7 +28,7 @@ pub struct AgentConfig {
     pub subject: SubjectId,
     pub subject_incarnation: IncarnationId,
     pub observer: ObserverId,
-    pub policy_generation: PolicyGenerationId,
+    pub observation_policy_generation: ObservationPolicyGenerationId,
     pub profile: ProducerProfile,
     pub cadence: Duration,
     pub validity_ms: u64,
@@ -43,7 +43,7 @@ impl AgentConfig {
             subject: SubjectId::new("subject:demo-host"),
             subject_incarnation: IncarnationId::new("subject-incarnation:demo-1"),
             observer: ObserverId::new("observer:synthetic-local"),
-            policy_generation: PolicyGenerationId::new("policy:demo-v1"),
+            observation_policy_generation: ObservationPolicyGenerationId::new("policy:demo-v1"),
             profile: ProducerProfile::Synthetic,
             cadence: Duration::from_millis(250),
             validity_ms: 750,
@@ -80,7 +80,7 @@ impl AgentConfig {
         self.observer
             .validate()
             .map_err(|error| AgentError::new(error.to_string()))?;
-        self.policy_generation
+        self.observation_policy_generation
             .validate()
             .map_err(|error| AgentError::new(error.to_string()))?;
         Ok(())
@@ -153,7 +153,7 @@ impl PulseAgent {
                 .unwrap_or(u64::MAX),
             validity_ms: self.config.validity_ms,
             profile,
-            policy_generation: self.config.policy_generation.clone(),
+            observation_policy_generation: self.config.observation_policy_generation.clone(),
             coverage,
             signals,
             observation_digest: DigestV1::from_parts("unsealed", &[]),

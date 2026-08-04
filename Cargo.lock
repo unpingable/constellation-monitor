@@ -242,6 +242,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulse-runtime"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "pulse-agent",
+ "pulse-evaluator",
+ "pulse-l3-bridge",
+ "pulse-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pulse-types"
 version = "0.1.0"
 dependencies = [

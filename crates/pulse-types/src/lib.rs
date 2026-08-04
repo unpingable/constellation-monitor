@@ -10,6 +10,7 @@ mod event;
 mod ids;
 mod judgment;
 mod pulse;
+mod runtime;
 
 pub use digest::{DigestV1, digest_parts};
 pub use escalation::*;
@@ -17,6 +18,7 @@ pub use event::*;
 pub use ids::*;
 pub use judgment::*;
 pub use pulse::*;
+pub use runtime::*;
 
 /// Initial schema version shared by the closed v1 records.
 pub const SCHEMA_VERSION_V1: u16 = 1;

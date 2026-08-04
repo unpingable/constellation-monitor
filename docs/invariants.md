@@ -1,6 +1,6 @@
 # Runtime invariants
 
-Status: normative for the initial vertical slice.
+Status: normative for the qualified vertical slice and bounded runtime.
 
 These are runtime claim limits, not aspirations. A violation is a defect. The
 word "positive" refers only to the `CURRENT` category.
@@ -114,8 +114,9 @@ word "positive" refers only to the `CURRENT` category.
     transition from a previously satisfied reliance bound to an unsatisfied
     one, plus its evidence-window digest.
 35. **Equivalent live requests deduplicate.** Repeating the same subject,
-    consumer, policy generation, trigger class, and diagnostic profile before
-    expiry produces no second execution request.
+    consumer, reliance-policy generation, observation-policy generation,
+    trigger class, and diagnostic profile before expiry produces no second
+    execution request.
 36. **Expiry does not slide on deduplication or deferral.** Neither event extends
     the original request expiry.
 37. **Only registered profiles execute.** The bridge refuses any profile absent
@@ -149,6 +150,55 @@ word "positive" refers only to the `CURRENT` category.
 48. **No stronger hostile-trace claim.** For every supplied hostile trace, a
     `CURRENT` result is permitted only when all current policy premises are
     demonstrably present in the encoded trace.
+
+## Receiver, scheduler, and generation transitions
+
+49. **No generation inheritance.** A prior `CURRENT` certificate is invalid
+    after any relevant reliance-policy, consumer-profile,
+    evaluator-semantic, observer-set, observation-policy, subject-incarnation,
+    or context-activation transition.
+50. **Content equality is not identity.** Equal policy bytes or semantic
+    digests under different generations cannot preserve or recreate standing.
+51. **Rollback and ABA do not resurrect.** Returning to an earlier body or
+    identifier is a new activation and cannot reuse an earlier certificate,
+    deadline, or evaluation result.
+52. **Generation barriers precede reconsideration.** The affected consumer is
+    first `UNKNOWN` under the new exact activation. Only a separate explicit
+    evaluation may establish another category.
+53. **Consumer transitions are isolated.** Changing Consumer A's context does
+    not change Consumer B's context, schedule, or certificate.
+54. **The scheduler owns positive expiry.** Every runtime-issued `CURRENT`
+    certificate has exactly one scheduled inclusive reevaluation at its
+    earliest required support deadline.
+55. **No pulse is needed for withdrawal.** Reaching a scheduled support
+    deadline reevaluates and withdraws stale positive standing even with an
+    empty input stream.
+56. **Simultaneous order is total.** Generation barriers precede matching
+    inclusive expiry, which precedes pulse processing and explicit
+    reevaluation at the same logical instant.
+57. **Stale schedules are activation-bound.** A deadline scheduled by an old
+    context cannot reevaluate or refresh a later context.
+58. **Lateness is evidence about the monitor.** Scheduler overshoot is measured
+    from the original deadline and never shifts freshness.
+59. **Bounds fail visibly.** Queue, subject, consumer, observer, stream,
+    incarnation, schedule, context-history, escalation, certificate, receipt,
+    and sparse-history exhaustion produces typed refusal or blindness; none
+    silently evicts evidence while preserving `CURRENT`.
+60. **Restart has no current standing.** Historical transitions, receipts, and
+    contradictions may reopen, but hot evidence, schedules, and `CURRENT`
+    certificates do not. Restart begins `UNKNOWN`.
+61. **Contradictions survive semantic transitions.** Policy/profile/evaluator/
+    observer-set changes and diagnostic completion cannot clear an applicable
+    active contradiction.
+62. **Subject replacement is named, not deletion.** Only an explicit configured
+    subject-incarnation replacement may mark an old-incarnation contradiction
+    inapplicable under `subject_incarnation_replacement/v1`; its historical
+    record remains.
+63. **Certificates are bounded and exact.** A certificate names the complete
+    activated reliance context, evidence refs, missing premises,
+    contradictions, coverage, expiry, next evaluation, and no-mutation
+    statement. Overflow withholds the positive certificate and emits an
+    explicit refusal; it never truncates a claim.
 
 ## Maximum stale-positive duration
 

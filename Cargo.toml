@@ -4,6 +4,7 @@ members = [
     "crates/pulse-evaluator",
     "crates/pulse-l3-bridge",
     "crates/pulse-replay",
+    "crates/pulse-runtime",
     "crates/pulse-types",
 ]
 resolver = "2"

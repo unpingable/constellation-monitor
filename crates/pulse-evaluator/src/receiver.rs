@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use pulse_types::{
-    ArrivalDispositionV1, AuthenticationResultV1, ClockId, IncarnationId, ObservationProfileIdV1,
-    ObserverId, PolicyGenerationId, PulseError, PulseFrameV1, ReceiverAnnotationV1, ReceiverId,
-    SCHEMA_VERSION_V1, SequenceGapV1, SubjectId,
+    ArrivalDispositionV1, AuthenticationResultV1, ClockId, IncarnationId,
+    ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId, PulseError, PulseFrameV1,
+    ReceiverAnnotationV1, ReceiverId, SCHEMA_VERSION_V1, SequenceGapV1, SubjectId,
 };
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -11,7 +11,7 @@ struct ReceiverStreamKey {
     subject: SubjectId,
     observer: ObserverId,
     profile: ObservationProfileIdV1,
-    policy_generation: PolicyGenerationId,
+    observation_policy_generation: ObservationPolicyGenerationId,
 }
 
 #[derive(Clone, Debug)]
@@ -95,7 +95,7 @@ impl ReceiverTracker {
             subject: frame.subject.clone(),
             observer: frame.observer.clone(),
             profile: frame.profile.clone(),
-            policy_generation: frame.policy_generation.clone(),
+            observation_policy_generation: frame.observation_policy_generation.clone(),
         };
         let (disposition, sequence_gap) = if retired_subject {
             (ArrivalDispositionV1::Replay, None)
@@ -155,5 +155,43 @@ impl ReceiverTracker {
             transport_observed_delay_ms,
             authentication,
         })
+    }
+
+    /// Install an externally configured subject-incarnation replacement and
+    /// retire all receiver stream lineages for that subject. This is separate
+    /// from merely receiving a pulse that disagrees about incarnation.
+    pub fn activate_subject_incarnation(
+        &mut self,
+        subject: &SubjectId,
+        replacement: IncarnationId,
+    ) -> Result<(), PulseError> {
+        subject.validate().map_err(|error| PulseError {
+            code: "invalid",
+            field: "subject",
+            detail: error.reason,
+        })?;
+        replacement.validate().map_err(|error| PulseError {
+            code: "invalid",
+            field: "subject_incarnation",
+            detail: error.reason,
+        })?;
+        if let Some(prior) = self
+            .subject_incarnations
+            .insert(subject.clone(), replacement)
+        {
+            self.retired_subject_incarnations
+                .insert((subject.clone(), prior));
+        }
+        let retiring = self
+            .streams
+            .iter()
+            .filter(|(key, _)| &key.subject == subject)
+            .map(|(key, stream)| (key.clone(), stream.incarnation.clone()))
+            .collect::<Vec<_>>();
+        for (key, incarnation) in retiring {
+            self.streams.remove(&key);
+            self.retired.insert((key, incarnation));
+        }
+        Ok(())
     }
 }

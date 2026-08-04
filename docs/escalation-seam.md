@@ -36,7 +36,8 @@ The closed request contains:
 | `consumer` | reliance class whose bound ceased to hold |
 | `trigger_class` | closed reason class such as contradiction or coverage collapse |
 | `evidence_window_digest` | identity of the evidence basis that caused the request |
-| `policy_generation` | exact observation/reliance policy law |
+| `policy_generation` | exact consumer reliance-policy law |
+| `observation_policy_generation` | exact collection law admitted by that reliance policy |
 | `diagnostic_profile` | one predeclared profile identity and version |
 | `bounds` | maximum runtime, output bytes, and observation count |
 | `clock_id` | receiver/bridge monotonic clock generation for V1 local comparison |
@@ -47,10 +48,10 @@ The closed request contains:
 | `nonclaims` | fixed statements excluding truth, authority, repair, and mutation |
 
 The semantic deduplication transcript is versioned and includes subject scope,
-consumer, policy generation, trigger class, and requested diagnostic profile.
-It intentionally excludes the request occurrence ID and creation time. The
-evidence-window digest remains in the request even when the semantic key
-deduplicates a later equivalent window.
+consumer, reliance-policy generation, observation-policy generation, trigger
+class, and requested diagnostic profile. It intentionally excludes the request
+occurrence ID and creation time. The evidence-window digest remains in the
+request even when the semantic key deduplicates a later equivalent window.
 
 V1's monotonic expiry is deliberately local. A bridge with a different clock
 generation refuses the request rather than guessing comparability. A future
@@ -116,7 +117,7 @@ An accepted stub run emits a versioned receipt containing:
 
 - receipt and run identities;
 - exact request, transition, evidence-window, deduplication, subject, consumer,
-  policy, and profile bindings;
+  reliance-policy, observation-policy, and profile bindings;
 - bridge clock identity and start/completion times;
 - bounded result entries and result digest;
 - observed diagnostic coverage;

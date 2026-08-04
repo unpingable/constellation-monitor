@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ContradictionRecordV1, DiagnosticEscalationRequestV1, DiagnosticEvidenceReferenceV1,
     EscalationDispositionV1, ExperimentalMetricsV1, JudgmentTransitionV1, MockDiagnosticReceiptV1,
-    ObserverId, SCHEMA_VERSION_V1, SparseEventId,
+    ObserverId, RelianceContextTransitionV1, RelianceSupportCertificateV1, RuntimeRefusalV1,
+    SCHEMA_VERSION_V1, SparseEventId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -42,6 +43,32 @@ pub enum SparseDurableEventKindV1 {
     MonitorCapabilityChanged {
         state: String,
         detail: String,
+    },
+    RelianceContextTransition {
+        transition: Box<RelianceContextTransitionV1>,
+    },
+    SupportCertificateIssued {
+        certificate: Box<RelianceSupportCertificateV1>,
+    },
+    RuntimeRefusal {
+        refusal: Box<RuntimeRefusalV1>,
+    },
+    SchedulerReevaluated {
+        consumer: crate::ConsumerId,
+        activation_id: crate::ContextActivationId,
+        expected_deadline_monotonic_ms: u64,
+        actual_reevaluation_monotonic_ms: u64,
+        stale_positive_overshoot_ms: u64,
+    },
+    RuntimeRestarted {
+        receiver_incarnation: crate::IncarnationId,
+        clock_id: crate::ClockId,
+        recovered_sparse_records: u64,
+        recovered_receipts: u64,
+        standing_recovered: bool,
+    },
+    ContradictionApplicabilityChanged {
+        custody: Box<crate::ContradictionCustodyV1>,
     },
     MetricsSnapshot {
         metrics: ExperimentalMetricsV1,

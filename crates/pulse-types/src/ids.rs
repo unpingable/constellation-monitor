@@ -46,7 +46,16 @@ identity_type!(ObserverId);
 identity_type!(ReceiverId);
 identity_type!(IncarnationId);
 identity_type!(ClockId);
+// Exact consumer reliance-policy generation.
 identity_type!(PolicyGenerationId);
+// Exact collection law named by a pulse occurrence.
+identity_type!(ObservationPolicyGenerationId);
+identity_type!(ConsumerProfileGenerationId);
+identity_type!(EvaluatorSemanticGenerationId);
+identity_type!(ObserverSetGenerationId);
+identity_type!(ContextActivationId);
+identity_type!(SupportCertificateId);
+identity_type!(RuntimeRefusalId);
 identity_type!(EvidenceWindowId);
 identity_type!(TransitionId);
 identity_type!(ContradictionId);

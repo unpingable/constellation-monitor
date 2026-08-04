@@ -13,9 +13,10 @@ use pulse_types::{
     AuthenticationFieldV1, AuthenticationResultV1, BoundedSignalValueV1, BridgeId, ClockId,
     ConsumerId, CoverageDescriptorV1, DiagnosticBoundsV1, EscalationDispositionV1,
     EscalationTriggerClassV1, ExperimentalMetricsV1, IncarnationId, JudgmentCategoryV1,
-    JudgmentTransitionV1, MockDiagnosticReceiptV1, ObservationProfileIdV1, ObserverId,
-    PolicyGenerationId, PulseFrameV1, ReceivedPulseV1, ReceiverId, SCHEMA_VERSION_V1,
-    SignalAssessmentV1, SparseDurableEventV1, SubjectId, digest_parts,
+    JudgmentTransitionV1, MockDiagnosticReceiptV1, ObservationPolicyGenerationId,
+    ObservationProfileIdV1, ObserverId, PolicyGenerationId, PulseFrameV1, ReceivedPulseV1,
+    ReceiverId, SCHEMA_VERSION_V1, SignalAssessmentV1, SparseDurableEventV1, SubjectId,
+    digest_parts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -217,6 +218,7 @@ pub fn run_records(records: Vec<TraceRecordV1>) -> Result<ReplayReportV1, Replay
         scope: "host".to_owned(),
         consumer: ConsumerId::new("consumer:capacity-display/v1"),
         generation: PolicyGenerationId::new("policy:demo-v1"),
+        observation_policy_generation: ObservationPolicyGenerationId::new("policy:demo-v1"),
         observation_profile: profile.clone(),
         required_coverage: config.required_coverage.clone(),
         minimum_observers: config.minimum_observers,
@@ -564,7 +566,7 @@ fn collect_with_bridge(
         .escalation_dispositions
         .push(outcome.disposition.clone());
     let disposition_output = evaluator
-        .record_escalation_disposition(outcome.disposition)
+        .record_escalation_disposition(outcome.disposition, bridge_at)
         .map_err(|error| ReplayError::new(error.to_string()))?;
     collector.collect_output(&disposition_output);
     if let Some(receipt) = outcome.receipt {
@@ -671,7 +673,7 @@ fn trace_frame(
         observer_monotonic_ns: at_ms.saturating_mul(1_000_000),
         validity_ms,
         profile: profile.clone(),
-        policy_generation: PolicyGenerationId::new("policy:demo-v1"),
+        observation_policy_generation: ObservationPolicyGenerationId::new("policy:demo-v1"),
         coverage: CoverageDescriptorV1 {
             expected: default_required_coverage(),
             observed: observed_coverage.to_vec(),

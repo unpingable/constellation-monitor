@@ -196,6 +196,7 @@ impl StubL3Bridge {
             subject_scope: request.subject_scope.clone(),
             consumer: request.consumer.clone(),
             policy_generation: request.policy_generation.clone(),
+            observation_policy_generation: request.observation_policy_generation.clone(),
             diagnostic_profile: request.diagnostic_profile.clone(),
             bridge_id: self.bridge_id.clone(),
             clock_id: self.clock_id.clone(),
@@ -343,7 +344,7 @@ fn result_digest(
 mod tests {
     use pulse_types::{
         ConsumerId, ESCALATION_NONCLAIMS, EscalationTriggerClassV1, IncarnationId,
-        PolicyGenerationId, SubjectId, SubjectScopeV1, TransitionId,
+        ObservationPolicyGenerationId, PolicyGenerationId, SubjectId, SubjectScopeV1, TransitionId,
     };
 
     use super::*;
@@ -361,6 +362,9 @@ mod tests {
             trigger_class: EscalationTriggerClassV1::CoverageCollapse,
             evidence_window_digest: digest_parts("window", &[b"one"]),
             policy_generation: PolicyGenerationId::new("policy:1"),
+            observation_policy_generation: ObservationPolicyGenerationId::new(
+                "observation-policy:1",
+            ),
             diagnostic_profile: stub_profile_identity(),
             bounds: DiagnosticBoundsV1 {
                 maximum_runtime_ms: 25,

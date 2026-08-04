@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BridgeId, ClockId, ConsumerId, DiagnosticReceiptId, DiagnosticRunId, DigestV1,
-    EscalationRequestId, PolicyGenerationId, SCHEMA_VERSION_V1, SubjectScopeV1, TransitionId,
-    digest_parts,
+    EscalationRequestId, ObservationPolicyGenerationId, PolicyGenerationId, SCHEMA_VERSION_V1,
+    SubjectScopeV1, TransitionId, digest_parts,
 };
 
 pub const ESCALATION_NONCLAIMS: [&str; 4] = [
@@ -107,6 +107,7 @@ pub struct DiagnosticEscalationRequestV1 {
     pub trigger_class: EscalationTriggerClassV1,
     pub evidence_window_digest: DigestV1,
     pub policy_generation: PolicyGenerationId,
+    pub observation_policy_generation: ObservationPolicyGenerationId,
     pub diagnostic_profile: DiagnosticProfileIdV1,
     pub bounds: DiagnosticBoundsV1,
     pub clock_id: ClockId,
@@ -128,6 +129,7 @@ impl DiagnosticEscalationRequestV1 {
                 self.subject_scope.scope.as_bytes(),
                 self.consumer.as_str().as_bytes(),
                 self.policy_generation.as_str().as_bytes(),
+                self.observation_policy_generation.as_str().as_bytes(),
                 self.trigger_class.as_str().as_bytes(),
                 self.diagnostic_profile.name.as_bytes(),
                 &self.diagnostic_profile.version.to_be_bytes(),
@@ -155,6 +157,9 @@ impl DiagnosticEscalationRequestV1 {
         self.policy_generation
             .validate()
             .map_err(|_| EscalationError::new("invalid_identity", "invalid policy generation"))?;
+        self.observation_policy_generation.validate().map_err(|_| {
+            EscalationError::new("invalid_identity", "invalid observation-policy generation")
+        })?;
         self.clock_id
             .validate()
             .map_err(|_| EscalationError::new("invalid_identity", "invalid clock identity"))?;
@@ -268,6 +273,7 @@ pub struct MockDiagnosticReceiptV1 {
     pub subject_scope: SubjectScopeV1,
     pub consumer: ConsumerId,
     pub policy_generation: PolicyGenerationId,
+    pub observation_policy_generation: ObservationPolicyGenerationId,
     pub diagnostic_profile: DiagnosticProfileIdV1,
     pub bridge_id: BridgeId,
     pub clock_id: ClockId,
@@ -322,6 +328,9 @@ mod tests {
             trigger_class: EscalationTriggerClassV1::CoverageCollapse,
             evidence_window_digest: digest_parts("window", &[b"one"]),
             policy_generation: PolicyGenerationId::new("policy:1"),
+            observation_policy_generation: ObservationPolicyGenerationId::new(
+                "observation-policy:1",
+            ),
             diagnostic_profile: DiagnosticProfileIdV1 {
                 name: "local.readonly.summary".to_owned(),
                 version: 1,
@@ -350,6 +359,10 @@ mod tests {
         request.request_id = EscalationRequestId::new("request:2");
         assert_eq!(request.compute_deduplication_key(), first);
         request.policy_generation = PolicyGenerationId::new("policy:2");
+        assert_ne!(request.compute_deduplication_key(), first);
+        request.policy_generation = PolicyGenerationId::new("policy:1");
+        request.observation_policy_generation =
+            ObservationPolicyGenerationId::new("observation-policy:2");
         assert_ne!(request.compute_deduplication_key(), first);
     }
 }
