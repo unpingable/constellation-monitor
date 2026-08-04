@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "exercise": "bounded local Linux /proc receiver/scheduler exercise",
+  "wall_clock_measurement": true,
+  "hard_realtime_claimed": false,
+  "expected_support_expiry_monotonic_ms": 61,
+  "actual_reevaluation_monotonic_ms": 76,
+  "stale_positive_overshoot_ms": 15,
+  "policy_transition_withdrawal_wall_us": 851,
+  "policy_transition_withdrawal_logical_ms": 0,
+  "duplicate_escalation_count": 1,
+  "state_after_receiver_restart": "UNKNOWN",
+  "historical_records_recovered": 20,
+  "queue_refusal": "pending_queue_capacity",
+  "observer_cardinality_refusal": "observer_capacity",
+  "producer_restart_changed_observer_incarnation": true,
+  "proc_coverage": [
+    "proc.cpu",
+    "proc.memory"
+  ],
+  "nonclaims": [
+    "wall measurements describe one local exercise, not a latency guarantee",
+    "a /proc pulse does not establish subject health or observer truthfulness",
+    "receiver restart recovered history but no current standing",
+    "no request, receipt, or certificate grants mutation authority"
+  ]
+}
