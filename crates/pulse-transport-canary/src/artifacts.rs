@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     CAMPAIGN_STARTING_COMMIT, CANARY_CONSUMER_A, CANARY_CONSUMER_B, CANARY_SUBJECT,
-    CanaryHarnessV1, run_restart_custody_demo, run_udp_loopback_probe,
+    CanaryHarnessV1, run_restart_custody_demo, run_silence_expiry_demo, run_udp_loopback_probe,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -159,6 +159,7 @@ fn write_packages(
                 "accepted_certificate_digest": harness.receiver_package_b.acceptance.accepted_certificate_digest
             },
             "packages_contain_private_key_material": false,
+            "qualification_evidence_class": "bounded semantic fixture; not the final campaign gate record",
             "source_to_binary_correspondence_claimed": false,
             "remote_attestation_claimed": false
         }),
@@ -234,6 +235,7 @@ fn write_qualification_summary(directory: &Path, files: &mut Vec<String>) -> Res
             "authentication": "Ed25519 / ed25519-dalek verify_strict / pinned exact public keys",
             "freshness": "ArrivalAnchored at receiver-owned monotonic arrival time",
             "deterministic_harness_executed": true,
+            "runtime_package_evidence": "one-test exact semantic fixture; final campaign gates are reported separately",
             "actual_udp_loopback_executed_separately": true,
             "actual_two_host_linux_canary_executed": false,
             "private_key_material_in_artifacts": false,
@@ -518,6 +520,13 @@ pub fn write_campaign_artifacts(
     )?;
 
     harness.shutdown()?;
+
+    write_json(
+        directory,
+        "silence-expiry-demo.json",
+        &run_silence_expiry_demo()?,
+        &mut files,
+    )?;
 
     write_json(
         directory,

@@ -304,16 +304,19 @@ fn qualification_package(
     config: &RuntimeConfigV1,
     registration: &ConsumerRegistrationV1,
 ) -> Result<LocalQualificationPackageV1, String> {
-    let mut inputs = qualification_fixture_inputs(CAMPAIGN_STARTING_COMMIT, 125);
+    let mut inputs = qualification_fixture_inputs(CAMPAIGN_STARTING_COMMIT, 1);
     inputs.declared_claims = vec![
         "exact_active_artifact_binding/v1".to_owned(),
-        "receiver_boundary_custody_canary/v1".to_owned(),
         "restart_requires_new_activation/v1".to_owned(),
+        "transport_custody_semantic_fixture/v1".to_owned(),
     ];
     inputs.nonclaims.push("not_remote_attestation".to_owned());
     inputs
         .nonclaims
         .push("not_transport_delay_bound".to_owned());
+    inputs
+        .nonclaims
+        .push("not_campaign_qualification_evidence".to_owned());
     inputs.nonclaims.sort();
     inputs.nonclaims.dedup();
     build_local_qualification_package(config, registration, inputs)
@@ -772,8 +775,10 @@ pub struct CustodyDemoArtifactV1 {
     pub scenario: String,
     pub transport: String,
     pub authentication: String,
+    pub sender_offer_digest: DigestV1,
     pub challenge_digest: DigestV1,
     pub session_binding_digest: DigestV1,
+    pub receiver_session_acceptance_digest: DigestV1,
     pub envelope_digest: DigestV1,
     pub acceptance_receipt_digest: DigestV1,
     pub consumer_a_judgment: JudgmentCategoryV1,
@@ -796,13 +801,33 @@ pub fn run_matched_custody_demo() -> Result<CustodyDemoArtifactV1, String> {
         .remote_observation_custody
         .first()
         .is_some_and(|custody| {
-            custody.envelope_digest == envelope.envelope_digest
+            custody.sender_session_offer_digest == session.offer.offer_digest
+                && custody.receiver_session_acceptance_digest
+                    == session.receiver_acceptance.acceptance_digest
+                && custody.envelope_digest == envelope.envelope_digest
                 && custody.acceptance_receipt_digest == receipt.receipt_digest
                 && custody.sender_manifest_digest == harness.sender_package.manifest.manifest_digest
                 && custody.receiver_manifest_digest
                     == harness.receiver_package_a.manifest.manifest_digest
                 && custody.authority_grants.grants_nothing()
         });
+    let mut trace = vec![
+        "receiver UNBOUND -> QualifiedAndMatched (local semantic fixture)".to_owned(),
+        "sender UNBOUND -> QualifiedAndMatched (local semantic fixture)".to_owned(),
+        format!("signed sender offer {}", session.offer.offer_digest),
+        format!(
+            "signed receiver challenge {}",
+            session.challenge.challenge_digest
+        ),
+        format!("signed sender binding {}", session.binding.binding_digest),
+        format!(
+            "signed receiver session acceptance {}",
+            session.receiver_acceptance.acceptance_digest
+        ),
+        format!("exact observation envelope {}", envelope.envelope_digest),
+        format!("receiver admission receipt {}", receipt.receipt_digest),
+    ];
+    trace.extend(output.trace_lines);
     let artifact = CustodyDemoArtifactV1 {
         schema_version: SCHEMA_VERSION_V1,
         scenario: "matched_local_two-process-shaped_custody".to_owned(),
@@ -811,8 +836,10 @@ pub fn run_matched_custody_demo() -> Result<CustodyDemoArtifactV1, String> {
         authentication:
             "Ed25519 pinned public keys; key possession over domain-separated exact bytes only"
                 .to_owned(),
+        sender_offer_digest: session.offer.offer_digest,
         challenge_digest: session.challenge.challenge_digest,
         session_binding_digest: session.binding.binding_digest,
+        receiver_session_acceptance_digest: session.receiver_acceptance.acceptance_digest,
         envelope_digest: envelope.envelope_digest,
         acceptance_receipt_digest: receipt.receipt_digest,
         consumer_a_judgment: certificate_a.judgment,
@@ -821,7 +848,7 @@ pub fn run_matched_custody_demo() -> Result<CustodyDemoArtifactV1, String> {
         consumer_b_deadline_monotonic_ms: certificate_b.earliest_support_expiry_monotonic_ms,
         support_names_exact_remote_custody,
         envelope_bytes: datagram.len(),
-        trace: output.trace_lines,
+        trace,
         nonclaims: vec![
             "not a two-host result".to_owned(),
             "not remote attestation".to_owned(),
@@ -852,6 +879,76 @@ pub struct CustodyRestartArtifactV1 {
     pub prior_acceptance_receipt_reused_as_evidence: bool,
     pub fresh_local_activation_required: bool,
     pub fresh_challenge_required: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustodyExpiryDemoArtifactV1 {
+    pub schema_version: u16,
+    pub initial_judgment: JudgmentCategoryV1,
+    pub expected_support_deadline_monotonic_ms: u64,
+    pub actual_withdrawal_monotonic_ms: u64,
+    pub stale_positive_overshoot_ms: u64,
+    pub final_judgment: JudgmentCategoryV1,
+    pub final_supporting_evidence_count: usize,
+    pub final_active_deadlines: usize,
+    pub new_envelope_arrived: bool,
+    pub subject_contradiction_invented: bool,
+    pub trace: Vec<String>,
+}
+
+pub fn run_silence_expiry_demo() -> Result<CustodyExpiryDemoArtifactV1, String> {
+    let mut harness = CanaryHarnessV1::deterministic()?;
+    harness.establish_session()?;
+    harness.emit_and_admit(1)?;
+    let initial = harness.receiver_certificate(CANARY_CONSUMER_A);
+    let deadline = initial
+        .earliest_support_expiry_monotonic_ms
+        .ok_or("CURRENT remote support has no deadline")?;
+    let withdrawn = harness
+        .receiver_reactor
+        .as_ref()
+        .ok_or("receiver stopped")?
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.observed_at_epoch_monotonic_ms >= deadline
+                && snapshot.certificates.iter().any(|certificate| {
+                    certificate.consumer == ConsumerId::new(CANARY_CONSUMER_A)
+                        && certificate.judgment == JudgmentCategoryV1::Unknown
+                })
+        })
+        .map_err(|error| error.to_string())?;
+    let final_certificate = withdrawn
+        .certificates
+        .iter()
+        .find(|certificate| certificate.consumer == ConsumerId::new(CANARY_CONSUMER_A))
+        .ok_or("withdrawal snapshot lacks Consumer A")?;
+    let artifact = CustodyExpiryDemoArtifactV1 {
+        schema_version: SCHEMA_VERSION_V1,
+        initial_judgment: initial.judgment,
+        expected_support_deadline_monotonic_ms: deadline,
+        actual_withdrawal_monotonic_ms: withdrawn.observed_at_epoch_monotonic_ms,
+        stale_positive_overshoot_ms: withdrawn
+            .observed_at_epoch_monotonic_ms
+            .saturating_sub(deadline),
+        final_judgment: final_certificate.judgment,
+        final_supporting_evidence_count: withdrawn.supporting_evidence_count,
+        final_active_deadlines: withdrawn.active_deadline_count,
+        new_envelope_arrived: false,
+        subject_contradiction_invented: final_certificate.judgment
+            == JudgmentCategoryV1::Contradicted,
+        trace: vec![
+            "exact remote evidence admitted -> Consumer A CURRENT".to_owned(),
+            format!("receiver-owned support deadline armed at {deadline}ms"),
+            "network silence; no retry, replay, or sender time update".to_owned(),
+            format!(
+                "reactor withdrew CURRENT at {}ms",
+                withdrawn.observed_at_epoch_monotonic_ms
+            ),
+            "Consumer A UNKNOWN; no subject contradiction invented".to_owned(),
+        ],
+    };
+    harness.shutdown()?;
+    Ok(artifact)
 }
 
 pub fn run_restart_custody_demo() -> Result<CustodyRestartArtifactV1, String> {

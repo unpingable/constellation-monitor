@@ -621,6 +621,49 @@ fn exact_local_revocation_fact_withdraws_session_but_grants_no_revocation_author
 }
 
 #[test]
+fn exact_local_supersession_fact_withdraws_session_without_inheriting_successor_custody() {
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
+    harness.establish_session().expect("session");
+    harness.emit_and_admit(1).expect("current evidence");
+    let fact = GenerationLifecycleFactV1::new(GenerationLifecycleFactBodyV1 {
+        schema_version: SCHEMA_VERSION_V1,
+        authority_id: "local-custody-lifecycle-authority:canary".to_owned(),
+        fact_sequence: 1,
+        certificate_digest: harness
+            .sender_package
+            .certificate
+            .certificate_digest
+            .clone(),
+        kind: GenerationLifecycleKindV1::Superseded,
+        successor_manifest_digest: Some(digest_parts(
+            "transport.successor.manifest.v1",
+            &[b"successor"],
+        )),
+        successor_certificate_digest: Some(digest_parts(
+            "transport.successor.certificate.v1",
+            &[b"successor"],
+        )),
+        reason: "qualified successor configured".to_owned(),
+        authority_grants: AuthorityGrantsV1::none(),
+    })
+    .expect("exact local supersession fact");
+    harness
+        .receiver
+        .apply_sender_lifecycle_fact(harness.receiver_reactor.as_ref().unwrap(), &fact)
+        .expect("configured local lifecycle boundary accepts exact fact");
+    let snapshot = harness.receiver_reactor.as_ref().unwrap().snapshot();
+    assert_eq!(harness.receiver.live_session_count(), 0);
+    assert!(!snapshot.live_standing_available);
+    assert_eq!(snapshot.active_deadline_count, 0);
+    assert!(snapshot.certificates.iter().all(|certificate| {
+        certificate.remote_observation_custody.is_empty()
+            && certificate.judgment != JudgmentCategoryV1::Current
+    }));
+    assert!(fact.body.authority_grants.grants_nothing());
+    harness.shutdown().expect("shutdown");
+}
+
+#[test]
 fn arbitrary_revocation_authority_string_is_refused_without_session_change() {
     let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");

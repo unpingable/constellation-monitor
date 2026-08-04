@@ -10,6 +10,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("{}", serde_json::to_string_pretty(&artifact)?);
             Ok(())
         }
+        Some("expiry-demo") => {
+            let artifact = pulse_transport_canary::run_silence_expiry_demo()?;
+            println!("{}", serde_json::to_string_pretty(&artifact)?);
+            Ok(())
+        }
         Some("restart-demo") => {
             let artifact = pulse_transport_canary::run_restart_custody_demo()?;
             println!("{}", serde_json::to_string_pretty(&artifact)?);
@@ -35,7 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             Ok(())
         }
         _ => Err(
-            "usage: pulse-transport-canary <demo|restart-demo|udp-loopback|crash-child|artifacts>"
+            "usage: pulse-transport-canary <demo|expiry-demo|restart-demo|udp-loopback|crash-child|artifacts>"
                 .into(),
         ),
     }
