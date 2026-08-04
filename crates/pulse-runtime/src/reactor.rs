@@ -607,20 +607,22 @@ impl LocalCrashReactor {
             response: sender,
         };
         self.submit_command(command)?;
-        receiver
-            .recv_timeout(Duration::from_millis(
-                self.config.command_response_timeout_ms,
-            ))
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => ReactorCommandError::new(
+        match receiver.recv_timeout(Duration::from_millis(
+            self.config.command_response_timeout_ms,
+        )) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.latch_response_timeout();
+                Err(ReactorCommandError::new(
                     ReactorCommandErrorClassV1::ResponseTimeout,
                     "reactor blindness response exceeded its configured wait bound",
-                ),
-                mpsc::RecvTimeoutError::Disconnected => ReactorCommandError::new(
-                    ReactorCommandErrorClassV1::ActorTerminated,
-                    "reactor terminated before confirming blindness",
-                ),
-            })?
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ReactorCommandError::new(
+                ReactorCommandErrorClassV1::ActorTerminated,
+                "reactor terminated before confirming blindness",
+            )),
+        }
     }
 
     fn submit_command(&self, command: ActorCommand) -> Result<(), ReactorCommandError> {

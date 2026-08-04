@@ -1,6 +1,7 @@
 # Runtime invariants
 
-Status: normative for the qualified vertical slice and bounded runtime.
+Status: normative for the qualified vertical slice, bounded runtime, local
+reactor, and historical journal.
 
 These are runtime claim limits, not aspirations. A violation is a defect. The
 word "positive" refers only to the `CURRENT` category.
@@ -200,17 +201,72 @@ word "positive" refers only to the `CURRENT` category.
     statement. Overflow withholds the positive certificate and emits an
     explicit refusal; it never truncates a claim.
 
+## Local reactor and historical journal
+
+64. **A live actor owns wakeup.** While the reactor reports operational
+    temporal custody, its dedicated thread owns the earliest active support
+    deadline and invokes deterministic evaluation without external
+    `run_until` calls.
+65. **Actual wake time governs late evaluation.** A late timer wake evaluates
+    at actual receiver time. It never evaluates at the requested deadline or
+    moves the encoded support expiry.
+66. **Non-operational custody exposes no live standing.** Mailbox saturation,
+    response timeout, condition-variable failure, actor unwind, required
+    journal failure, command-channel abandonment, and termination clear the
+    shared certificates, evidence count, and deadline surface.
+67. **Timer and journal failures stay distinct.** Reactor wakeup/actor failure
+    and journal append/sync/bound failure have different typed conditions and
+    counters; neither is flattened into a reassuring scalar.
+68. **Monotonic epochs never bridge restart.** Every persisted monotonic value
+    names one process epoch. Values from different epochs are provenance and
+    are never subtracted to reconstruct freshness or elapsed time.
+69. **Restart empties temporal state.** After process restart, standing is
+    `UNKNOWN`, supporting evidence is empty, and active deadlines are empty,
+    regardless of recovered historical `CURRENT` records.
+70. **Journal append is bounded and non-evicting.** Record-count, payload-size,
+    and file-size exhaustion refuse before writing an extra record. No append
+    silently removes an older record.
+71. **Acknowledgement names an exact boundary.** An acknowledgement identifies
+    the record sequence, frame digest, declared durability mode, completed
+    data/commit sync phases, and returned-ack fact. No failed append returns a
+    durable acknowledgement.
+72. **Recovery stops at first damage.** Scanner recovery never searches beyond
+    a damaged frame for later magic and never presents a damaged suffix as
+    clean EOF.
+73. **Incomplete prefix remains incomplete.** A permitted valid-prefix
+    projection carries its damage class, first offset, incomplete-history
+    status, and operator-action requirement.
+74. **Refused recovery cannot project.** Interior corruption, sequence
+    ambiguity, unsupported structure, and other `Refused` outcomes cannot be
+    converted into runtime historical state.
+75. **Checksums are not authority.** Frame and commit SHA-256 values detect
+    accidental corruption; they authenticate neither writer nor storage.
+76. **History restores no execution lease.** Historical escalation and
+    deduplication events restore no active request owner, suppression lease,
+    retry permission, or diagnostic authority.
+77. **Contradiction custody is non-laundering.** A recovered contradiction may
+    continue to block a later explicit evaluation; diagnostic acceptance,
+    completion, append, or restart never resolves it.
+78. **Journal records grant no mutation.** Every journal envelope and all
+    reactor/recovery outputs structurally carry `mutation_authority: none` or
+    contain no authority field at all.
+
 ## Maximum stale-positive duration
 
-The runtime recomputes freshness on every ingest and explicit tick. If a
-consumer caches the last judgment between ticks, the supported upper bound is:
+The deterministic kernel recomputes freshness on every ingest and explicit
+tick. The local reactor additionally owns a real monotonic wakeup for the
+earliest active deadline. For an operational reactor, the observed local
+duration is:
 
 ```text
-effective evidence validity + maximum evaluator tick delay
+stale-positive overshoot = actual withdrawal - encoded support expiry
 ```
 
 The experiment records the observed duration between the earliest required
 support expiry and the first non-positive evaluation. This observed value is
 `maximum_stale_positive_duration_ms`. It is an experimental measurement, not a
-hard real-time guarantee. A run without explicit ticks makes no between-call
-latency claim.
+hard real-time guarantee or a bound under arbitrary host load. A caller using
+the deterministic kernel without the reactor still makes no between-call
+latency claim. Once the reactor ceases to report operational custody, its
+shared surface exposes no live certificate rather than pretending a timer
+bound remains enforced.

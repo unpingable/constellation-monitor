@@ -1,7 +1,7 @@
 # Threat model
 
-Status: normative claim boundary for the experimental vertical slice. This is
-not a production security assessment.
+Status: normative claim boundary for the experimental vertical slice and local
+crash-fault campaign. This is not a production security assessment.
 
 ## Assets
 
@@ -14,6 +14,10 @@ The runtime protects the integrity of:
 - consumer-indexed judgment explanations;
 - escalation scope, bounds, expiry, and deduplication;
 - diagnostic receipt correlation; and
+- process-local monotonic epoch separation;
+- explicit reactor temporal-custody state;
+- journal sequence, frame integrity, valid-prefix completeness, and
+  acknowledgement boundary; and
 - the fact that no monitor-plane object grants mutation authority.
 
 Availability matters because observation blindness is itself a semantic fact.
@@ -31,7 +35,11 @@ The initial slice assumes:
 - the local bridge registry and harmless stub implementation are trusted to
   match their compiled declaration; and
 - supplied replay files are untrusted input but the replay harness itself is
-  trusted.
+  trusted;
+- the local OS implements `Instant`, condition variables, file append,
+  `sync_data`, and `sync_all` according to their documented interfaces; and
+- journal checksums detect accidental corruption only. Journal storage and the
+  writer host are not treated as adversarially authenticated.
 
 An authentication result is an input dimension, not proof of observation
 truth. V1 includes a placeholder/authentication carrier but does not build a
@@ -111,6 +119,33 @@ still a harness concern. Overload cannot make prior evidence appear current.
 
 V1 is in-memory and single-process. It does not claim crash durability for
 current pulse state. Restart begins without inherited positive reliance.
+
+### Reactor death and timer lateness
+
+The actor can wake late, its mailbox can saturate, its condition-variable wait
+can fail, its thread can unwind, or its owner can disappear. A late wake uses
+actual receiver time and records overshoot. Mailbox saturation is latched
+outside the full queue. Actor unwind, abandonment, response timeout, and
+required-journal failure clear the shared live-standing surface. These paths
+reduce availability and do not prove a scheduler-latency bound. Process
+`SIGKILL` removes the entire live surface; restart has a new monotonic epoch and
+begins `UNKNOWN` with no evidence or deadline.
+
+### Journal tear, corruption, and rollback
+
+Process death may leave a partial header, payload, trailer, commit marker, or a
+fully written but uncommitted suffix. Recovery validates exact lengths,
+sequence, prior links, frame checksums, commit checksums, and closed payload
+types, then stops at the first defect. It never hunts later bytes for a record.
+An allowed valid prefix is explicitly incomplete and requires operator action;
+interior corruption and other refused outcomes cannot project history.
+
+The format cannot authenticate a malicious writer or detect removal at an
+exact committed-record boundary without an external trusted tail anchor. A
+compromised storage layer can therefore hide history. It still cannot restore
+present reliance because restart never projects historical events into
+`CURRENT`, support, deadlines, active escalation ownership, or mutation
+authority.
 
 The bounded receiver runtime treats policy rollback, equal-content
 regeneration, identifier ABA, stale deadline callbacks, and deserialized

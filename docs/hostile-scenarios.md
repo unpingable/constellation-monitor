@@ -1,6 +1,7 @@
 # Hostile scenario corpus
 
-Status: normative expected behavior for the initial replay corpus.
+Status: normative expected behavior for the initial replay corpus and local
+crash-fault qualification corpus.
 
 Every trace is JSONL and supplies explicit logical receiver times. Replay uses
 no ambient wall clock. A repeated run must produce byte-equivalent semantic
@@ -81,3 +82,40 @@ latency. In particular, it cannot detect a first-seen packet delayed entirely
 before receiver arrival without additional evidence. The trace must encode a
 known prior sequence, a receiver-verifiable delay fact, or a later expiry for
 the delayed-delivery property to apply.
+
+## Local crash-fault corpus
+
+The reactor/journal campaign adds real-thread and Linux child-process cases
+outside JSONL replay:
+
+- autonomous inclusive expiry, early notification/re-arm, deliberate late
+  wakeup, multiple earliest-first deadlines, generation cancellation, mailbox
+  saturation, journal exhaustion, actor unwind, owner abandonment, and clean
+  shutdown;
+- `SIGKILL` before/after deadline arming, before expiry, after in-memory
+  withdrawal but before journaling, after frame write before sync, after commit
+  sync before acknowledgement, during header/payload/trailer writes, after
+  acknowledged contradiction and escalation-dedup custody, and during clean
+  shutdown;
+- clean and empty journals, partial header/payload/trailer/commit writes,
+  uncommitted suffixes, duplicate/stale/reordered/skipped frames, oversized
+  declared length, unsupported version/kind, interior and first-record bit
+  corruption, unexpected trailing bytes, bounds, and injected append I/O
+  failure; and
+- truncation at all 3,088 byte positions of a three-record corpus. No partial
+  frame becomes a record. Truncation at zero or another exact committed-prefix
+  boundary is indistinguishable from a legitimately shorter self-contained
+  journal and is retained as a named limitation.
+
+Every restart oracle is independent of journal health:
+
+```text
+current standing = UNKNOWN
+supporting evidence = 0
+active deadlines = 0
+mutation authority = none
+```
+
+A `RecoveredThroughValidPrefix` result is explicitly incomplete and carries
+operator action. A `Refused` result cannot project runtime history. Later
+valid-looking bytes after interior corruption are never scanned as records.

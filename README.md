@@ -85,7 +85,17 @@ The minimal Rust workspace contains six crates:
 The receiver/scheduler campaign adds `pulse-runtime`, a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
 certificates, and earliest-expiry reevaluation. It is not a production or
-distributed scheduler. See the [runtime contract](docs/runtime-contract.md).
+distributed scheduler. The local crash-fault campaign encloses that semantic
+kernel in one dedicated monotonic wakeup thread and one bounded, checksummed,
+append-only historical journal. See the [runtime contract](docs/runtime-contract.md)
+and [crash-fault contract](docs/crash-fault-contract.md).
+
+The new local claim is deliberately narrower than crash-durable reliance:
+
+> While one reactor process is operational, a real runtime actor wakes for the
+> earliest support deadline and withdraws expired positive standing without a
+> new pulse. After process death, only explicitly recovered history survives;
+> current standing, support, and deadlines restart empty and `UNKNOWN`.
 
 Pulses are hot, bounded, ephemeral records. JSONL is used for fixtures, replay,
 diagnostics, and sparse durable events, not as the assumed high-rate wire.
@@ -104,6 +114,13 @@ cargo run -p pulse-runtime -- demo
 cargo run -p pulse-runtime -- restart-demo
 cargo run -p pulse-runtime -- qualify
 cargo run -p pulse-runtime -- live-linux
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- reactor-demo
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- restart-demo
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- torn-journal-demo
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- interior-corruption-demo
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- crash-harness
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- corruption-corpus
+cargo run -p pulse-runtime --bin pulse-crash-campaign -- live-linux
 ```
 
 Optional report paths are created without overwriting an existing file. Their
@@ -128,6 +145,10 @@ mutation authority.
 - [Receiver/scheduler campaign plan](docs/campaign-2-plan.md)
 - [Receiver/scheduler reconnaissance](docs/campaign-2-reconnaissance.md)
 - [Receiver/scheduler campaign report](docs/campaign-2-report.md)
+- [Local crash-fault reactor and journal contract](docs/crash-fault-contract.md)
+- [Local crash-fault campaign plan](docs/campaign-3-plan.md)
+- [Local crash-fault reconnaissance](docs/campaign-3-reconnaissance.md)
+- [Local crash-fault campaign report](docs/campaign-3-report.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.

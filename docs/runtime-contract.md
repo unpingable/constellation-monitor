@@ -1,7 +1,9 @@
 # Bounded receiver and scheduler contract
 
-Status: normative for the receiver/scheduler campaign. The runtime and all
-record names remain provisional.
+Status: normative for the deterministic receiver/scheduler semantic kernel.
+The local actor, monotonic-epoch, append, sync, and corruption-recovery rules
+are additionally governed by [crash-fault-contract.md](crash-fault-contract.md).
+The runtime and all record names remain provisional.
 
 ## Owned question
 
@@ -175,9 +177,12 @@ claim; it makes reliance `UNKNOWN` with an explicit bound reason.
 contain bounded sparse events (including a certificate that was `CURRENT` at
 an earlier occurrence), contradiction custody, and correlated diagnostic
 receipts. It contains no authoritative current projection, hot pulse window,
-scheduled deadline, receiver lineage, or active escalation lease. The campaign
-qualifies exact serialization/recovery semantics, not filesystem atomicity,
-`fsync`, corruption recovery, or crash-durable storage plumbing.
+scheduled deadline, receiver lineage, or active escalation lease. The
+deterministic kernel qualifies exact serialization/recovery semantics. The
+enclosing local journal now qualifies bounded framing, append acknowledgement,
+`sync_data`/`sync_all` boundaries, first-damage scanning, and process-kill
+recovery under the separate crash-fault contract. Neither layer makes current
+standing crash durable.
 
 On restart the runtime uses a new receiver incarnation and clock generation,
 loads historical records as history, restores applicable unresolved
@@ -185,6 +190,12 @@ contradiction custody, and installs a restart barrier. Every current standing
 is `UNKNOWN` until explicit current evaluation under a newly activated exact
 context. Deserializing a historical `CURRENT` transition never recreates
 standing.
+
+`JournalHistoryProjectionV1` may project a clean journal or a specifically
+permitted valid prefix. It carries recovery outcome, damage, completeness, and
+operator-action status so an incomplete prefix is not presented as healthy
+history. A `Refused` scan cannot project history. No journal timestamp from a
+prior `MonotonicEpochV1` is compared with the restart clock.
 
 Thus these remain separate:
 

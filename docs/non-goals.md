@@ -1,7 +1,7 @@
 # Non-goals
 
-Status: normative scope boundary for the qualified vertical slice and bounded
-receiver/scheduler campaign.
+Status: normative scope boundary for the qualified vertical slice, bounded
+receiver/scheduler, and local crash-fault custody campaigns.
 
 The repository does not implement or claim:
 
@@ -39,6 +39,18 @@ The repository does not implement or claim:
 - a production receiver, production transport, distributed scheduler,
   leader election, or failover protocol;
 - crash-durable current standing or recovery of hot pulse windows;
+- hard bounds on scheduler latency under arbitrary host load;
+- physical-media durability or immunity to filesystem, kernel, or storage
+  device defects;
+- host-crash, distributed crash-consistency, replication, failover, or
+  consensus semantics;
+- a database, generic write-ahead log, compaction framework, journal query
+  engine, or long-term historical store;
+- detection of exact committed-prefix rollback without a separately trusted
+  external tail anchor;
+- durable diagnostic execution, retry, request ownership, or suppression
+  authority;
+- a general async runtime, generic scheduler, or networking service;
 - unbounded policy/configuration history or a general configuration service;
 - a general query engine, plugin framework, or runtime rules engine; or
 - full contradiction-resolution or policy-supersession semantics.

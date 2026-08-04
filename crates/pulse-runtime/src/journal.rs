@@ -1518,7 +1518,13 @@ mod tests {
 
     use super::*;
     use proptest::prelude::*;
-    use pulse_types::{SparseDurableEventKindV1, SparseEventId};
+    use pulse_l3_bridge::{StubL3Bridge, stub_profile_identity};
+    use pulse_types::{
+        BridgeId, ConsumerId, DiagnosticBoundsV1, DiagnosticEscalationRequestV1,
+        ESCALATION_NONCLAIMS, EscalationRequestId, EscalationTriggerClassV1,
+        ObservationPolicyGenerationId, PolicyGenerationId, SparseDurableEventKindV1, SparseEventId,
+        SubjectId, SubjectScopeV1, TransitionId,
+    };
 
     static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
@@ -1583,6 +1589,48 @@ mod tests {
                 JournalDurabilityModeV1::FileSynced,
             )
             .expect("fixture append succeeds")
+    }
+
+    fn receipt() -> MockDiagnosticReceiptV1 {
+        let mut request = DiagnosticEscalationRequestV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            request_id: EscalationRequestId::new("request:journal-receipt"),
+            subject_scope: SubjectScopeV1 {
+                subject: SubjectId::new("subject:journal-receipt"),
+                subject_incarnation: IncarnationId::new("subject-incarnation:journal-receipt"),
+                scope: "host".to_owned(),
+            },
+            consumer: ConsumerId::new("consumer:journal-receipt"),
+            trigger_class: EscalationTriggerClassV1::CoverageCollapse,
+            evidence_window_digest: digest_parts("journal.receipt.window", &[b"one"]),
+            policy_generation: PolicyGenerationId::new("policy:journal-receipt"),
+            observation_policy_generation: ObservationPolicyGenerationId::new(
+                "observation-policy:journal-receipt",
+            ),
+            diagnostic_profile: stub_profile_identity(),
+            bounds: DiagnosticBoundsV1 {
+                maximum_runtime_ms: 25,
+                maximum_output_bytes: 1_024,
+                maximum_observations: 4,
+            },
+            clock_id: ClockId::new("clock:journal-receipt"),
+            created_at_monotonic_ms: 1,
+            expires_at_monotonic_ms: 100,
+            deduplication_key: digest_parts("pending", &[]),
+            causal_transition_id: TransitionId::new("transition:journal-receipt"),
+            nonclaims: ESCALATION_NONCLAIMS
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+        };
+        request.deduplication_key = request.compute_deduplication_key();
+        StubL3Bridge::new(
+            BridgeId::new("bridge:journal-receipt"),
+            ClockId::new("clock:journal-receipt"),
+        )
+        .handle(&request, 2)
+        .receipt
+        .expect("stub produces bounded receipt")
     }
 
     #[test]
@@ -1824,6 +1872,18 @@ mod tests {
         let mut journal = HistoricalJournal::create_new(&path, config.clone()).expect("create");
         append_event(&mut journal, &epoch("epoch:one"), "event:one", 900);
         append_event(&mut journal, &epoch("epoch:two"), "event:two", 1);
+        let receipt = receipt();
+        journal
+            .append(
+                epoch("epoch:two"),
+                2,
+                None,
+                JournalRecordBodyV1::DiagnosticReceipt {
+                    receipt: receipt.clone(),
+                },
+                JournalDurabilityModeV1::FileSynced,
+            )
+            .expect("receipt append");
         drop(journal);
         let report = HistoricalJournal::scan(&path, &config).expect("scan");
         assert_eq!(report.outcome, JournalRecoveryOutcomeV1::Clean);
@@ -1832,6 +1892,7 @@ mod tests {
             report.records[1].monotonic_epoch.epoch_id
         );
         let projection = report.project_history().expect("project history");
+        assert_eq!(projection.history.diagnostic_receipts, vec![receipt]);
         assert!(!projection.current_standing_reconstructed);
         assert!(!projection.active_escalation_suppression_restored);
         fs::remove_file(path).expect("remove fixture");

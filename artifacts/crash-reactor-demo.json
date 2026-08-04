@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "campaign_starting_commit": "668589e537e9cffe151913f72ca45a61ca32b1d7",
+  "mechanism": "dedicated std thread + bounded mutex/condvar mailbox + process-local Instant",
+  "sequence": [
+    "UNKNOWN",
+    "fresh bounded evidence received",
+    "CURRENT",
+    "real monotonic deadline armed",
+    "no new pulse",
+    "reactor wake",
+    "UNKNOWN",
+    "historical withdrawal appended"
+  ],
+  "requested_support_deadline_monotonic_ms": 326,
+  "actual_wakeup_monotonic_ms": 326,
+  "actual_withdrawal_monotonic_ms": 326,
+  "wakeup_lateness_ms": 0,
+  "stale_positive_overshoot_ms": 0,
+  "withdrawal_sparse_records": 1,
+  "journal_records_recovered": 13,
+  "journal_recovery": "clean",
+  "history_complete": true,
+  "historical_current_records": 1,
+  "current_standing_reconstructed": false,
+  "mutation_authority": "none",
+  "journal_maximum_append_latency_us": 10896,
+  "journal_maximum_sync_latency_us": 10808,
+  "terminal_trace": [
+    "[000025ms] UNKNOWN receiver actor operational; support=0 deadlines=0",
+    "[000026ms] CURRENT exact evidence accepted; deadline=326ms",
+    "[000326ms] UNKNOWN inclusive deadline processed; lateness=0ms overshoot=0ms",
+    "[journal] withdrawal_records=1 recovery=Clean complete=true"
+  ],
+  "nonclaims": [
+    "the local wakeup measurement is not a hard-real-time guarantee",
+    "CURRENT is an expiring consumer-indexed reliance judgment, not subject health",
+    "the historical CURRENT record is provenance and reconstructs no standing",
+    "no certificate or journal record grants mutation authority"
+  ]
+}

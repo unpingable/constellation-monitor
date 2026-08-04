@@ -207,8 +207,9 @@ bytes for another magic value and never skips damage.
   incomplete, and operator action is required.
 - `Refused`: corruption, unsupported format, sequence/prior-link failure,
   bound violation, identity ambiguity, or I/O failure prevents a complete
-  replay. The validated prefix may be reported for custody, but later bytes are
-  not interpreted and the journal is not healthy.
+  replay. The scanner reports how many leading records were structurally
+  validated, but `project_history` refuses to turn this outcome into runtime
+  history. Later bytes are not interpreted and the journal is not healthy.
 
 Damage classes distinguish partial header, partial payload, partial trailer,
 partial/uncommitted commit marker, unexpected trailing bytes, checksum or
@@ -218,8 +219,18 @@ payload identity conflict, and I/O failure. Reports name records recovered,
 first damaged byte offset, history completeness, and operator-action posture.
 
 A historical runtime payload projected from a clean or explicitly recovered
-prefix remains history only. A damaged journal cannot create reliance,
-deadlines, escalation authority, diagnostic authority, or mutation authority.
+prefix carries the recovery outcome, damage class, completeness, and
+operator-action requirement and remains history only. A damaged journal cannot
+create reliance, deadlines, escalation authority, diagnostic authority, or
+mutation authority.
+
+A self-contained append-only file cannot detect that a previously longer file
+was truncated at byte zero or at another exact committed-record boundary: those
+bytes are identical to a legitimately shorter clean journal. Detecting that
+class of rollback would require a separately durable trusted tail anchor,
+generation manifest, or external custody service. This campaign records the
+limitation and does not add such a component. It cannot strengthen standing
+because every restart is `UNKNOWN` regardless of apparent journal completeness.
 
 ## Escalation and contradiction custody
 

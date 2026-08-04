@@ -1,8 +1,8 @@
 # Runtime architecture
 
-Status: normative for the qualified vertical slice and bounded
-receiver/scheduler campaign. The repository and component names are
-provisional.
+Status: normative for the qualified vertical slice, bounded receiver/scheduler,
+and local crash-fault custody campaigns. The repository and component names
+are provisional.
 
 ## Product boundary
 
@@ -44,6 +44,39 @@ bounded ingress -> receiver annotation -> pending input order
 `pulse-runtime` is a local single-process coordinator, not a distributed
 scheduler. Its full bound, ordering, restart, and generation contract is
 normative in [runtime-contract.md](runtime-contract.md).
+
+The crash-fault campaign adds a narrow operational owner without changing the
+deterministic kernel or evidence semantics:
+
+```text
+bounded caller commands
+        |
+        v
+bounded mailbox --notify--> dedicated reactor thread
+                             | process-local Instant / exact epoch
+                             | earliest support deadline
+                             v
+                    ReceiverSchedulerRuntime::run_until(actual_now)
+                             |
+                  +----------+-----------+
+                  |                      |
+          ephemeral live surface     append-only historical journal
+          certificates/evidence      sparse events/contradictions/receipts
+          support/deadlines           checksummed frames + commit markers
+                  |                      |
+             process death          scan first damage; report health
+                  |                      |
+                  +----------+-----------+
+                             v
+                    restart UNKNOWN, support=0,
+                    deadlines=0, new monotonic epoch
+```
+
+The reactor is one dedicated standard-library thread with a mutex, condition
+variable, and fixed mailbox capacity. It is not an async runtime. The journal
+is one bounded regular file with no database, compaction, rotation,
+replication, or query layer. Their exact contract is normative in
+[crash-fault-contract.md](crash-fault-contract.md).
 
 Transport, runtime interpretation, sparse event custody, and presentation are
 separate. A transport adapter cannot assign a judgment, and a renderer cannot
@@ -368,9 +401,27 @@ It does not implement distributed storage or long-term pulse retention.
 The receiver runtime may reopen an exactly serialized bounded history payload,
 contradiction custody, and receipts. A historical event may say that a
 certificate was `CURRENT` then; it is not an authoritative current projection.
-The runtime deliberately cannot reopen hot evidence, schedules, or positive
-standing. Restart installs `UNKNOWN` before any explicit current evaluation.
-No atomic storage or crash-durability implementation is qualified.
+The runtime deliberately cannot reopen hot evidence, schedules, active
+escalation ownership, or positive standing. Restart installs `UNKNOWN` before
+any explicit current evaluation.
+
+The local journal qualifies an append protocol for these history-only records.
+Each data frame binds a closed record kind, exact payload length, sequence,
+process monotonic epoch, prior-frame checksum, and payload checksum. A separate
+checksummed commit marker distinguishes a committed record from an incomplete
+suffix. `FileSynced` acknowledgement is returned only after `sync_all` has
+returned for both the data frame and its commit marker. Creation separately
+syncs the empty file and parent directory entry. This is an operating-system
+durability boundary, not a physical-media, kernel, filesystem, or host-crash
+guarantee.
+
+Recovery never scans past the first defect. A torn suffix after a committed
+prefix may be projected only with explicit incomplete-history and
+operator-action fields. Interior corruption and other `Refused` outcomes
+cannot be projected into runtime history. A self-contained file cannot detect
+that a previously longer history was truncated at an exact committed-record
+boundary without an external trusted tail anchor; this limitation cannot
+restore current standing and remains a named gap.
 
 ## Experimental metrics
 
@@ -398,3 +449,10 @@ maximum stale-positive duration.
 The enclosing runtime separately exposes expected support expiry, actual
 reevaluation, scheduler lateness, policy-transition withdrawal latency,
 capacity refusals, escalation deduplication, and recovered-history counts.
+
+The local reactor adds wakeup count, actual wakeup lateness, autonomous
+deadline-withdrawal count, mailbox refusal, wakeup/actor/journal failure class,
+and maximum journal append/sync latency. Journal recovery separately exposes
+outcome, damage class, first damaged offset, valid-prefix bytes, records
+recovered, completeness, and operator-action requirement. Timer custody and
+journal custody are not collapsed into one scalar status.
