@@ -533,3 +533,39 @@ fn clean_shutdown_terminates_with_no_live_standing_surface() {
     assert_eq!(final_snapshot.active_deadline_count, 0);
     fs::remove_file(path).expect("remove fixture");
 }
+
+#[test]
+fn abandoned_command_channel_withdraws_and_journals_temporal_custody() {
+    let (reactor, path, journal_config, _) = start_reactor(
+        "abandoned",
+        "consumer:one",
+        500,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 500)).expect("pulse");
+    assert_eq!(
+        judgment(&reactor.snapshot(), "consumer:one"),
+        JudgmentCategoryV1::Current
+    );
+
+    drop(reactor);
+
+    let report = HistoricalJournal::scan(&path, &journal_config).expect("scan abandoned journal");
+    assert_eq!(
+        report.outcome,
+        pulse_runtime::JournalRecoveryOutcomeV1::Clean
+    );
+    assert!(report.records.iter().any(|record| matches!(
+        &record.body,
+        pulse_runtime::JournalRecordBodyV1::SparseEvent {
+            event: pulse_types::SparseDurableEventV1 {
+                event: pulse_types::SparseDurableEventKindV1::MonitorCapabilityChanged {
+                    state,
+                    ..
+                },
+                ..
+            }
+        } if state == "reactor_terminated"
+    )));
+    fs::remove_file(path).expect("remove fixture");
+}

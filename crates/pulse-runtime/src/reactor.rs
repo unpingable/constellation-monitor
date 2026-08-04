@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -79,6 +80,7 @@ pub enum ReactorConditionV1 {
     MailboxOverloaded,
     ExplicitBlindness,
     WakeupFailure,
+    ActorTerminated,
     JournalFailure,
     CommandChannelClosed,
     ShuttingDown,
@@ -531,19 +533,24 @@ impl LocalCrashReactor {
         let thread_shared = Arc::clone(&shared);
         let thread_clock = clock.clone();
         let thread_epoch = epoch;
+        let guard_epoch = thread_epoch.clone();
+        let guard_clock = thread_clock.clone();
+        let guard_shared = Arc::clone(&thread_shared);
         let thread_config = config;
         let join = thread::Builder::new()
             .name("pulse-local-crash-reactor".to_owned())
             .spawn(move || {
-                actor_main(
-                    runtime,
-                    journal,
-                    thread_epoch,
-                    thread_config,
-                    thread_clock,
-                    thread_shared,
-                    qualification_hook,
-                );
+                guard_actor_unwind(&guard_shared, &guard_epoch, &guard_clock, || {
+                    actor_main(
+                        runtime,
+                        journal,
+                        thread_epoch,
+                        thread_config,
+                        thread_clock,
+                        thread_shared,
+                        qualification_hook,
+                    );
+                });
             })
             .map_err(|error| {
                 ReactorCommandError::new(
@@ -747,6 +754,23 @@ impl LocalCrashReactor {
             })?;
         }
         Ok(self.snapshot())
+    }
+}
+
+fn guard_actor_unwind(
+    shared: &Arc<(Mutex<SharedState>, Condvar)>,
+    epoch: &MonotonicEpochV1,
+    clock: &ReactorClock,
+    actor: impl FnOnce(),
+) {
+    if panic::catch_unwind(AssertUnwindSafe(actor)).is_err() {
+        terminate_shared_without_runtime(
+            shared,
+            epoch,
+            clock.now_ms(),
+            ReactorConditionV1::ActorTerminated,
+            "reactor actor thread terminated by an unwind; temporal custody was withdrawn",
+        );
     }
 }
 
@@ -1298,6 +1322,42 @@ fn terminate_shared(
     condvar.notify_all();
 }
 
+fn terminate_shared_without_runtime(
+    shared: &Arc<(Mutex<SharedState>, Condvar)>,
+    epoch: &MonotonicEpochV1,
+    now: u64,
+    condition: ReactorConditionV1,
+    detail: impl Into<String>,
+) {
+    let (mutex, condvar) = &**shared;
+    let mut state = lock_recovering_poison(mutex);
+    state.accepting_commands = false;
+    let mut snapshot = state.snapshot.clone();
+    snapshot.monotonic_epoch = epoch.clone();
+    snapshot.observed_at_epoch_monotonic_ms = now;
+    snapshot.condition = condition;
+    snapshot.condition_detail = detail.into();
+    snapshot.live_standing_available = false;
+    snapshot.certificates.clear();
+    snapshot.active_deadline_count = 0;
+    snapshot.earliest_deadline_monotonic_ms = None;
+    snapshot.supporting_evidence_count = 0;
+    snapshot.clean_shutdown = false;
+    snapshot.mutation_authority = MutationAuthorityV1::None;
+    state.snapshot = snapshot;
+    for command in state.queue.drain(..) {
+        let response = match command {
+            ActorCommand::RuntimeInput { response, .. }
+            | ActorCommand::DeclareBlindness { response, .. } => response,
+        };
+        let _ = response.send(Err(ReactorCommandError::new(
+            ReactorCommandErrorClassV1::ActorTerminated,
+            "reactor actor thread terminated before command processing",
+        )));
+    }
+    condvar.notify_all();
+}
+
 fn lock_recovering_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -1411,5 +1471,61 @@ mod tests {
         let state = reactor.shared.0.lock().expect("shared state");
         assert_eq!(state.queue.len(), 1);
         assert!(state.overload_latched);
+    }
+
+    #[test]
+    fn actor_unwind_immediately_withdraws_shared_temporal_custody() {
+        let epoch = MonotonicEpochV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            epoch_id: pulse_types::IncarnationId::new("epoch:actor-unwind"),
+            receiver: pulse_types::ReceiverId::new("receiver:actor-unwind"),
+            receiver_incarnation: pulse_types::IncarnationId::new(
+                "receiver-incarnation:actor-unwind",
+            ),
+            clock_id: pulse_types::ClockId::new("clock:actor-unwind"),
+            origin_runtime_monotonic_ms: 0,
+            clock_source: "std::time::Instant/process-local".to_owned(),
+        };
+        let mut snapshot = ReactorSnapshotV1::unavailable(
+            epoch.clone(),
+            0,
+            ReactorConditionV1::Operational,
+            "fixture current surface",
+            RuntimeMetricsV1::empty(),
+            ReactorMetricsV1::empty(),
+        );
+        snapshot.live_standing_available = true;
+        snapshot.active_deadline_count = 1;
+        snapshot.earliest_deadline_monotonic_ms = Some(10);
+        snapshot.supporting_evidence_count = 1;
+        let shared = Arc::new((
+            Mutex::new(SharedState {
+                queue: VecDeque::new(),
+                accepting_commands: true,
+                overload_latched: false,
+                response_timeout_latched: false,
+                abandoned: false,
+                shutdown_requested: false,
+                snapshot,
+            }),
+            Condvar::new(),
+        ));
+        let clock = ReactorClock {
+            origin: Instant::now(),
+            origin_runtime_monotonic_ms: 0,
+        };
+
+        guard_actor_unwind(&shared, &epoch, &clock, || panic!("injected actor unwind"));
+
+        let state = shared.0.lock().expect("shared state remains inspectable");
+        assert!(!state.accepting_commands);
+        assert_eq!(
+            state.snapshot.condition,
+            ReactorConditionV1::ActorTerminated
+        );
+        assert!(!state.snapshot.live_standing_available);
+        assert!(state.snapshot.certificates.is_empty());
+        assert_eq!(state.snapshot.active_deadline_count, 0);
+        assert_eq!(state.snapshot.supporting_evidence_count, 0);
     }
 }

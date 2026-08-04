@@ -6,7 +6,10 @@ use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::Path;
 
-use pulse_runtime::{run_crash_child, run_crash_harness};
+use pulse_runtime::{
+    qualification_manifest, run_crash_child, run_crash_harness, run_journal_corruption_corpus,
+    run_live_linux_exercise, run_reactor_demo, run_restart_demo,
+};
 use serde::Serialize;
 
 fn write_json<T: Serialize>(path: Option<&str>, value: &T) -> Result<(), Box<dyn Error>> {
@@ -21,7 +24,7 @@ fn write_json<T: Serialize>(path: Option<&str>, value: &T) -> Result<(), Box<dyn
 
 fn usage() {
     eprintln!(
-        "usage: pulse-crash-campaign <crash-harness> [create-new-json-path]\n\
+        "usage: pulse-crash-campaign <reactor-demo|restart-demo|crash-harness|corruption-corpus|live-linux|qualification> [create-new-json-path]\n\
          internal: pulse-crash-campaign crash-child <scenario> <journal> <marker>"
     );
 }
@@ -60,6 +63,77 @@ fn main() -> Result<(), Box<dyn Error>> {
                     scenario.active_deadlines_after_restart
                 );
             }
+            write_json(arguments.get(1).map(String::as_str), &artifact)?;
+        }
+        Some("reactor-demo") if arguments.len() <= 2 => {
+            let artifact = run_reactor_demo()?;
+            for line in &artifact.terminal_trace {
+                println!("{line}");
+            }
+            write_json(arguments.get(1).map(String::as_str), &artifact)?;
+        }
+        Some("restart-demo") if arguments.len() <= 2 => {
+            let executable = env::current_exe()?;
+            let artifact = run_restart_demo(&executable)?;
+            for line in &artifact.terminal_trace {
+                println!("{line}");
+            }
+            write_json(arguments.get(1).map(String::as_str), &artifact)?;
+        }
+        Some("corruption-corpus") if arguments.len() <= 2 => {
+            let artifact = run_journal_corruption_corpus()?;
+            println!(
+                "journal_scenarios={} truncation_positions={} first_damage_stop={} standing_reconstructed={}",
+                artifact.scenarios.len(),
+                artifact.truncation_sweep.byte_positions_tested,
+                artifact.all_damage_stopped_at_first_invalid_frame,
+                !artifact.all_recovery_reconstructed_no_standing
+            );
+            for scenario in &artifact.scenarios {
+                println!(
+                    "{} outcome={:?} damage={:?} records={} damaged_offset={:?} complete={}",
+                    scenario.name,
+                    scenario.outcome,
+                    scenario.damage,
+                    scenario.records_recovered,
+                    scenario.first_damaged_offset,
+                    scenario.history_complete
+                );
+            }
+            write_json(arguments.get(1).map(String::as_str), &artifact)?;
+        }
+        Some("live-linux") if arguments.len() <= 2 => {
+            let executable = env::current_exe()?;
+            let artifact = run_live_linux_exercise(&executable)?;
+            println!(
+                "timer_samples={} lateness_ms={:?} overshoot_ms={:?} sigkill_scenarios={}",
+                artifact.timer_samples.len(),
+                artifact.wakeup_lateness_ms,
+                artifact.stale_positive_overshoot_ms,
+                artifact.sigkill_scenarios
+            );
+            for sample in &artifact.timer_samples {
+                println!(
+                    "{} deadline={} wake={} withdrawal={} lateness={} overshoot={} restart={}",
+                    sample.name,
+                    sample.requested_support_deadline_monotonic_ms,
+                    sample.actual_wakeup_monotonic_ms,
+                    sample.actual_withdrawal_monotonic_ms,
+                    sample.wakeup_lateness_ms,
+                    sample.stale_positive_overshoot_ms,
+                    sample.restart_standing
+                );
+            }
+            write_json(arguments.get(1).map(String::as_str), &artifact)?;
+        }
+        Some("qualification") if arguments.len() <= 2 => {
+            let artifact = qualification_manifest();
+            println!(
+                "qualification_checks={} current_standing_durable={} mutation_authority_emitted={}",
+                artifact.checks.len(),
+                artifact.current_standing_durable,
+                artifact.mutation_authority_emitted
+            );
             write_json(arguments.get(1).map(String::as_str), &artifact)?;
         }
         _ => {

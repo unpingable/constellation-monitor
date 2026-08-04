@@ -72,6 +72,8 @@ pub struct CrashScenarioResultV1 {
     pub historical_escalation_deduplication_keys: usize,
     pub active_escalation_suppression_restored: bool,
     pub durability_point_reached_before_kill: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_append_acknowledgement_returned_before_kill: Option<bool>,
     pub acknowledgement_delivery_known_after_restart: bool,
     pub mutation_authority: MutationAuthorityV1,
 }
@@ -184,6 +186,16 @@ fn run_harness_in(executable: &Path, root: &Path) -> Result<CrashHarnessArtifact
                 | "after_contradiction_custody_persisted"
                 | "after_escalation_deduplication_persisted"
         );
+        let target_append_acknowledgement_returned_before_kill = match *name {
+            "after_withdrawal_written_before_sync"
+            | "after_sync_before_acknowledgement"
+            | "during_record_framing"
+            | "during_payload_write"
+            | "during_trailer_checksum_write" => Some(false),
+            "after_contradiction_custody_persisted"
+            | "after_escalation_deduplication_persisted" => Some(true),
+            _ => None,
+        };
         scenarios.push(CrashScenarioResultV1 {
             name: (*name).to_owned(),
             marker_observed: true,
@@ -203,6 +215,7 @@ fn run_harness_in(executable: &Path, root: &Path) -> Result<CrashHarnessArtifact
             active_escalation_suppression_restored: projection
                 .active_escalation_suppression_restored,
             durability_point_reached_before_kill,
+            target_append_acknowledgement_returned_before_kill,
             acknowledgement_delivery_known_after_restart: false,
             mutation_authority: MutationAuthorityV1::None,
         });
@@ -424,7 +437,7 @@ fn park_forever() -> ! {
     }
 }
 
-fn journal_config(scenario: &str) -> JournalConfigV1 {
+pub(crate) fn journal_config(scenario: &str) -> JournalConfigV1 {
     JournalConfigV1 {
         schema_version: SCHEMA_VERSION_V1,
         journal_id: format!("journal:crash:{scenario}"),
@@ -436,7 +449,7 @@ fn journal_config(scenario: &str) -> JournalConfigV1 {
     }
 }
 
-fn runtime_config(receiver_incarnation: &str, clock: &str) -> RuntimeConfigV1 {
+pub(crate) fn runtime_config(receiver_incarnation: &str, clock: &str) -> RuntimeConfigV1 {
     RuntimeConfigV1 {
         schema_version: SCHEMA_VERSION_V1,
         receiver: ReceiverId::new("receiver:crash-fixture"),
@@ -446,7 +459,7 @@ fn runtime_config(receiver_incarnation: &str, clock: &str) -> RuntimeConfigV1 {
     }
 }
 
-fn epoch(config: &RuntimeConfigV1, id: &str, origin: u64) -> MonotonicEpochV1 {
+pub(crate) fn epoch(config: &RuntimeConfigV1, id: &str, origin: u64) -> MonotonicEpochV1 {
     MonotonicEpochV1 {
         schema_version: SCHEMA_VERSION_V1,
         epoch_id: IncarnationId::new(id),
@@ -466,7 +479,7 @@ fn profile() -> ObservationProfileIdV1 {
     }
 }
 
-fn policy() -> ReliancePolicyV1 {
+pub(crate) fn policy() -> ReliancePolicyV1 {
     ReliancePolicyV1 {
         schema_version: SCHEMA_VERSION_V1,
         subject: SubjectId::new(SUBJECT),
@@ -482,9 +495,15 @@ fn policy() -> ReliancePolicyV1 {
         coherence_tolerances: BTreeMap::new(),
         observer_failure_domains: BTreeMap::new(),
         escalation: Some(EscalationPolicyV1 {
-            triggers: [pulse_types::EscalationTriggerClassV1::FreshnessLost]
-                .into_iter()
-                .collect::<BTreeSet<_>>(),
+            triggers: [
+                pulse_types::EscalationTriggerClassV1::FreshnessLost,
+                pulse_types::EscalationTriggerClassV1::CoverageCollapse,
+                pulse_types::EscalationTriggerClassV1::ContradictionRetained,
+                pulse_types::EscalationTriggerClassV1::SubjectBoundViolated,
+                pulse_types::EscalationTriggerClassV1::TransportBlind,
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>(),
             diagnostic_profile: stub_profile_identity(),
             bounds: DiagnosticBoundsV1 {
                 maximum_runtime_ms: 25,
@@ -496,7 +515,10 @@ fn policy() -> ReliancePolicyV1 {
     }
 }
 
-fn registration(policy: ReliancePolicyV1, activation_id: &str) -> ConsumerRegistrationV1 {
+pub(crate) fn registration(
+    policy: ReliancePolicyV1,
+    activation_id: &str,
+) -> ConsumerRegistrationV1 {
     let context = RelianceContextV1 {
         schema_version: SCHEMA_VERSION_V1,
         activation_id: ContextActivationId::new(activation_id),
@@ -514,12 +536,19 @@ fn registration(policy: ReliancePolicyV1, activation_id: &str) -> ConsumerRegist
     }
 }
 
-fn current_runtime(config: RuntimeConfigV1) -> Result<ReceiverSchedulerRuntime, io::Error> {
+pub(crate) fn registered_runtime(
+    config: RuntimeConfigV1,
+) -> Result<ReceiverSchedulerRuntime, io::Error> {
     let mut runtime = ReceiverSchedulerRuntime::new(config)
         .map_err(|error| io::Error::other(error.to_string()))?;
     runtime
         .register_consumer(registration(policy(), "activation:crash-child"), 0)
         .map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(runtime)
+}
+
+fn current_runtime(config: RuntimeConfigV1) -> Result<ReceiverSchedulerRuntime, io::Error> {
+    let mut runtime = registered_runtime(config)?;
     runtime
         .enqueue(0, ingress())
         .map_err(|refusal| io::Error::other(format!("{refusal:?}")))?;
@@ -537,16 +566,27 @@ fn current_runtime(config: RuntimeConfigV1) -> Result<ReceiverSchedulerRuntime, 
     Ok(runtime)
 }
 
-fn ingress() -> RuntimeInputV1 {
+pub(crate) fn ingress() -> RuntimeInputV1 {
+    ingress_with_sequence(1)
+}
+
+pub(crate) fn ingress_with_sequence(sequence: u64) -> RuntimeInputV1 {
+    ingress_with_sequence_and_validity(sequence, SUPPORT_MS)
+}
+
+pub(crate) fn ingress_with_sequence_and_validity(
+    sequence: u64,
+    validity_ms: u64,
+) -> RuntimeInputV1 {
     let frame = PulseFrameV1 {
         schema_version: SCHEMA_VERSION_V1,
         subject: SubjectId::new(SUBJECT),
         subject_incarnation: IncarnationId::new(SUBJECT_INCAR),
         observer: ObserverId::new("observer:crash-fixture"),
         observer_incarnation: IncarnationId::new("observer-incarnation:crash-one"),
-        sequence: 1,
-        observer_monotonic_ns: 1,
-        validity_ms: SUPPORT_MS,
+        sequence,
+        observer_monotonic_ns: sequence.saturating_mul(1_000_000),
+        validity_ms,
         profile: profile(),
         observation_policy_generation: ObservationPolicyGenerationId::new(OBSERVATION_GENERATION),
         coverage: CoverageDescriptorV1 {
@@ -631,7 +671,7 @@ fn sparse_context_digest(event: &SparseDurableEventV1) -> Option<DigestV1> {
     }
 }
 
-fn synthetic_event(label: &str) -> JournalRecordBodyV1 {
+pub(crate) fn synthetic_event(label: &str) -> JournalRecordBodyV1 {
     JournalRecordBodyV1::SparseEvent {
         event: SparseDurableEventV1 {
             schema_version: SCHEMA_VERSION_V1,

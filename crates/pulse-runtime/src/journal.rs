@@ -14,12 +14,12 @@ use pulse_types::{
 };
 use serde::{Deserialize, Serialize};
 
-const JOURNAL_FORMAT_VERSION_V1: u16 = 1;
+pub(crate) const JOURNAL_FORMAT_VERSION_V1: u16 = 1;
 const DATA_MAGIC: &[u8; 8] = b"PCJDATA1";
 const TRAILER_MAGIC: &[u8; 8] = b"PCJEND01";
 const COMMIT_MAGIC: &[u8; 8] = b"PCJCOM01";
 const DIGEST_BYTES: usize = 71;
-const HEADER_BYTES: usize = 8 + 2 + 1 + 1 + 8 + 4 + DIGEST_BYTES;
+pub(crate) const HEADER_BYTES: usize = 8 + 2 + 1 + 1 + 8 + 4 + DIGEST_BYTES;
 const TRAILER_BYTES: usize = 8 + DIGEST_BYTES;
 const COMMIT_BYTES: usize = 8 + 8 + DIGEST_BYTES + DIGEST_BYTES;
 
@@ -373,6 +373,15 @@ impl JournalRecoveryReportV1 {
     }
 
     pub fn project_history(&self) -> Result<JournalHistoryProjectionV1, JournalError> {
+        if self.outcome == JournalRecoveryOutcomeV1::Refused {
+            return Err(JournalError::new(
+                JournalErrorClassV1::DamagedJournal,
+                format!(
+                    "journal recovery was refused; damaged history cannot be projected: damage={:?} offset={:?}",
+                    self.damage, self.first_damaged_offset
+                ),
+            ));
+        }
         let mut sparse_events = Vec::new();
         let mut event_ids = BTreeSet::new();
         let mut contradictions: BTreeMap<
@@ -439,6 +448,10 @@ impl JournalRecoveryReportV1 {
             .map_err(|error| JournalError::invalid_record(error.to_string()))?;
         Ok(JournalHistoryProjectionV1 {
             schema_version: SCHEMA_VERSION_V1,
+            recovery_outcome: self.outcome,
+            recovery_damage: self.damage,
+            history_complete: self.history_complete,
+            operator_action_required: self.operator_action_required,
             history,
             historical_escalation_deduplication_keys: historical_deduplication_keys
                 .into_iter()
@@ -453,6 +466,11 @@ impl JournalRecoveryReportV1 {
 #[serde(deny_unknown_fields)]
 pub struct JournalHistoryProjectionV1 {
     pub schema_version: u16,
+    pub recovery_outcome: JournalRecoveryOutcomeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_damage: Option<JournalDamageClassV1>,
+    pub history_complete: bool,
+    pub operator_action_required: bool,
     pub history: RuntimeHistoricalStateV1,
     pub historical_escalation_deduplication_keys: Vec<DigestV1>,
     pub active_escalation_suppression_restored: bool,
@@ -1832,9 +1850,20 @@ mod tests {
                 prop_assert!(!report.history_complete);
                 prop_assert!(report.operator_action_required);
             }
-            let projection = report.project_history().expect("valid prefix always projects");
-            prop_assert!(!projection.current_standing_reconstructed);
-            prop_assert!(!projection.active_escalation_suppression_restored);
+            match report.outcome {
+                JournalRecoveryOutcomeV1::Refused => {
+                    let error = report.project_history().expect_err("refused damage cannot project");
+                    prop_assert_eq!(error.class, JournalErrorClassV1::DamagedJournal);
+                }
+                JournalRecoveryOutcomeV1::Clean
+                | JournalRecoveryOutcomeV1::RecoveredThroughValidPrefix => {
+                    let projection = report.project_history().expect("permitted history projects");
+                    prop_assert_eq!(projection.recovery_outcome, report.outcome);
+                    prop_assert_eq!(projection.history_complete, report.history_complete);
+                    prop_assert!(!projection.current_standing_reconstructed);
+                    prop_assert!(!projection.active_escalation_suppression_restored);
+                }
+            }
         }
     }
 }

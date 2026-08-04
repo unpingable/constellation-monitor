@@ -1,10 +1,18 @@
 #![forbid(unsafe_code)]
 //! Bounded receiver/scheduler owner for exact consumer reliance contexts.
 
+mod campaign;
 mod crash;
 mod journal;
 mod reactor;
 
+pub use campaign::{
+    CrashFaultQualificationArtifactV1, DistributionU64V1, DistributionU128V1,
+    JournalCorruptionCorpusV1, JournalScenarioV1, LiveLinuxArtifactV1, QualificationCheckV1,
+    ReactorDemoArtifactV1, RestartDemoArtifactV1, TimerSampleV1, TruncationSweepV1,
+    qualification_manifest, run_journal_corruption_corpus, run_live_linux_exercise,
+    run_reactor_demo, run_restart_demo,
+};
 pub use crash::{
     CrashHarnessArtifactV1, CrashScenarioResultV1, run_crash_child, run_crash_harness,
 };
