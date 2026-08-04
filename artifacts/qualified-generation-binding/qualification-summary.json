@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "source_commit": "06ba3b8a007686cf4c793148a6439841916b5182",
+  "source_tree_object": "f96cc79e4bd9e42e618ac6bd31ed47866b9e892a",
+  "source_tree_digest": "sha256:c64b13b947d82d6beb2fa0245a27919eeb47bae01a8818f3c20de2bd9b3932d6",
+  "manifest_digest": "sha256:63ecf5d031b0eb77c20c8bcbc891d0a23339c46a148faebbca3ad5ebed0d414c",
+  "qualification_report_digest": "sha256:2675110ec3e96191f50c4d6e037e4f9ce89365bd5ad2f19ef0505510e627d2d0",
+  "qualification_certificate_digest": "sha256:33bdd57879a7b0a8602aaa5558e2ba52f02dc41093a131ebdd8c906bd0ae2b80",
+  "activation_receipt_digest": "sha256:863e0a3176c6ed99e872395875cd627632c21c0d20afa816e53136ebfc0627d1",
+  "activation_state": "qualified_and_matched",
+  "qualification_commands": [
+    {
+      "sequence": 1,
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout_digest": "sha256:2a4507925a2ef085ba019bb783a4eeb76f000a53bd2e9b6d7e3acc881b172604",
+      "stderr_digest": "sha256:2a4507925a2ef085ba019bb783a4eeb76f000a53bd2e9b6d7e3acc881b172604",
+      "observed_test_count": null
+    },
+    {
+      "sequence": 2,
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "stdout_digest": "sha256:2a4507925a2ef085ba019bb783a4eeb76f000a53bd2e9b6d7e3acc881b172604",
+      "stderr_digest": "sha256:9157b9b3ee5da2c07e3ebd520e890d31a4a4b3865ee44a525872284d187e0719",
+      "observed_test_count": null
+    },
+    {
+      "sequence": 3,
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features"
+      ],
+      "exit_code": 0,
+      "stdout_digest": "sha256:b3949c43538d0b46e5ccf219e3dbe57fcde15ff4042fc835c4a29294fffea043",
+      "stderr_digest": "sha256:57c042b293a347e80cf7fe00c37400ea75b89e931b41a3de2dedf39b3215ab7d",
+      "observed_test_count": 125
+    }
+  ],
+  "total_tests_passed": 125,
+  "all_required_commands_passed": true,
+  "cryptographic_signature_present": false,
+  "source_to_binary_correspondence_claimed": false,
+  "independent_attestation_claimed": false,
+  "authority_granted": false,
+  "nonclaims": [
+    "digest identity is not authorship, authority, freshness, or qualification",
+    "local self-measurement is not independent attestation",
+    "source-to-binary correspondence is not established",
+    "compiler, toolchain, kernel, loader, and host integrity are not established",
+    "no continuation, diagnostic-execution, deployment, signing, revocation, or mutation authority is granted",
+    "no subject-health, complete-coverage, production, or product-plane claim is made"
+  ]
+}

@@ -1,7 +1,8 @@
 # Threat model
 
-Status: normative claim boundary for the experimental vertical slice and local
-crash-fault campaign. This is not a production security assessment.
+Status: normative claim boundary for the experimental vertical slice, local
+crash-fault custody, and qualified-generation binding campaigns. This is not a
+production security assessment.
 
 ## Assets
 
@@ -18,6 +19,8 @@ The runtime protects the integrity of:
 - explicit reactor temporal-custody state;
 - journal sequence, frame integrity, valid-prefix completeness, and
   acknowledgement boundary; and
+- canonical artifact-package identity and process-local activation identity;
+- separation of declaration, checked qualification, and live activation; and
 - the fact that no monitor-plane object grants mutation authority.
 
 Availability matters because observation blindness is itself a semantic fact.
@@ -39,7 +42,12 @@ The initial slice assumes:
 - the local OS implements `Instant`, condition variables, file append,
   `sync_data`, and `sync_all` according to their documented interfaces; and
 - journal checksums detect accidental corruption only. Journal storage and the
-  writer host are not treated as adversarially authenticated.
+  writer host are not treated as adversarially authenticated;
+- SHA-256 content identities rely on collision resistance and are neither
+  authenticity nor authorization evidence; and
+- Linux `/proc/self/exe`, ordinary inode/timestamp behavior, the kernel,
+  loader, compiler, and process memory behave consistently with the narrow
+  local measurement contract. None is independently attested.
 
 An authentication result is an input dimension, not proof of observation
 truth. V1 includes a placeholder/authentication carrier but does not build a
@@ -157,6 +165,24 @@ Queue, observer, stream, incarnation, deadline, and history cardinality are
 hostile inputs. Saturation is a typed refusal and observation-capability loss,
 not an eviction hint. The campaign does not qualify behavior after process
 memory exhaustion, OS scheduler failure, or a compromised receiver clock.
+
+### Artifact substitution and authority laundering
+
+An input may reuse a generation label while replacing executable, evaluator,
+policy, profile, observer-set, observation-policy, configuration, contract,
+corpus, or qualification-result bytes. It may pair an old certificate with a
+new manifest, replay a prior process receipt, supply noncanonical JSON with
+equivalent apparent meaning, or assert an unconfigured revocation. The binding
+gate treats each as a substitution or ambiguity and withholds `CURRENT`.
+
+Exact hashes establish only content identity under their algorithm
+assumptions. A canonical manifest is not qualification; a checked certificate
+is not activation; and a historical receipt is not a live process capability.
+The local certificate is unsigned, executable measurement is self-observation
+through a retained `/proc/self/exe` handle, and no package object grants
+continuation, diagnostic execution, deployment, signing, revocation, or
+mutation authority. A malicious kernel, loader, compiler, build environment,
+or process-memory writer remains outside the established claim.
 
 ### Escalation storms
 

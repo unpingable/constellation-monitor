@@ -251,6 +251,51 @@ word "positive" refers only to the `CURRENT` category.
     reactor/recovery outputs structurally carry `mutation_authority: none` or
     contain no authority field at all.
 
+## Qualified-generation binding
+
+79. **Declaration is not qualification.** A generation label, digest, source
+    identifier, or canonical manifest cannot independently satisfy the binding
+    premise for `CURRENT`.
+80. **Qualification is not activation.** A valid manifest, checked report, or
+    accepted qualification certificate cannot construct the live activation
+    capability or establish present reliance.
+81. **Every positive role is exact.** The running executable, evaluator,
+    reliance policy, consumer profile, observer set, observation policy,
+    runtime configuration, and semantic contracts must all match the accepted
+    manifest exactly. Any missing or mismatching required role withholds
+    `CURRENT` and creates no support deadline.
+82. **Active bindings are process-local capabilities.** The accepted binding
+    owns a retained executable handle, is neither cloneable nor serializable,
+    and names one fresh process/activation occurrence.
+83. **Positive certificates name qualification.** Every `CURRENT` support
+    certificate names the exact manifest, qualification certificate,
+    activation receipt, process occurrence, and generation-set identity that
+    supplied its live premise.
+84. **Receipts remain history.** A prior activation receipt, including a
+    synced `QualifiedAndMatched` receipt, cannot restore an accepted binding,
+    evidence, standing, or a deadline after restart.
+85. **Lifecycle changes are barriers.** An accepted local supersession or
+    revocation fact withdraws positive standing and cancels its deadline. A
+    successor does not inherit the predecessor's activation or evidence.
+86. **Lifecycle authority is configured and local.** An arbitrary lifecycle
+    assertion or mismatched authority identifier is refused; V1 claims no
+    signer, organizational, or global revocation authority.
+87. **Canonical bytes are singular.** Identity-bearing package objects reject
+    duplicate or unknown fields, alternate field order or whitespace,
+    unsupported digests, duplicate/missing roles, body/digest disagreement,
+    and bytes beyond the bounded canonical object.
+88. **Qualification claims are evidence-bounded.** A certificate may name
+    only claims present in both its exact manifest declaration and its checked
+    machine-readable qualification report.
+89. **Binding failure classes stay distinct.** Artifact mismatch,
+    qualification refusal, lifecycle refusal, timer failure, journal failure,
+    and observation blindness are separate typed conditions; none is collapsed
+    into a scalar status.
+90. **Qualification grants no operational authority.** Manifests, reports,
+    certificates, lifecycle facts, activation receipts, accepted bindings,
+    and support certificates grant no continuation, diagnostic-execution,
+    deployment, signing, revocation, or mutation authority.
+
 ## Maximum stale-positive duration
 
 The deterministic kernel recomputes freshness on every ingest and explicit

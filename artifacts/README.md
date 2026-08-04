@@ -50,3 +50,33 @@ additional CPU and filesystem load on that run; the measurements are evidence
 of observed behavior, not latency guarantees. Checksums are corruption
 detection, not authenticity, and no artifact restores current standing or
 grants diagnostic or mutation authority.
+
+The qualified-generation campaign adds the
+`qualified-generation-binding/` directory:
+
+- canonical `qualified-manifest.json`, `qualification-report.json`, and
+  `qualification-certificate.json` bind the exact ten-role artifact inventory,
+  source/build assumptions, three checked gate commands, 125 observed tests,
+  and hostile corpus;
+- canonical `activation-receipt.json` records one local
+  `QualifiedAndMatched` process occurrence and eight activation-required
+  measurements, including the opened `/proc/self/exe` object;
+- `matched-activation-demo.json`, `executable-mismatch-demo.json`, and
+  `policy-substitution-demo.json` show exact acceptance and two fail-closed
+  substitutions;
+- `mismatch-corpus.json` covers every activation-required artifact role, while
+  `authority-laundering-refusals.json` records why labels, digests, manifests,
+  certificates, source identities, test results, historical receipts,
+  superseded/revoked packages, and partial matches are insufficient;
+- `restart-activation.json` records historical receipt recovery with binding
+  `Unbound`, judgment `UNKNOWN`, support zero, and deadlines zero;
+- `crash-restart-activation-corpus.json` records 12 real `SIGKILL` boundaries
+  and the one semantically refused receipt-before-activation ordering; and
+- supersession/revocation and the exact checked qualification summary remain
+  separate machine-readable records.
+
+The manifest, report, certificate, corpus, results, and activation receipt are
+stored as their exact compact canonical bytes, without a trailing newline.
+Other demonstration/index artifacts are ordinary pretty JSON. SHA-256 here is
+content identity and corruption detection, not authorship, signer authority,
+source-to-binary proof, independent attestation, or supply-chain security.

@@ -1,6 +1,7 @@
 # Local crash-fault reactor and journal contract
 
-Status: normative for campaign 3. Names and format remain provisional.
+Status: normative for campaign 3 and the campaign-4 activation-receipt
+interaction. Names and format remain provisional.
 
 ## Owned question
 
@@ -111,6 +112,14 @@ availability, transport assumptions, timer authority, diagnostic authority, or
 mutation authority. Fresh evidence and explicit evaluation in the new exact
 context and monotonic epoch are required for any new `CURRENT`.
 
+Qualified manifests, checked reports, certificates, binding failures, and
+activation receipts are also historical after restart. The opened executable
+handle and accepted activation token are deliberately non-serializable. A new
+process therefore starts `Unbound` in addition to `UNKNOWN`, remeasures every
+load-bearing active object, emits a new process-local receipt, and then still
+needs fresh evidence. A previously synced `QualifiedAndMatched` receipt or
+historical `CURRENT` event cannot restore binding, support, or a deadline.
+
 ## Journal format
 
 The journal is one append-only regular file with no rotation or compaction in
@@ -186,6 +195,30 @@ value leaves a committed recoverable record; recovery cannot know whether the
 in-memory acknowledgement was observed. This is acknowledged-delivery
 ambiguity, not journal corruption and not permission to retry an external
 effect.
+
+### Activation-receipt ordering
+
+An activation receipt states what one process actually activated. V1 therefore
+commits the ephemeral, non-serializable binding before handing the receipt to
+the historical journal. It refuses the hypothetical ordering “sync activation
+receipt, then activate,” because a kill between those steps would leave a
+durable receipt falsely claiming activation. Consequences are explicit:
+
+- a kill after measurement but before binding commit leaves neither binding
+  nor receipt;
+- a kill after binding commit but before receipt append loses only historical
+  receipt custody; restart still loses the ephemeral binding;
+- a torn or uncommitted receipt suffix is reported under the normal journal
+  damage law; and
+- a fully committed receipt remains historical after restart and cannot
+  construct the accepted activation token.
+
+The campaign-4 child harness injects `SIGKILL` before/during measurement,
+between measurement and binding commit, between binding and receipt custody,
+during receipt framing, before and after sync/commit, before evidence, while
+`CURRENT`, and after mismatch detection. The semantically invalid
+receipt-before-activation point is recorded as a refused qualification point,
+not simulated as though it were lawful.
 
 `sync_data`/`sync_all` success is an operating-system request. The campaign
 tests process-kill recovery on one local Linux filesystem. It does not claim

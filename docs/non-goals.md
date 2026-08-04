@@ -1,7 +1,8 @@
 # Non-goals
 
 Status: normative scope boundary for the qualified vertical slice, bounded
-receiver/scheduler, and local crash-fault custody campaigns.
+receiver/scheduler, local crash-fault custody, and qualified-generation binding
+campaigns.
 
 The repository does not implement or claim:
 
@@ -9,6 +10,13 @@ The repository does not implement or claim:
 - Byzantine correctness;
 - trusted self-attestation;
 - full cryptographic attestation infrastructure;
+- reproducible builds or source-to-binary correspondence;
+- compiler, toolchain, kernel, loader, or host trust;
+- secure boot, TPM-backed measurement, or remote attestation;
+- signer authorization, public key infrastructure, or a global certificate or
+  revocation authority;
+- artifact freshness, organizational approval, supply-chain security, or
+  malware absence;
 - automatic repair or remediation;
 - production mutation of any kind;
 - distributed persistent storage;
@@ -51,6 +59,8 @@ The repository does not implement or claim:
 - durable diagnostic execution, retry, request ownership, or suppression
   authority;
 - a general async runtime, generic scheduler, or networking service;
+- a general build system, package manager, transparency log, deployment
+  orchestrator, or mutable artifact watcher;
 - unbounded policy/configuration history or a general configuration service;
 - a general query engine, plugin framework, or runtime rules engine; or
 - full contradiction-resolution or policy-supersession semantics.

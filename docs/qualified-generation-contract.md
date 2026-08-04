@@ -157,6 +157,16 @@ the retained handle. This does not prove which bytes the kernel executed,
 loader correctness, immutable mappings, host integrity, or independence.
 Measurement unavailability or ambiguity refuses activation.
 
+Within one process, an exact executable content measurement may be reused only
+when a newly opened `/proc/self/exe` handle has the same device, inode, length,
+modification time, and change time as the cached opened object. Every accepted
+activation retains its own handle. Point-of-positive-use revalidation compares
+that retained handle's metadata; any ordinary metadata change triggers a full
+bounded reread and digest comparison. This optimization assumes ordinary Linux
+filesystem metadata semantics. Undetectable raw-device mutation, kernel
+misreporting, and hostile host control remain explicit host-integrity
+nonclaims.
+
 Policy, consumer-profile, observer-set, observation-policy, and configuration
 values are canonicalized from the exact owned Rust values the runtime stores.
 They are not digests of debug output, map iteration order, memory layout,
@@ -290,6 +300,13 @@ Crash before measurement, during measurement, before/after receipt journaling,
 after activation but before evidence, while `CURRENT`, or after mismatch cannot
 reconstruct activation from history. A prior receipt replay has the wrong
 activation occurrence and lacks the live accepted capability.
+
+Because the record is called an activation receipt, V1 commits the ephemeral
+binding before journaling the receipt. It explicitly refuses to sync a receipt
+before activation: a crash in that ordering would leave a durable false claim.
+The qualified crash corpus covers both sides of binding commit and every
+journal write/sync boundary; the refused receipt-before-activation point is a
+recorded negative result rather than a simulated success.
 
 ## Authority and exact nonclaims
 

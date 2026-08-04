@@ -78,6 +78,36 @@ is one bounded regular file with no database, compaction, rotation,
 replication, or query layer. Their exact contract is normative in
 [crash-fault-contract.md](crash-fault-contract.md).
 
+The qualified-generation campaign adds a fail-closed premise before positive
+reliance without changing evaluator category precedence or timer custody:
+
+```text
+declared generation set
+        +
+canonical artifact manifest --exact--> checked qualification report
+        +                                      |
+local acceptance/lifecycle policy             v
+        +                              qualification certificate
+opened /proc/self/exe handle                   |
+        +                                      v
+canonical owned runtime values ------> fresh process-local activation receipt
+                                               |
+                                  non-serializable accepted activation
+                                               |
+                                               v
+                              CURRENT support certificate may name
+                              exact manifest/certificate/receipt/context
+```
+
+The three judgments remain separate: a generation can be declared without a
+package, a package can be qualified without being active, and a historical
+activation receipt cannot reconstruct the live accepted activation. Every
+nonmatching or ambiguous binding state prevents `CURRENT` and cancels the
+affected consumer's inherited support deadline. Binding failure, timer
+failure, journal failure, and observation blindness remain distinct classes.
+The complete contract is
+[qualified-generation-contract.md](qualified-generation-contract.md).
+
 Transport, runtime interpretation, sparse event custody, and presentation are
 separate. A transport adapter cannot assign a judgment, and a renderer cannot
 change one.
@@ -263,6 +293,9 @@ These identities are deliberately not interchangeable:
 | transition | semantically relevant judgment changes | causal before/after occurrence |
 | escalation request | threshold crossing is admitted | one bounded diagnostic request |
 | diagnostic run | bridge accepts a request | one bounded execution occurrence |
+| artifact manifest | one exact artifact/generation inventory is canonicalized | content identity and assumptions, not qualification |
+| qualification certificate | checked results are bound to one exact manifest | local exact qualification evidence, not activation or signer authority |
+| activation occurrence | one process freshly measures and accepts one package | non-serializable local premise for positive reliance |
 
 A change in semantic policy creates a new reliance-policy generation. A new
 generation is also required when an equal or rolled-back body is activated as
@@ -270,6 +303,13 @@ a new law. Old evidence may remain inspectable, but it can be reconsidered
 only by an explicit evaluation whose support certificate names the new exact
 activation and whose policy explicitly admits the observation profile and
 observation-policy generation. No prior standing is copied.
+
+Generation labels are still useful indexes, but they are no longer sufficient
+premises. The active support context also identifies the exact qualified
+manifest, qualification certificate, activation receipt, process occurrence,
+and generation-set digest. Exact content under another generation still needs
+a new package and activation; equal labels with different bytes fail role by
+role.
 
 ## Receiver admission
 

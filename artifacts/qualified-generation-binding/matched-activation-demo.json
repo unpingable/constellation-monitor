@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "scenario": "exact-matched-local-activation",
+  "steps": [
+    {
+      "sequence": 1,
+      "action": "certificate and manifest verified; exact local artifacts activated; no evidence yet",
+      "binding_state": "qualified_and_matched",
+      "judgment": "UNKNOWN",
+      "supporting_evidence_count": 0,
+      "active_deadlines": 0,
+      "activation_receipt_digest": "sha256:863e0a3176c6ed99e872395875cd627632c21c0d20afa816e53136ebfc0627d1",
+      "qualified_generation_digest": "sha256:58a171ba5a32e9bdc334021f0054ab4938c3ff09216695aaba2e59ad5a05e841",
+      "qualified_manifest_digest": "sha256:63ecf5d031b0eb77c20c8bcbc891d0a23339c46a148faebbca3ad5ebed0d414c",
+      "qualified_certificate_digest": "sha256:33bdd57879a7b0a8602aaa5558e2ba52f02dc41093a131ebdd8c906bd0ae2b80",
+      "qualified_activation_receipt_digest": "sha256:863e0a3176c6ed99e872395875cd627632c21c0d20afa816e53136ebfc0627d1",
+      "mutation_authority": "none"
+    },
+    {
+      "sequence": 2,
+      "action": "fresh evidence evaluated under the exact accepted activation",
+      "binding_state": "qualified_and_matched",
+      "judgment": "CURRENT",
+      "supporting_evidence_count": 1,
+      "active_deadlines": 1,
+      "activation_receipt_digest": "sha256:863e0a3176c6ed99e872395875cd627632c21c0d20afa816e53136ebfc0627d1",
+      "qualified_generation_digest": "sha256:58a171ba5a32e9bdc334021f0054ab4938c3ff09216695aaba2e59ad5a05e841",
+      "qualified_manifest_digest": "sha256:63ecf5d031b0eb77c20c8bcbc891d0a23339c46a148faebbca3ad5ebed0d414c",
+      "qualified_certificate_digest": "sha256:33bdd57879a7b0a8602aaa5558e2ba52f02dc41093a131ebdd8c906bd0ae2b80",
+      "qualified_activation_receipt_digest": "sha256:863e0a3176c6ed99e872395875cd627632c21c0d20afa816e53136ebfc0627d1",
+      "mutation_authority": "none"
+    }
+  ],
+  "assertions": [
+    "runtime began Unbound",
+    "activation receipt was QualifiedAndMatched",
+    "no evidence meant UNKNOWN after activation",
+    "fresh evidence earned CURRENT naming the exact qualified generation",
+    "no emitted object granted mutation authority"
+  ],
+  "terminal_trace": [
+    "[000000ms] CERTIFICATE consumer=consumer:qualified-display activation=activation:qualified-one judgment=UNKNOWN support_expires=none standing_inherited=false",
+    "[000001ms] PULSE ordinal=1 observer=observer:qualified-binding sequence=1 arrival=1ms",
+    "[000001ms] CERTIFICATE consumer=consumer:qualified-display activation=activation:qualified-one judgment=CURRENT support_expires=101ms standing_inherited=false"
+  ],
+  "nonclaims": [
+    "digest identity is not authorship, authority, freshness, or qualification",
+    "local self-measurement is not independent attestation",
+    "source-to-binary correspondence is not established",
+    "compiler, toolchain, kernel, loader, and host integrity are not established",
+    "no continuation, diagnostic-execution, deployment, signing, revocation, or mutation authority is granted",
+    "no subject-health, complete-coverage, production, or product-plane claim is made"
+  ]
+}

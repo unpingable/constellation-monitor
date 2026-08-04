@@ -74,15 +74,19 @@ policy generation.
 
 ## Workspace
 
-The minimal Rust workspace contains six crates:
+The minimal Rust workspace contains seven crates:
 
 - `pulse-types`: closed versioned records and compact bounded pulse encoding;
 - `pulse-agent`: synthetic and small Linux `/proc` pulse production;
 - `pulse-evaluator`: deterministic, multi-dimensional present-state logic;
 - `pulse-replay`: deterministic JSONL hostile-trace replay and terminal demo;
-- `pulse-l3-bridge`: closed-profile, harmless local diagnostic stub.
+- `pulse-l3-bridge`: closed-profile, harmless local diagnostic stub;
+- `pulse-runtime`: bounded deterministic scheduling plus local reactor/journal
+  custody; and
+- `pulse-qualification`: canonical local artifact-package generation,
+  verification, activation demos, and crash/substitution qualification.
 
-The receiver/scheduler campaign adds `pulse-runtime`, a bounded local owner for
+`pulse-runtime` is a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
 certificates, and earliest-expiry reevaluation. It is not a production or
 distributed scheduler. The local crash-fault campaign encloses that semantic
@@ -96,6 +100,19 @@ The new local claim is deliberately narrower than crash-durable reliance:
 > earliest support deadline and withdraws expired positive standing without a
 > new pulse. After process death, only explicitly recovered history survives;
 > current standing, support, and deadlines restart empty and `UNKNOWN`.
+
+The qualified-generation campaign adds one further gate:
+
+> `CURRENT` requires a live, non-serializable activation whose exact manifest,
+> checked qualification certificate, locally measured executable, canonical
+> evaluator/policy/profile/observer/observation/configuration values, process
+> occurrence, and support-certificate context all match.
+
+A declared generation, digest, manifest, certificate, source commit, passing
+test result, or historical activation receipt is individually insufficient.
+Local self-measurement identifies what one process observed; it is not
+independent attestation, source-to-binary proof, signer authority, or host
+integrity.
 
 Pulses are hot, bounded, ephemeral records. JSONL is used for fixtures, replay,
 diagnostics, and sparse durable events, not as the assumed high-rate wire.
@@ -121,6 +138,9 @@ cargo run -p pulse-runtime --bin pulse-crash-campaign -- interior-corruption-dem
 cargo run -p pulse-runtime --bin pulse-crash-campaign -- crash-harness
 cargo run -p pulse-runtime --bin pulse-crash-campaign -- corruption-corpus
 cargo run -p pulse-runtime --bin pulse-crash-campaign -- live-linux
+cargo run -p pulse-qualification -- demo
+cargo run -p pulse-qualification -- crash-demo
+cargo run -p pulse-qualification -- qualify /tmp/create-new-artifact-directory
 ```
 
 Optional report paths are created without overwriting an existing file. Their
@@ -149,6 +169,10 @@ mutation authority.
 - [Local crash-fault campaign plan](docs/campaign-3-plan.md)
 - [Local crash-fault reconnaissance](docs/campaign-3-reconnaissance.md)
 - [Local crash-fault campaign report](docs/campaign-3-report.md)
+- [Qualified-generation binding contract](docs/qualified-generation-contract.md)
+- [Qualified-generation campaign plan](docs/campaign-4-plan.md)
+- [Qualified-generation reconnaissance](docs/campaign-4-reconnaissance.md)
+- [Qualified-generation campaign report](docs/campaign-4-report.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.

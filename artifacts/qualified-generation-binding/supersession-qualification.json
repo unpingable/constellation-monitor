@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "lifecycle_kind": "superseded",
+  "before_state": "qualified_and_matched",
+  "after_state": "superseded",
+  "before_judgment": "CURRENT",
+  "after_judgment": "UNKNOWN",
+  "active_deadlines_after": 0,
+  "historical_receipt_preserved": true,
+  "standing_preserved": false
+}

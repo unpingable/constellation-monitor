@@ -3,6 +3,8 @@
 Status: normative for the deterministic receiver/scheduler semantic kernel.
 The local actor, monotonic-epoch, append, sync, and corruption-recovery rules
 are additionally governed by [crash-fault-contract.md](crash-fault-contract.md).
+Artifact qualification and process-local activation are governed by
+[qualified-generation-contract.md](qualified-generation-contract.md).
 The runtime and all record names remain provisional.
 
 ## Owned question
@@ -28,7 +30,9 @@ A support certificate binds all of:
 - observation-policy generation;
 - one unique context-activation occurrence;
 - subject identity and subject incarnation; and
-- receiver clock generation and evaluation time.
+- receiver clock generation and evaluation time;
+- exact qualified manifest and qualification-certificate digests; and
+- one fresh process-local activation-receipt/process occurrence.
 
 Generation identity and semantic content are different facts. Equal policy
 digests under different generations are not equal contexts. Reusing an earlier
@@ -40,13 +44,16 @@ activation identity is single-use within the bounded runtime history.
 under which an observation occurrence was produced. It does not identify the
 consumer reliance law. `ReliancePolicyV1.generation` identifies that reliance
 law and separately declares which observation-policy generation it admits.
+It is an index, not authority: no caller-supplied generation field can satisfy
+the qualified-binding premise on its own.
 
 ## Generation barrier
 
 Any change to a reliance-policy generation, consumer-profile generation,
 evaluator-semantic generation, observer-set generation, admitted observation
-policy, or configured subject incarnation installs a generation barrier for
-the affected consumer. The barrier:
+policy, configured subject incarnation, exact artifact identity, accepted
+qualification package, or qualification lifecycle state installs a generation
+barrier for the affected consumer. The barrier:
 
 1. cancels that consumer's old scheduled support certificate;
 2. emits `UNKNOWN` under the new exact context with
@@ -55,7 +62,8 @@ the affected consumer. The barrier:
 3. preserves historical evidence and applicable contradiction custody;
 4. emits no diagnostic solely because configuration changed; and
 5. permits `CURRENT` only after a later explicit evaluation creates a new
-   certificate naming the new context and all premises are actually present.
+   certificate naming the new context and live `QualifiedAndMatched` binding,
+   with all evidence premises actually present.
 
 The barrier is required even when the policy body digest is equal, the change
 loosens requirements, or the new body is a rollback. No code path converts the
@@ -164,12 +172,18 @@ cannot reissue `CURRENT`.
 - achieved and required coverage;
 - earliest support expiry and next scheduled reevaluation;
 - escalation state/disposition; and
+- the exact accepted manifest, qualification certificate, activation receipt,
+  process occurrence, and generation-set identity when the judgment is
+  `CURRENT`; and
 - structural `mutation_authority: none`.
 
 A `CURRENT` certificate is valid only before its earliest support expiry and
-only while its exact activation remains active. A non-current certificate has
-no positive support deadline. Certificate size overflow cannot truncate a
-claim; it makes reliance `UNKNOWN` with an explicit bound reason.
+only while its exact context activation and non-serializable qualified-artifact
+activation remain active. A non-current certificate has no positive support
+deadline. Certificate size overflow cannot truncate a claim; it makes reliance
+`UNKNOWN` with an explicit bound reason. A label, digest, canonical manifest,
+certificate, source commit, passing-test record, or prior activation receipt
+without the live accepted activation is an explicit missing premise.
 
 ## Persistence and restart
 
@@ -186,10 +200,12 @@ standing crash durable.
 
 On restart the runtime uses a new receiver incarnation and clock generation,
 loads historical records as history, restores applicable unresolved
-contradiction custody, and installs a restart barrier. Every current standing
-is `UNKNOWN` until explicit current evaluation under a newly activated exact
-context. Deserializing a historical `CURRENT` transition never recreates
-standing.
+contradiction custody, discards every accepted artifact activation, and
+installs a restart barrier. Every current standing is `UNKNOWN` until a new
+process locally remeasures and accepts the exact package and then performs an
+explicit current evaluation under a newly activated exact context.
+Deserializing a historical `CURRENT` transition or activation receipt never
+recreates standing.
 
 `JournalHistoryProjectionV1` may project a clean journal or a specifically
 permitted valid prefix. It carries recovery outcome, damage, completeness, and
