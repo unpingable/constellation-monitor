@@ -1,6 +1,25 @@
 #![forbid(unsafe_code)]
 //! Bounded receiver/scheduler owner for exact consumer reliance contexts.
 
+mod crash;
+mod journal;
+mod reactor;
+
+pub use crash::{
+    CrashHarnessArtifactV1, CrashScenarioResultV1, run_crash_child, run_crash_harness,
+};
+pub use journal::{
+    HistoricalJournal, HistoricalJournalRecordV1, JournalAppendAckV1, JournalBoundsV1,
+    JournalConfigV1, JournalCreationAckV1, JournalDamageClassV1, JournalDurabilityModeV1,
+    JournalError, JournalErrorClassV1, JournalHistoryProjectionV1, JournalRecordBodyV1,
+    JournalRecordKindV1, JournalRecoveryOutcomeV1, JournalRecoveryReportV1, JournalWriteStageV1,
+    MonotonicEpochV1,
+};
+pub use reactor::{
+    LocalCrashReactor, ReactorCommandError, ReactorCommandErrorClassV1, ReactorConditionV1,
+    ReactorConfigV1, ReactorMetricsV1, ReactorSnapshotV1,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -402,6 +421,46 @@ impl ReceiverSchedulerRuntime {
         self.schedules
             .first()
             .map(|schedule| schedule.deadline_monotonic_ms)
+    }
+
+    #[must_use]
+    pub const fn current_monotonic_ms(&self) -> u64 {
+        self.current_monotonic_ms
+    }
+
+    #[must_use]
+    pub fn current_certificates(&self) -> Vec<RelianceSupportCertificateV1> {
+        self.consumers
+            .values()
+            .filter_map(|state| state.certificate.clone())
+            .collect()
+    }
+
+    /// Withdraw positive standing when an enclosing local actor can no longer
+    /// maintain a named observation premise. This bypasses the bounded input
+    /// queue deliberately: queue saturation must not require adding one more
+    /// item to the queue it just saturated.
+    pub fn declare_external_monitor_blindness(
+        &mut self,
+        at_monotonic_ms: u64,
+        state: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Result<RuntimeCycleOutputV1, RuntimeError> {
+        self.ensure_time_not_regressed(at_monotonic_ms)?;
+        let state = state.into();
+        let detail = detail.into();
+        let mut output = std::mem::take(&mut self.pending_output);
+        self.record_sparse(
+            at_monotonic_ms,
+            SparseDurableEventKindV1::MonitorCapabilityChanged {
+                state,
+                detail: detail.clone(),
+            },
+            &mut output,
+        );
+        self.latch_blind_all(at_monotonic_ms, &detail);
+        output.append(std::mem::take(&mut self.pending_output));
+        Ok(output)
     }
 
     pub fn register_consumer(
