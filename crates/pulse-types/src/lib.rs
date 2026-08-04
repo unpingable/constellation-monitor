@@ -4,6 +4,7 @@
 //! These types carry bounded observation and reliance facts. None grants
 //! mutation authority, and no type contains a global health boolean.
 
+mod custody;
 mod digest;
 mod escalation;
 mod event;
@@ -13,6 +14,7 @@ mod pulse;
 mod qualification;
 mod runtime;
 
+pub use custody::*;
 pub use digest::{DigestV1, digest_parts};
 pub use escalation::*;
 pub use event::*;

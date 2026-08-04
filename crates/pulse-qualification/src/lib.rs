@@ -220,6 +220,7 @@ pub fn fixture_config(receiver_incarnation: &str, clock: &str) -> RuntimeConfigV
         receiver: ReceiverId::new("receiver:qualified-binding"),
         receiver_incarnation: IncarnationId::new(receiver_incarnation),
         clock_id: ClockId::new(clock),
+        transport_custody_policy: None,
         bounds: pulse_runtime::RuntimeBoundsV1::qualification(),
     }
 }

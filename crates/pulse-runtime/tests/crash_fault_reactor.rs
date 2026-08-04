@@ -107,6 +107,7 @@ fn runtime_config(incarnation: &str, clock: &str) -> RuntimeConfigV1 {
         receiver: ReceiverId::new("receiver:reactor-test"),
         receiver_incarnation: IncarnationId::new(incarnation),
         clock_id: ClockId::new(clock),
+        transport_custody_policy: None,
         bounds: RuntimeBoundsV1::qualification(),
     }
 }

@@ -218,6 +218,7 @@ fn runtime_config(receiver_incarnation: &str, clock: &str) -> RuntimeConfigV1 {
         receiver: ReceiverId::new("receiver:bounded-runtime"),
         receiver_incarnation: IncarnationId::new(receiver_incarnation),
         clock_id: ClockId::new(clock),
+        transport_custody_policy: None,
         bounds: RuntimeBoundsV1::qualification(),
     }
 }

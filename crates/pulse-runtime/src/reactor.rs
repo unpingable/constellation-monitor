@@ -10,8 +10,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use pulse_types::{
-    DigestV1, MutationAuthorityV1, RelianceSupportCertificateV1, RuntimeMetricsV1,
-    SCHEMA_VERSION_V1, SparseDurableEventKindV1, SparseDurableEventV1, digest_parts,
+    ConsumerId, DigestV1, MutationAuthorityV1, QualifiedGenerationBindingV1,
+    RelianceSupportCertificateV1, RuntimeMetricsV1, SCHEMA_VERSION_V1, SparseDurableEventKindV1,
+    SparseDurableEventV1, SubjectId, TransportCustodyPolicyBindingV1, digest_parts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -460,6 +461,7 @@ pub struct LocalCrashReactor {
     clock: ReactorClock,
     config: ReactorConfigV1,
     journal_path: PathBuf,
+    transport_custody_policy: Option<TransportCustodyPolicyBindingV1>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -491,6 +493,7 @@ impl LocalCrashReactor {
         qualification_hook: Option<ReactorQualificationHook>,
     ) -> Result<Self, ReactorCommandError> {
         config.validate()?;
+        let transport_custody_policy = runtime.config().transport_custody_policy.clone();
         epoch
             .validate()
             .map_err(ReactorCommandError::from_journal)?;
@@ -563,8 +566,64 @@ impl LocalCrashReactor {
             clock,
             config,
             journal_path,
+            transport_custody_policy,
             join: Some(join),
         })
+    }
+
+    /// Ask the live actor to remeasure and revalidate the exact local
+    /// activation used by a transport custody policy. Historical activation
+    /// receipts and a caller-provided generation label cannot satisfy this
+    /// gate.
+    pub fn revalidate_transport_activation(
+        &self,
+        subject: &SubjectId,
+        consumer: &ConsumerId,
+        expected_policy: &TransportCustodyPolicyBindingV1,
+    ) -> Result<QualifiedGenerationBindingV1, ReactorCommandError> {
+        expected_policy.validate().map_err(|error| {
+            ReactorCommandError::new(
+                ReactorCommandErrorClassV1::InvalidConfig,
+                format!("invalid transport custody policy binding: {error}"),
+            )
+        })?;
+        if self.transport_custody_policy.as_ref() != Some(expected_policy) {
+            return Err(ReactorCommandError::new(
+                ReactorCommandErrorClassV1::InvalidConfig,
+                "transport custody policy does not exactly match the activated runtime configuration",
+            ));
+        }
+        if !self.snapshot().condition.exposes_live_standing() {
+            return Err(ReactorCommandError::new(
+                ReactorCommandErrorClassV1::NotOperational,
+                "reactor cannot attest a live local activation while temporal custody is unavailable",
+            ));
+        }
+        let output = self.submit_input(RuntimeInputV1::RevalidateTransportActivation {
+            subject: subject.clone(),
+            consumer: consumer.clone(),
+            expected_policy: expected_policy.clone(),
+        })?;
+        if !self.snapshot().condition.exposes_live_standing() {
+            return Err(ReactorCommandError::new(
+                ReactorCommandErrorClassV1::NotOperational,
+                "reactor lost temporal custody during activation revalidation",
+            ));
+        }
+        output
+            .certificates
+            .iter()
+            .rev()
+            .find(|certificate| {
+                &certificate.subject_scope.subject == subject && &certificate.consumer == consumer
+            })
+            .and_then(|certificate| certificate.qualified_generation.clone())
+            .ok_or_else(|| {
+                ReactorCommandError::new(
+                    ReactorCommandErrorClassV1::NotOperational,
+                    "live actor did not establish an exact QualifiedAndMatched activation",
+                )
+            })
     }
 
     pub fn submit_input(
@@ -623,6 +682,30 @@ impl LocalCrashReactor {
                 "reactor terminated before confirming blindness",
             )),
         }
+    }
+
+    pub fn report_receiver_boundary_condition(
+        &self,
+        subject: Option<SubjectId>,
+        finding: pulse_types::TransportCustodyFindingV1,
+        session_binding_digest: Option<DigestV1>,
+        detail: impl Into<String>,
+        withdraw: bool,
+    ) -> Result<RuntimeCycleOutputV1, ReactorCommandError> {
+        let detail = detail.into();
+        let mut output = self.submit_input(RuntimeInputV1::ReceiverBoundaryCondition {
+            subject,
+            finding,
+            session_binding_digest,
+            detail: detail.clone(),
+            withdraw,
+        })?;
+        if withdraw {
+            output.append(
+                self.declare_blindness(format!("receiver-boundary {finding:?}: {detail}"))?,
+            );
+        }
+        Ok(output)
     }
 
     fn submit_command(&self, command: ActorCommand) -> Result<(), ReactorCommandError> {
@@ -699,6 +782,19 @@ impl LocalCrashReactor {
                 snapshot
             }
         }
+    }
+
+    /// Receiver-owned process-local monotonic time for transport arrival and
+    /// session custody. Sender clocks and network metadata never enter this
+    /// clock lineage.
+    pub fn receiver_monotonic_now(&self) -> Result<u64, ReactorCommandError> {
+        if !self.snapshot().condition.exposes_live_standing() {
+            return Err(ReactorCommandError::new(
+                ReactorCommandErrorClassV1::NotOperational,
+                "reactor monotonic custody is unavailable",
+            ));
+        }
+        Ok(self.clock.now_ms())
     }
 
     #[must_use]
@@ -1456,6 +1552,7 @@ mod tests {
             },
             config,
             journal_path: PathBuf::from("/tmp/nonexistent-mailbox-fixture"),
+            transport_custody_policy: None,
             join: None,
         };
         let error = reactor

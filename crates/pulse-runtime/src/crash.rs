@@ -455,6 +455,7 @@ pub(crate) fn runtime_config(receiver_incarnation: &str, clock: &str) -> Runtime
         receiver: ReceiverId::new("receiver:crash-fixture"),
         receiver_incarnation: IncarnationId::new(receiver_incarnation),
         clock_id: ClockId::new(clock),
+        transport_custody_policy: None,
         bounds: RuntimeBoundsV1::qualification(),
     }
 }

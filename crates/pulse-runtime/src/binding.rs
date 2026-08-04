@@ -21,6 +21,8 @@ use crate::{ConsumerRegistrationV1, RuntimeBoundsV1, RuntimeConfigV1};
 const EVALUATOR_IMPLEMENTATION_MARKER: &[u8] = b"monitor-skunkworks/pulse-evaluator/consumer-indexed-evaluator/v1\ncategory-precedence=contradicted,suspect,unknown,degraded,current\nreceiver-owned-freshness=true\nscalar-confidence=false\n";
 const RUNTIME_BINDING_CONTRACT: &[u8] = b"monitor-skunkworks/qualified-generation-binding/v1\ndeclared!=qualified!=activated\ncurrent-requires-qualified-and-matched=true\n";
 const SUPPORT_CERTIFICATE_CONTRACT: &[u8] = b"monitor-skunkworks/reliance-support-certificate/v2\nqualified-generation-binding-required-for-current=true\nmutation-authority=none\n";
+const REMOTE_SUPPORT_CERTIFICATE_CONTRACT: &[u8] = b"monitor-skunkworks/reliance-support-certificate/v3\nqualified-generation-binding-required-for-current=true\nremote-custody-is-exact-and-receiver-anchored=true\nmutation-authority=none\n";
+const RECEIVER_BOUNDARY_CONTRACT: &[u8] = b"monitor-skunkworks/receiver-boundary-custody/v1\nauthenticated-transport!=sender-activation!=receiver-admission!=reliance\nreceiver-owned-arrival-freshness=true\n";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -165,6 +167,8 @@ pub struct RuntimeConfigurationArtifactV1 {
     pub schema_version: u16,
     pub receiver: pulse_types::ReceiverId,
     pub bounds: RuntimeBoundsV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_custody_policy: Option<pulse_types::TransportCustodyPolicyBindingV1>,
     pub receiver_incarnation_is_process_occurrence: bool,
     pub receiver_clock_is_process_occurrence: bool,
     pub deadline_custody_contract: String,
@@ -423,11 +427,43 @@ pub fn runtime_semantic_contracts() -> Vec<SemanticContractIdentityV1> {
     ]
 }
 
+fn runtime_semantic_contracts_for_config(
+    config: &RuntimeConfigV1,
+) -> Vec<SemanticContractIdentityV1> {
+    if config.transport_custody_policy.is_none() {
+        return runtime_semantic_contracts();
+    }
+    let mut contracts = vec![
+        SemanticContractIdentityV1 {
+            name: "monitor.qualified_generation_binding".to_owned(),
+            version: 1,
+            digest: artifact_content_digest(RUNTIME_BINDING_CONTRACT),
+        },
+        SemanticContractIdentityV1 {
+            name: "monitor.receiver_boundary_custody".to_owned(),
+            version: 1,
+            digest: artifact_content_digest(RECEIVER_BOUNDARY_CONTRACT),
+        },
+        SemanticContractIdentityV1 {
+            name: "monitor.reliance_support_certificate".to_owned(),
+            version: 3,
+            digest: artifact_content_digest(REMOTE_SUPPORT_CERTIFICATE_CONTRACT),
+        },
+        SemanticContractIdentityV1 {
+            name: "monitor.runtime_evaluator".to_owned(),
+            version: 1,
+            digest: artifact_content_digest(EVALUATOR_IMPLEMENTATION_MARKER),
+        },
+    ];
+    contracts.sort_by(|left, right| left.name.cmp(&right.name));
+    contracts
+}
+
 pub fn active_runtime_artifact_payloads(
     config: &RuntimeConfigV1,
     registration: &ConsumerRegistrationV1,
 ) -> Result<Vec<RuntimeArtifactPayloadV1>, QualificationError> {
-    let contracts = runtime_semantic_contracts();
+    let contracts = runtime_semantic_contracts_for_config(config);
     let policy = CanonicalReliancePolicyArtifactV1::from(&registration.policy);
     let evaluator = EvaluatorImplementationArtifactV1 {
         schema_version: SCHEMA_VERSION_V1,
@@ -470,6 +506,7 @@ pub fn active_runtime_artifact_payloads(
         schema_version: SCHEMA_VERSION_V1,
         receiver: config.receiver.clone(),
         bounds: config.bounds,
+        transport_custody_policy: config.transport_custody_policy.clone(),
         receiver_incarnation_is_process_occurrence: true,
         receiver_clock_is_process_occurrence: true,
         deadline_custody_contract: "receiver-owned-inclusive-support-expiry/v1".to_owned(),
@@ -605,7 +642,7 @@ pub fn build_local_qualification_package(
         artifacts,
         source: inputs.source,
         build: inputs.build,
-        semantic_contracts: runtime_semantic_contracts(),
+        semantic_contracts: runtime_semantic_contracts_for_config(config),
         platform_assumptions: inputs.platform_assumptions,
         qualification_corpus_identities: vec![corpus_digest],
         declared_claims: inputs.declared_claims.clone(),

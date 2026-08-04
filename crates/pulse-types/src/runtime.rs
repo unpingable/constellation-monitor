@@ -7,8 +7,9 @@ use crate::{
     ContradictionRecordV1, CoverageSummaryV1, DigestV1, EscalationStateV1,
     EvaluatorSemanticGenerationId, EvidenceWindowId, IncarnationId, JudgmentCategoryV1,
     MockDiagnosticReceiptV1, MutationAuthorityV1, ObservationPolicyGenerationId,
-    ObserverSetGenerationId, PolicyGenerationId, QualifiedGenerationBindingV1, RuntimeRefusalId,
-    SCHEMA_VERSION_V1, SparseDurableEventV1, SubjectScopeV1, SupportCertificateId, digest_parts,
+    ObserverSetGenerationId, PolicyGenerationId, QualifiedGenerationBindingV1,
+    RemoteObservationCustodyReferenceV1, RuntimeRefusalId, SCHEMA_VERSION_V1, SparseDurableEventV1,
+    SubjectScopeV1, SupportCertificateId, digest_parts,
 };
 
 pub const MAX_CERTIFICATE_EVIDENCE_REFS: usize = 64;
@@ -124,6 +125,8 @@ pub struct RelianceSupportCertificateV1 {
     pub judgment: JudgmentCategoryV1,
     pub evidence_window_id: EvidenceWindowId,
     pub supporting_evidence_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_observation_custody: Vec<RemoteObservationCustodyReferenceV1>,
     pub missing_premises: Vec<String>,
     pub applicable_contradictions: Vec<ContradictionId>,
     pub coverage: CoverageSummaryV1,
@@ -171,6 +174,10 @@ impl RelianceSupportCertificateV1 {
         for evidence in &self.supporting_evidence_ids {
             owned.push(b"evidence".to_vec());
             owned.push(evidence.as_bytes().to_vec());
+        }
+        for custody in &self.remote_observation_custody {
+            owned.push(b"remote-custody".to_vec());
+            owned.push(custody.identity_digest().as_str().as_bytes().to_vec());
         }
         for premise in &self.missing_premises {
             owned.push(b"missing".to_vec());
@@ -244,6 +251,7 @@ impl RelianceSupportCertificateV1 {
             }
         }
         if self.supporting_evidence_ids.len() > MAX_CERTIFICATE_EVIDENCE_REFS
+            || self.remote_observation_custody.len() > MAX_CERTIFICATE_EVIDENCE_REFS
             || self.missing_premises.len() > MAX_CERTIFICATE_MISSING_PREMISES
             || self.applicable_contradictions.len() > MAX_CERTIFICATE_CONTRADICTIONS
         {
@@ -253,6 +261,10 @@ impl RelianceSupportCertificateV1 {
             ));
         }
         if !strictly_sorted(&self.supporting_evidence_ids)
+            || !self
+                .remote_observation_custody
+                .windows(2)
+                .all(|pair| pair[0].identity_digest() < pair[1].identity_digest())
             || !strictly_sorted(&self.missing_premises)
             || !strictly_sorted(&self.applicable_contradictions)
         {
@@ -260,6 +272,26 @@ impl RelianceSupportCertificateV1 {
                 "noncanonical_collection",
                 "support certificate collections must be sorted and unique",
             ));
+        }
+        for custody in &self.remote_observation_custody {
+            custody.validate().map_err(|error| {
+                RuntimeTypeError::new(error.code, "invalid remote observation custody")
+            })?;
+            if custody.subject_scope != self.subject_scope
+                || !self
+                    .supporting_evidence_ids
+                    .contains(&custody.supporting_evidence_id)
+            {
+                return Err(RuntimeTypeError::new(
+                    "remote_custody_mismatch",
+                    "remote custody does not identify supporting evidence for this subject",
+                ));
+            }
+            // The receiver-boundary activation and this consumer's evaluator
+            // activation are separately named qualified contexts. They may be
+            // different exact manifests/receipts inside one process; treating
+            // them as equal would collapse receiver admission into consumer
+            // reliance and would break consumer-indexed semantics.
         }
         if self.judgment == JudgmentCategoryV1::Current {
             if self.qualified_generation.is_none()
@@ -567,6 +599,7 @@ mod tests {
             judgment: JudgmentCategoryV1::Current,
             evidence_window_id: EvidenceWindowId::new("window:1"),
             supporting_evidence_ids: vec!["evidence:1".to_owned()],
+            remote_observation_custody: Vec::new(),
             missing_premises: Vec::new(),
             applicable_contradictions: Vec::new(),
             coverage: CoverageSummaryV1 {

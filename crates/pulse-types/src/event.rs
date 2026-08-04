@@ -4,8 +4,8 @@ use crate::{
     ActivationReceiptV1, ContradictionRecordV1, DiagnosticEscalationRequestV1,
     DiagnosticEvidenceReferenceV1, EscalationDispositionV1, ExperimentalMetricsV1,
     GenerationLifecycleFactV1, JudgmentTransitionV1, MockDiagnosticReceiptV1, ObserverId,
-    RelianceContextTransitionV1, RelianceSupportCertificateV1, RuntimeBindingStateV1,
-    RuntimeRefusalV1, SCHEMA_VERSION_V1, SparseEventId,
+    ReceiverAcceptanceReceiptV1, RelianceContextTransitionV1, RelianceSupportCertificateV1,
+    RuntimeBindingStateV1, RuntimeRefusalV1, SCHEMA_VERSION_V1, SparseEventId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -86,6 +86,15 @@ pub enum SparseDurableEventKindV1 {
         state: RuntimeBindingStateV1,
         detail: String,
         standing_preserved: bool,
+    },
+    ReceiverBoundaryAcceptanceRecorded {
+        receipt: Box<ReceiverAcceptanceReceiptV1>,
+    },
+    ReceiverBoundaryCustodyChanged {
+        state: crate::TransportCustodyFindingV1,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_binding_digest: Option<crate::DigestV1>,
+        detail: String,
     },
     MetricsSnapshot {
         metrics: ExperimentalMetricsV1,

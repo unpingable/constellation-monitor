@@ -4,6 +4,7 @@
 mod binding;
 mod campaign;
 mod crash;
+mod custody;
 mod journal;
 mod reactor;
 
@@ -17,6 +18,7 @@ pub use campaign::{
 pub use crash::{
     CrashHarnessArtifactV1, CrashScenarioResultV1, run_crash_child, run_crash_harness,
 };
+pub use custody::*;
 pub use journal::{
     HistoricalJournal, HistoricalJournalRecordV1, JournalAppendAckV1, JournalBoundsV1,
     JournalConfigV1, JournalCreationAckV1, JournalDamageClassV1, JournalDurabilityModeV1,
@@ -43,11 +45,12 @@ use pulse_types::{
     LocalActivationContextV1, LocalCertificateStatusV1, MockDiagnosticReceiptV1,
     MutationAuthorityV1, ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId,
     PulseFrameV1, QualifiedGenerationBindingV1, QualifiedGenerationSetV1, ReceivedPulseV1,
-    ReceiverId, RelianceContextTransitionV1, RelianceContextV1, RelianceSupportCertificateV1,
-    RuntimeBindingStateV1, RuntimeHistoricalStateV1, RuntimeMetricsV1, RuntimeRefusalClassV1,
-    RuntimeRefusalId, RuntimeRefusalV1, SCHEMA_VERSION_V1, SparseDurableEventKindV1,
-    SparseDurableEventV1, SparseEventId, SubjectId, SubjectScopeV1, VerifiedActivationV1,
-    digest_parts, verify_local_activation,
+    ReceiverAcceptanceReceiptV1, ReceiverId, RelianceContextTransitionV1, RelianceContextV1,
+    RelianceSupportCertificateV1, RemoteObservationCustodyReferenceV1, RuntimeBindingStateV1,
+    RuntimeHistoricalStateV1, RuntimeMetricsV1, RuntimeRefusalClassV1, RuntimeRefusalId,
+    RuntimeRefusalV1, SCHEMA_VERSION_V1, SparseDurableEventKindV1, SparseDurableEventV1,
+    SparseEventId, SubjectId, SubjectScopeV1, TransportCustodyFindingV1,
+    TransportCustodyPolicyBindingV1, VerifiedActivationV1, digest_parts, verify_local_activation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -136,6 +139,8 @@ pub struct RuntimeConfigV1 {
     pub receiver: ReceiverId,
     pub receiver_incarnation: IncarnationId,
     pub clock_id: ClockId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_custody_policy: Option<TransportCustodyPolicyBindingV1>,
     pub bounds: RuntimeBoundsV1,
 }
 
@@ -156,6 +161,11 @@ impl RuntimeConfigV1 {
         self.clock_id
             .validate()
             .map_err(|_| RuntimeError::new("invalid_identity", "invalid clock identity"))?;
+        if let Some(binding) = &self.transport_custody_policy {
+            binding
+                .validate()
+                .map_err(|error| RuntimeError::new(error.code, error.detail.clone()))?;
+        }
         self.bounds.validate()
     }
 }
@@ -182,7 +192,7 @@ pub struct PulseIngressV1 {
     pub authentication: AuthenticationResultV1,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum RuntimeInputV1 {
     ActivateConsumer(ConsumerActivationV1),
     ReplaceSubjectIncarnation {
@@ -191,11 +201,24 @@ pub enum RuntimeInputV1 {
         activations: Vec<ConsumerActivationV1>,
     },
     Pulse(PulseIngressV1),
+    RemotePulse(Box<VerifiedRemoteObservationV1>),
     EscalationDisposition(EscalationDispositionV1),
     DiagnosticReceipt(MockDiagnosticReceiptV1),
     Reevaluate {
         subject: SubjectId,
         consumer: ConsumerId,
+    },
+    RevalidateTransportActivation {
+        subject: SubjectId,
+        consumer: ConsumerId,
+        expected_policy: TransportCustodyPolicyBindingV1,
+    },
+    ReceiverBoundaryCondition {
+        subject: Option<SubjectId>,
+        finding: TransportCustodyFindingV1,
+        session_binding_digest: Option<pulse_types::DigestV1>,
+        detail: String,
+        withdraw: bool,
     },
     RestoreMonitorCapability {
         subject: Option<SubjectId>,
@@ -206,8 +229,11 @@ pub enum RuntimeInputV1 {
 impl RuntimeInputV1 {
     fn priority(&self) -> u8 {
         match self {
-            Self::ActivateConsumer(_) | Self::ReplaceSubjectIncarnation { .. } => 0,
-            Self::Pulse(_) => 2,
+            Self::ActivateConsumer(_)
+            | Self::ReplaceSubjectIncarnation { .. }
+            | Self::ReceiverBoundaryCondition { .. } => 0,
+            Self::Pulse(_) | Self::RemotePulse(_) => 2,
+            Self::RevalidateTransportActivation { .. } => 1,
             Self::EscalationDisposition(_) | Self::DiagnosticReceipt(_) => 3,
             Self::RestoreMonitorCapability { .. } => 4,
             Self::Reevaluate { .. } => 5,
@@ -217,16 +243,22 @@ impl RuntimeInputV1 {
     fn ordering_subject(&self) -> String {
         match self {
             Self::ActivateConsumer(activation) => activation.policy.subject.to_string(),
-            Self::ReplaceSubjectIncarnation { subject, .. } | Self::Reevaluate { subject, .. } => {
-                subject.to_string()
-            }
+            Self::ReplaceSubjectIncarnation { subject, .. }
+            | Self::Reevaluate { subject, .. }
+            | Self::RevalidateTransportActivation { subject, .. } => subject.to_string(),
             Self::Pulse(pulse) => pulse.frame.subject.to_string(),
+            Self::RemotePulse(pulse) => pulse.frame().subject.to_string(),
             Self::RestoreMonitorCapability {
+                subject: Some(subject),
+                ..
+            }
+            | Self::ReceiverBoundaryCondition {
                 subject: Some(subject),
                 ..
             } => subject.to_string(),
             Self::EscalationDisposition(_)
             | Self::DiagnosticReceipt(_)
+            | Self::ReceiverBoundaryCondition { subject: None, .. }
             | Self::RestoreMonitorCapability { subject: None, .. } => String::new(),
         }
     }
@@ -251,6 +283,17 @@ impl RuntimeInputV1 {
                 pulse.frame.sequence,
                 pulse.frame.observation_digest
             ),
+            Self::RemotePulse(pulse) => format!(
+                "remote-pulse:{}:{}:{}:{}:{:05}:{}:{:020}:{}",
+                pulse.frame().subject_incarnation,
+                pulse.frame().observer,
+                pulse.frame().observer_incarnation,
+                pulse.frame().profile.name,
+                pulse.frame().profile.version,
+                pulse.frame().observation_policy_generation,
+                pulse.frame().sequence,
+                pulse.frame().observation_digest
+            ),
             Self::EscalationDisposition(disposition) => {
                 format!("disposition:{}", disposition.request_id)
             }
@@ -258,6 +301,17 @@ impl RuntimeInputV1 {
                 format!("receipt:{}:{}", receipt.request_id, receipt.receipt_id)
             }
             Self::Reevaluate { consumer, .. } => format!("reevaluate:{consumer}"),
+            Self::RevalidateTransportActivation {
+                consumer,
+                expected_policy,
+                ..
+            } => format!(
+                "transport-activation-revalidation:{consumer}:{}:{}",
+                expected_policy.policy_generation, expected_policy.policy_digest
+            ),
+            Self::ReceiverBoundaryCondition {
+                finding, detail, ..
+            } => format!("receiver-boundary:{finding:?}:{detail}"),
             Self::RestoreMonitorCapability { detail, .. } => format!("restore:{detail}"),
         }
     }
@@ -366,6 +420,8 @@ pub struct ReceiverSchedulerRuntime {
     qualified_bindings: BTreeMap<ConsumerKey, QualifiedBindingSlot>,
     receiver_streams: BTreeSet<ReceiverStreamIdentity>,
     observer_incarnations: BTreeMap<(SubjectId, ObserverId), BTreeSet<IncarnationId>>,
+    remote_observation_custody:
+        BTreeMap<(SubjectId, ObserverId), RemoteObservationCustodyReferenceV1>,
     pending: BTreeMap<PendingKey, RuntimeInputV1>,
     schedules: BTreeSet<ScheduleKey>,
     request_owners: BTreeMap<pulse_types::EscalationRequestId, (ConsumerKey, u64)>,
@@ -401,6 +457,7 @@ impl ReceiverSchedulerRuntime {
             qualified_bindings: BTreeMap::new(),
             receiver_streams: BTreeSet::new(),
             observer_incarnations: BTreeMap::new(),
+            remote_observation_custody: BTreeMap::new(),
             pending: BTreeMap::new(),
             schedules: BTreeSet::new(),
             request_owners: BTreeMap::new(),
@@ -1314,7 +1371,35 @@ impl ReceiverSchedulerRuntime {
                 output,
             )?,
             RuntimeInputV1::Pulse(pulse) => {
-                self.process_pulse(logical_at, ingress_ordinal, pulse, evaluated_at, output)?;
+                self.process_pulse(
+                    logical_at,
+                    ingress_ordinal,
+                    pulse,
+                    None,
+                    evaluated_at,
+                    output,
+                )?;
+            }
+            RuntimeInputV1::RemotePulse(verified) => {
+                let (frame, custody, receipt) = verified.into_parts();
+                let principal = custody.sender_key_identity_digest.to_string();
+                let receiver_arrival_monotonic_ms = custody.receiver_arrival_monotonic_ms;
+                self.process_pulse(
+                    receiver_arrival_monotonic_ms,
+                    ingress_ordinal,
+                    PulseIngressV1 {
+                        frame,
+                        transport_path: "udp-authenticated-custody/v1".to_owned(),
+                        transport_observed_delay_ms: None,
+                        authentication: AuthenticationResultV1::Verified {
+                            method: "ed25519-pinned-custody/v1".to_owned(),
+                            principal,
+                        },
+                    },
+                    Some((custody, receipt)),
+                    evaluated_at,
+                    output,
+                )?;
             }
             RuntimeInputV1::EscalationDisposition(disposition) => {
                 let Some((owner, _)) = self.request_owners.get(&disposition.request_id).cloned()
@@ -1401,6 +1486,66 @@ impl ReceiverSchedulerRuntime {
                 self.consumers.insert(key.clone(), state);
                 self.apply_evaluation(&key, evaluation, evaluated_at, output)?;
             }
+            RuntimeInputV1::RevalidateTransportActivation {
+                subject,
+                consumer,
+                expected_policy,
+            } => {
+                if self.config.transport_custody_policy.as_ref() != Some(&expected_policy) {
+                    return Err(RuntimeError::new(
+                        "transport_policy_mismatch",
+                        "transport revalidation policy differs from the activated runtime configuration",
+                    ));
+                }
+                let key = ConsumerKey::new(subject, consumer);
+                let mut state = self.consumers.remove(&key).ok_or_else(|| {
+                    RuntimeError::new(
+                        "unknown_consumer",
+                        "transport activation consumer is unknown",
+                    )
+                })?;
+                let _ = self.revalidated_qualified_binding(&key, &state, evaluated_at, output)?;
+                let evaluation = state
+                    .evaluator
+                    .tick(evaluated_at)
+                    .map_err(RuntimeError::from_evaluator)?;
+                self.consumers.insert(key.clone(), state);
+                self.apply_evaluation(&key, evaluation, evaluated_at, output)?;
+            }
+            RuntimeInputV1::ReceiverBoundaryCondition {
+                subject,
+                finding,
+                session_binding_digest,
+                detail,
+                withdraw,
+            } => {
+                if detail.is_empty() || detail.len() > 256 || detail.chars().any(char::is_control) {
+                    return Err(RuntimeError::new(
+                        "invalid_receiver_boundary_condition",
+                        "receiver-boundary condition detail is empty, over-bound, or contains control characters",
+                    ));
+                }
+                self.record_sparse(
+                    evaluated_at,
+                    SparseDurableEventKindV1::ReceiverBoundaryCustodyChanged {
+                        state: finding,
+                        session_binding_digest,
+                        detail: detail.clone(),
+                    },
+                    output,
+                );
+                output.trace_lines.push(format!(
+                    "[{evaluated_at:06}ms] RECEIVER_BOUNDARY state={finding:?} detail={detail}"
+                ));
+                if withdraw {
+                    if let Some(subject) = &subject {
+                        self.latch_blind_subject(subject, evaluated_at, &detail);
+                    } else {
+                        self.latch_blind_all(evaluated_at, &detail);
+                    }
+                    output.append(std::mem::take(&mut self.pending_output));
+                }
+            }
             RuntimeInputV1::RestoreMonitorCapability { subject, detail } => {
                 let keys = self.consumer_keys(subject.as_ref());
                 for key in keys {
@@ -1470,6 +1615,10 @@ impl ReceiverSchedulerRuntime {
         arrival_at: u64,
         ingress_ordinal: u64,
         pulse: PulseIngressV1,
+        remote: Option<(
+            RemoteObservationCustodyReferenceV1,
+            ReceiverAcceptanceReceiptV1,
+        )>,
         evaluated_at: u64,
         output: &mut RuntimeCycleOutputV1,
     ) -> Result<(), RuntimeError> {
@@ -1582,6 +1731,40 @@ impl ReceiverSchedulerRuntime {
             .entry(lineage_key)
             .or_default()
             .insert(pulse.frame.observer_incarnation.clone());
+        if let Some((custody, receipt)) = &remote {
+            custody
+                .validate()
+                .map_err(|error| RuntimeError::new(error.code, error.detail.clone()))?;
+            receipt
+                .validate()
+                .map_err(|error| RuntimeError::new(error.code, error.detail.clone()))?;
+            if custody.subject_scope.subject != pulse.frame.subject
+                || custody.subject_scope.subject_incarnation != pulse.frame.subject_incarnation
+                || custody.observer != pulse.frame.observer
+                || custody.observation_sequence != pulse.frame.sequence
+                || custody.observation_identity != pulse.frame.observation_digest
+                || receipt.accepted_evidence_identity.as_ref()
+                    != Some(&custody.accepted_evidence_identity)
+                || receipt.envelope_digest.as_ref() != Some(&custody.envelope_digest)
+            {
+                return Err(RuntimeError::new(
+                    "remote_custody_mismatch",
+                    "verified remote custody no longer matches the admitted pulse",
+                ));
+            }
+            self.record_sparse(
+                evaluated_at,
+                SparseDurableEventKindV1::ReceiverBoundaryAcceptanceRecorded {
+                    receipt: Box::new(receipt.clone()),
+                },
+                output,
+            );
+            self.remote_observation_custody
+                .insert((subject.clone(), observer.clone()), custody.clone());
+        } else {
+            self.remote_observation_custody
+                .remove(&(subject.clone(), observer.clone()));
+        }
         let annotation = self
             .receiver
             .annotate(
@@ -1923,6 +2106,18 @@ impl ReceiverSchedulerRuntime {
         let mut contradictions = state.evaluator.active_contradiction_ids();
         contradictions.sort();
         contradictions.dedup();
+        let evidence_set = evidence.iter().collect::<BTreeSet<_>>();
+        let mut remote_observation_custody = self
+            .remote_observation_custody
+            .values()
+            .filter(|custody| {
+                custody.subject_scope == evaluation.judgment.subject_scope
+                    && evidence_set.contains(&custody.supporting_evidence_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        remote_observation_custody.sort_by_key(|custody| custody.identity_digest());
+        remote_observation_custody.dedup_by_key(|custody| custody.identity_digest());
         if evidence.len() > self.config.bounds.maximum_supporting_evidence_refs
             || contradictions.len() > pulse_types::MAX_CERTIFICATE_CONTRADICTIONS
         {
@@ -2004,6 +2199,7 @@ impl ReceiverSchedulerRuntime {
             judgment,
             evidence_window_id: evaluation.judgment.evidence_window_id.clone(),
             supporting_evidence_ids: evidence,
+            remote_observation_custody,
             missing_premises: missing,
             applicable_contradictions: contradictions,
             coverage: evaluation.judgment.coverage.clone(),

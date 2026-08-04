@@ -97,6 +97,7 @@ fn config_with(bounds: RuntimeBoundsV1, incarnation: &str, clock: &str) -> Runti
         receiver: ReceiverId::new("receiver:runtime-test"),
         receiver_incarnation: IncarnationId::new(incarnation),
         clock_id: ClockId::new(clock),
+        transport_custody_policy: None,
         bounds,
     }
 }
