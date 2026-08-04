@@ -1448,7 +1448,8 @@ impl ReceiverCustodyV1 {
                     TransportCustodyFindingV1::ReplayDetected
                 },
                 "duplicate, replayed, reordered, or over-window session sequence refused",
-            ));
+            )
+            .with_replay_window_result(replay.result));
         }
         if let Some(prior_observation) = session.high_observation_sequence
             && envelope.body.observation_sequence <= prior_observation
@@ -1457,7 +1458,8 @@ impl ReceiverCustodyV1 {
             return Err(CustodyError::new(
                 TransportCustodyFindingV1::ReplayDetected,
                 "observation sequence reset/replay is not admitted within a session",
-            ));
+            )
+            .with_replay_window_result(ReplayWindowResultV1::Replay));
         }
         let payload = envelope
             .body
@@ -1673,7 +1675,9 @@ impl ReceiverCustodyV1 {
             session_binding_verification: CustodyCheckResultV1::NotChecked,
             sender_qualification_package_acceptance: CustodyCheckResultV1::NotChecked,
             exact_identity_match: CustodyCheckResultV1::NotChecked,
-            replay_window_result: replay_for_finding(error.finding),
+            replay_window_result: error
+                .replay_window_result
+                .unwrap_or_else(|| replay_for_finding(error.finding)),
             sequence_gap: None,
             queue_and_capacity_result: if error.finding
                 == TransportCustodyFindingV1::TransportOverloaded
@@ -2986,6 +2990,7 @@ impl<'a> WireReader<'a> {
 pub struct CustodyError {
     pub finding: TransportCustodyFindingV1,
     pub detail: String,
+    pub replay_window_result: Option<ReplayWindowResultV1>,
 }
 
 impl CustodyError {
@@ -2993,7 +2998,13 @@ impl CustodyError {
         Self {
             finding,
             detail: detail.into(),
+            replay_window_result: None,
         }
+    }
+
+    fn with_replay_window_result(mut self, result: ReplayWindowResultV1) -> Self {
+        self.replay_window_result = Some(result);
+        self
     }
 
     fn from_type(error: CustodyTypeError) -> Self {

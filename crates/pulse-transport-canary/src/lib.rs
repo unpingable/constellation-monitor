@@ -257,6 +257,8 @@ fn receiver_policy(
     sender_key: &PeerKeyIdentityV1,
     sender_package: &LocalQualificationPackageV1,
     observation_time_freshness_required: bool,
+    maximum_messages_per_session: u32,
+    maximum_messages_per_second: u32,
 ) -> ReceiverAcceptancePolicyV1 {
     receiver_policy_with_digests(
         receiver_key,
@@ -264,6 +266,8 @@ fn receiver_policy(
         sender_package.manifest.manifest_digest.clone(),
         sender_package.certificate.certificate_digest.clone(),
         observation_time_freshness_required,
+        maximum_messages_per_session,
+        maximum_messages_per_second,
     )
 }
 
@@ -273,6 +277,8 @@ fn receiver_policy_with_digests(
     sender_manifest_digest: DigestV1,
     sender_certificate_digest: DigestV1,
     observation_time_freshness_required: bool,
+    maximum_messages_per_session: u32,
+    maximum_messages_per_second: u32,
 ) -> ReceiverAcceptancePolicyV1 {
     ReceiverAcceptancePolicyV1 {
         schema_version: SCHEMA_VERSION_V1,
@@ -289,8 +295,8 @@ fn receiver_policy_with_digests(
         permitted_observation_kinds: vec![ObservationCustodyKindV1::PulseV1],
         maximum_datagram_bytes: CANARY_MAX_DATAGRAM,
         maximum_session_duration_ms: CANARY_SESSION_DURATION_MS,
-        maximum_messages_per_session: 16,
-        maximum_messages_per_second: 16,
+        maximum_messages_per_session,
+        maximum_messages_per_second,
         receiver_queue_bound: 8,
         replay_window_size: 16,
         maximum_sequence_gap: 8,
@@ -455,15 +461,28 @@ pub struct EstablishedCanarySessionV1 {
 
 impl CanaryHarnessV1 {
     pub fn deterministic() -> Result<Self, String> {
-        Self::deterministic_with_freshness(false)
+        Self::deterministic_with_options(false, 16, 16)
     }
 
     pub fn observation_time_freshness_required() -> Result<Self, String> {
-        Self::deterministic_with_freshness(true)
+        Self::deterministic_with_options(true, 16, 16)
     }
 
-    fn deterministic_with_freshness(
+    pub fn with_transport_limits(
+        maximum_messages_per_session: u32,
+        maximum_messages_per_second: u32,
+    ) -> Result<Self, String> {
+        Self::deterministic_with_options(
+            false,
+            maximum_messages_per_session,
+            maximum_messages_per_second,
+        )
+    }
+
+    fn deterministic_with_options(
         observation_time_freshness_required: bool,
+        maximum_messages_per_session: u32,
+        maximum_messages_per_second: u32,
     ) -> Result<Self, String> {
         let (sender_signing, qualification_sender_key_copy) =
             CanarySigningIdentityV1::generate_qualification_pair(
@@ -490,6 +509,8 @@ impl CanaryHarnessV1 {
                 &[b"pending"],
             ),
             observation_time_freshness_required,
+            maximum_messages_per_session,
+            maximum_messages_per_second,
         );
         let receiver_policy_anchor_digest = receiver_policy_template.anchor_digest();
         let sender_policy = sender_policy(
@@ -509,6 +530,8 @@ impl CanaryHarnessV1 {
             &sender_key,
             &sender_package,
             observation_time_freshness_required,
+            maximum_messages_per_session,
+            maximum_messages_per_second,
         );
         receiver_policy
             .validate()

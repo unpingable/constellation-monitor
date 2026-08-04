@@ -368,6 +368,139 @@ fn duplicate_replay_does_not_renew_receiver_freshness() {
 }
 
 #[test]
+fn duplicate_observation_in_new_envelopes_and_repeated_duplicates_never_renew() {
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
+    harness.establish_session().expect("session");
+    let (_, _, _, admitted_datagram) = harness.emit_and_admit(1).expect("first admission");
+    let original = harness.receiver_certificate(CANARY_CONSUMER_A);
+    let original_deadline = original.earliest_support_expiry_monotonic_ms;
+
+    let new_envelope_same_observation = emit_without_delivery(&mut harness, 1);
+    let reset = harness
+        .enqueue_and_admit_raw(&new_envelope_same_observation)
+        .expect("observation-sequence refusal receipt");
+    assert!(!reset.admitted());
+    assert_eq!(
+        reset.receipt.finding,
+        TransportCustodyFindingV1::ReplayDetected
+    );
+
+    for _ in 0..4 {
+        let duplicate = harness
+            .enqueue_and_admit_raw(&admitted_datagram)
+            .expect("bounded duplicate refusal receipt");
+        assert!(!duplicate.admitted());
+        assert!(matches!(
+            duplicate.receipt.finding,
+            TransportCustodyFindingV1::DuplicateDetected
+                | TransportCustodyFindingV1::ReplayDetected
+        ));
+    }
+    let after = harness.receiver_certificate(CANARY_CONSUMER_A);
+    assert!(
+        after.earliest_support_expiry_monotonic_ms.is_none()
+            || after.earliest_support_expiry_monotonic_ms == original_deadline
+    );
+    assert!(harness.receiver.replay_refusals() >= 1);
+    harness.shutdown().expect("shutdown");
+}
+
+#[test]
+fn session_message_and_receiver_rate_bounds_refuse_without_eviction() {
+    let mut message_bound = CanaryHarnessV1::with_transport_limits(2, 16).expect("bounded harness");
+    message_bound.establish_session().expect("session");
+    for sequence in 1..=2 {
+        let _ = emit_without_delivery(&mut message_bound, sequence);
+    }
+    let sender_error = message_bound
+        .sender
+        .emit_pulse(
+            message_bound.sender_reactor.as_ref().unwrap(),
+            &pulse_types::SubjectId::new(CANARY_SUBJECT),
+            &pulse_types::ConsumerId::new(CANARY_CONSUMER_A),
+            &pulse_transport_canary::canary_pulse(3),
+        )
+        .expect_err("third envelope exceeds exact session message bound");
+    assert_eq!(
+        sender_error.finding,
+        TransportCustodyFindingV1::TransportOverloaded
+    );
+    assert_eq!(message_bound.sender.live_session_count(), 0);
+    message_bound.shutdown().expect("shutdown");
+
+    let mut rate_bound = CanaryHarnessV1::with_transport_limits(16, 1).expect("rate harness");
+    rate_bound.establish_session().expect("session");
+    rate_bound
+        .emit_and_admit(1)
+        .expect("first admitted message");
+    let second = emit_without_delivery(&mut rate_bound, 2);
+    let refusal = rate_bound
+        .enqueue_and_admit_raw(&second)
+        .expect("rate refusal receipt");
+    assert!(!refusal.admitted());
+    assert_eq!(
+        refusal.receipt.finding,
+        TransportCustodyFindingV1::TransportOverloaded
+    );
+    assert_eq!(rate_bound.receiver.live_session_count(), 0);
+    assert!(
+        !rate_bound
+            .receiver_reactor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .live_standing_available
+    );
+    assert_eq!(
+        rate_bound
+            .receiver_reactor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .active_deadline_count,
+        0
+    );
+    rate_bound.shutdown().expect("shutdown");
+}
+
+#[test]
+fn replay_window_gap_bound_is_explicit_before_payload_admission() {
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
+    harness.establish_session().expect("session");
+    let datagram = emit_without_delivery(&mut harness, 1);
+    let envelope =
+        pulse_runtime::decode_observation_envelope_datagram(&datagram, &harness.sender_key)
+            .expect("envelope");
+    let mut body = envelope.body;
+    body.session_sequence = 10;
+    let (_, hostile_gap) = sign_observation_envelope(&harness.qualification_sender_key_copy, body)
+        .expect("accepted key signs over-bound sequence assertion");
+    let refusal = harness
+        .enqueue_and_admit_raw(&hostile_gap)
+        .expect("bounded gap refusal receipt");
+    assert!(!refusal.admitted());
+    assert_eq!(
+        refusal.receipt.finding,
+        TransportCustodyFindingV1::ReplayDetected
+    );
+    assert_eq!(
+        refusal.receipt.replay_window_result,
+        pulse_types::ReplayWindowResultV1::BoundExceeded
+    );
+    assert!(refusal.receipt.accepted_evidence_identity.is_none());
+    assert_eq!(
+        harness
+            .receiver_reactor
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .active_deadline_count,
+        0
+    );
+    harness.shutdown().expect("shutdown");
+}
+
+#[test]
 fn reordered_envelope_is_refused_without_replacing_newer_admitted_evidence() {
     let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
