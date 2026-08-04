@@ -285,6 +285,35 @@ pub struct ReceiverAcceptancePolicyV1 {
     pub authority_grants: CustodyAuthorityGrantsV1,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiverAcceptancePolicyAnchorV1 {
+    pub schema_version: u16,
+    pub policy_generation: String,
+    pub receiver_key: PeerKeyIdentityV1,
+    pub accepted_sender_key: PeerKeyIdentityV1,
+    pub accepted_protocol_version: u16,
+    pub accepted_pulse_schema_version: u16,
+    pub accepted_observer: ObserverId,
+    pub accepted_failure_domain_claim: String,
+    pub permitted_subject_scopes: Vec<SubjectScopeV1>,
+    pub permitted_observation_kinds: Vec<ObservationCustodyKindV1>,
+    pub maximum_datagram_bytes: u16,
+    pub maximum_session_duration_ms: u64,
+    pub maximum_messages_per_session: u32,
+    pub maximum_messages_per_second: u32,
+    pub receiver_queue_bound: u16,
+    pub replay_window_size: u16,
+    pub maximum_sequence_gap: u64,
+    pub certificate_status: CustodyCertificateStatusV1,
+    pub lifecycle_authority_id: String,
+    pub freshness_mode: RemoteFreshnessModeV1,
+    pub arrival_anchored_evidence_may_support_reliance: bool,
+    pub observation_time_freshness_required: bool,
+    pub journal_id: String,
+    pub authority_grants: CustodyAuthorityGrantsV1,
+}
+
 impl ReceiverAcceptancePolicyV1 {
     pub fn validate(&self) -> Result<(), CustodyTypeError> {
         validate_schema(self.schema_version)?;
@@ -350,8 +379,63 @@ impl ReceiverAcceptancePolicyV1 {
 
     #[must_use]
     pub fn identity_digest(&self) -> DigestV1 {
-        let bytes = serde_json::to_vec(self).expect("validated schema serializes");
-        digest_parts("transport.receiver-acceptance-policy.v1", &[&bytes])
+        let anchor = self.anchor_digest();
+        Self::identity_digest_from_parts(
+            &anchor,
+            &self.accepted_sender_manifest_digest,
+            &self.accepted_sender_certificate_digest,
+        )
+    }
+
+    /// Compute the exact policy identity from the cycle-free receiver-policy
+    /// anchor and the exact sender package admitted by that policy.
+    #[must_use]
+    pub fn identity_digest_from_parts(
+        anchor: &DigestV1,
+        sender_manifest: &DigestV1,
+        sender_certificate: &DigestV1,
+    ) -> DigestV1 {
+        digest_parts(
+            "transport.receiver-acceptance-policy.v1",
+            &[
+                anchor.as_str().as_bytes(),
+                sender_manifest.as_str().as_bytes(),
+                sender_certificate.as_str().as_bytes(),
+            ],
+        )
+    }
+
+    #[must_use]
+    pub fn anchor_digest(&self) -> DigestV1 {
+        let anchor = ReceiverAcceptancePolicyAnchorV1 {
+            schema_version: self.schema_version,
+            policy_generation: self.policy_generation.clone(),
+            receiver_key: self.receiver_key.clone(),
+            accepted_sender_key: self.accepted_sender_key.clone(),
+            accepted_protocol_version: self.accepted_protocol_version,
+            accepted_pulse_schema_version: self.accepted_pulse_schema_version,
+            accepted_observer: self.accepted_observer.clone(),
+            accepted_failure_domain_claim: self.accepted_failure_domain_claim.clone(),
+            permitted_subject_scopes: self.permitted_subject_scopes.clone(),
+            permitted_observation_kinds: self.permitted_observation_kinds.clone(),
+            maximum_datagram_bytes: self.maximum_datagram_bytes,
+            maximum_session_duration_ms: self.maximum_session_duration_ms,
+            maximum_messages_per_session: self.maximum_messages_per_session,
+            maximum_messages_per_second: self.maximum_messages_per_second,
+            receiver_queue_bound: self.receiver_queue_bound,
+            replay_window_size: self.replay_window_size,
+            maximum_sequence_gap: self.maximum_sequence_gap,
+            certificate_status: self.certificate_status,
+            lifecycle_authority_id: self.lifecycle_authority_id.clone(),
+            freshness_mode: self.freshness_mode,
+            arrival_anchored_evidence_may_support_reliance: self
+                .arrival_anchored_evidence_may_support_reliance,
+            observation_time_freshness_required: self.observation_time_freshness_required,
+            journal_id: self.journal_id.clone(),
+            authority_grants: self.authority_grants,
+        };
+        let bytes = serde_json::to_vec(&anchor).expect("receiver policy anchor serializes");
+        digest_parts("transport.receiver-acceptance-policy-anchor.v1", &[&bytes])
     }
 
     #[must_use]
@@ -382,6 +466,7 @@ pub struct SenderEmissionPolicyV1 {
     pub sender_key: PeerKeyIdentityV1,
     pub accepted_receiver_key: PeerKeyIdentityV1,
     pub accepted_receiver_policy_generation: String,
+    pub accepted_receiver_policy_anchor_digest: DigestV1,
     pub observer: ObserverId,
     pub failure_domain_claim: String,
     pub permitted_subject_scopes: Vec<SubjectScopeV1>,
@@ -409,6 +494,7 @@ impl SenderEmissionPolicyV1 {
             "accepted receiver policy generation",
             &self.accepted_receiver_policy_generation,
         )?;
+        validate_digest(&self.accepted_receiver_policy_anchor_digest)?;
         self.observer
             .validate()
             .map_err(|error| CustodyTypeError::new("invalid_identity", error.to_string()))?;
@@ -551,6 +637,7 @@ pub struct ReceiverSessionChallengeBodyV1 {
     pub receiver_monotonic_epoch: IncarnationId,
     pub session_nonce_hex: String,
     pub receiver_acceptance_policy_generation: String,
+    pub receiver_acceptance_policy_anchor_digest: DigestV1,
     pub receiver_acceptance_policy_digest: DigestV1,
     pub intended_sender_key_identity_digest: DigestV1,
     pub intended_sender_process_occurrence: IncarnationId,
@@ -569,6 +656,7 @@ impl ReceiverSessionChallengeBodyV1 {
         for digest in [
             &self.receiver_key_identity_digest,
             &self.sender_session_offer_digest,
+            &self.receiver_acceptance_policy_anchor_digest,
             &self.receiver_acceptance_policy_digest,
             &self.intended_sender_key_identity_digest,
             &self.accepted_sender_manifest_digest,

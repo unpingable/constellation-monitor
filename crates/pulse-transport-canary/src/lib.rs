@@ -23,7 +23,7 @@ use pulse_runtime::{
     SenderCustodyV1, build_local_qualification_package, decode_observation_envelope_datagram,
     decode_receiver_challenge_datagram, decode_receiver_session_acceptance_datagram,
     decode_sender_session_binding_datagram, decode_sender_session_offer_datagram,
-    qualification_fixture_inputs,
+    qualification_fixture_inputs, sign_receiver_challenge,
 };
 use pulse_types::{
     AuthenticationFieldV1, BoundedSignalValueV1, ClockId, ConsumerId, ConsumerProfileGenerationId,
@@ -33,10 +33,10 @@ use pulse_types::{
     ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId, ObserverSetGenerationId,
     PeerKeyIdentityV1, PolicyGenerationId, PulseFrameV1, ReceiverAcceptancePolicyV1,
     ReceiverAcceptanceReceiptV1, ReceiverId, ReceiverSessionAcceptanceV1,
-    ReceiverSessionChallengeV1, RelianceContextV1, RelianceSupportCertificateV1,
-    RemoteFreshnessModeV1, RuntimeBindingStateV1, SCHEMA_VERSION_V1, SenderEmissionPolicyV1,
-    SenderSessionBindingV1, SenderSessionOfferV1, SignalAssessmentV1, SubjectId, SubjectScopeV1,
-    TransportCustodyFindingV1, digest_parts,
+    ReceiverSessionChallengeBodyV1, ReceiverSessionChallengeV1, RelianceContextV1,
+    RelianceSupportCertificateV1, RemoteFreshnessModeV1, RuntimeBindingStateV1, SCHEMA_VERSION_V1,
+    SenderEmissionPolicyV1, SenderSessionBindingV1, SenderSessionOfferV1, SignalAssessmentV1,
+    SubjectId, SubjectScopeV1, TransportCustodyFindingV1, digest_parts,
 };
 use serde::{Deserialize, Serialize};
 
@@ -233,6 +233,7 @@ pub fn canary_pulse(sequence: u64) -> PulseFrameV1 {
 fn sender_policy(
     sender_key: &PeerKeyIdentityV1,
     receiver_key: &PeerKeyIdentityV1,
+    receiver_policy_anchor_digest: DigestV1,
 ) -> SenderEmissionPolicyV1 {
     SenderEmissionPolicyV1 {
         schema_version: SCHEMA_VERSION_V1,
@@ -240,6 +241,7 @@ fn sender_policy(
         sender_key: sender_key.clone(),
         accepted_receiver_key: receiver_key.clone(),
         accepted_receiver_policy_generation: "receiver-acceptance-policy:canary-one".to_owned(),
+        accepted_receiver_policy_anchor_digest: receiver_policy_anchor_digest,
         observer: ObserverId::new(CANARY_OBSERVER),
         failure_domain_claim: CANARY_FAILURE_DOMAIN.to_owned(),
         permitted_subject_scopes: vec![canary_scope()],
@@ -256,13 +258,29 @@ fn receiver_policy(
     sender_package: &LocalQualificationPackageV1,
     observation_time_freshness_required: bool,
 ) -> ReceiverAcceptancePolicyV1 {
+    receiver_policy_with_digests(
+        receiver_key,
+        sender_key,
+        sender_package.manifest.manifest_digest.clone(),
+        sender_package.certificate.certificate_digest.clone(),
+        observation_time_freshness_required,
+    )
+}
+
+fn receiver_policy_with_digests(
+    receiver_key: &PeerKeyIdentityV1,
+    sender_key: &PeerKeyIdentityV1,
+    sender_manifest_digest: DigestV1,
+    sender_certificate_digest: DigestV1,
+    observation_time_freshness_required: bool,
+) -> ReceiverAcceptancePolicyV1 {
     ReceiverAcceptancePolicyV1 {
         schema_version: SCHEMA_VERSION_V1,
         policy_generation: "receiver-acceptance-policy:canary-one".to_owned(),
         receiver_key: receiver_key.clone(),
         accepted_sender_key: sender_key.clone(),
-        accepted_sender_manifest_digest: sender_package.manifest.manifest_digest.clone(),
-        accepted_sender_certificate_digest: sender_package.certificate.certificate_digest.clone(),
+        accepted_sender_manifest_digest: sender_manifest_digest,
+        accepted_sender_certificate_digest: sender_certificate_digest,
         accepted_protocol_version: pulse_types::CUSTODY_PROTOCOL_VERSION_V1,
         accepted_pulse_schema_version: SCHEMA_VERSION_V1,
         accepted_observer: ObserverId::new(CANARY_OBSERVER),
@@ -463,7 +481,22 @@ impl CanaryHarnessV1 {
             .map_err(|error| error.to_string())?;
         let sender_key = sender_signing.key_identity().clone();
         let receiver_key = receiver_signing.key_identity().clone();
-        let sender_policy = sender_policy(&sender_key, &receiver_key);
+        let receiver_policy_template = receiver_policy_with_digests(
+            &receiver_key,
+            &sender_key,
+            digest_parts("transport.canary.pending-sender-manifest.v1", &[b"pending"]),
+            digest_parts(
+                "transport.canary.pending-sender-certificate.v1",
+                &[b"pending"],
+            ),
+            observation_time_freshness_required,
+        );
+        let receiver_policy_anchor_digest = receiver_policy_template.anchor_digest();
+        let sender_policy = sender_policy(
+            &sender_key,
+            &receiver_key,
+            receiver_policy_anchor_digest.clone(),
+        );
         sender_policy
             .validate()
             .map_err(|error| error.to_string())?;
@@ -480,6 +513,11 @@ impl CanaryHarnessV1 {
         receiver_policy
             .validate()
             .map_err(|error| error.to_string())?;
+        if receiver_policy.anchor_digest() != receiver_policy_anchor_digest {
+            return Err(
+                "receiver policy anchor changed while binding the exact sender package".to_owned(),
+            );
+        }
         let receiver_config = runtime_config("receiver", receiver_policy.binding());
         let receiver_registration_a = canary_registration(CANARY_CONSUMER_A, 1);
         let receiver_registration_b = canary_registration(CANARY_CONSUMER_B, 2);
@@ -599,6 +637,22 @@ impl CanaryHarnessV1 {
             binding_wire: binding_bytes,
             receiver_acceptance_wire: acceptance_bytes,
         })
+    }
+
+    /// Sign a receiver challenge with the harness-only duplicate key holder so
+    /// hostile authenticated receiver assertions can be tested. This helper
+    /// deliberately demonstrates no exclusive-key-custody claim.
+    pub fn sign_receiver_challenge_for_qualification(
+        &self,
+        body: ReceiverSessionChallengeBodyV1,
+    ) -> Result<Vec<u8>, String> {
+        let signing = self
+            .receiver_restart_key_copy
+            .as_ref()
+            .ok_or("receiver qualification key holder is unavailable")?;
+        let (_, datagram) =
+            sign_receiver_challenge(signing, body).map_err(|error| error.to_string())?;
+        Ok(datagram)
     }
 
     pub fn emit_and_admit(

@@ -1,6 +1,6 @@
 use pulse_runtime::{
-    CanarySigningIdentityV1, decode_sender_session_offer_datagram, sign_observation_envelope,
-    sign_sender_session_offer,
+    CanarySigningIdentityV1, decode_receiver_challenge_datagram,
+    decode_sender_session_offer_datagram, sign_observation_envelope, sign_sender_session_offer,
 };
 use pulse_transport_canary::{
     CANARY_CONSUMER_A, CANARY_CONSUMER_B, CANARY_SESSION_DURATION_MS, CANARY_SUBJECT,
@@ -8,8 +8,8 @@ use pulse_transport_canary::{
 };
 use pulse_types::{
     AuthorityGrantsV1, CustodyPeerRoleV1, GenerationLifecycleFactBodyV1, GenerationLifecycleFactV1,
-    GenerationLifecycleKindV1, IncarnationId, JudgmentCategoryV1, SCHEMA_VERSION_V1,
-    TransportCustodyFindingV1, digest_parts,
+    GenerationLifecycleKindV1, IncarnationId, JudgmentCategoryV1, ReceiverAcceptancePolicyV1,
+    SCHEMA_VERSION_V1, TransportCustodyFindingV1, digest_parts,
 };
 
 #[test]
@@ -227,6 +227,52 @@ fn accepted_key_with_substituted_manifest_is_refused_before_evidence() {
             .active_deadline_count,
         0
     );
+    harness.shutdown().expect("shutdown");
+}
+
+#[test]
+fn same_label_receiver_policy_substitution_is_refused_by_exact_anchor() {
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
+    let subject = pulse_types::SubjectId::new(CANARY_SUBJECT);
+    let consumer = pulse_types::ConsumerId::new(CANARY_CONSUMER_A);
+    let sender_reactor = harness.sender_reactor.as_ref().unwrap();
+    let receiver_reactor = harness.receiver_reactor.as_ref().unwrap();
+    let offer = harness
+        .sender
+        .create_session_offer(sender_reactor, &subject, &consumer)
+        .expect("sender offer");
+    let valid_challenge = harness
+        .receiver
+        .accept_session_offer_and_issue_challenge(receiver_reactor, &subject, &consumer, &offer)
+        .expect("valid challenge");
+    let challenge = decode_receiver_challenge_datagram(&valid_challenge, &harness.receiver_key)
+        .expect("decode challenge");
+    let mut body = challenge.body;
+    assert_eq!(
+        body.receiver_acceptance_policy_generation,
+        harness.sender_policy.accepted_receiver_policy_generation
+    );
+    body.receiver_acceptance_policy_anchor_digest = digest_parts(
+        "hostile.receiver-policy-anchor.v1",
+        &[b"same-label-other-policy"],
+    );
+    body.receiver_acceptance_policy_digest = ReceiverAcceptancePolicyV1::identity_digest_from_parts(
+        &body.receiver_acceptance_policy_anchor_digest,
+        &body.accepted_sender_manifest_digest,
+        &body.accepted_sender_certificate_digest,
+    );
+    let hostile = harness
+        .sign_receiver_challenge_for_qualification(body)
+        .expect("accepted receiver key signs hostile policy assertion");
+    let error = harness
+        .sender
+        .accept_receiver_challenge(sender_reactor, &subject, &consumer, &hostile)
+        .expect_err("same-label policy substitution must be refused");
+    assert_eq!(
+        error.finding,
+        TransportCustodyFindingV1::ReceiverChallengeInvalid
+    );
+    assert_eq!(harness.sender.live_session_count(), 0);
     harness.shutdown().expect("shutdown");
 }
 

@@ -99,6 +99,27 @@ fn canonical_policy_decoders_refuse_unknown_duplicate_and_reordered_json() {
         SenderEmissionPolicyV1::decode_canonical(&sender).expect("canonical sender"),
         harness.sender_policy
     );
+    assert_eq!(
+        harness.sender_policy.accepted_receiver_policy_anchor_digest,
+        harness.receiver_policy.anchor_digest()
+    );
+    let original_anchor = harness.receiver_policy.anchor_digest();
+    let original_identity = harness.receiver_policy.identity_digest();
+    let mut different_sender_package = harness.receiver_policy.clone();
+    different_sender_package.accepted_sender_manifest_digest =
+        pulse_types::digest_parts("hostile.other-manifest.v1", &[b"other"]);
+    assert_eq!(different_sender_package.anchor_digest(), original_anchor);
+    assert_ne!(
+        different_sender_package.identity_digest(),
+        original_identity
+    );
+    let mut different_policy_semantics = harness.receiver_policy.clone();
+    different_policy_semantics.maximum_sequence_gap += 1;
+    assert_ne!(different_policy_semantics.anchor_digest(), original_anchor);
+    assert_ne!(
+        different_policy_semantics.identity_digest(),
+        original_identity
+    );
 
     let mut receiver_value: serde_json::Value =
         serde_json::from_slice(&receiver).expect("receiver JSON");

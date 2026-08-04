@@ -574,10 +574,24 @@ impl SenderCustodyV1 {
                 != self.policy.accepted_receiver_key.identity_digest()
             || challenge.body.receiver_acceptance_policy_generation
                 != self.policy.accepted_receiver_policy_generation
+            || challenge.body.receiver_acceptance_policy_anchor_digest
+                != self.policy.accepted_receiver_policy_anchor_digest
         {
             return Err(CustodyError::new(
                 TransportCustodyFindingV1::ReceiverChallengeInvalid,
                 "challenge does not match the sender's exact pinned peer policy",
+            ));
+        }
+        let expected_receiver_policy_digest =
+            ReceiverAcceptancePolicyV1::identity_digest_from_parts(
+                &challenge.body.receiver_acceptance_policy_anchor_digest,
+                &challenge.body.accepted_sender_manifest_digest,
+                &challenge.body.accepted_sender_certificate_digest,
+            );
+        if challenge.body.receiver_acceptance_policy_digest != expected_receiver_policy_digest {
+            return Err(CustodyError::new(
+                TransportCustodyFindingV1::ReceiverChallengeInvalid,
+                "challenge receiver-policy identity is not the exact anchored policy",
             ));
         }
         let exact_activation =
@@ -1129,6 +1143,7 @@ impl ReceiverCustodyV1 {
             receiver_monotonic_epoch: snapshot.monotonic_epoch.epoch_id,
             session_nonce_hex: encode_lower_hex(&nonce),
             receiver_acceptance_policy_generation: self.policy.policy_generation.clone(),
+            receiver_acceptance_policy_anchor_digest: self.policy.anchor_digest(),
             receiver_acceptance_policy_digest: self.policy.identity_digest(),
             intended_sender_key_identity_digest: self.policy.accepted_sender_key.identity_digest(),
             intended_sender_process_occurrence: offer.body.sender_process_occurrence.clone(),
@@ -2367,6 +2382,7 @@ fn encode_challenge_body(body: &ReceiverSessionChallengeBodyV1) -> Result<Vec<u8
     writer.text(body.receiver_monotonic_epoch.as_str())?;
     writer.fixed_hex(&body.session_nonce_hex, 32, "session nonce")?;
     writer.text(&body.receiver_acceptance_policy_generation)?;
+    writer.digest(&body.receiver_acceptance_policy_anchor_digest)?;
     writer.digest(&body.receiver_acceptance_policy_digest)?;
     writer.digest(&body.intended_sender_key_identity_digest)?;
     writer.text(body.intended_sender_process_occurrence.as_str())?;
@@ -2390,6 +2406,7 @@ fn decode_challenge_body(bytes: &[u8]) -> Result<ReceiverSessionChallengeBodyV1,
         receiver_monotonic_epoch: IncarnationId::new(reader.text()?),
         session_nonce_hex: encode_lower_hex(reader.fixed(32)?),
         receiver_acceptance_policy_generation: reader.text()?,
+        receiver_acceptance_policy_anchor_digest: reader.digest()?,
         receiver_acceptance_policy_digest: reader.digest()?,
         intended_sender_key_identity_digest: reader.digest()?,
         intended_sender_process_occurrence: IncarnationId::new(reader.text()?),
@@ -3073,6 +3090,7 @@ mod tests {
             receiver_monotonic_epoch: IncarnationId::new("receiver-epoch:test"),
             session_nonce_hex: encode_lower_hex(&[3; 32]),
             receiver_acceptance_policy_generation: "receiver-policy:test".to_owned(),
+            receiver_acceptance_policy_anchor_digest: digest.clone(),
             receiver_acceptance_policy_digest: digest.clone(),
             intended_sender_key_identity_digest: digest.clone(),
             intended_sender_process_occurrence: IncarnationId::new("sender-process:test"),
