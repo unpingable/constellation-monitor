@@ -184,6 +184,23 @@ continuation, diagnostic execution, deployment, signing, revocation, or
 mutation authority. A malicious kernel, loader, compiler, build environment,
 or process-memory writer remains outside the established claim.
 
+### Receiver-boundary substitution and replay
+
+An attacker may possess an unaccepted key, corrupt or truncate a datagram,
+reuse a signature in another domain, substitute package, activation, observer,
+failure-domain, receiver, subject or incarnation identities, replay an old
+challenge or envelope, reset sequence, flood a bounded queue, or present a
+competing sender occurrence. The V1 canary uses exact pinned Ed25519 keys,
+five distinct signature domains, canonical bounded PCN1 bodies, process-bound
+offer and challenge state, a receiver-signed session acceptance, a fixed
+replay bitmap, and fail-closed queue/session bounds.
+
+This establishes configured-key possession over exact bytes and local
+receiver admission only. A stolen or shared key, malicious sender host, false
+observation, configured-but-fictitious failure-domain label, pre-arrival
+delay, packet denial, kernel compromise, traffic analysis, and endpoint or DNS
+spoofing remain outside the claim. Network metadata never supplies authority.
+
 ### Escalation storms
 
 Equivalent failures may repeatedly cross a threshold. A stable semantic key

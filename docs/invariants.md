@@ -296,6 +296,43 @@ word "positive" refers only to the `CURRENT` category.
     and support certificates grant no continuation, diagnostic-execution,
     deployment, signing, revocation, or mutation authority.
 
+## Receiver-boundary custody
+
+91. **Authentication is not reliance.** A valid pinned-key signature, sender
+    qualified-activation assertion, receiver admission, and consumer judgment
+    remain four separate facts.
+92. **Sessions bind both live occurrences.** A sender offer names the sender
+    process; the receiver challenge binds that exact offer/occurrence; the
+    sender binding answers it; and a receiver-signed acceptance is required
+    before emission. The sender verifies an exact receiver-policy anchor and
+    sender-package-bound composite identity; equal policy labels cannot
+    substitute content. Historical handshake bytes cannot create live state.
+93. **Arrival is receiver-owned.** Remote V1 support is anchored only at the
+    receiver monotonic arrival. Sender time, retry, duplicate, replay and
+    reorder never move that arrival or deadline.
+94. **Authenticated refusal is not evidence.** Signature success with a key,
+    package, process, observer, subject, incarnation, scope, sequence, payload
+    or lifecycle mismatch creates a bounded receipt and no verified token.
+95. **Remote support names exact custody.** A support certificate using remote
+    evidence names the exact sender, receiver, packages, activations,
+    occurrences, session, envelope, payload, admission receipt and arrival.
+96. **Replay custody is bounded.** One fixed bitmap/high-water state refuses
+    duplicate, replay, reorder and over-window inputs without retaining an
+    unbounded historical identity set or renewing freshness.
+97. **Occurrence conflict fails closed.** Two overlapping sender occurrences
+    claiming one observer/key/scope withdraw affected standing; last arrival
+    never selects a winner.
+98. **Transport loss is not subject contradiction.** Silence, partition,
+    overload and authentication refusal may remove reliance but do not invent
+    a contradictory subject observation.
+99. **Receiver-boundary restart is empty.** Either-peer restart destroys live
+    offers, challenges, sessions, accepted remote activation, evidence and
+    deadlines. Historical receipts cannot reconstruct them.
+100. **Custody grants no authority.** Keys, policies, offers, challenges,
+    bindings, receiver acceptances, envelopes, admission receipts and support
+    references grant no continuation, transport-administration, diagnostic,
+    deployment, signing, revocation or mutation authority.
+
 ## Maximum stale-positive duration
 
 The deterministic kernel recomputes freshness on every ingest and explicit

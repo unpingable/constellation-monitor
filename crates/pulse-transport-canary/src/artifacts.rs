@@ -76,7 +76,7 @@ fn protocol_schema() -> serde_json::Value {
         "objects": {
             "peer_key_identity_v1": ["algorithm", "exact public key bytes and digest", "closed role", "scope", "local policy identity"],
             "sender_session_offer_v1": ["sender process and monotonic epoch", "random offer nonce", "exact sender package and activation assertion", "intended receiver key", "observer/failure-domain/scope claims", "signature"],
-            "receiver_session_challenge_v1": ["exact sender offer digest and process occurrence", "receiver process and monotonic epoch", "random nonce", "acceptance policy identity", "intended sender key", "accepted sender package", "receiver expiry and message bounds", "signature"],
+            "receiver_session_challenge_v1": ["exact sender offer digest and process occurrence", "receiver process and monotonic epoch", "random nonce", "acceptance policy generation, cycle-free anchor, and exact sender-package-bound composite identity", "intended sender key", "accepted sender package", "receiver expiry and message bounds", "signature"],
             "sender_session_binding_v1": ["challenge digest", "sender process and monotonic epoch", "exact sender package and activation", "observer/failure-domain/scope claims", "signature"],
             "receiver_session_acceptance_v1": ["challenge and binding digests", "both process occurrences", "receiver policy digest", "receiver expiry and message bound", "signature"],
             "observation_custody_envelope_v1": ["challenge and session digests", "peer/process/package/activation identities", "observer/subject/incarnation/sequences", "exact pulse payload and digest", "sender times as provenance", "signature"],
@@ -231,6 +231,8 @@ fn write_qualification_summary(directory: &Path, files: &mut Vec<String>) -> Res
             "schema_version": SCHEMA_VERSION_V1,
             "campaign": "receiver-boundary-custody",
             "starting_commit": CAMPAIGN_STARTING_COMMIT,
+            "qualified_implementation_commit": "9b25f156286963c6cdc63892a4d60ad69d802207",
+            "qualified_implementation_tree": "f9d574cc1b908b4fc26376d2be12d1a3ae0b11b0",
             "transport": "bounded UDP datagrams",
             "authentication": "Ed25519 / ed25519-dalek verify_strict / pinned exact public keys",
             "freshness": "ArrivalAnchored at receiver-owned monotonic arrival time",
@@ -242,10 +244,12 @@ fn write_qualification_summary(directory: &Path, files: &mut Vec<String>) -> Res
             "authority_granted": false,
             "first_seen_prearrival_delay_bounded": false,
             "hard_realtime_claimed": false,
-            "final_commands_pending_at_generation": [
-                "cargo fmt --all -- --check",
-                "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-                "cargo test --workspace --all-targets --all-features"
+            "observed_workspace_tests_passed": 159,
+            "observed_canary_tests_passed": 30,
+            "qualification_commands": [
+                {"argv": ["cargo", "fmt", "--all", "--", "--check"], "exit_code": 0},
+                {"argv": ["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"], "exit_code": 0},
+                {"argv": ["cargo", "test", "--workspace", "--all-targets", "--all-features"], "exit_code": 0, "observed_tests_passed": 159}
             ]
         }),
         files,
@@ -365,6 +369,55 @@ pub fn write_campaign_artifacts(
             &mut files,
         )?;
     }
+    write_json(
+        directory,
+        "deterministic-transport-qualification.json",
+        &serde_json::json!({
+            "schema_version": SCHEMA_VERSION_V1,
+            "transport": "bounded UDP datagram adapter; deterministic semantic transfer uses exact direct datagram bytes",
+            "signature_domains": 5,
+            "canonical_wire_corpus_bytes": {
+                "sender_offer": offer_wire.len(),
+                "receiver_challenge": challenge_wire.len(),
+                "sender_binding": binding_wire.len(),
+                "receiver_session_acceptance": session_acceptance_wire.len(),
+                "observation_envelope": envelope_wire.len()
+            },
+            "hostile_scenarios": [
+                "wrong sender key, receiver key, and same-label receiver-policy substitution",
+                "five-way signature-domain separation",
+                "manifest/certificate/activation/process/epoch/observer/failure-domain/receiver/subject/incarnation/session substitution",
+                "every-byte truncation and single-byte corruption across the five-message corpus",
+                "trailing bytes, duplicate JSON field, unknown JSON field, noncanonical JSON order, and 128 bounded arbitrary datagrams",
+                "duplicate, duplicate observation under a new envelope, replay, reorder, explicit sequence gap and gap-bound refusal, session/rate exhaustion, session expiry, and old challenge replay",
+                "sender and receiver queue saturation, partition classification, silence expiry, and consumer-indexed divergence",
+                "competing sender occurrence, configured supersession/revocation, unauthorized revocation refusal",
+                "four real local-process SIGKILL points and history-only restart"
+            ],
+            "earned_locally": [
+                "authentication_sender_assertion_receiver_admission_and_reliance_are_distinct",
+                "exact_pinned_peer_keys_and_domain_separated_signatures",
+                "sender_emission_requires_live_local_fixture_activation_and_signed_receiver_acceptance",
+                "receiver_admission_requires_exact_package_occurrence_scope_sequence_and_payload",
+                "receiver_arrival_owns_freshness_and_expiry",
+                "duplicates_replays_reorders_and_retries_do_not_renew_freshness",
+                "overload_occurrence_conflict_lifecycle_and_restart_fail_closed",
+                "historical_receipts_restore_no_session_evidence_deadline_or_current",
+                "no_object_grants_operational_authority"
+            ],
+            "refused_or_unexecuted": [
+                "actual_two_linux_host_custody",
+                "remote_attestation",
+                "qualified_one_way_delay_or_first_seen_observation_age",
+                "failure_domain_independence",
+                "production_transport_security_or_availability"
+            ],
+            "workspace_tests_passed": 159,
+            "canary_tests_passed": 30,
+            "private_key_material_included": false
+        }),
+        &mut files,
+    )?;
     write_json(
         directory,
         "receiver-acceptance-corpus.json",
@@ -540,6 +593,25 @@ pub fn write_campaign_artifacts(
                 {"point": "envelope_signed", "test": "sigkill_before_session_during_session_and_after_signing_restores_no_live_custody"},
                 {"point": "receiver_current", "test": "sigkill_while_remote_current_recovers_history_but_no_session_evidence_or_standing"}
             ],
+            "required_crash_points": [
+                {"point": "receiver after challenge creation but before send", "executed_exactly": false, "status": "live pending challenge is nonserializable; exact instruction boundary is not exposed"},
+                {"point": "sender after challenge verification", "executed_exactly": false, "status": "verification and bounded binding creation are one synchronous operation"},
+                {"point": "sender after binding creation but before send", "executed_exactly": false, "status": "exact post-create/pre-send boundary is not exposed"},
+                {"point": "receiver after binding verification but before session activation", "executed_exactly": false, "status": "receiver verification and in-memory activation are one synchronous operation"},
+                {"point": "sender after envelope signing but before send", "executed_exactly": true, "fixture_point": "envelope_signed"},
+                {"point": "receiver after datagram receipt but before signature verification", "executed_exactly": false, "status": "no blocking injection seam in bounded admission operation"},
+                {"point": "receiver after signature verification but before admission", "executed_exactly": false, "status": "verified token is produced only at complete admission"},
+                {"point": "receiver after acceptance receipt creation but before journaling", "executed_exactly": false, "status": "receipt journaling belongs to the synchronous reactor transaction"},
+                {"point": "receiver after acceptance receipt journaling but before evaluator admission", "executed_exactly": false, "status": "atomic instruction boundary is not exposed"},
+                {"point": "receiver after evidence admission but before support-certificate journaling", "executed_exactly": false, "status": "atomic instruction boundary is not exposed"},
+                {"point": "sender while locally QualifiedAndMatched", "executed_exactly": true, "fixture_point": "sender_qualified"},
+                {"point": "receiver while CURRENT", "executed_exactly": true, "fixture_point": "receiver_current"},
+                {"point": "either peer during clean shutdown", "executed_exactly": false, "status": "clean reactor termination is tested; SIGKILL within canary shutdown is not exposed"}
+            ],
+            "additional_executed_point": {
+                "point": "both session states live before evidence",
+                "fixture_point": "session_active"
+            },
             "unexposed_atomic_injection_points": [
                 "receipt journaled before evaluator admission",
                 "evidence admission before support-certificate journaling"

@@ -74,7 +74,7 @@ policy generation.
 
 ## Workspace
 
-The minimal Rust workspace contains seven crates:
+The minimal Rust workspace contains eight crates:
 
 - `pulse-types`: closed versioned records and compact bounded pulse encoding;
 - `pulse-agent`: synthetic and small Linux `/proc` pulse production;
@@ -84,7 +84,9 @@ The minimal Rust workspace contains seven crates:
 - `pulse-runtime`: bounded deterministic scheduling plus local reactor/journal
   custody; and
 - `pulse-qualification`: canonical local artifact-package generation,
-  verification, activation demos, and crash/substitution qualification.
+  verification, activation demos, and crash/substitution qualification; and
+- `pulse-transport-canary`: one bounded Ed25519-pinned UDP custody path and
+  deterministic sender/receiver qualification harness.
 
 `pulse-runtime` is a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
@@ -114,6 +116,27 @@ Local self-measurement identifies what one process observed; it is not
 independent attestation, source-to-binary proof, signer authority, or host
 integrity.
 
+The receiver-boundary campaign adds one authenticated observation path while
+preserving four different facts:
+
+```text
+authenticated pinned-key transport
+!= sender assertion of qualified local activation
+!= receiver admission of one exact envelope
+!= one consumer's present reliance
+```
+
+The five-message session is sender offer, receiver challenge, sender binding,
+receiver acceptance, then observation envelope. Each message is a bounded
+canonical PCN1 datagram with a distinct Ed25519 signature domain. A sender
+cannot emit until the live receiver occurrence accepts its process-bound
+binding. The sender pins an exact receiver-policy content anchor and verifies
+the challenge's exact sender-package-bound composite policy identity; a policy
+generation label alone is insufficient. The receiver assigns arrival and expiry; sender clocks are provenance
+only. Restart destroys sessions and accepted evidence, and historical receipts
+cannot recreate `CURRENT`. This is pinned-key local custody, not remote
+attestation, confidentiality, observer truth, or production transport.
+
 Pulses are hot, bounded, ephemeral records. JSONL is used for fixtures, replay,
 diagnostics, and sparse durable events, not as the assumed high-rate wire.
 
@@ -141,6 +164,11 @@ cargo run -p pulse-runtime --bin pulse-crash-campaign -- live-linux
 cargo run -p pulse-qualification -- demo
 cargo run -p pulse-qualification -- crash-demo
 cargo run -p pulse-qualification -- qualify /tmp/create-new-artifact-directory
+cargo run -p pulse-transport-canary -- demo
+cargo run -p pulse-transport-canary -- expiry-demo
+cargo run -p pulse-transport-canary -- restart-demo
+cargo run -p pulse-transport-canary -- udp-loopback
+cargo run -p pulse-transport-canary -- artifacts /tmp/create-new-custody-artifact-directory
 ```
 
 Optional report paths are created without overwriting an existing file. Their
@@ -173,6 +201,10 @@ mutation authority.
 - [Qualified-generation campaign plan](docs/campaign-4-plan.md)
 - [Qualified-generation reconnaissance](docs/campaign-4-reconnaissance.md)
 - [Qualified-generation campaign report](docs/campaign-4-report.md)
+- [Receiver-boundary custody contract](docs/receiver-boundary-contract.md)
+- [Receiver-boundary campaign plan](docs/campaign-5-plan.md)
+- [Receiver-boundary reconnaissance](docs/campaign-5-reconnaissance.md)
+- [Receiver-boundary campaign report](docs/campaign-5-report.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.

@@ -6,9 +6,10 @@ Starting commit:
 `94c4c8ee8e7de89edee212abc823e97c809fc26a`.
 
 1. Freeze the receiver-boundary contract: exact pinned-key identities,
-   canonical signed challenge/binding/envelope objects, live non-serializable
-   session custody, receiver-local acceptance receipts, arrival-anchored
-   freshness, total admission order, explicit bounds, and restart loss.
+   canonical signed offer/challenge/binding/receiver-acceptance/envelope
+   objects, live non-serializable session custody, receiver-local admission
+   receipts, arrival-anchored freshness, total admission order, explicit
+   bounds, and restart loss.
 2. Add the smallest schema and runtime seams: a receiver-boundary policy digest
    inside the existing qualified runtime-configuration artifact, a bounded
    remote-custody reference in support certificates, and a move-only verified

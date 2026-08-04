@@ -2,7 +2,7 @@
 
 Status: normative scope boundary for the qualified vertical slice, bounded
 receiver/scheduler, local crash-fault custody, and qualified-generation binding
-campaigns.
+and receiver-boundary custody campaigns.
 
 The repository does not implement or claim:
 
@@ -46,6 +46,16 @@ The repository does not implement or claim:
 - hard real-time scheduling or latency guarantees;
 - a production receiver, production transport, distributed scheduler,
   leader election, or failover protocol;
+- network confidentiality, traffic-analysis resistance, service discovery,
+  general RPC, trust-on-first-use, dynamic enrollment, key rotation, public
+  PKI, DNS or network-endpoint authority;
+- key secrecy or exclusive custody, organizational or host identity, signer
+  authorization, remote attestation, or failure-domain independence;
+- synchronized clocks, sender-clock freshness, bounded one-way delay,
+  first-seen observation-age knowledge, guaranteed packet delivery, ordering
+  or network availability;
+- multi-hop, multi-receiver, arbitrary multi-sender or distributed session
+  custody;
 - crash-durable current standing or recovery of hot pulse windows;
 - hard bounds on scheduler latency under arbitrary host load;
 - physical-media durability or immunity to filesystem, kernel, or storage

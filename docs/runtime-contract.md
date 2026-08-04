@@ -5,6 +5,8 @@ The local actor, monotonic-epoch, append, sync, and corruption-recovery rules
 are additionally governed by [crash-fault-contract.md](crash-fault-contract.md).
 Artifact qualification and process-local activation are governed by
 [qualified-generation-contract.md](qualified-generation-contract.md).
+Authenticated remote admission is additionally governed by
+[receiver-boundary-contract.md](receiver-boundary-contract.md).
 The runtime and all record names remain provisional.
 
 ## Owned question
@@ -32,7 +34,9 @@ A support certificate binds all of:
 - subject identity and subject incarnation; and
 - receiver clock generation and evaluation time;
 - exact qualified manifest and qualification-certificate digests; and
-- one fresh process-local activation-receipt/process occurrence.
+- one fresh process-local activation-receipt/process occurrence; and
+- when enabled, one exact load-bearing sender/receiver transport-policy role,
+  generation and canonical policy digest.
 
 Generation identity and semantic content are different facts. Equal policy
 digests under different generations are not equal contexts. Reusing an earlier
@@ -97,6 +101,12 @@ standing first; the old deadline is then a superseded schedule item. Any new
 evaluation is a separate step under the new context. Thread scheduling,
 unordered maps, sender wall clocks, and ambient wall time do not select order.
 
+A remote envelope does not enter this ordering directly. The receiver-boundary
+gate first assigns receiver-owned arrival and produces a move-only verified
+observation token. That token becomes an admitted pulse at its already fixed
+arrival instant; authentication, replay or identity refusal produces no
+evaluator input and cannot renew freshness.
+
 ## Receiver-owned time and deadlines
 
 The receiver assigns arrival time from its identified monotonic clock. Sender
@@ -130,6 +140,12 @@ One `RuntimeBoundsV1` fixes nonzero maxima for:
 - active escalation requests;
 - supporting references in one certificate; and
 - retained sparse historical records and diagnostic receipts.
+
+The optional remote canary adds one peer, one live session, one pending
+offer/challenge, fixed sender and receiver datagram queues, a fixed replay
+window, bounded gap state, accepted-message/rate counters, and bounded
+acceptance receipts. Those live bounds refuse without eviction. Saturation
+invalidates the affected session and withdraws the live positive surface.
 
 No collection grows beyond its configured maximum. New subjects or consumers
 are refused without eviction. New observer, stream, incarnation, or queue
@@ -175,6 +191,12 @@ cannot reissue `CURRENT`.
 - the exact accepted manifest, qualification certificate, activation receipt,
   process occurrence, and generation-set identity when the judgment is
   `CURRENT`; and
+- for each remote observation actually supporting the result, a bounded exact
+  custody reference naming receiver process/epoch/policy/activation, sender
+  key/process/manifest/certificate/activation assertion, exact receiver-policy
+  anchor and sender-package-bound composite identity, offer/challenge/
+  binding/envelope, observer/subject/incarnation/sequences/payload, receiver
+  arrival, admission receipt and accepted evidence identity; and
 - structural `mutation_authority: none`.
 
 A `CURRENT` certificate is valid only before its earliest support expiry and
@@ -197,6 +219,12 @@ enclosing local journal now qualifies bounded framing, append acknowledgement,
 `sync_data`/`sync_all` boundaries, first-damage scanning, and process-kill
 recovery under the separate crash-fault contract. Neither layer makes current
 standing crash durable.
+
+Historical sender offers, receiver challenges, sender bindings, receiver
+session acceptances, envelopes, acceptance receipts and remote custody
+references remain history only. The live session, accepted remote activation,
+replay window and `VerifiedRemoteObservationV1` token are not serializable and
+cannot be reconstructed by journal replay.
 
 On restart the runtime uses a new receiver incarnation and clock generation,
 loads historical records as history, restores applicable unresolved

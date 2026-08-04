@@ -1,0 +1,56 @@
+{
+  "actual_two_host_linux_canary_executed": false,
+  "actual_udp_loopback_executed_separately": true,
+  "authentication": "Ed25519 / ed25519-dalek verify_strict / pinned exact public keys",
+  "authority_granted": false,
+  "campaign": "receiver-boundary-custody",
+  "deterministic_harness_executed": true,
+  "first_seen_prearrival_delay_bounded": false,
+  "freshness": "ArrivalAnchored at receiver-owned monotonic arrival time",
+  "hard_realtime_claimed": false,
+  "observed_canary_tests_passed": 30,
+  "observed_workspace_tests_passed": 159,
+  "private_key_material_in_artifacts": false,
+  "qualification_commands": [
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--all-targets",
+        "--all-features"
+      ],
+      "exit_code": 0,
+      "observed_tests_passed": 159
+    }
+  ],
+  "qualified_implementation_commit": "9b25f156286963c6cdc63892a4d60ad69d802207",
+  "qualified_implementation_tree": "f9d574cc1b908b4fc26376d2be12d1a3ae0b11b0",
+  "runtime_package_evidence": "one-test exact semantic fixture; final campaign gates are reported separately",
+  "schema_version": 1,
+  "starting_commit": "94c4c8ee8e7de89edee212abc823e97c809fc26a",
+  "transport": "bounded UDP datagrams"
+}

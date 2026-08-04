@@ -1,0 +1,32 @@
+{
+  "exclusive_key_custody_claimed": false,
+  "private_keys_included": false,
+  "receiver": {
+    "accepted_scopes": [
+      "host"
+    ],
+    "algorithm": "ed25519",
+    "intended_peer_role": "sender",
+    "local_acceptance_policy_id": "receiver-local-policy:canary",
+    "protocol_version": 1,
+    "public_key_digest": "sha256:a556ad1f1be96aeedca4027f3ac3e874bb4f7ab425e78d80c20c9e17f7781e49",
+    "public_key_hex": "30062814c9f42e0284f13b602825eaaab46ecf31e50857deb89ad477ec5a86ec",
+    "role": "receiver",
+    "schema_version": 1
+  },
+  "schema_version": 1,
+  "sender": {
+    "accepted_scopes": [
+      "host"
+    ],
+    "algorithm": "ed25519",
+    "intended_peer_role": "receiver",
+    "local_acceptance_policy_id": "sender-local-policy:canary",
+    "protocol_version": 1,
+    "public_key_digest": "sha256:a0867f97772475775ede2d7f9ac31135ad2091c918392947a81d8a4810beb12f",
+    "public_key_hex": "f40e63121e08cc3a217abf09e8d7b77067a2fc69414a164ddb4deebb1cdf4ea2",
+    "role": "sender",
+    "schema_version": 1
+  },
+  "valid_signature_claim": "possession of one configured key over exact domain-separated bytes"
+}

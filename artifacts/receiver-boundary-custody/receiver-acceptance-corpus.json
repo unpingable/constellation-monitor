@@ -1,0 +1,311 @@
+{
+  "acceptance_is_reliance": false,
+  "consumer_a_certificate": {
+    "applicable_contradictions": [],
+    "certificate_id": "support:0d0e2c751fc26d2ba14de80b230fa6852bdc63c47507bb1462e2b3218d766b31",
+    "consumer": "consumer:capacity-display",
+    "context": {
+      "activation_id": "activation:remote-canary:consumer:capacity-display",
+      "consumer_profile_generation": "consumer-profile:remote-canary:consumer:capacity-display",
+      "evaluator_semantic_generation": "evaluator:remote-canary-one",
+      "observation_policy_generation": "observation-policy:remote-canary-one",
+      "observer_set_generation": "observer-set:remote-canary:1",
+      "reliance_policy_generation": "policy:remote-canary:consumer:capacity-display",
+      "reliance_policy_semantic_digest": "sha256:81cb254e0ebf86dc47ce64b208cfc038ea36532795d6cc63a027e0f8069f7264",
+      "schema_version": 1
+    },
+    "coverage": {
+      "active": [
+        "load"
+      ],
+      "active_observers": 1,
+      "expired": [],
+      "missing": [],
+      "per_tag": [
+        {
+          "active_observers": 1,
+          "expired_observers": 0,
+          "required_observers": 1,
+          "tag": "load"
+        }
+      ],
+      "required": [
+        "load"
+      ],
+      "required_observers": 1
+    },
+    "earliest_support_expiry_monotonic_ms": 339,
+    "escalation": {
+      "state": "not_requested"
+    },
+    "evaluated_at_monotonic_ms": 233,
+    "evidence_window_id": "sha256:ce06770ed012c722124005bc2d40ac0de2da8c6369337c7af7530e91cf7343ee",
+    "judgment": "CURRENT",
+    "missing_premises": [],
+    "mutation_authority": "none",
+    "next_scheduled_reevaluation_monotonic_ms": 339,
+    "qualified_generation": {
+      "activation_occurrence_id": "activation-occurrence:9b44b846ef8020bc31e4a9130822e6ff8903d3ab017fadf3244e470a5e318618",
+      "activation_receipt_digest": "sha256:5e2b49ea6a5579b052f98bcab59d4c5fc73058b3cacdc4653707335e0a9f6177",
+      "authority_grants": {
+        "continuation": "none",
+        "deployment": "none",
+        "diagnostic_execution": "none",
+        "mutation": "none",
+        "revocation": "none",
+        "signing": "none"
+      },
+      "generation_set": {
+        "consumer": "consumer:capacity-display",
+        "consumer_profile_generation": "consumer-profile:remote-canary:consumer:capacity-display",
+        "evaluator_semantic_generation": "evaluator:remote-canary-one",
+        "observation_policy_generation": "observation-policy:remote-canary-one",
+        "observer_set_generation": "observer-set:remote-canary:1",
+        "reliance_policy_generation": "policy:remote-canary:consumer:capacity-display",
+        "reliance_policy_semantic_digest": "sha256:81cb254e0ebf86dc47ce64b208cfc038ea36532795d6cc63a027e0f8069f7264",
+        "subject": "subject:remote-canary"
+      },
+      "manifest_digest": "sha256:ddac574a0f9ec7884a13a6973b50090e2c2d76f09989d2e4898fce2c4d4ebd62",
+      "process_epoch_id": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "qualification_certificate_digest": "sha256:aa1555f11fc0a4bd003570402e5457e2a854fec36e26f32c963d15bda6f74e60",
+      "schema_version": 1
+    },
+    "receiver_clock_id": "clock:receiver:one",
+    "remote_observation_custody": [
+      {
+        "acceptance_receipt_digest": "sha256:aae17648e0dcf5775b4acb646f90ba468c621da5cdf37a3905d6e2a535fdba7b",
+        "accepted_evidence_identity": "sha256:3aa9a3a5b7261f25fdc4d2de3e01061f4367d0968addcc8d359ecbff9def2330",
+        "authority_grants": {
+          "continuation": "none",
+          "deployment": "none",
+          "diagnostic_execution": "none",
+          "mutation": "none",
+          "revocation": "none",
+          "signing": "none",
+          "transport_administration": "none"
+        },
+        "envelope_digest": "sha256:eb37adc48fafb7181425ce6f99419de5625a4230172cb5c4ed88a5fd66d578bf",
+        "failure_domain_claim": "configured-failure-domain:rack-a",
+        "freshness_mode": "arrival_anchored",
+        "observation_identity": "sha256:40815b751ff0797fe4e6270676a23b384a8eacb3a470ec3ca1fb8fe92940a5cb",
+        "observation_sequence": 1,
+        "observer": "observer:remote-canary",
+        "payload_digest": "sha256:645ba31e96f17b9ddc9410015a6e0ca6aa771afd8339ed0483864ed47f392e7c",
+        "receiver_acceptance_policy_digest": "sha256:cd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a7",
+        "receiver_acceptance_policy_generation": "receiver-acceptance-policy:canary-one",
+        "receiver_activation_receipt_digest": "sha256:5e2b49ea6a5579b052f98bcab59d4c5fc73058b3cacdc4653707335e0a9f6177",
+        "receiver_arrival_monotonic_ms": 219,
+        "receiver_challenge_digest": "sha256:75405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad15148",
+        "receiver_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3",
+        "receiver_manifest_digest": "sha256:ddac574a0f9ec7884a13a6973b50090e2c2d76f09989d2e4898fce2c4d4ebd62",
+        "receiver_monotonic_epoch": "monotonic-epoch:receiver:one",
+        "receiver_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+        "receiver_qualification_certificate_digest": "sha256:aa1555f11fc0a4bd003570402e5457e2a854fec36e26f32c963d15bda6f74e60",
+        "receiver_session_acceptance_digest": "sha256:c01aefb8e584712489ce56722cad558b786e71db474ef3eed77d0b854848f414",
+        "schema_version": 1,
+        "sender_activation_receipt_digest": "sha256:c2c388dbc86b63dbbe17e10523da8dbdf7214e7ae1476268b35e77ea4205e70f",
+        "sender_key_identity_digest": "sha256:9ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f",
+        "sender_manifest_digest": "sha256:de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf8774376360",
+        "sender_monotonic_epoch": "monotonic-epoch:sender:one",
+        "sender_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+        "sender_qualification_certificate_digest": "sha256:5fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945",
+        "sender_session_offer_digest": "sha256:7074b72b7264a9aabb6c0a053809eac4ca7ee97a5c025a29876406c37626d240",
+        "session_binding_digest": "sha256:f886055eaa8d6944a3fbdadcfddcffe6f09f51248320f803694a929c783bb208",
+        "session_sequence": 1,
+        "subject_scope": {
+          "scope": "host",
+          "subject": "subject:remote-canary",
+          "subject_incarnation": "subject-incarnation:remote-one"
+        },
+        "supporting_evidence_id": "observer:remote-canary/observer-incarnation:remote-one/seq=1/sha256:40815b751ff0797fe4e6270676a23b384a8eacb3a470ec3ca1fb8fe92940a5cb"
+      }
+    ],
+    "schema_version": 1,
+    "subject_scope": {
+      "scope": "host",
+      "subject": "subject:remote-canary",
+      "subject_incarnation": "subject-incarnation:remote-one"
+    },
+    "supporting_evidence_ids": [
+      "observer:remote-canary/observer-incarnation:remote-one/seq=1/sha256:40815b751ff0797fe4e6270676a23b384a8eacb3a470ec3ca1fb8fe92940a5cb"
+    ]
+  },
+  "consumer_b_certificate": {
+    "applicable_contradictions": [],
+    "certificate_id": "support:00709e822a1cc812019b1ed93c325c92ae4b19bb4ab5851778e7910643329eb2",
+    "consumer": "consumer:destructive-automation",
+    "context": {
+      "activation_id": "activation:remote-canary:consumer:destructive-automation",
+      "consumer_profile_generation": "consumer-profile:remote-canary:consumer:destructive-automation",
+      "evaluator_semantic_generation": "evaluator:remote-canary-one",
+      "observation_policy_generation": "observation-policy:remote-canary-one",
+      "observer_set_generation": "observer-set:remote-canary:2",
+      "reliance_policy_generation": "policy:remote-canary:consumer:destructive-automation",
+      "reliance_policy_semantic_digest": "sha256:bd1b5c51a9b5602252cea8fed754f733b66b7c62372a6fef8cfd10422beff92e",
+      "schema_version": 1
+    },
+    "coverage": {
+      "active": [],
+      "active_observers": 1,
+      "expired": [],
+      "missing": [
+        "load"
+      ],
+      "per_tag": [
+        {
+          "active_observers": 1,
+          "expired_observers": 0,
+          "required_observers": 2,
+          "tag": "load"
+        }
+      ],
+      "required": [
+        "load"
+      ],
+      "required_observers": 2
+    },
+    "escalation": {
+      "state": "not_requested"
+    },
+    "evaluated_at_monotonic_ms": 233,
+    "evidence_window_id": "sha256:c7f5ee958e2e1b1826a685f8d82e2f52e9ed12eafe7ebd1ea7ffa5fb5a773002",
+    "judgment": "UNKNOWN",
+    "missing_premises": [
+      "coverage:load",
+      "coverage_incomplete",
+      "observer_availability_insufficient"
+    ],
+    "mutation_authority": "none",
+    "qualified_generation": {
+      "activation_occurrence_id": "activation-occurrence:bae734f00d09873eade17b170855d3fd852e7530815f674e1164a08bfc460b41",
+      "activation_receipt_digest": "sha256:f1cd3c01ea8dc477d33ce247c4560b8b76eaedc459401b98a2109bedc58c5fcd",
+      "authority_grants": {
+        "continuation": "none",
+        "deployment": "none",
+        "diagnostic_execution": "none",
+        "mutation": "none",
+        "revocation": "none",
+        "signing": "none"
+      },
+      "generation_set": {
+        "consumer": "consumer:destructive-automation",
+        "consumer_profile_generation": "consumer-profile:remote-canary:consumer:destructive-automation",
+        "evaluator_semantic_generation": "evaluator:remote-canary-one",
+        "observation_policy_generation": "observation-policy:remote-canary-one",
+        "observer_set_generation": "observer-set:remote-canary:2",
+        "reliance_policy_generation": "policy:remote-canary:consumer:destructive-automation",
+        "reliance_policy_semantic_digest": "sha256:bd1b5c51a9b5602252cea8fed754f733b66b7c62372a6fef8cfd10422beff92e",
+        "subject": "subject:remote-canary"
+      },
+      "manifest_digest": "sha256:440b200b3cee4fdde55ab4262aa452488ee7bd42ee1c74372089bf397cf3a750",
+      "process_epoch_id": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "qualification_certificate_digest": "sha256:83c2dcdab8f22dce8c2e2ef87bd2d6f9dde3fc1365ed4de85be5461c9ab3cf32",
+      "schema_version": 1
+    },
+    "receiver_clock_id": "clock:receiver:one",
+    "remote_observation_custody": [
+      {
+        "acceptance_receipt_digest": "sha256:aae17648e0dcf5775b4acb646f90ba468c621da5cdf37a3905d6e2a535fdba7b",
+        "accepted_evidence_identity": "sha256:3aa9a3a5b7261f25fdc4d2de3e01061f4367d0968addcc8d359ecbff9def2330",
+        "authority_grants": {
+          "continuation": "none",
+          "deployment": "none",
+          "diagnostic_execution": "none",
+          "mutation": "none",
+          "revocation": "none",
+          "signing": "none",
+          "transport_administration": "none"
+        },
+        "envelope_digest": "sha256:eb37adc48fafb7181425ce6f99419de5625a4230172cb5c4ed88a5fd66d578bf",
+        "failure_domain_claim": "configured-failure-domain:rack-a",
+        "freshness_mode": "arrival_anchored",
+        "observation_identity": "sha256:40815b751ff0797fe4e6270676a23b384a8eacb3a470ec3ca1fb8fe92940a5cb",
+        "observation_sequence": 1,
+        "observer": "observer:remote-canary",
+        "payload_digest": "sha256:645ba31e96f17b9ddc9410015a6e0ca6aa771afd8339ed0483864ed47f392e7c",
+        "receiver_acceptance_policy_digest": "sha256:cd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a7",
+        "receiver_acceptance_policy_generation": "receiver-acceptance-policy:canary-one",
+        "receiver_activation_receipt_digest": "sha256:5e2b49ea6a5579b052f98bcab59d4c5fc73058b3cacdc4653707335e0a9f6177",
+        "receiver_arrival_monotonic_ms": 219,
+        "receiver_challenge_digest": "sha256:75405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad15148",
+        "receiver_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3",
+        "receiver_manifest_digest": "sha256:ddac574a0f9ec7884a13a6973b50090e2c2d76f09989d2e4898fce2c4d4ebd62",
+        "receiver_monotonic_epoch": "monotonic-epoch:receiver:one",
+        "receiver_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+        "receiver_qualification_certificate_digest": "sha256:aa1555f11fc0a4bd003570402e5457e2a854fec36e26f32c963d15bda6f74e60",
+        "receiver_session_acceptance_digest": "sha256:c01aefb8e584712489ce56722cad558b786e71db474ef3eed77d0b854848f414",
+        "schema_version": 1,
+        "sender_activation_receipt_digest": "sha256:c2c388dbc86b63dbbe17e10523da8dbdf7214e7ae1476268b35e77ea4205e70f",
+        "sender_key_identity_digest": "sha256:9ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f",
+        "sender_manifest_digest": "sha256:de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf8774376360",
+        "sender_monotonic_epoch": "monotonic-epoch:sender:one",
+        "sender_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+        "sender_qualification_certificate_digest": "sha256:5fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945",
+        "sender_session_offer_digest": "sha256:7074b72b7264a9aabb6c0a053809eac4ca7ee97a5c025a29876406c37626d240",
+        "session_binding_digest": "sha256:f886055eaa8d6944a3fbdadcfddcffe6f09f51248320f803694a929c783bb208",
+        "session_sequence": 1,
+        "subject_scope": {
+          "scope": "host",
+          "subject": "subject:remote-canary",
+          "subject_incarnation": "subject-incarnation:remote-one"
+        },
+        "supporting_evidence_id": "observer:remote-canary/observer-incarnation:remote-one/seq=1/sha256:40815b751ff0797fe4e6270676a23b384a8eacb3a470ec3ca1fb8fe92940a5cb"
+      }
+    ],
+    "schema_version": 1,
+    "subject_scope": {
+      "scope": "host",
+      "subject": "subject:remote-canary",
+      "subject_incarnation": "subject-incarnation:remote-one"
+    },
+    "supporting_evidence_ids": [
+      "observer:remote-canary/observer-incarnation:remote-one/seq=1/sha256:40815b751ff0797fe4e6270676a23b384a8eacb3a470ec3ca1fb8fe92940a5cb"
+    ]
+  },
+  "receipt": {
+    "accepted_evidence_identity": "sha256:3aa9a3a5b7261f25fdc4d2de3e01061f4367d0968addcc8d359ecbff9def2330",
+    "authority_grants": {
+      "continuation": "none",
+      "deployment": "none",
+      "diagnostic_execution": "none",
+      "mutation": "none",
+      "revocation": "none",
+      "signing": "none",
+      "transport_administration": "none"
+    },
+    "complete": true,
+    "envelope_digest": "sha256:eb37adc48fafb7181425ce6f99419de5625a4230172cb5c4ed88a5fd66d578bf",
+    "exact_identity_match": "accepted",
+    "finding": "evidence_admitted",
+    "journal_identity": "journal:receiver-custody-canary",
+    "mutation_authority": "none",
+    "observer_role_result": "accepted",
+    "payload_decoding_result": "accepted",
+    "queue_and_capacity_result": "accepted",
+    "receipt_digest": "sha256:aae17648e0dcf5775b4acb646f90ba468c621da5cdf37a3905d6e2a535fdba7b",
+    "receipt_sequence": 1,
+    "receiver_acceptance_policy_digest": "sha256:cd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a7",
+    "receiver_acceptance_policy_generation": "receiver-acceptance-policy:canary-one",
+    "receiver_arrival_monotonic_ms": 219,
+    "receiver_challenge_verification": "accepted",
+    "receiver_monotonic_epoch": "monotonic-epoch:receiver:one",
+    "receiver_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+    "refusal_reason": null,
+    "remote_network_endpoint": "deterministic-direct-datagram-harness",
+    "replay_window_result": "continuous",
+    "schema_version": 1,
+    "sender_key_verification": "accepted",
+    "sender_qualification_package_acceptance": "accepted",
+    "sequence_gap": null,
+    "session_binding_digest": "sha256:f886055eaa8d6944a3fbdadcfddcffe6f09f51248320f803694a929c783bb208",
+    "session_binding_verification": "accepted",
+    "subject_scope_result": "accepted"
+  },
+  "schema_version": 1,
+  "trace": [
+    "[000233ms] PULSE ordinal=4 observer=observer:remote-canary sequence=1 arrival=219ms",
+    "[000233ms] CERTIFICATE consumer=consumer:capacity-display activation=activation:remote-canary:consumer:capacity-display judgment=CURRENT support_expires=339ms standing_inherited=false",
+    "[000233ms] PULSE ordinal=4 observer=observer:remote-canary sequence=1 arrival=219ms",
+    "[000233ms] CERTIFICATE consumer=consumer:destructive-automation activation=activation:remote-canary:consumer:destructive-automation judgment=UNKNOWN support_expires=none standing_inherited=false"
+  ]
+}

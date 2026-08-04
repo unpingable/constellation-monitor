@@ -119,3 +119,29 @@ mutation authority = none
 A `RecoveredThroughValidPrefix` result is explicitly incomplete and carries
 operator action. A `Refused` result cannot project runtime history. Later
 valid-looking bytes after interior corruption are never scanned as records.
+
+## Receiver-boundary custody corpus
+
+The bounded transport campaign adds generated and integration cases for:
+
+- exact offer/challenge/binding/receiver-acceptance/envelope handshake and
+  distinct Ed25519 domains;
+- wrong keys, same-label receiver-policy substitution, signature mutation, package/activation/process/observer/
+  failure-domain/receiver/subject/incarnation/session substitutions;
+- every byte truncation and every single-byte corruption across a small
+  five-message corpus, trailing bytes, noncanonical policies, and 128 bounded
+  arbitrary datagrams;
+- duplicate envelope, duplicate observation under a fresh envelope, repeated
+  duplicate multiplicity, replay, reorder, explicit sequence gap and gap-bound
+  refusal, old challenge, session/rate exhaustion, session expiry, queue
+  saturation, bounded sender emission, and competing occurrence;
+- receiver-owned silence expiry, explicit partition without invented subject
+  contradiction, different consumer judgments, and observation-time
+  freshness refusal under first-seen delay; and
+- real Linux `SIGKILL` while remote evidence is `CURRENT`, followed by journal
+  recovery with `Unbound / UNKNOWN`, no session, evidence or deadline.
+
+An actual UDP loopback probe verifies exact datagram preservation but is
+explicitly not a two-host result. No authorized second Linux host was
+available, so cross-host timing, packet-loss and restart obligations remain
+unexecuted rather than simulated.

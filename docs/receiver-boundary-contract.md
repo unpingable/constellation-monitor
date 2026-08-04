@@ -39,10 +39,13 @@ authorization, host/process integrity, qualified code execution, observation
 truth, failure-domain independence, key secrecy, exclusive custody, or remote
 attestation.
 
-Signing keys are live non-serializable objects. Test keys are deterministic
-fixtures. Live keys may be created only in a newly created mode-0600 temporary
-file and are removed after the bounded exercise. Private bytes are never
-logged, journaled, committed, printed, or included in qualification artifacts.
+Signing keys are live non-serializable objects. Qualification keys are
+generated from operating-system randomness; the hostile harness deliberately
+creates two in-memory holders of one ephemeral key and therefore makes no
+exclusive-custody claim. A live canary key file may be created only as a new
+mode-0600 temporary file and is removed after the bounded exercise. Private
+bytes are never logged, journaled, committed, printed, or included in
+qualification artifacts.
 
 ## Canonical signed protocol
 
@@ -70,8 +73,10 @@ Signatures cover a length-framed transcript of one exact ASCII domain and the
 exact canonical body bytes. The only V1 domains are:
 
 ```text
+monitor.sender-session-offer.v1
 monitor.receiver-session-challenge.v1
 monitor.sender-session-binding.v1
+monitor.receiver-session-acceptance.v1
 monitor.observation-custody-envelope.v1
 ```
 
@@ -110,32 +115,56 @@ The receiver policy pins the sender/receiver key identities, accepted sender
 manifest/certificate, protocol/schema, observer, configured failure-domain
 claim, subject scopes, observation kinds, datagram/session/message/rate/queue,
 replay and gap bounds, local lifecycle authority/status, and
-`ArrivalAnchored` admission posture. The sender policy pins the exact receiver
-key and acceptance-policy identity plus its permitted observer, failure domain
-and subject/kind scope.
+`ArrivalAnchored` admission posture. Its identity is a domain-separated digest
+of (a) a canonical cycle-free anchor containing every field except the accepted
+sender manifest/certificate and (b) those two exact sender-package digests.
+The sender policy pins that exact anchor as well as the receiver key and policy
+generation. The challenge supplies the full composite identity and exact
+sender-package pair, so the sender recomputes it. This avoids a content-hash
+cycle while refusing same-label receiver-policy substitution.
 
 Policy change invalidates every session, declares affected remote custody
 blind, withdraws standing and deadlines, and requires a newly qualified local
-activation plus a new challenge/binding. A command-line label or equal policy
-body under another generation is insufficient.
+activation plus a new offer/challenge/binding/acceptance handshake. A
+command-line label or equal policy body under another generation is
+insufficient.
+
+## Sender offer and occurrence binding
+
+`SenderSessionOfferV1` is the bounded preflight needed to make a later
+receiver challenge non-replayable across sender restart. It is sender-signed
+and binds a fresh random sender nonce, intended receiver key, sender key, live
+sender process occurrence and monotonic epoch, exact manifest, qualification
+certificate, activation receipt and runtime-generation set, plus the
+configured observer, failure-domain claim and subject scopes.
+
+The sender creates an offer only after its reactor revalidates the live local
+activation. The receiver verifies the exact pinned sender key and package
+before issuing a challenge. An offer is an authenticated sender assertion,
+not remote attestation or admitted evidence. The receiver keeps at most one
+pending offer/challenge and never persists it as live state.
 
 ## Receiver challenge
 
 `ReceiverSessionChallengeV1` is receiver-signed and binds the receiver key,
 live qualified process occurrence, monotonic epoch, fresh 32-byte random nonce,
-exact receiver policy generation/digest, intended sender key, accepted sender
-manifest/certificate, receiver-monotonic issuance and inclusive expiry,
+the exact sender-offer digest and intended sender process occurrence, exact
+receiver policy generation/anchor/composite digest, intended sender key,
+accepted sender manifest/certificate, receiver-monotonic issuance and inclusive expiry,
 datagram/message limits, and domain. It is emitted only after a live reactor
 activation recheck.
 
-The sender verifies canonical bytes, receiver signature and exact pinned
-receiver/policy identities before responding. Challenge lifetime is evaluated
+The sender verifies canonical bytes, receiver signature, exact pinned policy
+anchor, and the recomputed composite receiver-policy identity before
+responding. A matching generation label is never enough. Challenge lifetime is evaluated
 against the receiver times carried for protocol comparison only; the sender
 does not use those values as evidence freshness. The receiver remains the
 authority for session expiry. A challenge is bound to one receiver process and
-epoch, one intended sender, one policy and one message bound. Restart or policy
-replacement destroys the live nonce/session state, so historical bytes cannot
-recreate it.
+epoch, one exact live sender offer/process occurrence, one policy and one
+message bound. A sender without the matching process-local pending offer
+refuses it. Restart or policy replacement on either peer destroys the offer,
+nonce and session state, so historical challenge bytes cannot recreate a
+session.
 
 ## Sender binding
 
@@ -151,7 +180,31 @@ The sender creates it only by synchronously asking its reactor to revalidate
 the non-serializable local activation. The receiver verifies its locally held
 canonical sender qualification package and pins the manifest/certificate,
 then records the live activation receipt/process values as authenticated sender
-assertions. A historical receipt cannot invoke this API.
+assertions. A historical receipt cannot invoke this API. The sender binding is
+provisional and cannot emit an observation until the next acknowledgement is
+verified.
+
+The deterministic harness packages are explicitly one-test semantic fixtures
+used to exercise this exact activation gate; their certificates carry
+`not_campaign_qualification_evidence`. Final workspace gates and hostile
+results are separate campaign evidence. Because no authorized second Linux
+host was available, this run does not claim that a cross-host deployed binary
+was activated from a final campaign package.
+
+## Receiver session acceptance
+
+`ReceiverSessionAcceptanceV1` is the receiver-signed acknowledgement that
+closes the live handshake. It binds the exact challenge and sender-binding
+digests, both keys, both process occurrences, receiver monotonic epoch and
+policy digest, receiver-owned inclusive session expiry, and message bound.
+The sender verifies it against its process-local provisional offer, challenge
+and binding and freshly revalidates local activation. Only then does the
+sender count the session as live or permit envelope emission.
+
+This acknowledgement is load-bearing: without it, an authenticated sender
+could not know that the live receiver occurrence admitted its binding. It
+proves receiver-key possession over exact bytes, not receiver host integrity,
+receiver truthfulness, or transport authority.
 
 ## Observation envelope
 
@@ -163,8 +216,9 @@ wire bytes and digest, and sender observation/emission monotonic values.
 
 Sender times are provenance only. The envelope carries neither receiver arrival
 nor remaining freshness nor judgment. Before every envelope the sender
-rechecks local qualified activation, reactor operational state, session expiry
-and message bound, exact scope/kind, payload canonicality and queue capacity.
+rechecks the signed receiver acceptance, local qualified activation, reactor
+operational state, session expiry and message bound, exact scope/kind, payload
+canonicality and queue capacity.
 Failure closes the session and emits no reassuring terminal observation.
 
 ## Deterministic receiver admission
@@ -230,6 +284,8 @@ duplicates and seen older sequences are refused and do not reach the runtime.
 Unique reorder within the bounded window is recorded and refused rather than
 refreshing evidence. A forward gap within the configured bound may be admitted
 only with explicit gap status; a larger gap is refused and marks missingness.
+The refusal receipt preserves the exact `BoundExceeded` replay classification
+rather than flattening it to generic replay.
 Sequence overflow, reset without a new session, prior-session/process/receiver
 replay, changed subject/observer, and message-count exhaustion are refused.
 
@@ -242,7 +298,8 @@ challenge and session; last arrival never chooses a winner.
 ## Failure vocabulary
 
 The closed statuses include `TransportUnavailable`, `TransportOverloaded`,
-`TransportMalformed`, `AuthenticationFailed`, `ReceiverChallengeInvalid`,
+`TransportMalformed`, `AuthenticationFailed`, `SenderKeyMismatch`,
+`ReceiverChallengeInvalid`,
 `SessionExpired`, `SessionUnknown`, `SessionConflict`,
 `SenderOccurrenceConflict`, `SignatureInvalid`, `QualifiedIdentityMismatch`,
 `CertificateSuperseded`, `CertificateRevoked`, `ReplayDetected`,
@@ -256,15 +313,17 @@ subject status.
 Sender restart yields `Unbound`, no session and no transport authority.
 Receiver restart yields `Unbound / UNKNOWN`, zero sessions, accepted remote
 activations, evidence and deadlines. Both use fresh process/monotonic epochs
-and must reactivate locally, issue/verify a new challenge and establish a new
-binding. Old bindings/envelopes are refused.
+and must reactivate locally, create and verify a new sender offer, issue and
+verify a new challenge, establish a new binding, and verify a new receiver
+acceptance. Old offers, challenges, bindings, acceptances and envelopes are
+refused.
 
-Historical challenge, session-binding, envelope and acceptance receipts may be
-journaled as sparse facts. They cannot construct the move-only session or
-verified remote token. Process death before/after signing, verification,
-journaling, evaluator admission or `CURRENT` can lose history, but restart
-never projects it into session, evidence, deadline, reliance, diagnostic
-execution or mutation authority.
+Historical offers, challenges, session bindings, receiver acceptances,
+envelopes and admission receipts may be journaled as sparse facts. They cannot
+construct the move-only session or verified remote token. Process death before
+or after signing, verification, journaling, evaluator admission or `CURRENT`
+can lose history, but restart never projects it into session, evidence,
+deadline, reliance, diagnostic execution or mutation authority.
 
 ## Exact nonclaims
 

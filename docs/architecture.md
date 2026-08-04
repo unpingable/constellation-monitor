@@ -1,8 +1,8 @@
 # Runtime architecture
 
 Status: normative for the qualified vertical slice, bounded receiver/scheduler,
-and local crash-fault custody campaigns. The repository and component names
-are provisional.
+local crash-fault custody, qualified generation, and bounded receiver-boundary
+campaigns. The repository and component names are provisional.
 
 ## Product boundary
 
@@ -107,6 +107,51 @@ affected consumer's inherited support deadline. Binding failure, timer
 failure, journal failure, and observation blindness remain distinct classes.
 The complete contract is
 [qualified-generation-contract.md](qualified-generation-contract.md).
+
+The receiver-boundary campaign adds one narrow authenticated custody path. It
+does not make transport authentication equivalent to sender qualification,
+receiver admission, or consumer reliance:
+
+```text
+sender live activation                        receiver live activation
+        |                                             |
+ signed offer (sender occurrence/package)             |
+        +---------------- UDP ------------------------>|
+        |<--------------- signed challenge -----------+
+ signed binding (qualified local assertion)            |
+        +--------------------------------------------->|
+        |<--------- signed receiver acceptance --------+
+ signed exact observation envelope                     |
+        +--------------------------------------------->|
+                                                      v
+                                           receiver-owned arrival
+                                           bounded admission receipt
+                                           move-only evidence token
+                                           consumer A: CURRENT
+                                           consumer B: UNKNOWN
+```
+
+Every datagram is at most 1,232 bytes and uses one canonical PCN1 binary body
+plus a domain-separated Ed25519 signature under exact locally pinned public
+keys. The sender offer and receiver acceptance are load-bearing: an old
+challenge cannot bind a restarted sender, and a provisional sender binding
+cannot emit until the live receiver occurrence acknowledges it. Neither
+signature nor exact package assertion is remote attestation.
+
+The sender also pins a canonical receiver-policy anchor rather than trusting
+its generation label. The receiver challenge binds that anchor to the exact
+sender manifest/certificate admitted by the receiver; the sender recomputes
+the composite policy identity. This breaks the qualification-package hash
+cycle without permitting same-label policy substitution.
+
+The receiver alone assigns arrival, admits evidence, interprets coverage and
+schedules expiry. Remote V1 evidence is explicitly `ArrivalAnchored`; sender
+times are provenance and never extend freshness. Session/replay/queue state
+and the verified evidence token are live and non-serializable. Restart on
+either peer destroys them. Exact admission receipts and custody references may
+be journaled as history but cannot reconstruct a session, evidence, deadline
+or `CURRENT`. See
+[receiver-boundary-contract.md](receiver-boundary-contract.md).
 
 Transport, runtime interpretation, sparse event custody, and presentation are
 separate. A transport adapter cannot assign a judgment, and a renderer cannot
@@ -317,6 +362,14 @@ The receiver validates the closed schema and bounds before evaluation. It then
 annotates the frame with receiver identity/incarnation, receiver monotonic
 arrival, sequence gap, duplicate/replay classification, transport path, and
 authentication result.
+
+For the bounded remote canary, admission has an earlier gate: canonical UDP
+framing, exact live offer/challenge/binding/receiver-acceptance session,
+pinned sender signature, exact sender package/activation assertion, observer,
+failure-domain claim, subject/incarnation, sequence/replay and payload all must
+match the receiver's own qualified acceptance policy. Only the resulting
+move-only `VerifiedRemoteObservationV1` can enter the ordinary evaluator. An
+authenticated refusal remains history and supplies no evidence.
 
 For a known stream:
 

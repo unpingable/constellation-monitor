@@ -80,3 +80,19 @@ stored as their exact compact canonical bytes, without a trailing newline.
 Other demonstration/index artifacts are ordinary pretty JSON. SHA-256 here is
 content identity and corruption detection, not authorship, signer authority,
 source-to-binary proof, independent attestation, or supply-chain security.
+
+The receiver-boundary campaign adds the `receiver-boundary-custody/`
+directory. It contains exact canonical sender/receiver policies and local
+qualification packages; public peer-key identities; signed sender-offer,
+receiver-challenge, sender-binding, receiver-session-acceptance and observation
+envelope corpora; admission/support references; authentication, replay,
+sequence, occurrence, restart and authority-refusal corpora; local Linux timing
+and actual UDP loopback measurements; and an exact qualification index.
+
+All private-key fields are absent and artifact generation is regression-tested
+by reparsing every JSON object, verifying all three qualification packages and
+decoding every signed datagram under the retained public keys. The loopback
+measurement is not labeled two-host. `live-two-host-measurements.json` records
+the unexecuted obligation because no second authorized reachable Linux host
+was available; the reachable configured candidate was Darwin. No private key
+was created for an unrun two-host exercise.

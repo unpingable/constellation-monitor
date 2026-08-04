@@ -1,0 +1,21 @@
+{
+  "executed": false,
+  "live_timing_samples": [],
+  "local_host": {
+    "architecture": "x86_64",
+    "default_route_interface": "enx00242788ae45",
+    "hostname": "sushi-k",
+    "kernel": "6.8.0-136-generic",
+    "operating_system": "linux"
+  },
+  "private_key_cleanup": "no two-host private keys were created",
+  "reachable_candidate": {
+    "observed_architecture": "arm64",
+    "observed_operating_system": "Darwin 24.6.0",
+    "selected_for_canary": false,
+    "ssh_alias": "mac"
+  },
+  "refusal": "no second explicitly authorized reachable Linux host was available; loopback is not reported as a two-host result",
+  "schema_version": 1,
+  "two_linux_hosts_qualified": false
+}

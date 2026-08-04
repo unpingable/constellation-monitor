@@ -1,0 +1,9 @@
+{
+  "competing_sender_process_occurrence": "sender-process:artifact-competing-two",
+  "finding": "sender_occurrence_conflict",
+  "first_sender_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+  "last_arrival_won": false,
+  "live_sessions_after": 0,
+  "positive_surface_after": false,
+  "schema_version": 1
+}

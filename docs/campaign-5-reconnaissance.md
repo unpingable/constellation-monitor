@@ -57,13 +57,18 @@ admission custody, not a need to persist standing or trust a sender clock.
 
 ## Boundary field allocation
 
-The signed receiver challenge crosses the boundary with receiver key,
-process/epoch, nonce, acceptance-policy, intended sender package, expiry and
-message/datagram bounds. The signed sender binding crosses with the exact
-challenge, sender key/process/epoch, manifest/certificate/activation receipt,
-runtime generation set, observer/failure-domain claim, and subject scope. The
-signed envelope crosses with those identities, exact subject/incarnation and
-sequences, canonical pulse bytes/digest, and sender-local time provenance.
+The signed sender offer crosses with sender key/process/epoch, random offer
+nonce, exact manifest/certificate/activation receipt/runtime generation set,
+intended receiver, observer/failure-domain claim, and subject scope. The signed
+receiver challenge binds that exact offer and sender occurrence plus receiver
+key/process/epoch, nonce, acceptance-policy anchor and exact
+sender-package-bound composite identity, intended sender package, expiry
+and message/datagram bounds. The signed sender binding answers that exact
+challenge. A receiver-signed acceptance binds the offer/challenge/binding,
+both occurrences, receiver policy, expiry and message bound before sender
+emission becomes live. The signed envelope crosses with those identities,
+exact subject/incarnation and sequences, canonical pulse bytes/digest, and
+sender-local time provenance.
 
 Receiver arrival time, remote endpoint interpretation, replay-window state,
 gap classification, queue/rate state, acceptance decision, evidence identity,

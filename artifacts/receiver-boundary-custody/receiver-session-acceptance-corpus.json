@@ -1,0 +1,39 @@
+{
+  "canonical_wire_encoding": "PCN1 bounded binary v1",
+  "datagram_bytes": 447,
+  "datagram_hex": "50434e3100010401760001000175405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad15148f886055eaa8d6944a3fbdadcfddcffe6f09f51248320f803694a929c783bb2081821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc39ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f004e70726f636573732d65706f63683a37353537663938636233303331636232396630663532613261323534663564306662376632613039333035623433666339333861346566623962313664343263001c6d6f6e6f746f6e69632d65706f63683a72656365697665723a6f6e65004e70726f636573732d65706f63683a37353537663938636233303331636232396630663532613261323534663564306662376632613039333035623433666339333861346566623962313664343263cd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a700000000000000b1000000000000036200000010720e98ec3851ee96616ee49802c7af6a779d943919c210ed2f66740805482d3ed550eed07f6152b4c20f88a271f6f45f9485338d06d849692e924fc7a1a53d01",
+  "diagnostic_projection": {
+    "acceptance_digest": "sha256:c01aefb8e584712489ce56722cad558b786e71db474ef3eed77d0b854848f414",
+    "authority_grants": {
+      "continuation": "none",
+      "deployment": "none",
+      "diagnostic_execution": "none",
+      "mutation": "none",
+      "revocation": "none",
+      "signing": "none",
+      "transport_administration": "none"
+    },
+    "body": {
+      "accepted_at_receiver_monotonic_ms": 177,
+      "expires_at_receiver_monotonic_ms": 866,
+      "maximum_messages": 16,
+      "protocol_version": 1,
+      "receiver_acceptance_policy_digest": "sha256:cd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a7",
+      "receiver_challenge_digest": "sha256:75405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad15148",
+      "receiver_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3",
+      "receiver_monotonic_epoch": "monotonic-epoch:receiver:one",
+      "receiver_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "schema_version": 1,
+      "sender_key_identity_digest": "sha256:9ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f",
+      "sender_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "sender_session_binding_digest": "sha256:f886055eaa8d6944a3fbdadcfddcffe6f09f51248320f803694a929c783bb208"
+    },
+    "schema_version": 1,
+    "signature_domain": "receiver_session_acceptance_v1",
+    "signature_hex": "720e98ec3851ee96616ee49802c7af6a779d943919c210ed2f66740805482d3ed550eed07f6152b4c20f88a271f6f45f9485338d06d849692e924fc7a1a53d01",
+    "signer_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3"
+  },
+  "object_kind": "receiver_session_acceptance_v1",
+  "private_key_included": false,
+  "schema_version": 1
+}

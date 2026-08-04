@@ -1,0 +1,24 @@
+{
+  "actual_withdrawal_monotonic_ms": 339,
+  "emission_through_evaluation_us": 53968,
+  "envelope_bytes": 1081,
+  "exercise": "local deterministic custody; real UDP probe separately identified",
+  "expected_support_deadline_monotonic_ms": 339,
+  "hard_realtime_claimed": false,
+  "resident_memory_kib": 10608,
+  "schema_version": 1,
+  "session_establishment_us": 120052,
+  "stale_positive_overshoot_ms": 0,
+  "two_host_claimed": false,
+  "udp_loopback_probe": {
+    "actual_udp_socket_executed": true,
+    "datagram_bytes": 1081,
+    "exact_bytes_preserved": true,
+    "receiver_endpoint": "127.0.0.1:48791",
+    "refusal": null,
+    "schema_version": 1,
+    "sender_endpoint": "127.0.0.1:39870",
+    "two_host_claimed": false
+  },
+  "wall_clock_measurement": true
+}

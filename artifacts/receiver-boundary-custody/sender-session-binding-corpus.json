@@ -1,0 +1,49 @@
+{
+  "canonical_wire_encoding": "PCN1 bounded binary v1",
+  "datagram_bytes": 540,
+  "datagram_hex": "50434e3100010301d30001000175405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad151481821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc39ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f004e70726f636573732d65706f63683a37353537663938636233303331636232396630663532613261323534663564306662376632613039333035623433666339333861346566623962313664343263001a6d6f6e6f746f6e69632d65706f63683a73656e6465723a6f6e65de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf87743763605fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945c2c388dbc86b63dbbe17e10523da8dbdf7214e7ae1476268b35e77ea4205e70f0edd69b470158c914a03857e18c57f22631853649e9ba360a2407a8da1199f3b00166f627365727665723a72656d6f74652d63616e6172790020636f6e666967757265642d6661696c7572652d646f6d61696e3a7261636b2d610100157375626a6563743a72656d6f74652d63616e617279001e7375626a6563742d696e6361726e6174696f6e3a72656d6f74652d6f6e650004686f7374000100000000000000010165a3a3b0495525e01177512a43eb7d22ba518f283b516a3f1d6e06cc312c840cb0db74cee56e4a1ec3f3d10f68b86ba6abe16ece2aee66553a145348d12f2f02",
+  "diagnostic_projection": {
+    "authority_grants": {
+      "continuation": "none",
+      "deployment": "none",
+      "diagnostic_execution": "none",
+      "mutation": "none",
+      "revocation": "none",
+      "signing": "none",
+      "transport_administration": "none"
+    },
+    "binding_digest": "sha256:f886055eaa8d6944a3fbdadcfddcffe6f09f51248320f803694a929c783bb208",
+    "body": {
+      "binding_result": "qualified_and_matched_assertion",
+      "failure_domain_claim": "configured-failure-domain:rack-a",
+      "observation_protocol_version": 1,
+      "observer": "observer:remote-canary",
+      "permitted_subject_scopes": [
+        {
+          "scope": "host",
+          "subject": "subject:remote-canary",
+          "subject_incarnation": "subject-incarnation:remote-one"
+        }
+      ],
+      "protocol_version": 1,
+      "receiver_challenge_digest": "sha256:75405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad15148",
+      "receiver_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3",
+      "schema_version": 1,
+      "sender_activation_receipt_digest": "sha256:c2c388dbc86b63dbbe17e10523da8dbdf7214e7ae1476268b35e77ea4205e70f",
+      "sender_key_identity_digest": "sha256:9ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f",
+      "sender_manifest_digest": "sha256:de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf8774376360",
+      "sender_monotonic_epoch": "monotonic-epoch:sender:one",
+      "sender_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "sender_qualification_certificate_digest": "sha256:5fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945",
+      "sender_runtime_generation_set_digest": "sha256:0edd69b470158c914a03857e18c57f22631853649e9ba360a2407a8da1199f3b",
+      "session_sequence_origin": 1
+    },
+    "schema_version": 1,
+    "signature_domain": "sender_session_binding_v1",
+    "signature_hex": "65a3a3b0495525e01177512a43eb7d22ba518f283b516a3f1d6e06cc312c840cb0db74cee56e4a1ec3f3d10f68b86ba6abe16ece2aee66553a145348d12f2f02",
+    "signer_key_identity_digest": "sha256:9ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f"
+  },
+  "object_kind": "sender_session_binding_v1",
+  "private_key_included": false,
+  "schema_version": 1
+}

@@ -1,0 +1,107 @@
+{
+  "first_seen_prearrival_delay_bounded": false,
+  "framing": [
+    "magic PCN1",
+    "closed message-kind byte",
+    "big-endian exact body length",
+    "canonical bounded body bytes",
+    "64-byte Ed25519 signature",
+    "trailing bytes refused"
+  ],
+  "maximum_datagram_bytes": 1232,
+  "objects": {
+    "observation_custody_envelope_v1": [
+      "challenge and session digests",
+      "peer/process/package/activation identities",
+      "observer/subject/incarnation/sequences",
+      "exact pulse payload and digest",
+      "sender times as provenance",
+      "signature"
+    ],
+    "peer_key_identity_v1": [
+      "algorithm",
+      "exact public key bytes and digest",
+      "closed role",
+      "scope",
+      "local policy identity"
+    ],
+    "receiver_acceptance_receipt_v1": [
+      "receiver process/epoch/policy/arrival",
+      "ordered admission checks",
+      "accepted evidence identity or refusal",
+      "receipt and journal sequences"
+    ],
+    "receiver_session_acceptance_v1": [
+      "challenge and binding digests",
+      "both process occurrences",
+      "receiver policy digest",
+      "receiver expiry and message bound",
+      "signature"
+    ],
+    "receiver_session_challenge_v1": [
+      "exact sender offer digest and process occurrence",
+      "receiver process and monotonic epoch",
+      "random nonce",
+      "acceptance policy generation, cycle-free anchor, and exact sender-package-bound composite identity",
+      "intended sender key",
+      "accepted sender package",
+      "receiver expiry and message bounds",
+      "signature"
+    ],
+    "sender_session_binding_v1": [
+      "challenge digest",
+      "sender process and monotonic epoch",
+      "exact sender package and activation",
+      "observer/failure-domain/scope claims",
+      "signature"
+    ],
+    "sender_session_offer_v1": [
+      "sender process and monotonic epoch",
+      "random offer nonce",
+      "exact sender package and activation assertion",
+      "intended receiver key",
+      "observer/failure-domain/scope claims",
+      "signature"
+    ]
+  },
+  "protocol_version": 1,
+  "receiver_admission_order": [
+    "bounded framing",
+    "canonical decode and protocol version",
+    "challenge/session/receiver identities",
+    "pinned sender key identity",
+    "strict signature verification",
+    "sender occurrence and exact package identities",
+    "observer/failure-domain/subject/kind scope",
+    "session and observation sequence/replay",
+    "queue/capacity/payload/lifecycle",
+    "receiver-owned arrival admission"
+  ],
+  "receiver_local_fields": [
+    "arrival",
+    "replay result",
+    "gap",
+    "queue result",
+    "accepted evidence identity",
+    "receipt sequence"
+  ],
+  "schema_version": 1,
+  "sender_emission_requires_receiver_acceptance": true,
+  "sender_times_are_provenance_only": true,
+  "session_flow": [
+    "sender offer",
+    "receiver challenge",
+    "sender binding",
+    "receiver acceptance",
+    "observation envelope"
+  ],
+  "signature_algorithm": "Ed25519 through ed25519-dalek verify_strict",
+  "signature_domains": [
+    "monitor.sender-session-offer.v1",
+    "monitor.receiver-session-challenge.v1",
+    "monitor.sender-session-binding.v1",
+    "monitor.receiver-session-acceptance.v1",
+    "monitor.observation-custody-envelope.v1"
+  ],
+  "transport": "one bounded UDP datagram path"
+}
