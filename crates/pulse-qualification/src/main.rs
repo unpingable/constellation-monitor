@@ -297,12 +297,12 @@ fn checked_inputs() -> Result<LocalQualificationInputsV1, Box<dyn Error>> {
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(bytes)?;
-    file.write_all(b"\n")?;
     Ok(())
 }
 
 fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), Box<dyn Error>> {
-    let bytes = serde_json::to_vec_pretty(value)?;
+    let mut bytes = serde_json::to_vec_pretty(value)?;
+    bytes.push(b'\n');
     write_new(path, &bytes)
 }
 
