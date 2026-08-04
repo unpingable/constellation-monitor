@@ -41,6 +41,7 @@ pub enum MonitorCapabilityV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReevaluationBarrierV1 {
     GenerationTransition { detail: String },
+    QualifiedGenerationBinding { detail: String },
     SubjectIncarnationTransition { detail: String },
     ReceiverRestart { detail: String },
     MonitorCapabilityRestored { detail: String },
@@ -50,6 +51,9 @@ impl ReevaluationBarrierV1 {
     const fn code(&self) -> &'static str {
         match self {
             Self::GenerationTransition { .. } => "generation_transition_requires_reevaluation",
+            Self::QualifiedGenerationBinding { .. } => {
+                "qualified_generation_binding_requires_reevaluation"
+            }
             Self::SubjectIncarnationTransition { .. } => {
                 "subject_incarnation_transition_requires_reevaluation"
             }
@@ -63,6 +67,7 @@ impl ReevaluationBarrierV1 {
     fn detail(&self) -> &str {
         match self {
             Self::GenerationTransition { detail }
+            | Self::QualifiedGenerationBinding { detail }
             | Self::SubjectIncarnationTransition { detail }
             | Self::ReceiverRestart { detail }
             | Self::MonitorCapabilityRestored { detail } => detail,

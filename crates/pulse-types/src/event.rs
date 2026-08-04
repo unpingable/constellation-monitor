@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ContradictionRecordV1, DiagnosticEscalationRequestV1, DiagnosticEvidenceReferenceV1,
-    EscalationDispositionV1, ExperimentalMetricsV1, JudgmentTransitionV1, MockDiagnosticReceiptV1,
-    ObserverId, RelianceContextTransitionV1, RelianceSupportCertificateV1, RuntimeRefusalV1,
-    SCHEMA_VERSION_V1, SparseEventId,
+    ActivationReceiptV1, ContradictionRecordV1, DiagnosticEscalationRequestV1,
+    DiagnosticEvidenceReferenceV1, EscalationDispositionV1, ExperimentalMetricsV1,
+    GenerationLifecycleFactV1, JudgmentTransitionV1, MockDiagnosticReceiptV1, ObserverId,
+    RelianceContextTransitionV1, RelianceSupportCertificateV1, RuntimeBindingStateV1,
+    RuntimeRefusalV1, SCHEMA_VERSION_V1, SparseEventId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -69,6 +70,22 @@ pub enum SparseDurableEventKindV1 {
     },
     ContradictionApplicabilityChanged {
         custody: Box<crate::ContradictionCustodyV1>,
+    },
+    QualifiedGenerationBindingChanged {
+        receipt: Box<ActivationReceiptV1>,
+    },
+    QualifiedGenerationLifecycleApplied {
+        consumer: crate::ConsumerId,
+        fact: Box<GenerationLifecycleFactV1>,
+        state: RuntimeBindingStateV1,
+        standing_preserved: bool,
+    },
+    QualifiedGenerationBindingInvalidated {
+        consumer: crate::ConsumerId,
+        prior_activation_receipt_digest: crate::DigestV1,
+        state: RuntimeBindingStateV1,
+        detail: String,
+        standing_preserved: bool,
     },
     MetricsSnapshot {
         metrics: ExperimentalMetricsV1,

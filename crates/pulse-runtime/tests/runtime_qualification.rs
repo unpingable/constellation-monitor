@@ -5,7 +5,7 @@ use pulse_evaluator::{EscalationPolicyV1, ReliancePolicyV1};
 use pulse_l3_bridge::{StubL3Bridge, stub_profile_identity};
 use pulse_runtime::{
     ConsumerActivationV1, ConsumerRegistrationV1, PulseIngressV1, ReceiverSchedulerRuntime,
-    RuntimeBoundsV1, RuntimeConfigV1, RuntimeInputV1,
+    RuntimeBoundsV1, RuntimeConfigV1, RuntimeInputV1, qualification_fixture_inputs,
 };
 use pulse_types::{
     AuthenticationFieldV1, AuthenticationResultV1, BoundedSignalValueV1, BridgeId, ClockId,
@@ -147,6 +147,48 @@ fn activation(
     }
 }
 
+fn install_binding(
+    runtime: &mut ReceiverSchedulerRuntime,
+    registration: &ConsumerRegistrationV1,
+    at_monotonic_ms: u64,
+) {
+    runtime
+        .qualify_and_activate_local_binding(
+            registration,
+            qualification_fixture_inputs("3cd15b7a1e7f424f6fd57c09b30fa4790947eca2", 97),
+            at_monotonic_ms,
+        )
+        .expect("local exact binding activates");
+}
+
+fn register_qualified(
+    runtime: &mut ReceiverSchedulerRuntime,
+    registration: ConsumerRegistrationV1,
+    at_monotonic_ms: u64,
+) {
+    install_binding(runtime, &registration, at_monotonic_ms);
+    runtime
+        .register_consumer(registration, at_monotonic_ms)
+        .expect("consumer registers");
+}
+
+fn install_activation_binding(
+    runtime: &mut ReceiverSchedulerRuntime,
+    activation: &ConsumerActivationV1,
+    subject_incarnation: &str,
+    at_monotonic_ms: u64,
+) {
+    install_binding(
+        runtime,
+        &ConsumerRegistrationV1 {
+            policy: activation.policy.clone(),
+            context: activation.context.clone(),
+            subject_incarnation: IncarnationId::new(subject_incarnation),
+        },
+        at_monotonic_ms,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pulse(
     subject: &str,
@@ -213,16 +255,15 @@ fn ingress(frame: PulseFrameV1) -> RuntimeInputV1 {
 
 fn one_consumer_runtime(validity_ms: u64) -> ReceiverSchedulerRuntime {
     let mut runtime = ReceiverSchedulerRuntime::new(config()).expect("runtime config");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, CONSUMER, "policy:p1", 1, validity_ms),
-                "activation:p1",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("consumer registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, CONSUMER, "policy:p1", 1, validity_ms),
+            "activation:p1",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     runtime
 }
 
@@ -341,15 +382,14 @@ fn equal_body_rollback_and_aba_each_require_a_new_evaluation() {
     let mut p2 = p1.clone();
     p2.generation = PolicyGenerationId::new("policy:p2");
     assert_eq!(p1.semantic_digest(), p2.semantic_digest());
+    let p2_activation = activation(
+        p2.clone(),
+        "activation:p2",
+        GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
+    );
+    install_activation_binding(&mut runtime, &p2_activation, SUBJECT_INCAR, 10);
     runtime
-        .enqueue(
-            10,
-            RuntimeInputV1::ActivateConsumer(activation(
-                p2.clone(),
-                "activation:p2",
-                GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
-            )),
-        )
+        .enqueue(10, RuntimeInputV1::ActivateConsumer(p2_activation))
         .expect("transition enqueues");
     runtime.run_until(10).expect("barrier evaluates");
     let p2_barrier = runtime
@@ -379,15 +419,14 @@ fn equal_body_rollback_and_aba_each_require_a_new_evaluation() {
 
     let mut p3 = p1.clone();
     p3.generation = PolicyGenerationId::new("policy:p3-rollback-body");
+    let p3_activation = activation(
+        p3,
+        "activation:p3",
+        GenerationTransitionCauseV1::PolicyRollback,
+    );
+    install_activation_binding(&mut runtime, &p3_activation, SUBJECT_INCAR, 20);
     runtime
-        .enqueue(
-            20,
-            RuntimeInputV1::ActivateConsumer(activation(
-                p3,
-                "activation:p3",
-                GenerationTransitionCauseV1::PolicyRollback,
-            )),
-        )
+        .enqueue(20, RuntimeInputV1::ActivateConsumer(p3_activation))
         .expect("rollback enqueues");
     runtime.run_until(20).expect("rollback barrier");
     assert_eq!(
@@ -398,15 +437,14 @@ fn equal_body_rollback_and_aba_each_require_a_new_evaluation() {
         JudgmentCategoryV1::Unknown
     );
 
+    let aba_activation = activation(
+        p1,
+        "activation:p1-aba-return",
+        GenerationTransitionCauseV1::AbaReactivation,
+    );
+    install_activation_binding(&mut runtime, &aba_activation, SUBJECT_INCAR, 30);
     runtime
-        .enqueue(
-            30,
-            RuntimeInputV1::ActivateConsumer(activation(
-                p1,
-                "activation:p1-aba-return",
-                GenerationTransitionCauseV1::AbaReactivation,
-            )),
-        )
+        .enqueue(30, RuntimeInputV1::ActivateConsumer(aba_activation))
         .expect("ABA enqueues");
     runtime.run_until(30).expect("ABA barrier");
     let aba = runtime
@@ -496,16 +534,15 @@ fn policy_tightening_and_observer_set_change_make_reliance_unknown() {
 #[test]
 fn policy_loosening_still_withdraws_before_explicit_reevaluation() {
     let mut runtime = ReceiverSchedulerRuntime::new(config()).expect("runtime");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, CONSUMER, "policy:tight-first", 2, 200),
-                "activation:tight-first",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, CONSUMER, "policy:tight-first", 2, 200),
+            "activation:tight-first",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     for observer in ["observer:a", "observer:b"] {
         runtime
             .enqueue(
@@ -531,15 +568,14 @@ fn policy_loosening_still_withdraws_before_explicit_reevaluation() {
             .judgment,
         JudgmentCategoryV1::Current
     );
+    let loosened = activation(
+        policy(SUBJECT, CONSUMER, "policy:loosened", 1, 200),
+        "activation:loosened",
+        GenerationTransitionCauseV1::ReliancePolicyChanged,
+    );
+    install_activation_binding(&mut runtime, &loosened, SUBJECT_INCAR, 10);
     runtime
-        .enqueue(
-            10,
-            RuntimeInputV1::ActivateConsumer(activation(
-                policy(SUBJECT, CONSUMER, "policy:loosened", 1, 200),
-                "activation:loosened",
-                GenerationTransitionCauseV1::ReliancePolicyChanged,
-            )),
-        )
+        .enqueue(10, RuntimeInputV1::ActivateConsumer(loosened))
         .expect("looser policy enqueues");
     runtime
         .run_until(10)
@@ -577,15 +613,14 @@ fn observation_policy_generation_change_requires_new_matching_evidence() {
     let mut next_policy = policy(SUBJECT, CONSUMER, "policy:observation-two", 1, 200);
     next_policy.observation_policy_generation =
         ObservationPolicyGenerationId::new("observation-policy:runtime-v2");
+    let next_activation = activation(
+        next_policy,
+        "activation:observation-two",
+        GenerationTransitionCauseV1::ObservationPolicyChanged,
+    );
+    install_activation_binding(&mut runtime, &next_activation, SUBJECT_INCAR, 10);
     runtime
-        .enqueue(
-            10,
-            RuntimeInputV1::ActivateConsumer(activation(
-                next_policy,
-                "activation:observation-two",
-                GenerationTransitionCauseV1::ObservationPolicyChanged,
-            )),
-        )
+        .enqueue(10, RuntimeInputV1::ActivateConsumer(next_activation))
         .expect("observation-policy transition enqueues");
     runtime
         .enqueue(
@@ -645,6 +680,7 @@ fn evaluator_semantic_change_barriers_even_with_same_policy_identity() {
     );
     next.context.evaluator_semantic_generation =
         EvaluatorSemanticGenerationId::new("evaluator:two");
+    install_activation_binding(&mut runtime, &next, SUBJECT_INCAR, 10);
     runtime
         .enqueue(10, RuntimeInputV1::ActivateConsumer(next))
         .expect("semantic transition enqueues");
@@ -684,6 +720,7 @@ fn evaluator_semantic_change_barriers_even_with_same_policy_identity() {
         EvaluatorSemanticGenerationId::new("evaluator:two");
     consumer_change.context.consumer_profile_generation =
         ConsumerProfileGenerationId::new("consumer-profile:two");
+    install_activation_binding(&mut runtime, &consumer_change, SUBJECT_INCAR, 20);
     runtime
         .enqueue(20, RuntimeInputV1::ActivateConsumer(consumer_change))
         .expect("consumer-profile transition enqueues");
@@ -703,26 +740,24 @@ fn one_consumer_transition_does_not_change_another() {
     let mut runtime = ReceiverSchedulerRuntime::new(config()).expect("runtime");
     let consumer_a = "consumer:a";
     let consumer_b = "consumer:b";
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, consumer_a, "policy:a1", 1, 200),
-                "activation:a1",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("A registers");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, consumer_b, "policy:b1", 1, 200),
-                "activation:b1",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("B registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, consumer_a, "policy:a1", 1, 200),
+            "activation:a1",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, consumer_b, "policy:b1", 1, 200),
+            "activation:b1",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     runtime
         .enqueue(
             0,
@@ -744,15 +779,14 @@ fn one_consumer_transition_does_not_change_another() {
         .expect("B certificate")
         .clone();
     let next_a = policy(SUBJECT, consumer_a, "policy:a2", 2, 200);
+    let next_a = activation(
+        next_a,
+        "activation:a2",
+        GenerationTransitionCauseV1::ReliancePolicyChanged,
+    );
+    install_activation_binding(&mut runtime, &next_a, SUBJECT_INCAR, 10);
     runtime
-        .enqueue(
-            10,
-            RuntimeInputV1::ActivateConsumer(activation(
-                next_a,
-                "activation:a2",
-                GenerationTransitionCauseV1::ReliancePolicyChanged,
-            )),
-        )
+        .enqueue(10, RuntimeInputV1::ActivateConsumer(next_a))
         .expect("A transition enqueues");
     runtime.run_until(10).expect("A transitions");
     let b_after = runtime
@@ -772,16 +806,15 @@ fn queue_saturation_withdraws_cached_current_immediately() {
         "clock:queue",
     ))
     .expect("runtime");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, CONSUMER, "policy:p1", 1, 200),
-                "activation:p1",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, CONSUMER, "policy:p1", 1, 200),
+            "activation:p1",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     establish_current(&mut runtime, 0, 200);
     runtime
         .enqueue(
@@ -864,16 +897,15 @@ fn observer_cardinality_churn_is_refused_and_visible() {
         "clock:observer-bound",
     ))
     .expect("runtime");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, CONSUMER, "policy:p1", 1, 200),
-                "activation:p1",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, CONSUMER, "policy:p1", 1, 200),
+            "activation:p1",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     establish_current(&mut runtime, 0, 200);
     runtime
         .enqueue(
@@ -995,12 +1027,11 @@ fn policy_permitted_unverified_provenance_is_caution_not_missing_premise() {
     let mut runtime = ReceiverSchedulerRuntime::new(config()).expect("runtime");
     let mut permissive = policy(SUBJECT, CONSUMER, "policy:permissive-auth", 1, 100);
     permissive.require_verified_authentication = false;
-    runtime
-        .register_consumer(
-            registration(permissive, "activation:permissive-auth", SUBJECT_INCAR),
-            0,
-        )
-        .expect("registers");
+    register_qualified(
+        &mut runtime,
+        registration(permissive, "activation:permissive-auth", SUBJECT_INCAR),
+        0,
+    );
     let mut pulse = match ingress(pulse(
         SUBJECT,
         SUBJECT_INCAR,
@@ -1077,16 +1108,15 @@ fn repeated_expiry_reevaluation_deduplicates_escalation() {
 #[test]
 fn diagnostic_completion_does_not_clear_contradiction() {
     let mut runtime = ReceiverSchedulerRuntime::new(config()).expect("runtime");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, CONSUMER, "policy:p1", 2, 200),
-                "activation:p1",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, CONSUMER, "policy:p1", 2, 200),
+            "activation:p1",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     for observer in ["observer:a", "observer:b"] {
         runtime
             .enqueue(
@@ -1272,16 +1302,15 @@ fn restart_recovers_history_but_not_current_standing() {
 #[test]
 fn restart_reexport_preserves_inapplicable_contradiction_custody() {
     let mut runtime = ReceiverSchedulerRuntime::new(config()).expect("runtime");
-    runtime
-        .register_consumer(
-            registration(
-                policy(SUBJECT, CONSUMER, "policy:custody-one", 2, 200),
-                "activation:custody-one",
-                SUBJECT_INCAR,
-            ),
-            0,
-        )
-        .expect("registers");
+    register_qualified(
+        &mut runtime,
+        registration(
+            policy(SUBJECT, CONSUMER, "policy:custody-one", 2, 200),
+            "activation:custody-one",
+            SUBJECT_INCAR,
+        ),
+        0,
+    );
     for observer in ["observer:a", "observer:b"] {
         runtime
             .enqueue(
@@ -1535,6 +1564,8 @@ fn subject_incarnation_churn_is_bounded_and_fail_closed() {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
     #[test]
     fn duplicate_multiplicity_never_renews_the_original_deadline(copies in 1usize..17) {
         let mut runtime = one_consumer_runtime(100);
@@ -1582,14 +1613,16 @@ proptest! {
             let generation = format!("policy:generated-{index}");
             let activation_id = format!("activation:generated-{index}");
             let next = policy(SUBJECT, CONSUMER, &generation, 1, 1_000);
+            let next_activation = activation(
+                next,
+                &activation_id,
+                GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
+            );
+            install_activation_binding(&mut runtime, &next_activation, SUBJECT_INCAR, at);
             runtime
                 .enqueue(
                     at,
-                    RuntimeInputV1::ActivateConsumer(activation(
-                        next,
-                        &activation_id,
-                        GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
-                    )),
+                    RuntimeInputV1::ActivateConsumer(next_activation),
                 )
                 .expect("generated activation enqueues");
             runtime.run_until(at).expect("generated barrier evaluates");

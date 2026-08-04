@@ -14,7 +14,7 @@ use pulse_evaluator::{EscalationPolicyV1, ReliancePolicyV1};
 use pulse_l3_bridge::stub_profile_identity;
 use pulse_runtime::{
     ConsumerActivationV1, ConsumerRegistrationV1, PulseIngressV1, ReceiverSchedulerRuntime,
-    RuntimeBoundsV1, RuntimeConfigV1, RuntimeInputV1,
+    RuntimeBoundsV1, RuntimeConfigV1, RuntimeInputV1, qualification_fixture_inputs,
 };
 use pulse_types::{
     AuthenticationFieldV1, AuthenticationResultV1, BoundedSignalValueV1, ClockId, ConsumerId,
@@ -28,6 +28,7 @@ use pulse_types::{
 use serde::Serialize;
 
 const STARTING_COMMIT: &str = "0a9fe16e6d091c6b4b1128fcb6166e53d712fc3f";
+const QUALIFIED_BINDING_SOURCE_COMMIT: &str = "3cd15b7a1e7f424f6fd57c09b30fa4790947eca2";
 const DEMO_SUBJECT: &str = "subject:runtime-generation-demo";
 const DEMO_CONSUMER: &str = "consumer:capacity-display";
 const DEMO_SUBJECT_INCAR: &str = "subject-incarnation:demo-one";
@@ -221,6 +222,19 @@ fn runtime_config(receiver_incarnation: &str, clock: &str) -> RuntimeConfigV1 {
     }
 }
 
+fn install_demo_binding(
+    runtime: &mut ReceiverSchedulerRuntime,
+    registration: &ConsumerRegistrationV1,
+    at_monotonic_ms: u64,
+) -> Result<(), Box<dyn Error>> {
+    runtime.qualify_and_activate_local_binding(
+        registration,
+        qualification_fixture_inputs(QUALIFIED_BINDING_SOURCE_COMMIT, 97),
+        at_monotonic_ms,
+    )?;
+    Ok(())
+}
+
 fn demo_pulse(validity_ms: u64) -> PulseFrameV1 {
     PulseFrameV1 {
         schema_version: SCHEMA_VERSION_V1,
@@ -335,14 +349,13 @@ fn run_generation_demo() -> Result<RuntimeDemoArtifact, Box<dyn Error>> {
         true,
     );
     let mut trace = Vec::new();
-    let initial = runtime.register_consumer(
-        registration(
-            p1.clone(),
-            "activation:p1-first",
-            IncarnationId::new(DEMO_SUBJECT_INCAR),
-        ),
-        0,
-    )?;
+    let p1_registration = registration(
+        p1.clone(),
+        "activation:p1-first",
+        IncarnationId::new(DEMO_SUBJECT_INCAR),
+    );
+    install_demo_binding(&mut runtime, &p1_registration, 0)?;
+    let initial = runtime.register_consumer(p1_registration, 0)?;
     trace.extend(initial.trace_lines);
     let mut steps = vec![capture_step(
         &runtime,
@@ -377,14 +390,21 @@ fn run_generation_demo() -> Result<RuntimeDemoArtifact, Box<dyn Error>> {
         p1.semantic_digest() == p2.semantic_digest(),
         "equal-body transition fixture is not semantically equal",
     )?;
+    let p2_activation = activation(
+        p2,
+        "activation:p2",
+        GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
+    );
+    let p2_registration = ConsumerRegistrationV1 {
+        policy: p2_activation.policy.clone(),
+        context: p2_activation.context.clone(),
+        subject_incarnation: IncarnationId::new(DEMO_SUBJECT_INCAR),
+    };
+    install_demo_binding(&mut runtime, &p2_registration, 20)?;
     enqueue(
         &mut runtime,
         20,
-        RuntimeInputV1::ActivateConsumer(activation(
-            p2,
-            "activation:p2",
-            GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
-        )),
+        RuntimeInputV1::ActivateConsumer(p2_activation),
     )?;
     let p2_output = runtime.run_until(20)?;
     trace.extend(p2_output.trace_lines);
@@ -402,14 +422,21 @@ fn run_generation_demo() -> Result<RuntimeDemoArtifact, Box<dyn Error>> {
 
     let mut rollback = p1;
     rollback.generation = PolicyGenerationId::new("policy:p1-body-rollback-g3");
+    let rollback_activation = activation(
+        rollback,
+        "activation:p1-body-rollback-g3",
+        GenerationTransitionCauseV1::PolicyRollback,
+    );
+    let rollback_registration = ConsumerRegistrationV1 {
+        policy: rollback_activation.policy.clone(),
+        context: rollback_activation.context.clone(),
+        subject_incarnation: IncarnationId::new(DEMO_SUBJECT_INCAR),
+    };
+    install_demo_binding(&mut runtime, &rollback_registration, 30)?;
     enqueue(
         &mut runtime,
         30,
-        RuntimeInputV1::ActivateConsumer(activation(
-            rollback,
-            "activation:p1-body-rollback-g3",
-            GenerationTransitionCauseV1::PolicyRollback,
-        )),
+        RuntimeInputV1::ActivateConsumer(rollback_activation),
     )?;
     let rollback_output = runtime.run_until(30)?;
     trace.extend(rollback_output.trace_lines);
@@ -520,14 +547,13 @@ fn run_restart_demo() -> Result<RestartArtifact, Box<dyn Error>> {
         100,
         true,
     );
-    runtime.register_consumer(
-        registration(
-            policy.clone(),
-            "activation:restart-before",
-            IncarnationId::new(DEMO_SUBJECT_INCAR),
-        ),
-        0,
-    )?;
+    let restart_registration = registration(
+        policy.clone(),
+        "activation:restart-before",
+        IncarnationId::new(DEMO_SUBJECT_INCAR),
+    );
+    install_demo_binding(&mut runtime, &restart_registration, 0)?;
+    runtime.register_consumer(restart_registration, 0)?;
     enqueue(&mut runtime, 1, ingress(demo_pulse(100)))?;
     runtime.run_until(1)?;
     require(
@@ -809,14 +835,13 @@ fn run_live_linux() -> Result<LiveLinuxArtifact, Box<dyn Error>> {
         "receiver-incarnation:live-one",
         "clock:live-process-one",
     ))?;
-    runtime.register_consumer(
-        registration(
-            policy.clone(),
-            "activation:live-p1",
-            subject_incarnation.clone(),
-        ),
-        0,
-    )?;
+    let live_registration = registration(
+        policy.clone(),
+        "activation:live-p1",
+        subject_incarnation.clone(),
+    );
+    install_demo_binding(&mut runtime, &live_registration, 0)?;
+    runtime.register_consumer(live_registration, 0)?;
 
     let first_frame = agent.next_pulse()?;
     let proc_coverage = first_frame.coverage.observed.clone();
@@ -893,14 +918,21 @@ fn run_live_linux() -> Result<LiveLinuxArtifact, Box<dyn Error>> {
     transitioned_policy.generation = PolicyGenerationId::new("policy:live-p2");
     let transition_at = elapsed_ms(started).max(third_arrival);
     let withdrawal_started = Instant::now();
+    let transition_activation = activation(
+        transitioned_policy.clone(),
+        "activation:live-p2",
+        GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
+    );
+    let transition_registration = ConsumerRegistrationV1 {
+        policy: transition_activation.policy.clone(),
+        context: transition_activation.context.clone(),
+        subject_incarnation: subject_incarnation.clone(),
+    };
+    install_demo_binding(&mut runtime, &transition_registration, transition_at)?;
     enqueue(
         &mut runtime,
         transition_at,
-        RuntimeInputV1::ActivateConsumer(activation(
-            transitioned_policy.clone(),
-            "activation:live-p2",
-            GenerationTransitionCauseV1::EquivalentBodyNewGeneration,
-        )),
+        RuntimeInputV1::ActivateConsumer(transition_activation),
     )?;
     runtime
         .run_until(transition_at)

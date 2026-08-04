@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Bounded receiver/scheduler owner for exact consumer reliance contexts.
 
+mod binding;
 mod campaign;
 mod crash;
 mod journal;
@@ -35,15 +36,18 @@ use pulse_evaluator::{
     EvaluationOutput, Evaluator, ReceiverTracker, ReevaluationBarrierV1, ReliancePolicyV1,
 };
 use pulse_types::{
-    AuthenticationResultV1, ClockId, ConsumerId, ContextActivationId, ContradictionApplicabilityV1,
-    ContradictionCustodyV1, DiagnosticEscalationRequestV1, EscalationDispositionV1,
-    GenerationTransitionCauseV1, IncarnationId, JudgmentCategoryV1, MockDiagnosticReceiptV1,
+    ActivationReceiptV1, AuthenticationResultV1, ClockId, ConsumerId, ContextActivationId,
+    ContradictionApplicabilityV1, ContradictionCustodyV1, DiagnosticEscalationRequestV1,
+    EscalationDispositionV1, GenerationLifecycleFactV1, GenerationLifecycleKindV1,
+    GenerationTransitionCauseV1, IncarnationId, JudgmentCategoryV1, LocalActivationAcceptanceV1,
+    LocalActivationContextV1, LocalCertificateStatusV1, MockDiagnosticReceiptV1,
     MutationAuthorityV1, ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId,
-    PulseFrameV1, ReceivedPulseV1, ReceiverId, RelianceContextTransitionV1, RelianceContextV1,
-    RelianceSupportCertificateV1, RuntimeHistoricalStateV1, RuntimeMetricsV1,
-    RuntimeRefusalClassV1, RuntimeRefusalId, RuntimeRefusalV1, SCHEMA_VERSION_V1,
-    SparseDurableEventKindV1, SparseDurableEventV1, SparseEventId, SubjectId, SubjectScopeV1,
-    digest_parts,
+    PulseFrameV1, QualifiedGenerationBindingV1, QualifiedGenerationSetV1, ReceivedPulseV1,
+    ReceiverId, RelianceContextTransitionV1, RelianceContextV1, RelianceSupportCertificateV1,
+    RuntimeBindingStateV1, RuntimeHistoricalStateV1, RuntimeMetricsV1, RuntimeRefusalClassV1,
+    RuntimeRefusalId, RuntimeRefusalV1, SCHEMA_VERSION_V1, SparseDurableEventKindV1,
+    SparseDurableEventV1, SparseEventId, SubjectId, SubjectScopeV1, VerifiedActivationV1,
+    digest_parts, verify_local_activation,
 };
 use serde::{Deserialize, Serialize};
 
@@ -269,6 +273,12 @@ pub struct RuntimeCycleOutputV1 {
     pub trace_lines: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RuntimeBindingActivationOutputV1 {
+    pub receipt: ActivationReceiptV1,
+    pub runtime_output: RuntimeCycleOutputV1,
+}
+
 impl RuntimeCycleOutputV1 {
     fn append(&mut self, mut other: Self) {
         self.certificates.append(&mut other.certificates);
@@ -297,6 +307,13 @@ struct ConsumerState {
     context: RelianceContextV1,
     seen_activations: BTreeSet<ContextActivationId>,
     certificate: Option<RelianceSupportCertificateV1>,
+}
+
+struct QualifiedBindingSlot {
+    state: RuntimeBindingStateV1,
+    receipt: ActivationReceiptV1,
+    acceptance: LocalActivationAcceptanceV1,
+    accepted: Option<VerifiedActivationV1>,
 }
 
 #[derive(Default)]
@@ -337,6 +354,7 @@ pub struct ReceiverSchedulerRuntime {
     receiver: ReceiverTracker,
     subjects: BTreeMap<SubjectId, SubjectState>,
     consumers: BTreeMap<ConsumerKey, ConsumerState>,
+    qualified_bindings: BTreeMap<ConsumerKey, QualifiedBindingSlot>,
     receiver_streams: BTreeSet<ReceiverStreamIdentity>,
     observer_incarnations: BTreeMap<(SubjectId, ObserverId), BTreeSet<IncarnationId>>,
     pending: BTreeMap<PendingKey, RuntimeInputV1>,
@@ -371,6 +389,7 @@ impl ReceiverSchedulerRuntime {
             config,
             subjects: BTreeMap::new(),
             consumers: BTreeMap::new(),
+            qualified_bindings: BTreeMap::new(),
             receiver_streams: BTreeSet::new(),
             observer_incarnations: BTreeMap::new(),
             pending: BTreeMap::new(),
@@ -442,6 +461,272 @@ impl ReceiverSchedulerRuntime {
             .values()
             .filter_map(|state| state.certificate.clone())
             .collect()
+    }
+
+    #[must_use]
+    pub fn binding_state(
+        &self,
+        subject: &SubjectId,
+        consumer: &ConsumerId,
+    ) -> RuntimeBindingStateV1 {
+        self.qualified_bindings
+            .get(&ConsumerKey::new(subject.clone(), consumer.clone()))
+            .map_or(RuntimeBindingStateV1::Unbound, |slot| slot.state)
+    }
+
+    #[must_use]
+    pub fn activation_receipt(
+        &self,
+        subject: &SubjectId,
+        consumer: &ConsumerId,
+    ) -> Option<&ActivationReceiptV1> {
+        self.qualified_bindings
+            .get(&ConsumerKey::new(subject.clone(), consumer.clone()))
+            .map(|slot| &slot.receipt)
+    }
+
+    /// Verify and install one exact subject/consumer qualified-generation
+    /// binding. The returned live activation cannot be deserialized or reused
+    /// after restart. Installing any binding result is an immediate barrier for
+    /// an already registered consumer; fresh evidence reevaluation remains a
+    /// separate step.
+    #[allow(clippy::too_many_arguments)]
+    pub fn activate_qualified_binding(
+        &mut self,
+        registration: &ConsumerRegistrationV1,
+        manifest_bytes: Option<&[u8]>,
+        certificate_bytes: Option<&[u8]>,
+        report_bytes: Option<&[u8]>,
+        acceptance: LocalActivationAcceptanceV1,
+        at_monotonic_ms: u64,
+    ) -> Result<RuntimeBindingActivationOutputV1, RuntimeError> {
+        if self.history_exhausted {
+            return Err(RuntimeError::new(
+                "sparse_history_capacity",
+                "sparse historical custody is exhausted; binding is fail-stopped",
+            ));
+        }
+        self.ensure_time_not_regressed(at_monotonic_ms)?;
+        self.validate_registration(registration)?;
+        let key = ConsumerKey::new(
+            registration.policy.subject.clone(),
+            registration.policy.consumer.clone(),
+        );
+        let maximum_binding_slots = self
+            .config
+            .bounds
+            .maximum_subjects
+            .checked_mul(self.config.bounds.maximum_consumers_per_subject)
+            .ok_or_else(|| RuntimeError::new("invalid_bounds", "binding slot bound overflow"))?;
+        if !self.qualified_bindings.contains_key(&key)
+            && self.qualified_bindings.len() >= maximum_binding_slots
+        {
+            return Err(RuntimeError::new(
+                "qualified_binding_capacity",
+                "qualified binding slot bound is full; no entry was evicted",
+            ));
+        }
+        let semantic_measurements = active_runtime_measurements(&self.config, registration)
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let expected_generation_set = QualifiedGenerationSetV1::from_context(
+            registration.policy.subject.clone(),
+            registration.policy.consumer.clone(),
+            &registration.context,
+        );
+        let attempt = verify_local_activation(
+            manifest_bytes,
+            certificate_bytes,
+            report_bytes,
+            &acceptance,
+            LocalActivationContextV1 {
+                expected_generation_set,
+                receiver_incarnation: self.config.receiver_incarnation.clone(),
+                receiver_clock_id: self.config.clock_id.clone(),
+                activated_at_monotonic_ms: at_monotonic_ms,
+                runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+                target_platform: format!(
+                    "{}-unknown-{}",
+                    std::env::consts::ARCH,
+                    std::env::consts::OS
+                ),
+                semantic_measurements,
+            },
+        )
+        .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let receipt = attempt.receipt;
+        let state = receipt.body.state;
+        self.qualified_bindings.insert(
+            key.clone(),
+            QualifiedBindingSlot {
+                state,
+                receipt: receipt.clone(),
+                acceptance,
+                accepted: attempt.accepted,
+            },
+        );
+
+        let mut output = std::mem::take(&mut self.pending_output);
+        self.record_sparse(
+            at_monotonic_ms,
+            SparseDurableEventKindV1::QualifiedGenerationBindingChanged {
+                receipt: Box::new(receipt.clone()),
+            },
+            &mut output,
+        );
+        self.cancel_schedule(&key);
+        if let Some(mut consumer_state) = self.consumers.remove(&key) {
+            let evaluation = consumer_state
+                .evaluator
+                .install_reevaluation_barrier(
+                    ReevaluationBarrierV1::QualifiedGenerationBinding {
+                        detail: format!(
+                            "qualified-generation activation result is {state:?}; prior standing is not inherited"
+                        ),
+                    },
+                    at_monotonic_ms,
+                )
+                .map_err(RuntimeError::from_evaluator)?;
+            self.consumers.insert(key.clone(), consumer_state);
+            self.apply_evaluation(&key, evaluation, at_monotonic_ms, &mut output)?;
+        }
+        output.trace_lines.push(format!(
+            "[{at_monotonic_ms:06}ms] BINDING consumer={} state={state:?} receipt={} standing_inherited=false",
+            key.consumer, receipt.receipt_digest
+        ));
+        output.append(std::mem::take(&mut self.pending_output));
+        Ok(RuntimeBindingActivationOutputV1 {
+            receipt,
+            runtime_output: output,
+        })
+    }
+
+    /// Assemble a narrow local package from already-recorded exact
+    /// qualification results, verify it through the same activation gate, and
+    /// return both historical package objects and the live activation result.
+    /// This function executes no command and trusts no generation label.
+    pub fn qualify_and_activate_local_binding(
+        &mut self,
+        registration: &ConsumerRegistrationV1,
+        inputs: LocalQualificationInputsV1,
+        at_monotonic_ms: u64,
+    ) -> Result<
+        (
+            LocalQualificationPackageV1,
+            RuntimeBindingActivationOutputV1,
+        ),
+        RuntimeError,
+    > {
+        let package = build_local_qualification_package(&self.config, registration, inputs)
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let manifest = package
+            .manifest_bytes()
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let certificate = package
+            .certificate_bytes()
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let report = package
+            .report_bytes()
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let activation = self.activate_qualified_binding(
+            registration,
+            Some(&manifest),
+            Some(&certificate),
+            Some(&report),
+            package.acceptance.clone(),
+            at_monotonic_ms,
+        )?;
+        Ok((package, activation))
+    }
+
+    pub fn apply_generation_lifecycle_fact(
+        &mut self,
+        subject: &SubjectId,
+        consumer: &ConsumerId,
+        fact: GenerationLifecycleFactV1,
+        at_monotonic_ms: u64,
+    ) -> Result<RuntimeCycleOutputV1, RuntimeError> {
+        if self.history_exhausted {
+            return Err(RuntimeError::new(
+                "sparse_history_capacity",
+                "sparse historical custody is exhausted; lifecycle change is fail-stopped",
+            ));
+        }
+        self.ensure_time_not_regressed(at_monotonic_ms)?;
+        fact.validate()
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let key = ConsumerKey::new(subject.clone(), consumer.clone());
+        let slot = self.qualified_bindings.get_mut(&key).ok_or_else(|| {
+            RuntimeError::new(
+                "unbound_generation",
+                "no active local binding exists for this lifecycle fact",
+            )
+        })?;
+        let observed_through = match &slot.acceptance.certificate_status {
+            LocalCertificateStatusV1::Accepted {
+                observed_through_sequence,
+            } => *observed_through_sequence,
+            _ => {
+                return Err(RuntimeError::new(
+                    "lifecycle_already_terminal",
+                    "binding lifecycle is already superseded, revoked, or unknown",
+                ));
+            }
+        };
+        if fact.body.authority_id != slot.acceptance.lifecycle_authority_id
+            || fact.body.certificate_digest != slot.acceptance.accepted_certificate_digest
+            || fact.body.fact_sequence <= observed_through
+        {
+            return Err(RuntimeError::new(
+                "lifecycle_authority_mismatch",
+                "fact authority, certificate, or sequence is not accepted by local policy",
+            ));
+        }
+        let state = match fact.body.kind {
+            GenerationLifecycleKindV1::Superseded => RuntimeBindingStateV1::Superseded,
+            GenerationLifecycleKindV1::Revoked => RuntimeBindingStateV1::Revoked,
+        };
+        slot.state = state;
+        slot.accepted = None;
+        slot.acceptance.certificate_status = match fact.body.kind {
+            GenerationLifecycleKindV1::Superseded => {
+                LocalCertificateStatusV1::Superseded { fact: fact.clone() }
+            }
+            GenerationLifecycleKindV1::Revoked => {
+                LocalCertificateStatusV1::Revoked { fact: fact.clone() }
+            }
+        };
+        self.cancel_schedule(&key);
+        let mut output = std::mem::take(&mut self.pending_output);
+        self.record_sparse(
+            at_monotonic_ms,
+            SparseDurableEventKindV1::QualifiedGenerationLifecycleApplied {
+                consumer: consumer.clone(),
+                fact: Box::new(fact),
+                state,
+                standing_preserved: false,
+            },
+            &mut output,
+        );
+        if let Some(mut consumer_state) = self.consumers.remove(&key) {
+            let evaluation = consumer_state
+                .evaluator
+                .install_reevaluation_barrier(
+                    ReevaluationBarrierV1::QualifiedGenerationBinding {
+                        detail: format!(
+                            "accepted local lifecycle fact changed binding to {state:?}"
+                        ),
+                    },
+                    at_monotonic_ms,
+                )
+                .map_err(RuntimeError::from_evaluator)?;
+            self.consumers.insert(key.clone(), consumer_state);
+            self.apply_evaluation(&key, evaluation, at_monotonic_ms, &mut output)?;
+        }
+        output.trace_lines.push(format!(
+            "[{at_monotonic_ms:06}ms] LIFECYCLE consumer={consumer} state={state:?} standing_preserved=false"
+        ));
+        output.append(std::mem::take(&mut self.pending_output));
+        Ok(output)
     }
 
     /// Withdraw positive standing when an enclosing local actor can no longer
@@ -1397,6 +1682,7 @@ impl ReceiverSchedulerRuntime {
             );
             return Ok(());
         }
+        self.invalidate_binding_for_context_change(&key, &activation.context, evaluated_at, output);
         let prior_context = state.context.clone();
         let prior_was_current = state
             .certificate
@@ -1553,11 +1839,21 @@ impl ReceiverSchedulerRuntime {
         evaluated_at: u64,
         output: &mut RuntimeCycleOutputV1,
     ) -> Result<(), RuntimeError> {
+        let prior_runtime_current = self
+            .consumers
+            .get(key)
+            .and_then(|state| state.certificate.as_ref())
+            .is_some_and(|certificate| certificate.judgment == JudgmentCategoryV1::Current);
         for event in evaluation.sparse_events {
             self.record_sparse(event.at_monotonic_ms, event.event, output);
         }
         if let Some(request) = evaluation.escalation_request {
-            if self.request_owners.len() >= self.config.bounds.maximum_active_escalations {
+            if !prior_runtime_current {
+                output.trace_lines.push(format!(
+                    "[{evaluated_at:06}ms] ESCALATION_SUPPRESSED consumer={} reason=no_prior_runtime_supported_current",
+                    key.consumer
+                ));
+            } else if self.request_owners.len() >= self.config.bounds.maximum_active_escalations {
                 self.push_refusal(
                     RuntimeRefusalClassV1::EscalationCapacity,
                     evaluated_at,
@@ -1606,12 +1902,24 @@ impl ReceiverSchedulerRuntime {
             );
             return Ok(());
         }
+        let evaluator_requested_current =
+            evaluation.judgment.category == JudgmentCategoryV1::Current;
+        let qualified_generation = if evaluator_requested_current {
+            self.revalidated_qualified_binding(key, &state, evaluated_at, output)?
+        } else {
+            self.descriptive_qualified_binding(key, &state)
+        };
+        let judgment = if evaluator_requested_current && qualified_generation.is_none() {
+            JudgmentCategoryV1::Unknown
+        } else {
+            evaluation.judgment.category
+        };
         // An evaluator can truthfully retain a nonblocking caution (for
         // example, unverified provenance when this exact policy does not
         // require verification) while still satisfying every named premise.
         // Such cautions remain in the judgment explanation; they are not
         // mislabeled as missing certificate premises.
-        let mut missing = if evaluation.judgment.category == JudgmentCategoryV1::Current {
+        let mut missing = if judgment == JudgmentCategoryV1::Current {
             Vec::new()
         } else {
             evaluation
@@ -1623,6 +1931,13 @@ impl ReceiverSchedulerRuntime {
                 .map(|reason| reason.code.clone())
                 .collect::<Vec<_>>()
         };
+        if evaluator_requested_current && qualified_generation.is_none() {
+            let binding_state = self
+                .qualified_bindings
+                .get(key)
+                .map_or(RuntimeBindingStateV1::Unbound, |slot| slot.state);
+            missing.push(format!("qualified_generation_binding:{binding_state:?}"));
+        }
         missing.extend(
             evaluation
                 .judgment
@@ -1633,16 +1948,21 @@ impl ReceiverSchedulerRuntime {
         );
         missing.sort();
         missing.dedup();
-        let deadline = evaluation.judgment.positive_support_expires_at_monotonic_ms;
+        let deadline = if judgment == JudgmentCategoryV1::Current {
+            evaluation.judgment.positive_support_expires_at_monotonic_ms
+        } else {
+            None
+        };
         let mut certificate = RelianceSupportCertificateV1 {
             schema_version: SCHEMA_VERSION_V1,
             certificate_id: pulse_types::SupportCertificateId::new("pending"),
             consumer: key.consumer.clone(),
             subject_scope: evaluation.judgment.subject_scope.clone(),
             context: state.context.clone(),
+            qualified_generation,
             evaluated_at_monotonic_ms: evaluated_at,
             receiver_clock_id: self.config.clock_id.to_string(),
-            judgment: evaluation.judgment.category,
+            judgment,
             evidence_window_id: evaluation.judgment.evidence_window_id.clone(),
             supporting_evidence_ids: evidence,
             missing_premises: missing,
@@ -1694,6 +2014,164 @@ impl ReceiverSchedulerRuntime {
             .map(|consumer| consumer.evaluator.metrics().escalation_deduplication_count)
             .sum();
         Ok(())
+    }
+
+    fn descriptive_qualified_binding(
+        &self,
+        key: &ConsumerKey,
+        state: &ConsumerState,
+    ) -> Option<QualifiedGenerationBindingV1> {
+        let slot = self.qualified_bindings.get(key)?;
+        if slot.state != RuntimeBindingStateV1::QualifiedAndMatched {
+            return None;
+        }
+        let accepted = slot.accepted.as_ref()?;
+        let binding = accepted.binding();
+        if binding.generation_set.subject != key.subject
+            || binding.generation_set.consumer != key.consumer
+            || !binding.generation_set.matches_context(&state.context)
+        {
+            return None;
+        }
+        Some(binding.clone())
+    }
+
+    fn invalidate_binding_for_context_change(
+        &mut self,
+        key: &ConsumerKey,
+        context: &RelianceContextV1,
+        evaluated_at: u64,
+        output: &mut RuntimeCycleOutputV1,
+    ) {
+        let invalidation = self.qualified_bindings.get(key).and_then(|slot| {
+            slot.accepted.as_ref().and_then(|accepted| {
+                (!accepted.binding().generation_set.matches_context(context)).then(|| {
+                    (
+                        accepted.receipt().receipt_digest.clone(),
+                        "reliance context changed without a matching fresh qualified activation"
+                            .to_owned(),
+                    )
+                })
+            })
+        });
+        if let Some((prior_receipt, detail)) = invalidation {
+            if let Some(slot) = self.qualified_bindings.get_mut(key) {
+                slot.state = RuntimeBindingStateV1::Unbound;
+                slot.accepted = None;
+            }
+            self.record_sparse(
+                evaluated_at,
+                SparseDurableEventKindV1::QualifiedGenerationBindingInvalidated {
+                    consumer: key.consumer.clone(),
+                    prior_activation_receipt_digest: prior_receipt,
+                    state: RuntimeBindingStateV1::Unbound,
+                    detail: detail.clone(),
+                    standing_preserved: false,
+                },
+                output,
+            );
+            output.trace_lines.push(format!(
+                "[{evaluated_at:06}ms] BINDING_INVALIDATED consumer={} state=Unbound detail={detail}",
+                key.consumer
+            ));
+        }
+    }
+
+    fn revalidated_qualified_binding(
+        &mut self,
+        key: &ConsumerKey,
+        state: &ConsumerState,
+        evaluated_at: u64,
+        output: &mut RuntimeCycleOutputV1,
+    ) -> Result<Option<QualifiedGenerationBindingV1>, RuntimeError> {
+        let registration = ConsumerRegistrationV1 {
+            policy: state.evaluator.policy().clone(),
+            context: state.context.clone(),
+            subject_incarnation: state.evaluator.current_subject_incarnation().clone(),
+        };
+        let observed = active_runtime_measurements(&self.config, &registration)
+            .map_err(|error| RuntimeError::new(error.code, error.detail))?;
+        let mut invalidation = None;
+        let binding = if let Some(slot) = self.qualified_bindings.get_mut(key) {
+            if slot.state != RuntimeBindingStateV1::QualifiedAndMatched {
+                None
+            } else if let Some(accepted) = slot.accepted.as_mut() {
+                let generation_matches = accepted.binding().generation_set.subject == key.subject
+                    && accepted.binding().generation_set.consumer == key.consumer
+                    && accepted
+                        .binding()
+                        .generation_set
+                        .matches_context(&state.context);
+                if !generation_matches {
+                    invalidation = Some((
+                        RuntimeBindingStateV1::Ambiguous,
+                        "active qualified generation does not match the evaluator context"
+                            .to_owned(),
+                        accepted.receipt().receipt_digest.clone(),
+                    ));
+                    None
+                } else if let Err(error) = accepted.revalidate_executable() {
+                    invalidation = Some((
+                        RuntimeBindingStateV1::MutableAfterActivation,
+                        error.to_string(),
+                        accepted.receipt().receipt_digest.clone(),
+                    ));
+                    None
+                } else {
+                    let mismatch = observed.iter().find(|observed_measurement| {
+                        accepted
+                            .measurements()
+                            .iter()
+                            .find(|qualified| qualified.role == observed_measurement.role)
+                            .is_none_or(|qualified| {
+                                qualified.content_digest != observed_measurement.content_digest
+                                    || qualified.byte_length != observed_measurement.byte_length
+                                    || qualified.caller_supplied
+                            })
+                    });
+                    if let Some(mismatch) = mismatch {
+                        invalidation = Some((
+                            mismatch.role.mismatch_state(),
+                            format!(
+                                "owned active artifact {:?} changed after qualification activation",
+                                mismatch.role
+                            ),
+                            accepted.receipt().receipt_digest.clone(),
+                        ));
+                        None
+                    } else {
+                        Some(accepted.binding().clone())
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some((binding_state, detail, prior_receipt)) = invalidation {
+            if let Some(slot) = self.qualified_bindings.get_mut(key) {
+                slot.state = binding_state;
+                slot.accepted = None;
+            }
+            self.cancel_schedule(key);
+            self.record_sparse(
+                evaluated_at,
+                SparseDurableEventKindV1::QualifiedGenerationBindingInvalidated {
+                    consumer: key.consumer.clone(),
+                    prior_activation_receipt_digest: prior_receipt,
+                    state: binding_state,
+                    detail: detail.clone(),
+                    standing_preserved: false,
+                },
+                output,
+            );
+            output.trace_lines.push(format!(
+                "[{evaluated_at:06}ms] BINDING_INVALIDATED consumer={} state={binding_state:?} detail={detail}",
+                key.consumer
+            ));
+        }
+        Ok(binding)
     }
 
     fn validate_registration(
@@ -2046,3 +2524,12 @@ pub fn policy_body_equality_marker(
         ],
     )
 }
+pub use binding::{
+    CanonicalEscalationPolicyV1, CanonicalFailureDomainV1, CanonicalReliancePolicyArtifactV1,
+    CanonicalToleranceV1, ConsumerProfileArtifactV1, EvaluatorImplementationArtifactV1,
+    LocalQualificationInputsV1, LocalQualificationPackageV1, ObservationPolicyArtifactV1,
+    ObserverSetArtifactV1, RuntimeArtifactPayloadV1, RuntimeConfigurationArtifactV1,
+    SemanticContractsArtifactV1, active_runtime_artifact_payloads, active_runtime_measurements,
+    build_local_qualification_package, package_artifact_digests, qualification_fixture_inputs,
+    runtime_semantic_contracts,
+};

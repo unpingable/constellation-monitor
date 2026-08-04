@@ -10,6 +10,7 @@ use pulse_runtime::{
     ConsumerActivationV1, ConsumerRegistrationV1, HistoricalJournal, JournalBoundsV1,
     JournalConfigV1, LocalCrashReactor, MonotonicEpochV1, PulseIngressV1, ReactorConditionV1,
     ReactorConfigV1, ReceiverSchedulerRuntime, RuntimeBoundsV1, RuntimeConfigV1, RuntimeInputV1,
+    qualification_fixture_inputs,
 };
 use pulse_types::{
     AuthenticationFieldV1, AuthenticationResultV1, BoundedSignalValueV1, ClockId, ConsumerId,
@@ -140,14 +141,19 @@ fn registered_runtime(
     config: RuntimeConfigV1,
 ) -> ReceiverSchedulerRuntime {
     let mut runtime = ReceiverSchedulerRuntime::new(config).expect("runtime");
+    let registration = registration(
+        policy(consumer, "policy:reactor-one", validity_ms),
+        "activation:one",
+    );
     runtime
-        .register_consumer(
-            registration(
-                policy(consumer, "policy:reactor-one", validity_ms),
-                "activation:one",
-            ),
+        .qualify_and_activate_local_binding(
+            &registration,
+            qualification_fixture_inputs("3cd15b7a1e7f424f6fd57c09b30fa4790947eca2", 97),
             0,
         )
+        .expect("local exact binding activates");
+    runtime
+        .register_consumer(registration, 0)
         .expect("consumer registers");
     runtime
 }
@@ -417,24 +423,30 @@ fn two_deadlines_are_serviced_earliest_first() {
     let path = temp_path("two-deadlines");
     let runtime_config = runtime_config("receiver-incarnation:two", "clock:two");
     let mut runtime = ReceiverSchedulerRuntime::new(runtime_config.clone()).expect("runtime");
+    let fast = registration(
+        policy("consumer:fast", "policy:fast", 40),
+        "activation:fast",
+    );
     runtime
-        .register_consumer(
-            registration(
-                policy("consumer:fast", "policy:fast", 40),
-                "activation:fast",
-            ),
+        .qualify_and_activate_local_binding(
+            &fast,
+            qualification_fixture_inputs("3cd15b7a1e7f424f6fd57c09b30fa4790947eca2", 97),
             0,
         )
-        .expect("fast registers");
+        .expect("fast binding activates");
+    runtime.register_consumer(fast, 0).expect("fast registers");
+    let slow = registration(
+        policy("consumer:slow", "policy:slow", 150),
+        "activation:slow",
+    );
     runtime
-        .register_consumer(
-            registration(
-                policy("consumer:slow", "policy:slow", 150),
-                "activation:slow",
-            ),
+        .qualify_and_activate_local_binding(
+            &slow,
+            qualification_fixture_inputs("3cd15b7a1e7f424f6fd57c09b30fa4790947eca2", 97),
             0,
         )
-        .expect("slow registers");
+        .expect("slow binding activates");
+    runtime.register_consumer(slow, 0).expect("slow registers");
     let journal_config = journal_config("journal:two-deadlines");
     let journal = HistoricalJournal::create_new(&path, journal_config).expect("journal");
     let reactor = LocalCrashReactor::start(

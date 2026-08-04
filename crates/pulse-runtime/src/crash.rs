@@ -541,8 +541,16 @@ pub(crate) fn registered_runtime(
 ) -> Result<ReceiverSchedulerRuntime, io::Error> {
     let mut runtime = ReceiverSchedulerRuntime::new(config)
         .map_err(|error| io::Error::other(error.to_string()))?;
+    let registration = registration(policy(), "activation:crash-child");
     runtime
-        .register_consumer(registration(policy(), "activation:crash-child"), 0)
+        .qualify_and_activate_local_binding(
+            &registration,
+            crate::qualification_fixture_inputs("3cd15b7a1e7f424f6fd57c09b30fa4790947eca2", 97),
+            0,
+        )
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    runtime
+        .register_consumer(registration, 0)
         .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(runtime)
 }

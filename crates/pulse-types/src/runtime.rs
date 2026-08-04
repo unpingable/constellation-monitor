@@ -7,8 +7,8 @@ use crate::{
     ContradictionRecordV1, CoverageSummaryV1, DigestV1, EscalationStateV1,
     EvaluatorSemanticGenerationId, EvidenceWindowId, IncarnationId, JudgmentCategoryV1,
     MockDiagnosticReceiptV1, MutationAuthorityV1, ObservationPolicyGenerationId,
-    ObserverSetGenerationId, PolicyGenerationId, RuntimeRefusalId, SCHEMA_VERSION_V1,
-    SparseDurableEventV1, SubjectScopeV1, SupportCertificateId, digest_parts,
+    ObserverSetGenerationId, PolicyGenerationId, QualifiedGenerationBindingV1, RuntimeRefusalId,
+    SCHEMA_VERSION_V1, SparseDurableEventV1, SubjectScopeV1, SupportCertificateId, digest_parts,
 };
 
 pub const MAX_CERTIFICATE_EVIDENCE_REFS: usize = 64;
@@ -117,6 +117,8 @@ pub struct RelianceSupportCertificateV1 {
     pub consumer: ConsumerId,
     pub subject_scope: SubjectScopeV1,
     pub context: RelianceContextV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualified_generation: Option<QualifiedGenerationBindingV1>,
     pub evaluated_at_monotonic_ms: u64,
     pub receiver_clock_id: String,
     pub judgment: JudgmentCategoryV1,
@@ -147,6 +149,10 @@ impl RelianceSupportCertificateV1 {
                 .to_vec(),
             self.subject_scope.scope.as_bytes().to_vec(),
             context_digest.as_str().as_bytes().to_vec(),
+            self.qualified_generation.as_ref().map_or_else(
+                || b"qualified-generation:none".to_vec(),
+                |binding| binding.identity_digest().as_str().as_bytes().to_vec(),
+            ),
             self.evaluated_at_monotonic_ms.to_be_bytes().to_vec(),
             self.receiver_clock_id.as_bytes().to_vec(),
             self.judgment.as_str().as_bytes().to_vec(),
@@ -223,6 +229,20 @@ impl RelianceSupportCertificateV1 {
             .validate()
             .map_err(|_| RuntimeTypeError::identity("subject_scope"))?;
         self.context.validate()?;
+        if let Some(binding) = &self.qualified_generation {
+            binding
+                .validate()
+                .map_err(|error| RuntimeTypeError::new(error.code, "invalid qualified binding"))?;
+            if binding.generation_set.subject != self.subject_scope.subject
+                || binding.generation_set.consumer != self.consumer
+                || !binding.generation_set.matches_context(&self.context)
+            {
+                return Err(RuntimeTypeError::new(
+                    "qualified_binding_mismatch",
+                    "qualified generation binding does not match the certificate context",
+                ));
+            }
+        }
         if self.supporting_evidence_ids.len() > MAX_CERTIFICATE_EVIDENCE_REFS
             || self.missing_premises.len() > MAX_CERTIFICATE_MISSING_PREMISES
             || self.applicable_contradictions.len() > MAX_CERTIFICATE_CONTRADICTIONS
@@ -242,7 +262,8 @@ impl RelianceSupportCertificateV1 {
             ));
         }
         if self.judgment == JudgmentCategoryV1::Current {
-            if self.earliest_support_expiry_monotonic_ms.is_none()
+            if self.qualified_generation.is_none()
+                || self.earliest_support_expiry_monotonic_ms.is_none()
                 || self.next_scheduled_reevaluation_monotonic_ms
                     != self.earliest_support_expiry_monotonic_ms
                 || self
@@ -254,7 +275,7 @@ impl RelianceSupportCertificateV1 {
             {
                 return Err(RuntimeTypeError::new(
                     "invalid_current_support",
-                    "CURRENT certificate must bind complete premises and a future exact support expiry",
+                    "CURRENT certificate must bind qualified generation, complete premises, and a future exact support expiry",
                 ));
             }
         } else if self.earliest_support_expiry_monotonic_ms.is_some()
@@ -483,7 +504,10 @@ fn escalation_transcript(state: &EscalationStateV1) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ClockId, CoverageSummaryV1, EscalationStateV1, SubjectId, digest_parts};
+    use crate::{
+        AuthorityGrantsV1, ClockId, CoverageSummaryV1, EscalationStateV1, QualifiedGenerationSetV1,
+        SubjectId, digest_parts,
+    };
 
     fn context(activation: &str, generation: &str) -> RelianceContextV1 {
         RelianceContextV1 {
@@ -513,6 +537,7 @@ mod tests {
 
     #[test]
     fn current_certificate_requires_exact_scheduled_expiry() {
+        let exact_context = context("activation:1", "policy:1");
         let mut certificate = RelianceSupportCertificateV1 {
             schema_version: SCHEMA_VERSION_V1,
             certificate_id: SupportCertificateId::new("pending"),
@@ -522,7 +547,21 @@ mod tests {
                 subject_incarnation: IncarnationId::new("subject-incarnation:1"),
                 scope: "host".to_owned(),
             },
-            context: context("activation:1", "policy:1"),
+            context: exact_context.clone(),
+            qualified_generation: Some(QualifiedGenerationBindingV1 {
+                schema_version: SCHEMA_VERSION_V1,
+                manifest_digest: digest_parts("manifest", &[b"one"]),
+                qualification_certificate_digest: digest_parts("certificate", &[b"one"]),
+                activation_receipt_digest: digest_parts("receipt", &[b"one"]),
+                activation_occurrence_id: IncarnationId::new("activation-occurrence:one"),
+                process_epoch_id: IncarnationId::new("process-epoch:one"),
+                generation_set: QualifiedGenerationSetV1::from_context(
+                    SubjectId::new("subject:a"),
+                    ConsumerId::new("consumer:a"),
+                    &exact_context,
+                ),
+                authority_grants: AuthorityGrantsV1::none(),
+            }),
             evaluated_at_monotonic_ms: 10,
             receiver_clock_id: ClockId::new("clock:1").to_string(),
             judgment: JudgmentCategoryV1::Current,

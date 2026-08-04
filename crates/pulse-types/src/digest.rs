@@ -26,8 +26,16 @@ impl DigestV1 {
         if hex.len() != 64 {
             return Err(DigestError("digest has the wrong length"));
         }
-        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(DigestError("digest contains non-hexadecimal bytes"));
+        if !hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(DigestError(
+                "digest contains non-canonical hexadecimal bytes",
+            ));
+        }
+        if hex.bytes().all(|byte| byte == b'0') {
+            return Err(DigestError("all-zero digest is not a content identity"));
         }
         Ok(())
     }
@@ -86,5 +94,20 @@ mod tests {
         digest_parts("fixture", &[b"value"])
             .validate()
             .expect("generated digest is valid");
+    }
+
+    #[test]
+    fn digest_validation_rejects_algorithm_downgrade_uppercase_and_zero() {
+        assert!(DigestV1("sha1:00".to_owned()).validate().is_err());
+        assert!(
+            DigestV1(format!("sha256:{}", "A".repeat(64)))
+                .validate()
+                .is_err()
+        );
+        assert!(
+            DigestV1(format!("sha256:{}", "0".repeat(64)))
+                .validate()
+                .is_err()
+        );
     }
 }
