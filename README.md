@@ -74,7 +74,9 @@ policy generation.
 
 ## Workspace
 
-The minimal Rust workspace contains eight crates:
+The Rust workspace contains nine crates. Eight retain the experimental monitor
+plane, while one closed production adapter owns proposition-exact support for
+the first NQ/Nightshift integration:
 
 - `pulse-types`: closed versioned records and compact bounded pulse encoding;
 - `pulse-agent`: synthetic and small Linux `/proc` pulse production;
@@ -86,7 +88,9 @@ The minimal Rust workspace contains eight crates:
 - `pulse-qualification`: canonical local artifact-package generation,
   verification, activation demos, and crash/substitution qualification; and
 - `pulse-transport-canary`: one bounded Ed25519-pinned UDP custody path and
-  deterministic sender/receiver qualification harness.
+  deterministic sender/receiver qualification harness; and
+- `pulse-nq-load-support`: a closed one-shot producer, separate intake, and
+  read-only resolver for exactly `nq.host.load_pressure/v1`.
 
 `pulse-runtime` is a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
@@ -205,6 +209,7 @@ mutation authority.
 - [Receiver-boundary campaign plan](docs/campaign-5-plan.md)
 - [Receiver-boundary reconnaissance](docs/campaign-5-reconnaissance.md)
 - [Receiver-boundary campaign report](docs/campaign-5-report.md)
+- [Exact NQ host-load-pressure support contract](docs/nq-host-load-pressure-support-v1.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.
