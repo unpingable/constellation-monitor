@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "monitor.project-observation.inventory/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project", "repository", "acquisition", "validation_issues", "concerns"],
+  "properties": {
+    "schema": {"const": "monitor.project-observation.inventory/v1"},
+    "project": {"type": "string", "minLength": 1},
+    "repository": {"type": "string", "minLength": 1},
+    "acquisition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["disposition", "acquired_at_unix_ms", "producer", "binding_schema", "manifest_digest", "status_digest", "exit_code", "stdout_bytes", "stderr_bytes", "repository_revision_context", "repository_revision_is_deployment_provenance"],
+      "properties": {
+        "disposition": {"type": "string", "minLength": 1},
+        "acquired_at_unix_ms": {"type": "integer", "minimum": 0},
+        "producer": {"type": "string", "minLength": 1},
+        "binding_schema": {"const": "project.observation-binding/v1"},
+        "manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "status_digest": {"type": ["string", "null"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "stdout_bytes": {"type": "integer", "minimum": 0},
+        "stderr_bytes": {"type": "integer", "minimum": 0},
+        "repository_revision_context": {"type": ["string", "null"]},
+        "repository_revision_is_deployment_provenance": {"const": false}
+      }
+    },
+    "validation_issues": {"type": "array", "items": {"type": "string"}},
+    "concerns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["declaration", "monitor_state", "observation"],
+        "properties": {
+          "declaration": {"type": "object"},
+          "monitor_state": {"enum": ["OBSERVED", "MISSING_REQUIRED_OBSERVATION", "MISSING_OPTIONAL_OBSERVATION"]},
+          "observation": {"type": ["object", "null"]}
+        }
+      }
+    }
+  }
+}
