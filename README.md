@@ -74,9 +74,10 @@ policy generation.
 
 ## Workspace
 
-The Rust workspace contains nine crates. Eight retain the experimental monitor
-plane, while one closed production adapter owns proposition-exact support for
-the first NQ/Nightshift integration:
+The Rust workspace contains ten crates. Nine retain the experimental monitor
+plane, including one generic repository concern acquisition boundary, while
+one closed production adapter owns proposition-exact support for the first
+NQ/Nightshift integration:
 
 - `pulse-types`: closed versioned records and compact bounded pulse encoding;
 - `pulse-agent`: synthetic and small Linux `/proc` pulse production;
@@ -89,6 +90,9 @@ the first NQ/Nightshift integration:
   verification, activation demos, and crash/substitution qualification; and
 - `pulse-transport-canary`: one bounded Ed25519-pinned UDP custody path and
   deterministic sender/receiver qualification harness; and
+- `monitor-project-concerns`: passive generic concern discovery, explicitly
+  trusted bounded producer acquisition, structural correspondence validation,
+  and required-observation inventory gaps; and
 - `pulse-nq-load-support`: a closed one-shot producer, separate intake, and
   read-only resolver for exactly `nq.host.load_pressure/v1`.
 
@@ -173,6 +177,9 @@ cargo run -p pulse-transport-canary -- expiry-demo
 cargo run -p pulse-transport-canary -- restart-demo
 cargo run -p pulse-transport-canary -- udp-loopback
 cargo run -p pulse-transport-canary -- artifacts /tmp/create-new-custody-artifact-directory
+cargo run -p monitor-project-concerns --bin monitor-concerns -- discover /path/to/workspace
+cargo run -p monitor-project-concerns --bin monitor-concerns -- validate /path/to/project
+cargo run -p monitor-project-concerns --bin monitor-concerns -- collect /path/to/project --trusted-root /path/to/workspace --allow-exec
 ```
 
 Optional report paths are created without overwriting an existing file. Their
@@ -210,6 +217,7 @@ mutation authority.
 - [Receiver-boundary reconnaissance](docs/campaign-5-reconnaissance.md)
 - [Receiver-boundary campaign report](docs/campaign-5-report.md)
 - [Exact NQ host-load-pressure support contract](docs/nq-host-load-pressure-support-v1.md)
+- [Generic project-concern discovery and acquisition contract](docs/project-concern-contract.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.

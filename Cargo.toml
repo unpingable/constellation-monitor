@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/monitor-project-concerns",
     "crates/pulse-agent",
     "crates/pulse-evaluator",
     "crates/pulse-l3-bridge",
@@ -27,6 +28,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_jcs = "0.1"
 sha2 = "0.10"
+toml = "0.9.12"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
