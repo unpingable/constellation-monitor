@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pulse.project-predicate-qualified-support/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "receipt_digest", "policy_id", "policy_digest", "project", "concern", "question", "declaration_profile", "predicate_profile", "nq_catalog_digest", "nq_profile_digest", "nq_input_schema_digest", "nq_receipt_digest", "nq_verifier_executable_digest", "primary_observed_at", "support_evidence_id", "support_evidence_digest", "support_observed_at", "support_producer_id", "support_source_id", "support_vantage_id", "subject_id", "qualification_at", "current_until_unix_ms", "primary_support_skew_ms", "independence_basis", "disposition", "detail", "validated", "not_validated"],
+  "properties": {
+    "schema": {"const": "pulse.project-predicate-qualified-support/v1"},
+    "receipt_digest": {"$ref": "#/$defs/digest"}, "policy_id": {"type": "string"}, "policy_digest": {"$ref": "#/$defs/digest"},
+    "project": {"type": "string"}, "concern": {"type": "string"}, "question": {"type": "string"}, "declaration_profile": {"type": "string"}, "predicate_profile": {"type": "string"},
+    "nq_catalog_digest": {"$ref": "#/$defs/digest"}, "nq_profile_digest": {"$ref": "#/$defs/digest"}, "nq_input_schema_digest": {"$ref": "#/$defs/digest"}, "nq_receipt_digest": {"$ref": "#/$defs/digest"}, "nq_verifier_executable_digest": {"$ref": "#/$defs/digest"},
+    "primary_observed_at": {"type": ["string", "null"]}, "support_evidence_id": {"type": ["string", "null"]}, "support_evidence_digest": {"type": ["string", "null"]}, "support_observed_at": {"type": ["string", "null"]}, "support_producer_id": {"type": ["string", "null"]}, "support_source_id": {"type": ["string", "null"]}, "support_vantage_id": {"type": ["string", "null"]}, "subject_id": {"type": "string"}, "qualification_at": {"type": "string", "format": "date-time"}, "current_until_unix_ms": {"type": ["integer", "null"]}, "primary_support_skew_ms": {"type": ["integer", "null"], "minimum": 0}, "independence_basis": {"type": "string"},
+    "disposition": {"enum": ["SUPPORTED_CURRENT", "NQ_RECEIPT_INVALID", "MISSING_SUPPORT", "SUPPORT_PRODUCER_FAILED", "SUPPORT_EVIDENCE_INVALID", "IDENTITY_MISMATCH", "INDEPENDENCE_NOT_QUALIFIED", "PRIMARY_STALE", "SUPPORT_STALE", "SKEW_EXCEEDED", "CONTRADICTORY"]},
+    "detail": {"type": "string"}, "validated": {"type": "array", "items": {"type": "string"}}, "not_validated": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

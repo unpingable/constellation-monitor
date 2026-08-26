@@ -5,6 +5,7 @@ members = [
     "crates/pulse-evaluator",
     "crates/pulse-l3-bridge",
     "crates/pulse-nq-load-support",
+    "crates/pulse-project-predicate-support",
     "crates/pulse-qualification",
     "crates/pulse-replay",
     "crates/pulse-runtime",
@@ -28,6 +29,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_jcs = "0.1"
 sha2 = "0.10"
+time = { version = "0.3", features = ["parsing"] }
 toml = "0.9.12"
 
 [workspace.lints.rust]
