@@ -150,8 +150,13 @@ pub struct QualifiedSupportReceiptV1 {
     pub support_vantage_id: Option<String>,
     pub subject_id: String,
     pub qualification_at: String,
-    pub current_until_unix_ms: Option<i128>,
-    pub primary_support_skew_ms: Option<u128>,
+    /// Exclusive Unix-millisecond reliance boundary. The wire type is i64 so
+    /// canonical JSON remains valid and interoperable; supported RFC3339
+    /// occurrences already fit this range.
+    pub current_until_unix_ms: Option<i64>,
+    /// Absolute primary/support skew in milliseconds. Bounded to u64 before
+    /// sealing so JCS never receives a JSON-incompatible u128.
+    pub primary_support_skew_ms: Option<u64>,
     pub independence_basis: String,
     pub disposition: SupportDispositionV1,
     pub detail: String,
@@ -394,9 +399,12 @@ pub fn qualify(
     let primary_deadline = add_seconds(primary_time, primary_bound)?;
     let support_deadline = add_seconds(support_time, support_bound)?;
     receipt.current_until_unix_ms = Some(to_unix_ms(primary_deadline.min(support_deadline))?);
-    let skew = (primary_time - support_time)
-        .whole_milliseconds()
-        .unsigned_abs();
+    let skew = u64::try_from(
+        (primary_time - support_time)
+            .whole_milliseconds()
+            .unsigned_abs(),
+    )
+    .map_err(|_| "primary/support skew exceeds u64 milliseconds")?;
     receipt.primary_support_skew_ms = Some(skew);
     if qualification_time >= primary_deadline {
         receipt.disposition = SupportDispositionV1::PrimaryStale;
@@ -404,7 +412,13 @@ pub fn qualify(
     } else if qualification_time >= support_deadline {
         receipt.disposition = SupportDispositionV1::SupportStale;
         receipt.detail = "support observation is outside the exclusive Pulse age bound".into();
-    } else if skew > u128::from(policy.currentness.maximum_primary_support_skew_seconds) * 1_000 {
+    } else if skew
+        > policy
+            .currentness
+            .maximum_primary_support_skew_seconds
+            .checked_mul(1_000)
+            .ok_or("primary/support skew policy overflows milliseconds")?
+    {
         receipt.disposition = SupportDispositionV1::SkewExceeded;
         receipt.detail = "primary/support occurrence skew exceeds policy".into();
     } else if !evaluation.semantic_conclusion {
@@ -646,8 +660,9 @@ fn add_seconds(value: OffsetDateTime, seconds: u64) -> Result<OffsetDateTime, St
         ))
         .ok_or_else(|| "currentness deadline overflow".into())
 }
-fn to_unix_ms(value: OffsetDateTime) -> Result<i128, String> {
-    Ok(value.unix_timestamp_nanos() / 1_000_000)
+fn to_unix_ms(value: OffsetDateTime) -> Result<i64, String> {
+    i64::try_from(value.unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| "currentness deadline exceeds i64 Unix milliseconds".into())
 }
 
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {

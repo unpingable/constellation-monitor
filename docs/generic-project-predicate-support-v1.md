@@ -84,6 +84,12 @@ policy bound. The receipt records both occurrences, the qualification
 occurrence, skew, and the earlier deadline. Replay uses the original
 qualification occurrence and never refreshes time.
 
+The JSON wire uses `i64` for the exclusive Unix-millisecond deadline and
+`u64` for skew. Those bounds cover the admitted RFC3339 occurrence domain and
+avoid feeding JSON-incompatible 128-bit integer serializers into JCS. A
+canonical write/read regression test makes the saved receipt replay seam part
+of qualification rather than relying only on in-memory equality.
+
 Dispositions are distinct:
 
 ```text

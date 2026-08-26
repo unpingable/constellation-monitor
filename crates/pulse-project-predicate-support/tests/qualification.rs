@@ -7,8 +7,8 @@ use ed25519_dalek::SigningKey;
 use pulse_project_predicate_support::{
     CurrentnessPolicyV1, EVIDENCE_SCHEMA, NqArtifacts, POLICY_SCHEMA, SignedSupportEvidenceV1,
     SupportDispositionV1, SupportEvidenceV1, SupportPolicyV1, SupportSourceBindingV1,
-    TargetBindingV1, canonical_digest, qualify, qualify_support_failure, replay, sign_evidence,
-    verifier_executable_digest,
+    TargetBindingV1, canonical_digest, qualify, qualify_support_failure, read_json, replay,
+    sign_evidence, verifier_executable_digest, write_json,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -139,6 +139,24 @@ fn unfamiliar_project_qualifies_and_opaque_state_is_inert() {
             .unwrap()
             .matches
     );
+}
+
+#[test]
+fn qualified_receipt_round_trips_as_valid_canonical_json() {
+    let fixture = Fixture::new(true);
+    let evidence = fixture.evidence(12, "2026-08-25T12:00:10Z", "FROBNICATED");
+    let receipt = qualify(
+        &fixture.policy,
+        &fixture.nq(),
+        Some(&evidence),
+        "2026-08-25T12:01:00Z",
+    )
+    .unwrap();
+    let path = fixture._root.path().join("qualified-support.json");
+    write_json(&path, &receipt).unwrap();
+    let decoded: pulse_project_predicate_support::QualifiedSupportReceiptV1 =
+        read_json(&path).unwrap();
+    assert_eq!(decoded, receipt);
 }
 
 #[test]
