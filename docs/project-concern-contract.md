@@ -175,7 +175,18 @@ applicable. Nightshift owns recurrence, horizon, escalation, and attention.
 Monitor does not know whether a domain proposition is true, decide alert
 severity, own remediation, infer currentness absent in evidence, make NQ
 admissions, infer no events or no drift, confer publication authority, or
-execute arbitrary discovered repositories. No generic project-observation
-admission exists in the current closed NQ model, so this campaign stops at a
-stable adapter-ready Monitor inventory. Existing proposition-specific NQ
-integrations remain separate and are not relabelled as generic admission.
+execute arbitrary discovered repositories. NQ's separate, closed
+`project-predicate` profile catalog may admit exact typed predicates over this
+inventory; that does not widen Monitor's role or turn an opaque producer state
+into a universal health verdict.
+
+## Contract custody handover
+
+As of 2026-09-07, `atproto-ops` release candidate `v1.0.0-rc.1` at
+`c3fd2455a31dbf083f9628ef7c1e0298aacb80a5` is the canonical source for the
+three producer-facing schemas. `schemas/atproto.ops.contract.lock.json` pins
+the exact vendored bytes. Monitor remains the original implementation and owns
+acquisition/inventory semantics, but it no longer owns a separate copy of the
+producer contract by convention. A change to accepted v1 meaning requires an
+explicit contract version; a producer repair to satisfy established v1 does
+not.
