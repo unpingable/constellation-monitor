@@ -1,7 +1,8 @@
-# monitor-skunkworks
+# Constellation Monitor
 
-`monitor-skunkworks` is a provisional name for an experimental near-real-time
-present-confidence plane.
+Constellation Monitor is the private, experimental near-real-time
+present-confidence plane. Existing crate, protocol, and internal repository
+identities retain their current names.
 
 The project asks one bounded question:
 
@@ -55,6 +56,13 @@ Synesthesia     human presentation of present-state coherence or collapse
 This repository owns only the first line and a stubbed, non-authorizing seam
 toward the second.
 
+Monitor discovers bounded observations and evaluates consumer-indexed present
+reliance. Pulse records and preserves the exact evidence, custody, freshness,
+and replay facts consumed at that boundary. Discovery is not evidence custody;
+custody is not currentness; `CURRENT` is not authorization. Nightshift may
+consume the proposition-exact `nightshift.qualified_support.v1` result, but it
+still owns the consequence and must independently satisfy its other gates.
+
 ## Judgment vocabulary
 
 - `CURRENT`: the exact named reliance conditions are satisfied *now*.
@@ -74,10 +82,9 @@ policy generation.
 
 ## Workspace
 
-The Rust workspace contains ten crates. Nine retain the experimental monitor
-plane, including one generic repository concern acquisition boundary, while
-one closed production adapter owns proposition-exact support for the first
-NQ/Nightshift integration:
+The Rust workspace contains eleven crates spanning the experimental monitor
+plane, a generic repository-concern acquisition boundary, and closed
+proposition-exact support adapters:
 
 - `pulse-types`: closed versioned records and compact bounded pulse encoding;
 - `pulse-agent`: synthetic and small Linux `/proc` pulse production;
