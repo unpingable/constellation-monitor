@@ -257,7 +257,7 @@ helper_runtime_dir = "{root / 'helpers'}"
 [[notification_routes]]
 reference = "local-demo"
 transport = "slack"
-endpoint_secret_locator = "NQ_LOCAL_DEMO_UNSET_WEBHOOK"
+endpoint_secret_locator = "NQ_LOCAL_DEMO_UNSET_URL"
 timeout_ms = 10000
 max_response_bytes = 32768
 [notification_routes.nightshift_attention_replay]
