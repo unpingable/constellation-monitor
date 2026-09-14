@@ -24,7 +24,7 @@ pub const EVIDENCE_SCHEMA: &str = "pulse.project-predicate-support-evidence/v1";
 pub const ENVELOPE_SCHEMA: &str = "pulse.project-predicate-support-envelope/v1";
 pub const RECEIPT_SCHEMA: &str = "pulse.project-predicate-qualified-support/v1";
 pub const REPLAY_SCHEMA: &str = "pulse.project-predicate-support-replay/v1";
-pub const NQ_EVALUATION_SCHEMA: &str = "nq.project-predicate-support-evaluation/v1";
+pub const NQ_EVALUATION_SCHEMA: &str = "nq.bounded-predicate-support-evaluation/v1";
 const SIGNATURE_DOMAIN: &[u8] = b"pulse/project-predicate-support/evidence/v1\0";
 const MAX_ARTIFACT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1024 * 1024;
@@ -596,7 +596,10 @@ fn invoke_nq(nq: &NqArtifacts<'_>, facts: &Value) -> Result<NqSupportEvaluation,
         .map_err(|error| error.to_string())?;
     facts_file.flush().map_err(|error| error.to_string())?;
     let mut child = Command::new(nq.executable)
-        .args(["project-predicate", "support-evaluate", "--receipt"])
+        // The public NQ successor owns this compiled, finite-profile boundary.
+        // Matching JSON transport is not compatibility with the older catalog
+        // interpreter; never fall back to that predecessor command or schema.
+        .args(["bounded-predicate", "support-evaluate", "--receipt"])
         .arg(nq.receipt)
         .args(["--inventory"])
         .arg(nq.inventory)

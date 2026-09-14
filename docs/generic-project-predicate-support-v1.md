@@ -1,6 +1,9 @@
 # Generic independent support for NQ project predicates v1
 
-Status: qualified for explicitly governed independent-source profiles.
+Status: original independent-source qualification is retained. The current
+adapter targets the public NQ successor's compiled bounded-predicate boundary;
+its connected qualification is required before advertising an installed profile.
+This does not provide arbitrary catalog evaluation or a saved-check adapter.
 
 ## Layer and exact claim
 
@@ -49,10 +52,18 @@ testimony and excluded from the predicate.
 
 Pulse directly invokes the policy-pinned NQ executable with argv (never a
 shell), a ten-second runtime bound, bounded output, no stdin, and exact saved
-receipt/inventory/catalog. NQ's `project-predicate support-evaluate` operation
+receipt/inventory/catalog. NQ's `bounded-predicate support-evaluate` operation
 first replays the original receipt, then evaluates its already-governed profile
 over the support facts. Pulse does not parse a claimed `semantic_conclusion`
 without this replay and does not duplicate NQ's evaluator.
+
+The expected result is `nq.bounded-predicate-support-evaluation/v1` from the
+public native successor. The older `project-predicate` command/schema is not a
+fallback. Policy still pins the exact executable; existing policy digests must
+be deliberately renewed for new binary bytes. NQ's finite compiled profile and
+exclusive300-second maximum can refuse inputs even when a broader Pulse policy
+would permit their age. Pulse must not override that refusal or infer compatible
+semantics merely from shared field names.
 
 ## Independence relation
 
@@ -115,7 +126,7 @@ failed, stale, non-independent, and contradictory support are never merged.
 ```sh
 pulse-project-predicate-support qualify \
   --policy support-policy.json \
-  --nq-executable /qualified/path/nq-monitor \
+  --nq-executable /qualified/path/nq \
   --nq-receipt admission.json \
   --inventory monitor-inventory.json \
   --catalog predicate-catalog.json \
@@ -125,7 +136,7 @@ pulse-project-predicate-support qualify \
 
 pulse-project-predicate-support replay \
   --policy support-policy.json \
-  --nq-executable /qualified/path/nq-monitor \
+  --nq-executable /qualified/path/nq \
   --nq-receipt admission.json \
   --inventory monitor-inventory.json \
   --catalog predicate-catalog.json \

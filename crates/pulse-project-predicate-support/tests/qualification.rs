@@ -32,10 +32,10 @@ impl Fixture {
     fn new(conclusion: bool) -> Self {
         let root = TempDir::new().unwrap();
         let verifier = root.path().join("nq-verifier");
-        let result = json!({"schema":"nq.project-predicate-support-evaluation/v1","admission_replay_matches":true,"admission_receipt_digest":R,"catalog_digest":C,"predicate_profile":"nq.profile.sprocket-queue-bounded-17/v1","profile_digest":P,"input_schema_digest":I,"semantic_conclusion":conclusion,"trace":{"expression":"queue.depth Le U64(17)","result":conclusion}});
+        let result = json!({"schema":"nq.bounded-predicate-support-evaluation/v1","admission_replay_matches":true,"admission_receipt_digest":R,"catalog_digest":C,"predicate_profile":"nq.profile.sprocket-queue-bounded-17/v1","profile_digest":P,"input_schema_digest":I,"semantic_conclusion":conclusion,"trace":{"compiled_semantics":"nq.bounded-predicate-compiled/v1","result":conclusion}});
         fs::write(
             &verifier,
-            format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", result),
+            format!("#!/bin/sh\ntest \"$1\" = bounded-predicate && test \"$2\" = support-evaluate || exit 64\nprintf '%s\\n' '{}'\n", result),
         )
         .unwrap();
         let mut mode = fs::metadata(&verifier).unwrap().permissions();
@@ -139,6 +139,28 @@ fn unfamiliar_project_qualifies_and_opaque_state_is_inert() {
             .unwrap()
             .matches
     );
+}
+
+#[test]
+fn predecessor_schema_is_not_accepted_as_native_support() {
+    let mut fixture = Fixture::new(true);
+    let script = fs::read_to_string(&fixture.verifier).unwrap().replace(
+        "nq.bounded-predicate-support-evaluation/v1",
+        "nq.project-predicate-support-evaluation/v1",
+    );
+    fs::write(&fixture.verifier, script).unwrap();
+    fixture.policy.nq_verifier_executable_digest =
+        verifier_executable_digest(&fixture.verifier).unwrap();
+    fixture.policy.seal().unwrap();
+    let evidence = fixture.evidence(12, "2026-08-25T12:00:10Z", "observed");
+    let receipt = qualify(
+        &fixture.policy,
+        &fixture.nq(),
+        Some(&evidence),
+        "2026-08-25T12:01:00Z",
+    )
+    .unwrap();
+    assert_eq!(receipt.disposition, SupportDispositionV1::NqReceiptInvalid);
 }
 
 #[test]
@@ -280,7 +302,7 @@ fn checked_in_schemas_are_parseable_and_version_exact() {
 }
 
 #[test]
-#[ignore = "requires NQ_MONITOR_BIN from the qualified NQ checkout"]
+#[ignore = "requires NQ_MONITOR_BIN pointing to the public native nq executable"]
 fn real_nq_sprocket_support_and_contradiction() {
     let bin = PathBuf::from(std::env::var_os("NQ_MONITOR_BIN").expect("NQ_MONITOR_BIN"));
     let root = TempDir::new().unwrap();
@@ -296,7 +318,7 @@ fn real_nq_sprocket_support_and_contradiction() {
     fs::write(&catalog, serde_json::to_vec(&cat).unwrap()).unwrap();
     let cat_digest = canonical_digest(&cat).unwrap();
     let output = Command::new(&bin)
-        .args(["project-predicate", "admit", "--inventory"])
+        .args(["bounded-predicate", "admit", "--inventory"])
         .arg(&inventory)
         .arg("--profiles")
         .arg(&catalog)
