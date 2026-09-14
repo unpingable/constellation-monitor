@@ -27,6 +27,11 @@ def now():
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 def canonical(value):
     # This example's signed objects use ASCII keys/strings, integers and bools.
     # It is not a general-purpose replacement for the components' JCS encoder.
@@ -91,6 +96,7 @@ def invoke(root, label, argv, expected=0):
         start_new_session=True)
     output = {"stdout": bytearray(), "stderr": bytearray()}
     deadline = time.monotonic() + 30
+    failure = None
     try:
         with selectors.DefaultSelector() as selector:
             for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
@@ -107,20 +113,23 @@ def invoke(root, label, argv, expected=0):
                         if len(output[key.data]) > 1024 * 1024:
                             raise RuntimeError("command output exceeded 1 MiB")
         process.wait(timeout=max(0.01, deadline - time.monotonic()))
-    except BaseException:
+    except BaseException as error:
+        failure = error
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         process.wait()
-        raise
     finally:
         process.stdout.close()
         process.stderr.close()
     record = {"label": label, "argv": command, "exit_code": process.returncode,
+        "supervision_error": type(failure).__name__ if failure else None,
         **{name: value.decode("utf-8", "replace") for name, value in output.items()}}
     with (root / "commands.jsonl").open("a") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
+    if failure is not None:
+        raise failure
     if (expected == 0 and process.returncode != 0) or (expected != 0 and process.returncode == 0):
         raise RuntimeError(f"{label}: unexpected exit {process.returncode}; inspect commands.jsonl")
     return json.loads(record["stdout"]) if expected == 0 and record["stdout"].strip() else None
@@ -172,7 +181,7 @@ description = "Is the observed queue depth at least eighteen?"
         + json.dumps(["/usr/bin/python3", str(script), "--produce", str(database)]) + '\n')
     inventory = invoke(root, "monitor-acquire", [args.monitor, "collect", project,
         "--trusted-root", root, "--allow-exec", "--json", "--timeout-ms", "5000"])
-    assert inventory["acquisition"]["disposition"] == "ACQUIRED_AND_VALIDATED"
+    require(inventory["acquisition"]["disposition"] == "ACQUIRED_AND_VALIDATED", "Monitor did not acquire valid input")
     write(root / "inventory.json", inventory)
     profile = {"schema": "nq.project-predicate-profile/v1", "id": "local.queue-high/v1",
         "question": "queue.depth-at-least-18/v1", "declaration_profile": "queue.depth-high/v1",
@@ -222,7 +231,20 @@ description = "Is the observed queue depth at least eighteen?"
     invoke(root, "pulse-qualify", [args.pulse, "qualify", *pulse_args, "--at", now(),
         "--output", root / "pulse.json"])
     qualified = json.loads((root / "pulse.json").read_bytes())
-    assert qualified["disposition"] == "SUPPORTED_CURRENT"
+    require(qualified["disposition"] == "SUPPORTED_CURRENT", "Pulse did not establish current support")
+    changed = json.loads(json.dumps(catalog))
+    changed["profiles"][0]["accepted_producers"] = ["unapproved-producer"]
+    write(root / "changed-catalog.json", changed)
+    invoke(root, "changed-catalog-refused", [args.nq, "bounded-predicate", "replay",
+        "--receipt", root / "admission.json", "--inventory", root / "inventory.json",
+        "--profiles", root / "changed-catalog.json", "--output", "-"], expected=1)
+    # A future evaluation is an explicit negative control, not a refreshed observation.
+    stale_at = (dt.datetime.fromisoformat(qualified["primary_observed_at"].replace("Z", "+00:00"))
+        + dt.timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    invoke(root, "stale-support-control", [args.pulse, "qualify", *pulse_args,
+        "--at", stale_at, "--output", root / "stale-pulse.json"])
+    stale = json.loads((root / "stale-pulse.json").read_bytes())
+    require(stale["disposition"] == "PRIMARY_STALE", "Exclusive freshness boundary was not enforced")
     attention_target = {key: target[key] for key in
         ("project", "concern", "question", "declaration_profile", "predicate_profile", "subject_id")}
     attention_target.update({"nq_catalog_digest": target["catalog_digest"],
@@ -241,13 +263,18 @@ description = "Is the observed queue depth at least eighteen?"
         "--catalog", root / "catalog.json", "--support-evidence", root / "support.json"]
     accepted = invoke(root, "nightshift-ingest", ingest)
     duplicate = invoke(root, "nightshift-duplicate", ingest)
-    assert accepted["disposition"] == "ACCEPTED" and duplicate["disposition"] == "DUPLICATE_EVIDENCE_OCCURRENCE"
+    require(accepted["disposition"] == "ACCEPTED" and duplicate["disposition"] == "DUPLICATE_EVIDENCE_OCCURRENCE",
+        "Nightshift did not converge on the existing evidence occurrence")
     invoke(root, "nightshift-evaluate", [*ns, "evaluate", "--policy", root / "attention-policy.json",
         "--evaluated-at", now(), "--output", root / "attention.json"])
     bundle = json.loads((root / "attention.json").read_bytes())
-    assert bundle["receipt"]["disposition"] == "ATTENTION_REQUIRED"
+    require(bundle["receipt"]["disposition"] == "ATTENTION_REQUIRED", "Expected explicit operator-policy attention")
     replay = invoke(root, "nightshift-replay", [*ns, "replay", "--bundle", root / "attention.json"])
-    assert replay["matches"]
+    require(replay["matches"], "Nightshift replay mismatch")
+    invoke(root, "nightshift-reopen-stale", [*ns, "evaluate", "--policy", root / "attention-policy.json",
+        "--evaluated-at", stale_at, "--output", root / "stale-attention.json"])
+    stale_attention = json.loads((root / "stale-attention.json").read_bytes())
+    require(stale_attention["receipt"]["disposition"] == "INPUT_NOT_CURRENT", "Stale input advanced attention")
     config = root / "nq.toml"
     config.write_text(f'''schema = "nq.config.v1"
 database_path = "{root / 'nq.sqlite'}"
@@ -279,13 +306,15 @@ execution_account = "{pwd.getpwuid(os.getuid()).pw_name}"
     write(root / "intent.json", intent)
     submit = [*nq, "notification", "submit", "--intent", root / "intent.json", "--route", "local-demo"]
     delivered = invoke(root, "notification-no-network", submit)
-    assert delivered["delivery_state"] == "refused"
-    assert invoke(root, "notification-duplicate", submit) == delivered
+    require(delivered["delivery_state"] == "refused", "No-network submission did not refuse delivery")
+    require(invoke(root, "notification-duplicate", submit) == delivered, "Delivery duplicate diverged")
     inspected = invoke(root, "notification-inspect", [*nq, "notification", "inspect", "--notification-id", delivered["notification_id"]])
-    assert inspected[0]["event_count"] == 1
+    require(inspected[0]["event_count"] == 1, "Duplicate created another delivery event")
     result = {"schema": "constellation.local-queue-attention-example/v1", "result": "qualified",
         "actual_components": ["Monitor", "NQ", "Pulse", "Nightshift"],
         "real_sqlite_reads": 2, "nightshift_duplicate_converged": True,
+        "changed_catalog_refused": True, "stale_support_refused": True,
+        "reopened_attention_does_not_refresh_evidence": True,
         "notification_state": "refused", "network_enabled": False,
         "limitations": ["Disposable queue, not production state", "One operator supplies policy and both producer implementations",
             "Source-path independence only; not independent organizations or attested hardware",
