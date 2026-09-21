@@ -1,0 +1,23 @@
+schema = "project.concerns/v1"
+project = "example-fixture"
+
+[[concerns]]
+id = "example.queue.progress"
+question = "example.question.queue-progress/v1"
+profile = "example.profile.local/v1"
+required = true
+description = "Did the fixture produce an observation about bounded queue progress?"
+
+[[concerns]]
+id = "example.output.freshness"
+question = "example.question.output-freshness/v1"
+profile = "example.profile.local/v1"
+required = true
+description = "Did the fixture produce an observation about output freshness?"
+
+[[concerns]]
+id = "example.optional.mode"
+question = "example.question.optional-mode/v1"
+profile = "example.profile.local/v1"
+required = false
+description = "What fixture-specific optional mode did the producer report?"

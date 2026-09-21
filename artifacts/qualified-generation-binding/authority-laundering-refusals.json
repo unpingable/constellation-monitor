@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "corpus": "authority-laundering-refusals",
+  "checks": [
+    {
+      "scenario": "caller-supplied generation label alone",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "artifact digest alone",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "manifest digest alone",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "exact source commit alone",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "passing test result without exact package binding",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "historical CURRENT record alone",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "valid canonical manifest without certificate",
+      "expected_binding_state": "missing_certificate",
+      "observed_binding_state": "missing_certificate",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "qualification certificate without manifest",
+      "expected_binding_state": "manifest_mismatch",
+      "observed_binding_state": "manifest_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "manifest and certificate without checked qualification report",
+      "expected_binding_state": "qualification_evidence_missing",
+      "observed_binding_state": "qualification_evidence_missing",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "exact policy; different evaluator bytes",
+      "expected_binding_state": "evaluator_mismatch",
+      "observed_binding_state": "evaluator_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "same policy name and generation; different policy bytes",
+      "expected_binding_state": "policy_mismatch",
+      "observed_binding_state": "policy_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "Superseded certificate",
+      "expected_binding_state": "superseded",
+      "observed_binding_state": "superseded",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "Revoked certificate",
+      "expected_binding_state": "revoked",
+      "observed_binding_state": "revoked",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "successful prior activation receipt after process restart",
+      "expected_binding_state": "unbound",
+      "observed_binding_state": "unbound",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    }
+  ],
+  "all_passed": true
+}

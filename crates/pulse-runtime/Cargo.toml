@@ -1,0 +1,27 @@
+[package]
+name = "pulse-runtime"
+default-run = "pulse-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+pulse-agent = { path = "../pulse-agent" }
+pulse-evaluator = { path = "../pulse-evaluator" }
+pulse-l3-bridge = { path = "../pulse-l3-bridge" }
+pulse-types = { path = "../pulse-types" }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pulse-crash-campaign"
+path = "src/bin/crash_campaign.rs"

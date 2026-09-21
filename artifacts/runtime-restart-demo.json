@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "scenario": "history-custody-without-standing-recovery",
+  "historical_records_recovered": 5,
+  "historical_current_certificate_records": 1,
+  "serialized_history_bytes": 6461,
+  "serialization_round_trip_exact": true,
+  "current_standing": "UNKNOWN",
+  "current_supporting_evidence_count": 0,
+  "scheduled_deadline_count": 0,
+  "standing_recovered": false,
+  "trace": [
+    "[000000ms] CERTIFICATE consumer=consumer:capacity-display activation=activation:restart-after judgment=UNKNOWN support_expires=none standing_inherited=false",
+    "[000000ms] CERTIFICATE consumer=consumer:capacity-display activation=activation:restart-after judgment=UNKNOWN support_expires=none standing_inherited=false",
+    "[000000ms] RESTART historical_records=5 receipts=0 current_standing=UNKNOWN"
+  ]
+}

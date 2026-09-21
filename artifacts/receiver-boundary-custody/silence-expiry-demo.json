@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "initial_judgment": "CURRENT",
+  "expected_support_deadline_monotonic_ms": 340,
+  "actual_withdrawal_monotonic_ms": 341,
+  "stale_positive_overshoot_ms": 1,
+  "final_judgment": "UNKNOWN",
+  "final_supporting_evidence_count": 1,
+  "final_active_deadlines": 0,
+  "new_envelope_arrived": false,
+  "subject_contradiction_invented": false,
+  "trace": [
+    "exact remote evidence admitted -> Consumer A CURRENT",
+    "receiver-owned support deadline armed at 340ms",
+    "network silence; no retry, replay, or sender time update",
+    "reactor withdrew CURRENT at 341ms",
+    "Consumer A UNKNOWN; no subject contradiction invented"
+  ]
+}

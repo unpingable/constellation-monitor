@@ -1,0 +1,12 @@
+{
+  "deadline_after_replay_monotonic_ms": 339,
+  "duplicate_refusal_count": 1,
+  "encoded_support_deadline_monotonic_ms": 339,
+  "first_arrival_monotonic_ms": 219,
+  "first_envelope_digest": "sha256:eb37adc48fafb7181425ce6f99419de5625a4230172cb5c4ed88a5fd66d578bf",
+  "freshness_renewed": false,
+  "replay_finding": "duplicate_detected",
+  "replay_refusal_count": 0,
+  "schema_version": 1,
+  "sequence_gap_count": 0
+}

@@ -1,0 +1,23 @@
+[package]
+name = "pulse-nq-load-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "pulse-nq-load-support"
+path = "src/main.rs"

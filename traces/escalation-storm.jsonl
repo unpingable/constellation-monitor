@@ -1,0 +1,6 @@
+{"event":"config","minimum_observers":1,"auto_bridge":false}
+{"event":"pulse","at_ms":0,"observer":"observer:a","observer_incarnation":"a:1","sequence":1,"validity_ms":300}
+{"event":"fault","at_ms":10,"label":"equivalent coverage failures recur"}
+{"event":"pulse","at_ms":10,"observer":"observer:a","observer_incarnation":"a:1","sequence":2,"validity_ms":300,"observed_coverage":["load"]}
+{"event":"pulse","at_ms":20,"observer":"observer:a","observer_incarnation":"a:1","sequence":3,"validity_ms":300}
+{"event":"pulse","at_ms":30,"observer":"observer:a","observer_incarnation":"a:1","sequence":4,"validity_ms":300,"observed_coverage":["load"]}

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "corpus": "load-bearing-identity-substitution",
+  "checks": [
+    {
+      "scenario": "same labels; different executable bytes",
+      "expected_binding_state": "executable_mismatch",
+      "observed_binding_state": "executable_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "exact policy; different evaluator bytes",
+      "expected_binding_state": "evaluator_mismatch",
+      "observed_binding_state": "evaluator_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "same policy name and generation; different policy bytes",
+      "expected_binding_state": "policy_mismatch",
+      "observed_binding_state": "policy_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "same profile generation; different profile bytes",
+      "expected_binding_state": "profile_mismatch",
+      "observed_binding_state": "profile_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "same observer-set generation; different observer-set bytes",
+      "expected_binding_state": "observer_set_mismatch",
+      "observed_binding_state": "observer_set_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "same observation-policy generation; different bytes",
+      "expected_binding_state": "observation_policy_mismatch",
+      "observed_binding_state": "observation_policy_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "same configuration label; different canonical configuration",
+      "expected_binding_state": "configuration_mismatch",
+      "observed_binding_state": "configuration_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    },
+    {
+      "scenario": "unsupported semantic contract bytes",
+      "expected_binding_state": "contract_mismatch",
+      "observed_binding_state": "contract_mismatch",
+      "observed_judgment": "UNKNOWN",
+      "active_deadlines": 0,
+      "current_permitted": false,
+      "authority_granted": false,
+      "passed": true
+    }
+  ],
+  "all_passed": true
+}

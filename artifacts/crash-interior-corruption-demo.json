@@ -1,0 +1,15 @@
+{
+  "name": "interior_bit_corruption",
+  "expected": "recovery stops at corrupted second record despite later valid-looking bytes",
+  "outcome": "refused",
+  "damage": "interior_corruption",
+  "records_recovered": 1,
+  "first_damaged_offset": 1124,
+  "valid_prefix_bytes": 1029,
+  "observed_file_bytes": 3087,
+  "history_complete": false,
+  "operator_action_required": true,
+  "append_error": null,
+  "current_standing_reconstructed": false,
+  "mutation_authority": "none"
+}

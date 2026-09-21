@@ -1,0 +1,17 @@
+{
+  "all_refused": true,
+  "checks": [
+    {
+      "admitted": false,
+      "finding": "qualified_identity_mismatch",
+      "scenario": "accepted key with substituted manifest"
+    },
+    {
+      "admitted": false,
+      "finding": "sender_key_mismatch",
+      "scenario": "unaccepted sender key"
+    }
+  ],
+  "freshness_renewed": false,
+  "schema_version": 1
+}

@@ -1,0 +1,25 @@
+{
+  "packages_contain_private_key_material": false,
+  "qualification_evidence_class": "bounded semantic fixture; not the final campaign gate record",
+  "receiver_consumer_a": {
+    "accepted_certificate_digest": "sha256:aa1555f11fc0a4bd003570402e5457e2a854fec36e26f32c963d15bda6f74e60",
+    "manifest_digest": "sha256:ddac574a0f9ec7884a13a6973b50090e2c2d76f09989d2e4898fce2c4d4ebd62",
+    "qualification_certificate_digest": "sha256:aa1555f11fc0a4bd003570402e5457e2a854fec36e26f32c963d15bda6f74e60",
+    "qualification_report_digest": "sha256:5971a48c035e553774eb5951ccace2ca224339cf7fce7b115294a81e4f53c623"
+  },
+  "receiver_consumer_b": {
+    "accepted_certificate_digest": "sha256:83c2dcdab8f22dce8c2e2ef87bd2d6f9dde3fc1365ed4de85be5461c9ab3cf32",
+    "manifest_digest": "sha256:440b200b3cee4fdde55ab4262aa452488ee7bd42ee1c74372089bf397cf3a750",
+    "qualification_certificate_digest": "sha256:83c2dcdab8f22dce8c2e2ef87bd2d6f9dde3fc1365ed4de85be5461c9ab3cf32",
+    "qualification_report_digest": "sha256:390133e55cbb5b4f21e75584558c1b694149daaf657b760bef50c71aa999722f"
+  },
+  "remote_attestation_claimed": false,
+  "schema_version": 1,
+  "sender": {
+    "accepted_certificate_digest": "sha256:5fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945",
+    "manifest_digest": "sha256:de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf8774376360",
+    "qualification_certificate_digest": "sha256:5fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945",
+    "qualification_report_digest": "sha256:4ec1cc36da8dce8c29eb668abb0fca3a3f96d5cc055109065292014e99e969e9"
+  },
+  "source_to_binary_correspondence_claimed": false
+}

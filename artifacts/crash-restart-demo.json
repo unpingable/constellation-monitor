@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "scenario": "CURRENT -> armed deadline -> SIGKILL before expiry -> history-only restart",
+  "kill_mechanism": "std::process::Child::kill (SIGKILL on qualified Linux host)",
+  "journal_recovery": "clean",
+  "records_recovered": 5,
+  "historical_current_records": 1,
+  "current_standing_after_restart": "UNKNOWN",
+  "supporting_evidence_after_restart": 0,
+  "active_deadlines_after_restart": 0,
+  "fresh_evidence_required": true,
+  "monotonic_epoch_reused": false,
+  "active_escalation_suppression_restored": false,
+  "mutation_authority": "none",
+  "terminal_trace": [
+    "CURRENT bounded support established",
+    "real monotonic deadline armed",
+    "child process SIGKILLed before expiry",
+    "restart history_records=5 recovery=Clean",
+    "current standing UNKNOWN",
+    "supporting evidence 0",
+    "active deadlines 0",
+    "fresh evidence required"
+  ]
+}

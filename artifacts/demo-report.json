@@ -1,0 +1,721 @@
+{
+  "schema_version": 1,
+  "transitions": [
+    {
+      "transition": {
+        "schema_version": 1,
+        "transition_id": "transition:f5b169cfa910cac451c6b6a99ec4749ccef01705aa1acf5df64986ab65c982a1",
+        "subject_scope": {
+          "subject": "subject:demo-host",
+          "subject_incarnation": "subject-incarnation:1",
+          "scope": "host"
+        },
+        "consumer": "consumer:capacity-display/v1",
+        "policy_generation": "policy:demo-v1",
+        "at_monotonic_ms": 0,
+        "to": "UNKNOWN",
+        "prior_evidence_window": null,
+        "evidence_window": "sha256:c23140f05ea6c5c41ea29be2ea0076ba46c5e6f984f630a6edc1220bfe82969f",
+        "reason_codes": [
+          "coverage_incomplete",
+          "observer_availability_insufficient"
+        ]
+      },
+      "category": "UNKNOWN",
+      "summary": "No violating observation is currently known, but coverage is incomplete and reliance is therefore UNKNOWN.",
+      "reason_codes": [
+        "coverage_incomplete",
+        "observer_availability_insufficient"
+      ],
+      "active_coverage": [],
+      "missing_coverage": [
+        "load",
+        "memory"
+      ],
+      "dimensions": {
+        "freshness": "current",
+        "sequence_continuity": "first_seen",
+        "observer_availability": "partial",
+        "cross_observer_coherence": "insufficient",
+        "coverage": "absent",
+        "provenance": "verified",
+        "transport": "normal",
+        "subject_signal_consistency": "consistent"
+      }
+    },
+    {
+      "transition": {
+        "schema_version": 1,
+        "transition_id": "transition:6be21fafde0adf693bc810eacb81574dcfc2b60f0e41df94c894fd02c3b43480",
+        "subject_scope": {
+          "subject": "subject:demo-host",
+          "subject_incarnation": "subject-incarnation:1",
+          "scope": "host"
+        },
+        "consumer": "consumer:capacity-display/v1",
+        "policy_generation": "policy:demo-v1",
+        "at_monotonic_ms": 0,
+        "from": "UNKNOWN",
+        "to": "CURRENT",
+        "prior_evidence_window": "sha256:c23140f05ea6c5c41ea29be2ea0076ba46c5e6f984f630a6edc1220bfe82969f",
+        "evidence_window": "sha256:03a16fd5c845720c66701ee2987bdc8f4d195fb8892a5062e13196045b176015",
+        "reason_codes": [
+          "named_reliance_conditions_satisfied"
+        ]
+      },
+      "category": "CURRENT",
+      "positive_support_expires_at_monotonic_ms": 300,
+      "summary": "CURRENT: named reliance conditions are satisfied for this consumer at this evaluation time.",
+      "reason_codes": [
+        "named_reliance_conditions_satisfied"
+      ],
+      "active_coverage": [
+        "load",
+        "memory"
+      ],
+      "missing_coverage": [],
+      "dimensions": {
+        "freshness": "current",
+        "sequence_continuity": "first_seen",
+        "observer_availability": "available",
+        "cross_observer_coherence": "coherent",
+        "coverage": "complete",
+        "provenance": "verified",
+        "transport": "normal",
+        "subject_signal_consistency": "consistent"
+      }
+    },
+    {
+      "transition": {
+        "schema_version": 1,
+        "transition_id": "transition:193f551e64681fc17653254bd6ea20ebe501acfa5e48ce761e528e28e40ccf88",
+        "subject_scope": {
+          "subject": "subject:demo-host",
+          "subject_incarnation": "subject-incarnation:1",
+          "scope": "host"
+        },
+        "consumer": "consumer:capacity-display/v1",
+        "policy_generation": "policy:demo-v1",
+        "at_monotonic_ms": 100,
+        "from": "CURRENT",
+        "to": "CURRENT",
+        "prior_evidence_window": "sha256:ce52aa5d5e5ffb2c0540c60e0027b34003ecdd21874ea4b2b2855791868b06c6",
+        "evidence_window": "sha256:833010cbe0944cdfd07f4d9c392ea274e5ed41eaeb9fb573b2e69f3a69e771a2",
+        "reason_codes": [
+          "named_reliance_conditions_satisfied"
+        ]
+      },
+      "category": "CURRENT",
+      "positive_support_expires_at_monotonic_ms": 400,
+      "summary": "CURRENT: named reliance conditions are satisfied for this consumer at this evaluation time.",
+      "reason_codes": [
+        "named_reliance_conditions_satisfied"
+      ],
+      "active_coverage": [
+        "load",
+        "memory"
+      ],
+      "missing_coverage": [],
+      "dimensions": {
+        "freshness": "current",
+        "sequence_continuity": "continuous",
+        "observer_availability": "available",
+        "cross_observer_coherence": "coherent",
+        "coverage": "complete",
+        "provenance": "verified",
+        "transport": "normal",
+        "subject_signal_consistency": "consistent"
+      }
+    },
+    {
+      "transition": {
+        "schema_version": 1,
+        "transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
+        "subject_scope": {
+          "subject": "subject:demo-host",
+          "subject_incarnation": "subject-incarnation:1",
+          "scope": "host"
+        },
+        "consumer": "consumer:capacity-display/v1",
+        "policy_generation": "policy:demo-v1",
+        "at_monotonic_ms": 200,
+        "from": "CURRENT",
+        "to": "CONTRADICTED",
+        "prior_evidence_window": "sha256:999f1dbedf98ef85f3fdbead671049a0c4f081f8b3a2a623483e4b1135358761",
+        "evidence_window": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
+        "reason_codes": [
+          "contradiction_retained",
+          "subject_bound_violated"
+        ]
+      },
+      "category": "CONTRADICTED",
+      "summary": "CONTRADICTED: incompatible grounded evidence remains unresolved.",
+      "reason_codes": [
+        "contradiction_retained",
+        "subject_bound_violated"
+      ],
+      "active_coverage": [
+        "load",
+        "memory"
+      ],
+      "missing_coverage": [],
+      "dimensions": {
+        "freshness": "current",
+        "sequence_continuity": "continuous",
+        "observer_availability": "available",
+        "cross_observer_coherence": "disagreement",
+        "coverage": "complete",
+        "provenance": "verified",
+        "transport": "normal",
+        "subject_signal_consistency": "contradictory"
+      }
+    },
+    {
+      "transition": {
+        "schema_version": 1,
+        "transition_id": "transition:4f66b8703f255355f50df0b705dc806f1982e4cd3999a80dfc59acdc1614266a",
+        "subject_scope": {
+          "subject": "subject:demo-host",
+          "subject_incarnation": "subject-incarnation:1",
+          "scope": "host"
+        },
+        "consumer": "consumer:capacity-display/v1",
+        "policy_generation": "policy:demo-v1",
+        "at_monotonic_ms": 202,
+        "from": "CONTRADICTED",
+        "to": "CONTRADICTED",
+        "prior_evidence_window": "sha256:d441a965792aa45456a67600445f1e8cdfda6e591d210c0145e776eab190f945",
+        "evidence_window": "sha256:e52532ddca211658b2df9b223b8ac9d802c558bbcb392ea971924852823e70aa",
+        "reason_codes": [
+          "contradiction_retained",
+          "subject_bound_violated",
+          "diagnostic_receipt_correlated"
+        ]
+      },
+      "category": "CONTRADICTED",
+      "summary": "CONTRADICTED: incompatible grounded evidence remains unresolved.",
+      "reason_codes": [
+        "contradiction_retained",
+        "subject_bound_violated",
+        "diagnostic_receipt_correlated"
+      ],
+      "active_coverage": [
+        "load",
+        "memory"
+      ],
+      "missing_coverage": [],
+      "dimensions": {
+        "freshness": "current",
+        "sequence_continuity": "continuous",
+        "observer_availability": "available",
+        "cross_observer_coherence": "disagreement",
+        "coverage": "complete",
+        "provenance": "verified",
+        "transport": "normal",
+        "subject_signal_consistency": "contradictory"
+      }
+    }
+  ],
+  "escalation_dispositions": [
+    {
+      "schema_version": 1,
+      "request_id": "escalation:0000000000000001",
+      "bridge_id": "bridge:replay-stub-v1",
+      "clock_id": "clock:replay-v1",
+      "decided_at_monotonic_ms": 201,
+      "kind": {
+        "decision": "accept",
+        "admitted_bounds": {
+          "maximum_runtime_ms": 25,
+          "maximum_output_bytes": 1024,
+          "maximum_observations": 4
+        }
+      },
+      "mutation_authority": "none"
+    }
+  ],
+  "diagnostic_receipts": [
+    {
+      "schema_version": 1,
+      "receipt_id": "receipt:204b83ae596c3ef6ed2e2f1155374d7bc5333404b4bfc7bb3fadcba1cd46133e",
+      "run_id": "run:ad6eb1254a0966f2ef9877c9ed6d6e3042a737e611378eea3bd0cc9e5ee3ae52",
+      "request_id": "escalation:0000000000000001",
+      "causal_transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
+      "deduplication_key": "sha256:39ff1cf8edf83148d5211cb3bcab5d343bc4bdff843945cde4439fb42853f206",
+      "evidence_window_digest": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
+      "subject_scope": {
+        "subject": "subject:demo-host",
+        "subject_incarnation": "subject-incarnation:1",
+        "scope": "host"
+      },
+      "consumer": "consumer:capacity-display/v1",
+      "policy_generation": "policy:demo-v1",
+      "observation_policy_generation": "policy:demo-v1",
+      "diagnostic_profile": {
+        "name": "local.readonly.summary",
+        "version": 1,
+        "semantic_digest": "sha256:3c4f58ff76223b8b5a4f703eaaa2e1aa85df3c02d800712a95cfd3e90c660010"
+      },
+      "bridge_id": "bridge:replay-stub-v1",
+      "clock_id": "clock:replay-v1",
+      "started_at_monotonic_ms": 201,
+      "completed_at_monotonic_ms": 202,
+      "applicable_until_monotonic_ms": 400,
+      "status": "completed",
+      "results": [
+        {
+          "name": "stub_execution",
+          "value": "completed",
+          "interpretation": "the compiled harmless local stub returned"
+        },
+        {
+          "name": "subject_scope_binding",
+          "value": "subject:demo-host/host",
+          "interpretation": "request correlation only; no subject condition inferred"
+        }
+      ],
+      "observed_coverage": [
+        "stub.bridge",
+        "stub.profile"
+      ],
+      "result_digest": "sha256:817ac400b4787e9498e51f4b814b5b0694f3550ed13f56e5c7c6eca62a9f69c7",
+      "nonclaims": [
+        "This is a mock local diagnostic receipt, not an NQ artifact.",
+        "Stub completion does not establish subject health or resolve contradiction.",
+        "This receipt grants no execution, repair, or mutation authority."
+      ],
+      "mutation_authority": "none"
+    }
+  ],
+  "final_judgment": {
+    "schema_version": 1,
+    "subject_scope": {
+      "subject": "subject:demo-host",
+      "subject_incarnation": "subject-incarnation:1",
+      "scope": "host"
+    },
+    "consumer": "consumer:capacity-display/v1",
+    "policy_generation": "policy:demo-v1",
+    "coverage": {
+      "required": [
+        "load",
+        "memory"
+      ],
+      "active": [
+        "load",
+        "memory"
+      ],
+      "missing": [],
+      "expired": [],
+      "active_observers": 2,
+      "required_observers": 2,
+      "per_tag": [
+        {
+          "tag": "load",
+          "active_observers": 2,
+          "expired_observers": 0,
+          "required_observers": 2
+        },
+        {
+          "tag": "memory",
+          "active_observers": 2,
+          "expired_observers": 0,
+          "required_observers": 2
+        }
+      ]
+    },
+    "evaluated_at_monotonic_ms": 202,
+    "receiver_clock_id": "clock:replay-v1",
+    "evidence_window_id": "sha256:e52532ddca211658b2df9b223b8ac9d802c558bbcb392ea971924852823e70aa",
+    "category": "CONTRADICTED",
+    "dimensions": {
+      "freshness": "current",
+      "sequence_continuity": "continuous",
+      "observer_availability": "available",
+      "cross_observer_coherence": "disagreement",
+      "coverage": "complete",
+      "provenance": "verified",
+      "transport": "normal",
+      "subject_signal_consistency": "contradictory"
+    },
+    "explanation": {
+      "summary": "CONTRADICTED: incompatible grounded evidence remains unresolved.",
+      "reasons": [
+        {
+          "code": "contradiction_retained",
+          "detail": "1 independently grounded contradiction record(s) remain unresolved",
+          "evidence_refs": [
+            "contradiction:3e08d04fb34e5869fa77b6acc5ad18f20714d127ceef10e3e6d0dc21034379ea"
+          ]
+        },
+        {
+          "code": "subject_bound_violated",
+          "detail": "current admitted evidence contains an outside-declared-bound observation",
+          "evidence_refs": [
+            "observer:b/observer-b:1/seq=3/sha256:fc17a0eec0281865a81ac264f7ef97dfbda18773b0cc2b056dc26189323cdb4f"
+          ]
+        },
+        {
+          "code": "diagnostic_receipt_correlated",
+          "detail": "1 bounded diagnostic receipt(s) were correlated; they do not refresh pulse evidence"
+        }
+      ],
+      "claims": [
+        "Incompatible admitted observation statements remain visible and unresolved."
+      ],
+      "nonclaims": [
+        "Pulse receipt does not establish subject health.",
+        "The runtime does not establish that observations are truthful.",
+        "The runtime does not establish complete distributed-world coverage.",
+        "Observer identity does not establish observer independence.",
+        "A present-state judgment is consumer-, policy-, coverage-, and time-indexed.",
+        "Diagnostic completion does not establish indefinite reliance.",
+        "This judgment grants no authority to execute, repair, or mutate anything."
+      ]
+    },
+    "escalation": {
+      "state": "completed",
+      "request_id": "escalation:0000000000000001",
+      "receipt_id": "receipt:204b83ae596c3ef6ed2e2f1155374d7bc5333404b4bfc7bb3fadcba1cd46133e"
+    },
+    "mutation_authority": "none"
+  },
+  "metrics": {
+    "schema_version": 1,
+    "pulse_to_evaluation_latency_ms": 0,
+    "maximum_stale_positive_duration_ms": 0,
+    "failure_to_contradicted_latency_ms": 0,
+    "failure_to_escalation_latency_ms": 0,
+    "false_escalation_count": 0,
+    "active_coverage": 2,
+    "expired_coverage": 0,
+    "dropped_stale_pulse_count": 0,
+    "duplicate_count": 0,
+    "sequence_gap_count": 0,
+    "escalation_deduplication_count": 0,
+    "monitor_input_drop_count": 0
+  },
+  "sparse_events": [
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000001",
+      "at_monotonic_ms": 0,
+      "event": {
+        "kind": "judgment_transition",
+        "transition": {
+          "schema_version": 1,
+          "transition_id": "transition:f5b169cfa910cac451c6b6a99ec4749ccef01705aa1acf5df64986ab65c982a1",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "policy_generation": "policy:demo-v1",
+          "at_monotonic_ms": 0,
+          "to": "UNKNOWN",
+          "prior_evidence_window": null,
+          "evidence_window": "sha256:c23140f05ea6c5c41ea29be2ea0076ba46c5e6f984f630a6edc1220bfe82969f",
+          "reason_codes": [
+            "coverage_incomplete",
+            "observer_availability_insufficient"
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000002",
+      "at_monotonic_ms": 0,
+      "event": {
+        "kind": "judgment_transition",
+        "transition": {
+          "schema_version": 1,
+          "transition_id": "transition:6be21fafde0adf693bc810eacb81574dcfc2b60f0e41df94c894fd02c3b43480",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "policy_generation": "policy:demo-v1",
+          "at_monotonic_ms": 0,
+          "from": "UNKNOWN",
+          "to": "CURRENT",
+          "prior_evidence_window": "sha256:c23140f05ea6c5c41ea29be2ea0076ba46c5e6f984f630a6edc1220bfe82969f",
+          "evidence_window": "sha256:03a16fd5c845720c66701ee2987bdc8f4d195fb8892a5062e13196045b176015",
+          "reason_codes": [
+            "named_reliance_conditions_satisfied"
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000003",
+      "at_monotonic_ms": 100,
+      "event": {
+        "kind": "judgment_transition",
+        "transition": {
+          "schema_version": 1,
+          "transition_id": "transition:193f551e64681fc17653254bd6ea20ebe501acfa5e48ce761e528e28e40ccf88",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "policy_generation": "policy:demo-v1",
+          "at_monotonic_ms": 100,
+          "from": "CURRENT",
+          "to": "CURRENT",
+          "prior_evidence_window": "sha256:ce52aa5d5e5ffb2c0540c60e0027b34003ecdd21874ea4b2b2855791868b06c6",
+          "evidence_window": "sha256:833010cbe0944cdfd07f4d9c392ea274e5ed41eaeb9fb573b2e69f3a69e771a2",
+          "reason_codes": [
+            "named_reliance_conditions_satisfied"
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000004",
+      "at_monotonic_ms": 200,
+      "event": {
+        "kind": "contradiction_created",
+        "contradiction": {
+          "schema_version": 1,
+          "contradiction_id": "contradiction:3e08d04fb34e5869fa77b6acc5ad18f20714d127ceef10e3e6d0dc21034379ea",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "policy_generation": "policy:demo-v1",
+          "signal": "load_ratio",
+          "first_observed_at_monotonic_ms": 200,
+          "evidence_refs": [
+            "observer:a/observer-a:1/seq=3/sha256:0e42b38aefad2408506e4c751ca50b2d5186f5ff12f6391390ab24e1be7b8064",
+            "observer:b/observer-b:1/seq=3/sha256:fc17a0eec0281865a81ac264f7ef97dfbda18773b0cc2b056dc26189323cdb4f"
+          ],
+          "incompatible_statements": [
+            "observer=observer:a signal=load_ratio value=0.25 unit=ratio assessment=WithinDeclaredBound",
+            "observer=observer:b signal=load_ratio value=1.25 unit=ratio assessment=OutsideDeclaredBound"
+          ],
+          "status": {
+            "state": "active"
+          }
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000005",
+      "at_monotonic_ms": 200,
+      "event": {
+        "kind": "judgment_transition",
+        "transition": {
+          "schema_version": 1,
+          "transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "policy_generation": "policy:demo-v1",
+          "at_monotonic_ms": 200,
+          "from": "CURRENT",
+          "to": "CONTRADICTED",
+          "prior_evidence_window": "sha256:999f1dbedf98ef85f3fdbead671049a0c4f081f8b3a2a623483e4b1135358761",
+          "evidence_window": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
+          "reason_codes": [
+            "contradiction_retained",
+            "subject_bound_violated"
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000006",
+      "at_monotonic_ms": 200,
+      "event": {
+        "kind": "escalation_requested",
+        "request": {
+          "schema_version": 1,
+          "request_id": "escalation:0000000000000001",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "trigger_class": "contradiction_retained",
+          "evidence_window_digest": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
+          "policy_generation": "policy:demo-v1",
+          "observation_policy_generation": "policy:demo-v1",
+          "diagnostic_profile": {
+            "name": "local.readonly.summary",
+            "version": 1,
+            "semantic_digest": "sha256:3c4f58ff76223b8b5a4f703eaaa2e1aa85df3c02d800712a95cfd3e90c660010"
+          },
+          "bounds": {
+            "maximum_runtime_ms": 25,
+            "maximum_output_bytes": 1024,
+            "maximum_observations": 4
+          },
+          "clock_id": "clock:replay-v1",
+          "created_at_monotonic_ms": 200,
+          "expires_at_monotonic_ms": 400,
+          "deduplication_key": "sha256:39ff1cf8edf83148d5211cb3bcab5d343bc4bdff843945cde4439fb42853f206",
+          "causal_transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
+          "nonclaims": [
+            "This request is not diagnostic evidence.",
+            "This request grants no execution or mutation authority.",
+            "Acceptance authorizes only the named bounded observation profile in the local bridge.",
+            "Diagnostic completion does not establish subject health or indefinite reliance."
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000007",
+      "at_monotonic_ms": 201,
+      "event": {
+        "kind": "escalation_disposition",
+        "disposition": {
+          "schema_version": 1,
+          "request_id": "escalation:0000000000000001",
+          "bridge_id": "bridge:replay-stub-v1",
+          "clock_id": "clock:replay-v1",
+          "decided_at_monotonic_ms": 201,
+          "kind": {
+            "decision": "accept",
+            "admitted_bounds": {
+              "maximum_runtime_ms": 25,
+              "maximum_output_bytes": 1024,
+              "maximum_observations": 4
+            }
+          },
+          "mutation_authority": "none"
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000008",
+      "at_monotonic_ms": 202,
+      "event": {
+        "kind": "diagnostic_receipt_correlated",
+        "receipt": {
+          "schema_version": 1,
+          "receipt_id": "receipt:204b83ae596c3ef6ed2e2f1155374d7bc5333404b4bfc7bb3fadcba1cd46133e",
+          "run_id": "run:ad6eb1254a0966f2ef9877c9ed6d6e3042a737e611378eea3bd0cc9e5ee3ae52",
+          "request_id": "escalation:0000000000000001",
+          "causal_transition_id": "transition:af4a68de4bc5b729ac6ae3c5a0532ab9ae9b4a02828922a4666756cca0f9ad27",
+          "deduplication_key": "sha256:39ff1cf8edf83148d5211cb3bcab5d343bc4bdff843945cde4439fb42853f206",
+          "evidence_window_digest": "sha256:f1eae5c372a92e86e9b74965bff81d7aca44e610269d211f821b68f64cd2b4b1",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "policy_generation": "policy:demo-v1",
+          "observation_policy_generation": "policy:demo-v1",
+          "diagnostic_profile": {
+            "name": "local.readonly.summary",
+            "version": 1,
+            "semantic_digest": "sha256:3c4f58ff76223b8b5a4f703eaaa2e1aa85df3c02d800712a95cfd3e90c660010"
+          },
+          "bridge_id": "bridge:replay-stub-v1",
+          "clock_id": "clock:replay-v1",
+          "started_at_monotonic_ms": 201,
+          "completed_at_monotonic_ms": 202,
+          "applicable_until_monotonic_ms": 400,
+          "status": "completed",
+          "results": [
+            {
+              "name": "stub_execution",
+              "value": "completed",
+              "interpretation": "the compiled harmless local stub returned"
+            },
+            {
+              "name": "subject_scope_binding",
+              "value": "subject:demo-host/host",
+              "interpretation": "request correlation only; no subject condition inferred"
+            }
+          ],
+          "observed_coverage": [
+            "stub.bridge",
+            "stub.profile"
+          ],
+          "result_digest": "sha256:817ac400b4787e9498e51f4b814b5b0694f3550ed13f56e5c7c6eca62a9f69c7",
+          "nonclaims": [
+            "This is a mock local diagnostic receipt, not an NQ artifact.",
+            "Stub completion does not establish subject health or resolve contradiction.",
+            "This receipt grants no execution, repair, or mutation authority."
+          ],
+          "mutation_authority": "none"
+        },
+        "evidence_reference": {
+          "receipt_id": "receipt:204b83ae596c3ef6ed2e2f1155374d7bc5333404b4bfc7bb3fadcba1cd46133e",
+          "result_digest": "sha256:817ac400b4787e9498e51f4b814b5b0694f3550ed13f56e5c7c6eca62a9f69c7",
+          "recorded_at_monotonic_ms": 202,
+          "applicable_until_monotonic_ms": 400,
+          "nonclaims": [
+            "This is a mock local diagnostic receipt, not an NQ artifact.",
+            "Stub completion does not establish subject health or resolve contradiction.",
+            "This receipt grants no execution, repair, or mutation authority."
+          ]
+        }
+      }
+    },
+    {
+      "schema_version": 1,
+      "event_id": "event:0000000000000009",
+      "at_monotonic_ms": 202,
+      "event": {
+        "kind": "judgment_transition",
+        "transition": {
+          "schema_version": 1,
+          "transition_id": "transition:4f66b8703f255355f50df0b705dc806f1982e4cd3999a80dfc59acdc1614266a",
+          "subject_scope": {
+            "subject": "subject:demo-host",
+            "subject_incarnation": "subject-incarnation:1",
+            "scope": "host"
+          },
+          "consumer": "consumer:capacity-display/v1",
+          "policy_generation": "policy:demo-v1",
+          "at_monotonic_ms": 202,
+          "from": "CONTRADICTED",
+          "to": "CONTRADICTED",
+          "prior_evidence_window": "sha256:d441a965792aa45456a67600445f1e8cdfda6e591d210c0145e776eab190f945",
+          "evidence_window": "sha256:e52532ddca211658b2df9b223b8ac9d802c558bbcb392ea971924852823e70aa",
+          "reason_codes": [
+            "contradiction_retained",
+            "subject_bound_violated",
+            "diagnostic_receipt_correlated"
+          ]
+        }
+      }
+    }
+  ],
+  "terminal_lines": [
+    "[000000ms] NOTE normal pulses establish only consumer-indexed present reliance",
+    "[000000ms] JUDGMENT NONE -> UNKNOWN coverage=0/2 missing=[load,memory] support_expires=none freshness=Current continuity=FirstSeen availability=Partial coherence=Insufficient coverage_state=Absent provenance=Verified transport=Normal signals=Consistent reasons=[coverage_incomplete,observer_availability_insufficient]",
+    "[000000ms] JUDGMENT UNKNOWN -> CURRENT coverage=2/2 missing=[] support_expires=300ms freshness=Current continuity=FirstSeen availability=Available coherence=Coherent coverage_state=Complete provenance=Verified transport=Normal signals=Consistent reasons=[named_reliance_conditions_satisfied]",
+    "[000100ms] JUDGMENT CURRENT -> CURRENT coverage=2/2 missing=[] support_expires=400ms freshness=Current continuity=Continuous availability=Available coherence=Coherent coverage_state=Complete provenance=Verified transport=Normal signals=Consistent reasons=[named_reliance_conditions_satisfied]",
+    "[000200ms] FAULT marker=observer divergence begins (experiment timing basis only)",
+    "[000200ms] JUDGMENT CURRENT -> CONTRADICTED coverage=2/2 missing=[] support_expires=none freshness=Current continuity=Continuous availability=Available coherence=Disagreement coverage_state=Complete provenance=Verified transport=Normal signals=Contradictory reasons=[contradiction_retained,subject_bound_violated]",
+    "[000200ms] ESCALATION request=escalation:0000000000000001 trigger=contradiction_retained profile=local.readonly.summary/1 expires=400ms bounds=DiagnosticBoundsV1 { maximum_runtime_ms: 25, maximum_output_bytes: 1024, maximum_observations: 4 }",
+    "[000201ms] BRIDGE request=escalation:0000000000000001 decision=accept",
+    "[000202ms] DIAGNOSTIC receipt=receipt:204b83ae596c3ef6ed2e2f1155374d7bc5333404b4bfc7bb3fadcba1cd46133e run=run:ad6eb1254a0966f2ef9877c9ed6d6e3042a737e611378eea3bd0cc9e5ee3ae52 status=Completed result=sha256:817ac400b4787e9498e51f4b814b5b0694f3550ed13f56e5c7c6eca62a9f69c7 nonclaim=does-not-establish-health",
+    "[000202ms] JUDGMENT CONTRADICTED -> CONTRADICTED coverage=2/2 missing=[] support_expires=none freshness=Current continuity=Continuous availability=Available coherence=Disagreement coverage_state=Complete provenance=Verified transport=Normal signals=Contradictory reasons=[contradiction_retained,subject_bound_violated,diagnostic_receipt_correlated]",
+    "[000202ms] NOTE the bounded diagnostic completed; contradiction remains until explicit resolution and fresh evidence",
+    "[000202ms] CAUTION diagnostic receipt correlated; judgment remains CONTRADICTED",
+    "[000202ms] METRICS max_stale_positive=0ms pulse_to_eval=0ms failure_to_unknown=not-measured failure_to_contradicted=0ms failure_to_escalation=0ms false_escalation=0 active_coverage=2 expired_coverage=0 stale_drop=0 duplicate=0 gap=0 escalation_dedup=0"
+  ]
+}

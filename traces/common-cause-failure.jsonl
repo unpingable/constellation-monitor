@@ -1,0 +1,8 @@
+{"event":"config","minimum_observers":2,"auto_bridge":false,"failure_domains":{"observer:a":"domain:shared","observer:b":"domain:shared","observer:c":"domain:independent"}}
+{"event":"pulse","at_ms":0,"observer":"observer:a","observer_incarnation":"a:1","sequence":1,"validity_ms":200}
+{"event":"pulse","at_ms":0,"observer":"observer:b","observer_incarnation":"b:1","sequence":1,"validity_ms":200}
+{"event":"pulse","at_ms":0,"observer":"observer:c","observer_incarnation":"c:1","sequence":1,"validity_ms":100}
+{"event":"fault","at_ms":50,"label":"independent domain disappears while correlated observers continue"}
+{"event":"pulse","at_ms":50,"observer":"observer:a","observer_incarnation":"a:1","sequence":2,"validity_ms":200}
+{"event":"pulse","at_ms":50,"observer":"observer:b","observer_incarnation":"b:1","sequence":2,"validity_ms":200}
+{"event":"tick","at_ms":100}

@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "scenario": "exact-generation-withdrawal-rollback-and-expiry",
+  "clock": "deterministic receiver-local replay clock; not wall clock",
+  "steps": [
+    {
+      "at_monotonic_ms": 0,
+      "action": "receiver start; no hot evidence",
+      "judgment": "UNKNOWN",
+      "policy_generation": "policy:p1",
+      "activation_id": "activation:p1-first",
+      "standing_inherited": false,
+      "support_expiry_monotonic_ms": null,
+      "certificate_id": "support:a0fb0b6e48490e418013ed389771bb54b18d08cac17284047c6aa792ebd1ded3"
+    },
+    {
+      "at_monotonic_ms": 10,
+      "action": "bounded pulse explicitly evaluated under P1",
+      "judgment": "CURRENT",
+      "policy_generation": "policy:p1",
+      "activation_id": "activation:p1-first",
+      "standing_inherited": false,
+      "support_expiry_monotonic_ms": 50,
+      "certificate_id": "support:628ee6b6af5cec61a15447f85762501e10f2d16ee44b3d092793fa9570140073"
+    },
+    {
+      "at_monotonic_ms": 20,
+      "action": "equal policy body activated as exact generation P2; prior standing withdrawn",
+      "judgment": "UNKNOWN",
+      "policy_generation": "policy:p2",
+      "activation_id": "activation:p2",
+      "standing_inherited": false,
+      "support_expiry_monotonic_ms": null,
+      "certificate_id": "support:ed6f2b86420054ddf244bf15c1283705485a1dbae6c979070e5ef4550eeac86a"
+    },
+    {
+      "at_monotonic_ms": 30,
+      "action": "rollback to the P1 body under a fresh generation and activation; no resurrection",
+      "judgment": "UNKNOWN",
+      "policy_generation": "policy:p1-body-rollback-g3",
+      "activation_id": "activation:p1-body-rollback-g3",
+      "standing_inherited": false,
+      "support_expiry_monotonic_ms": null,
+      "certificate_id": "support:1859568cbfbb1f33ec5516d905920854811aea034250df467f65847eae497eef"
+    },
+    {
+      "at_monotonic_ms": 31,
+      "action": "explicit evidence reconsideration under the exact rollback generation",
+      "judgment": "CURRENT",
+      "policy_generation": "policy:p1-body-rollback-g3",
+      "activation_id": "activation:p1-body-rollback-g3",
+      "standing_inherited": false,
+      "support_expiry_monotonic_ms": 50,
+      "certificate_id": "support:c0301dde5a90d57c7292b0c3ff2bdc9a48606528b28d175d5e0cdab81197d7f1"
+    },
+    {
+      "at_monotonic_ms": 50,
+      "action": "inclusive support deadline fired with no new pulse",
+      "judgment": "UNKNOWN",
+      "policy_generation": "policy:p1-body-rollback-g3",
+      "activation_id": "activation:p1-body-rollback-g3",
+      "standing_inherited": false,
+      "support_expiry_monotonic_ms": null,
+      "certificate_id": "support:597bd67bc60027969d7ec344a75930784a77c38aeb0e8dc981616a03a08df1db"
+    }
+  ],
+  "assertions": [
+    "equal policy bodies under distinct generations do not share standing",
+    "rollback does not resurrect the original certificate",
+    "only explicit evaluation can earn standing under a new exact context",
+    "inclusive support expiry withdraws CURRENT without a new pulse",
+    "every certificate grants mutation_authority=none"
+  ],
+  "emitted_escalation_count": 1,
+  "metrics": {
+    "schema_version": 1,
+    "expected_support_expiry_monotonic_ms": 50,
+    "actual_reevaluation_monotonic_ms": 50,
+    "maximum_stale_positive_duration_ms": 0,
+    "policy_transition_withdrawal_latency_ms": 0,
+    "scheduler_lateness_ms": 0,
+    "queue_refusal_count": 0,
+    "subject_refusal_count": 0,
+    "observer_refusal_count": 0,
+    "receiver_stream_refusal_count": 0,
+    "deadline_refusal_count": 0,
+    "context_refusal_count": 0,
+    "sparse_history_refusal_count": 0,
+    "duplicate_escalation_count": 0,
+    "recovered_sparse_record_count": 0,
+    "recovered_receipt_count": 0
+  },
+  "terminal_trace": [
+    "[000ms] UNKNOWN generation=policy:p1 activation=activation:p1-first inherited=false deadline=none action=receiver start; no hot evidence",
+    "[010ms] CURRENT generation=policy:p1 activation=activation:p1-first inherited=false deadline=50ms action=bounded pulse explicitly evaluated under P1",
+    "[020ms] UNKNOWN generation=policy:p2 activation=activation:p2 inherited=false deadline=none action=equal policy body activated as exact generation P2; prior standing withdrawn",
+    "[030ms] UNKNOWN generation=policy:p1-body-rollback-g3 activation=activation:p1-body-rollback-g3 inherited=false deadline=none action=rollback to the P1 body under a fresh generation and activation; no resurrection",
+    "[031ms] CURRENT generation=policy:p1-body-rollback-g3 activation=activation:p1-body-rollback-g3 inherited=false deadline=50ms action=explicit evidence reconsideration under the exact rollback generation",
+    "[050ms] UNKNOWN generation=policy:p1-body-rollback-g3 activation=activation:p1-body-rollback-g3 inherited=false deadline=none action=inclusive support deadline fired with no new pulse"
+  ],
+  "nonclaims": [
+    "CURRENT does not mean subject health",
+    "the replay clock is not a hard real-time measurement",
+    "the escalation request grants no diagnostic or mutation authority"
+  ]
+}

@@ -1,0 +1,20 @@
+[package]
+name = "pulse-qualification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pulse-evaluator = { path = "../pulse-evaluator" }
+pulse-l3-bridge = { path = "../pulse-l3-bridge" }
+pulse-runtime = { path = "../pulse-runtime" }
+pulse-types = { path = "../pulse-types" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

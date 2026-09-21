@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "historical_activation_receipts_recovered": 1,
+  "prior_process_binding_state": "qualified_and_matched",
+  "restarted_binding_state": "unbound",
+  "restarted_judgment": "UNKNOWN",
+  "restarted_supporting_evidence_count": 0,
+  "restarted_active_deadlines": 0,
+  "new_measurement_required": true,
+  "prior_receipt_reused": false
+}

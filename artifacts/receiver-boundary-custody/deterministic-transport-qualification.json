@@ -1,0 +1,44 @@
+{
+  "canary_tests_passed": 30,
+  "canonical_wire_corpus_bytes": {
+    "observation_envelope": 1081,
+    "receiver_challenge": 584,
+    "receiver_session_acceptance": 447,
+    "sender_binding": 540,
+    "sender_offer": 529
+  },
+  "earned_locally": [
+    "authentication_sender_assertion_receiver_admission_and_reliance_are_distinct",
+    "exact_pinned_peer_keys_and_domain_separated_signatures",
+    "sender_emission_requires_live_local_fixture_activation_and_signed_receiver_acceptance",
+    "receiver_admission_requires_exact_package_occurrence_scope_sequence_and_payload",
+    "receiver_arrival_owns_freshness_and_expiry",
+    "duplicates_replays_reorders_and_retries_do_not_renew_freshness",
+    "overload_occurrence_conflict_lifecycle_and_restart_fail_closed",
+    "historical_receipts_restore_no_session_evidence_deadline_or_current",
+    "no_object_grants_operational_authority"
+  ],
+  "hostile_scenarios": [
+    "wrong sender key, receiver key, and same-label receiver-policy substitution",
+    "five-way signature-domain separation",
+    "manifest/certificate/activation/process/epoch/observer/failure-domain/receiver/subject/incarnation/session substitution",
+    "every-byte truncation and single-byte corruption across the five-message corpus",
+    "trailing bytes, duplicate JSON field, unknown JSON field, noncanonical JSON order, and 128 bounded arbitrary datagrams",
+    "duplicate, duplicate observation under a new envelope, replay, reorder, explicit sequence gap and gap-bound refusal, session/rate exhaustion, session expiry, and old challenge replay",
+    "sender and receiver queue saturation, partition classification, silence expiry, and consumer-indexed divergence",
+    "competing sender occurrence, configured supersession/revocation, unauthorized revocation refusal",
+    "four real local-process SIGKILL points and history-only restart"
+  ],
+  "private_key_material_included": false,
+  "refused_or_unexecuted": [
+    "actual_two_linux_host_custody",
+    "remote_attestation",
+    "qualified_one_way_delay_or_first_seen_observation_age",
+    "failure_domain_independence",
+    "production_transport_security_or_availability"
+  ],
+  "schema_version": 1,
+  "signature_domains": 5,
+  "transport": "bounded UDP datagram adapter; deterministic semantic transfer uses exact direct datagram bytes",
+  "workspace_tests_passed": 159
+}

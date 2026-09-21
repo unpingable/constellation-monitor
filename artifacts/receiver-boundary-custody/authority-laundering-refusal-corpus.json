@@ -1,0 +1,20 @@
+{
+  "continuation": false,
+  "deployment": false,
+  "diagnostic_execution": false,
+  "mutation": false,
+  "objects_checked": [
+    "peer key",
+    "sender offer",
+    "challenge",
+    "session binding",
+    "receiver session acceptance",
+    "envelope",
+    "acceptance receipt",
+    "remote support reference"
+  ],
+  "revocation": false,
+  "schema_version": 1,
+  "signing": false,
+  "transport_administration": false
+}

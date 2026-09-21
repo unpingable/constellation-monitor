@@ -1,0 +1,44 @@
+{
+  "canonical_wire_encoding": "PCN1 bounded binary v1",
+  "datagram_bytes": 584,
+  "datagram_hex": "50434e3100010201ff000100011821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc37074b72b7264a9aabb6c0a053809eac4ca7ee97a5c025a29876406c37626d240004e70726f636573732d65706f63683a37353537663938636233303331636232396630663532613261323534663564306662376632613039333035623433666339333861346566623962313664343263001c6d6f6e6f746f6e69632d65706f63683a72656365697665723a6f6e6576068f28f663b41cf915540bb8c18d816e852beb00faef1beab68922ad633d6c002572656365697665722d616363657074616e63652d706f6c6963793a63616e6172792d6f6e65844d167a4b38bab981e7e0597c0d8bfda87489e4e04c0d5674c96498c6cc19abcd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a79ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f004e70726f636573732d65706f63683a37353537663938636233303331636232396630663532613261323534663564306662376632613039333035623433666339333861346566623962313664343263de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf87743763605fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e79450000000000000074000000000000036204d000000010938f5273a78732d51dba81600a34dc13ca71b01593abdb024284f49dffc80547dd9329c33f58d1fce004ff28888391feb65c5415c73c75cf68beb85adb1a1200",
+  "diagnostic_projection": {
+    "authority_grants": {
+      "continuation": "none",
+      "deployment": "none",
+      "diagnostic_execution": "none",
+      "mutation": "none",
+      "revocation": "none",
+      "signing": "none",
+      "transport_administration": "none"
+    },
+    "body": {
+      "accepted_sender_certificate_digest": "sha256:5fac941b51f158b984ddd64ff8e22bbe1dca4be3fb168c0e0ba41759de5e7945",
+      "accepted_sender_manifest_digest": "sha256:de5dff462884ddad3859719019c33a50597dc29b747091f54c8dbf8774376360",
+      "expires_at_receiver_monotonic_ms": 866,
+      "intended_sender_key_identity_digest": "sha256:9ca0b270f2773fb7b55f149a413f8c3bf09226347feda58402b22f4e25689a9f",
+      "intended_sender_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "issued_at_receiver_monotonic_ms": 116,
+      "maximum_envelope_bytes": 1232,
+      "maximum_messages": 16,
+      "protocol_version": 1,
+      "receiver_acceptance_policy_anchor_digest": "sha256:844d167a4b38bab981e7e0597c0d8bfda87489e4e04c0d5674c96498c6cc19ab",
+      "receiver_acceptance_policy_digest": "sha256:cd53d0b34283618c42de13aad8f63298d453a148093e3bcbb4a05319a7a698a7",
+      "receiver_acceptance_policy_generation": "receiver-acceptance-policy:canary-one",
+      "receiver_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3",
+      "receiver_monotonic_epoch": "monotonic-epoch:receiver:one",
+      "receiver_process_occurrence": "process-epoch:7557f98cb3031cb29f0f52a2a254f5d0fb7f2a09305b43fc938a4efb9b16d42c",
+      "schema_version": 1,
+      "sender_session_offer_digest": "sha256:7074b72b7264a9aabb6c0a053809eac4ca7ee97a5c025a29876406c37626d240",
+      "session_nonce_hex": "76068f28f663b41cf915540bb8c18d816e852beb00faef1beab68922ad633d6c"
+    },
+    "challenge_digest": "sha256:75405bba9a125ddfa9940c0126c190f227a79ce6070112a4ca192d4e8ad15148",
+    "schema_version": 1,
+    "signature_domain": "receiver_session_challenge_v1",
+    "signature_hex": "938f5273a78732d51dba81600a34dc13ca71b01593abdb024284f49dffc80547dd9329c33f58d1fce004ff28888391feb65c5415c73c75cf68beb85adb1a1200",
+    "signer_key_identity_digest": "sha256:1821895738f2819319ae91dacee5ac7f4301d7743093a84fad052262e5d8dcc3"
+  },
+  "object_kind": "receiver_session_challenge_v1",
+  "private_key_included": false,
+  "schema_version": 1
+}

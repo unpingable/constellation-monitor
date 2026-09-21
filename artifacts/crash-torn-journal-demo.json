@@ -1,0 +1,15 @@
+{
+  "name": "valid_prefix_followed_by_torn_suffix",
+  "expected": "one valid record recovered; suffix torn and history incomplete",
+  "outcome": "recovered_through_valid_prefix",
+  "damage": "truncated_payload",
+  "records_recovered": 1,
+  "first_damaged_offset": 1316,
+  "valid_prefix_bytes": 1221,
+  "observed_file_bytes": 1760,
+  "history_complete": false,
+  "operator_action_required": true,
+  "append_error": "io_failure",
+  "current_standing_reconstructed": false,
+  "mutation_authority": "none"
+}

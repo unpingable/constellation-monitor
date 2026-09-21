@@ -1,0 +1,5 @@
+{"event":"config","minimum_observers":1,"auto_bridge":false}
+{"event":"pulse","at_ms":0,"observer":"observer:a","observer_incarnation":"a:old","sequence":5,"validity_ms":200}
+{"event":"fault","at_ms":10,"label":"observer process restarts"}
+{"event":"pulse","at_ms":10,"observer":"observer:a","observer_incarnation":"a:new","sequence":1,"validity_ms":200}
+{"event":"pulse","at_ms":20,"observer":"observer:a","observer_incarnation":"a:new","sequence":2,"validity_ms":200}

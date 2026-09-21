@@ -1,0 +1,41 @@
+{
+  "schema": "constellation.source-cut-provenance/v1",
+  "product": "constellation-monitor",
+  "hosted_subsystems": [
+    "pulse"
+  ],
+  "source": {
+    "commit": "d741ca74171bcf4ffec910e124aa17f24173dbb7",
+    "tree": "7523ef0071b04e656b3e22fe02b607c86a63afa5"
+  },
+  "included_categories": [
+    "rust-source-and-tests",
+    "public-schemas",
+    "synthetic-fixtures-and-traces",
+    "public-qualification-artifacts",
+    "product-documentation",
+    "packaging-and-lockfiles"
+  ],
+  "excluded_exact_paths": [
+    "docs/reconnaissance.md",
+    "artifacts/receiver-boundary-custody/live-two-host-measurements.json"
+  ],
+  "excluded_path_patterns": [
+    "docs/campaign-*-plan.md",
+    "docs/campaign-*-reconnaissance.md",
+    "docs/campaign-*-report.md"
+  ],
+  "excluded_categories": [
+    "credentials-and-secret-values",
+    "private-endpoints-and-machine-specific-operational-records",
+    "private-campaign-records",
+    "consumer-specific-private-material",
+    "unrelated-projects"
+  ],
+  "post_cut_changes": [
+    "public-documentation-and-licensing",
+    "bounded-local-qualification-fixture-scheduling-repairs"
+  ],
+  "history_policy": "product-only-public-root-commit; private development history preserved separately",
+  "license": "Apache-2.0"
+}

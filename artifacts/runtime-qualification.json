@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "campaign": "bounded receiver/scheduler and exact-generation qualification",
+  "starting_commit": "0a9fe16e6d091c6b4b1128fcb6166e53d712fc3f",
+  "harness_clock": "deterministic receiver-local replay clock",
+  "checks": [
+    {
+      "name": "inclusive expiry and withdrawal without input",
+      "result": "pass",
+      "evidence": "deadline_withdraws_current_without_new_evidence_and_expiry_is_inclusive"
+    },
+    {
+      "name": "deadline overshoot measurement",
+      "result": "pass",
+      "evidence": "scheduler_overshoot_is_measured_without_moving_the_deadline"
+    },
+    {
+      "name": "late queued-input deadline accounting",
+      "result": "pass",
+      "evidence": "delayed_processing_of_an_earlier_input_still_accounts_for_expired_standing"
+    },
+    {
+      "name": "equal body, rollback, and ABA barriers",
+      "result": "pass",
+      "evidence": "equal_body_rollback_and_aba_each_require_a_new_evaluation"
+    },
+    {
+      "name": "same-instant deterministic ordering",
+      "result": "pass",
+      "evidence": "simultaneous_policy_transition_precedes_inclusive_expiry"
+    },
+    {
+      "name": "policy tightening and observer-set change",
+      "result": "pass",
+      "evidence": "policy_tightening_and_observer_set_change_make_reliance_unknown"
+    },
+    {
+      "name": "policy loosening still barriers",
+      "result": "pass",
+      "evidence": "policy_loosening_still_withdraws_before_explicit_reevaluation"
+    },
+    {
+      "name": "observation-policy generation requires matching evidence",
+      "result": "pass",
+      "evidence": "observation_policy_generation_change_requires_new_matching_evidence"
+    },
+    {
+      "name": "evaluator-semantic and consumer-profile generation changes",
+      "result": "pass",
+      "evidence": "evaluator_semantic_change_barriers_even_with_same_policy_identity"
+    },
+    {
+      "name": "consumer transition isolation",
+      "result": "pass",
+      "evidence": "one_consumer_transition_does_not_change_another"
+    },
+    {
+      "name": "queue saturation fail-closed",
+      "result": "pass",
+      "evidence": "queue_saturation_withdraws_cached_current_immediately"
+    },
+    {
+      "name": "observer cardinality refusal",
+      "result": "pass",
+      "evidence": "observer_cardinality_churn_is_refused_and_visible"
+    },
+    {
+      "name": "subject and schedule reservation bounds",
+      "result": "pass",
+      "evidence": "subject_and_deadline_capacity_are_explicit_registration_refusals"
+    },
+    {
+      "name": "duplicate and reordered non-renewal",
+      "result": "pass",
+      "evidence": "duplicate_and_reordered_inputs_do_not_renew_support"
+    },
+    {
+      "name": "policy-permitted provenance caution",
+      "result": "pass",
+      "evidence": "policy_permitted_unverified_provenance_is_caution_not_missing_premise"
+    },
+    {
+      "name": "clock regression blindness",
+      "result": "pass",
+      "evidence": "clock_regression_reports_blindness_instead_of_preserving_current"
+    },
+    {
+      "name": "escalation deduplication",
+      "result": "pass",
+      "evidence": "repeated_expiry_reevaluation_deduplicates_escalation"
+    },
+    {
+      "name": "contradiction custody through receipt",
+      "result": "pass",
+      "evidence": "diagnostic_completion_does_not_clear_contradiction"
+    },
+    {
+      "name": "delayed disposition evaluated at receiver now",
+      "result": "pass",
+      "evidence": "delayed_escalation_disposition_is_evaluated_at_receiver_now"
+    },
+    {
+      "name": "history-only receiver restart",
+      "result": "pass",
+      "evidence": "restart_recovers_history_but_not_current_standing"
+    },
+    {
+      "name": "inapplicable contradiction custody across restart",
+      "result": "pass",
+      "evidence": "restart_reexport_preserves_inapplicable_contradiction_custody"
+    },
+    {
+      "name": "policy-generation content binding across restart",
+      "result": "pass",
+      "evidence": "restart_rejects_policy_generation_rebound_to_different_content"
+    },
+    {
+      "name": "subject replacement noninheritance",
+      "result": "pass",
+      "evidence": "explicit_subject_replacement_does_not_inherit_hot_evidence"
+    },
+    {
+      "name": "sparse-history capacity fail-stop",
+      "result": "pass",
+      "evidence": "sparse_history_capacity_is_explicit_and_fail_stops_new_input"
+    },
+    {
+      "name": "subject-incarnation churn bound",
+      "result": "pass",
+      "evidence": "subject_incarnation_churn_is_bounded_and_fail_closed"
+    },
+    {
+      "name": "duplicate multiplicity property",
+      "result": "pass",
+      "evidence": "duplicate_multiplicity_never_renews_the_original_deadline"
+    },
+    {
+      "name": "generation transition property",
+      "result": "pass",
+      "evidence": "every_fresh_generation_activation_barriers_before_reearning_current"
+    },
+    {
+      "name": "enqueue-race ordering property",
+      "result": "pass",
+      "evidence": "same_instant_order_is_independent_of_enqueue_race"
+    },
+    {
+      "name": "same-instant pulse semantic ordering property",
+      "result": "pass",
+      "evidence": "same_instant_pulse_order_uses_stable_semantic_keys"
+    },
+    {
+      "name": "identity-churn bound property",
+      "result": "pass",
+      "evidence": "adversarial_observer_identity_churn_never_exceeds_the_bound"
+    }
+  ],
+  "deterministic_demo_metrics": {
+    "schema_version": 1,
+    "expected_support_expiry_monotonic_ms": 50,
+    "actual_reevaluation_monotonic_ms": 50,
+    "maximum_stale_positive_duration_ms": 0,
+    "policy_transition_withdrawal_latency_ms": 0,
+    "scheduler_lateness_ms": 0,
+    "queue_refusal_count": 0,
+    "subject_refusal_count": 0,
+    "observer_refusal_count": 0,
+    "receiver_stream_refusal_count": 0,
+    "deadline_refusal_count": 0,
+    "context_refusal_count": 0,
+    "sparse_history_refusal_count": 0,
+    "duplicate_escalation_count": 0,
+    "recovered_sparse_record_count": 0,
+    "recovered_receipt_count": 0
+  },
+  "restart": {
+    "schema_version": 1,
+    "scenario": "history-custody-without-standing-recovery",
+    "historical_records_recovered": 5,
+    "historical_current_certificate_records": 1,
+    "serialized_history_bytes": 6461,
+    "serialization_round_trip_exact": true,
+    "current_standing": "UNKNOWN",
+    "current_supporting_evidence_count": 0,
+    "scheduled_deadline_count": 0,
+    "standing_recovered": false,
+    "trace": [
+      "[000000ms] CERTIFICATE consumer=consumer:capacity-display activation=activation:restart-after judgment=UNKNOWN support_expires=none standing_inherited=false",
+      "[000000ms] CERTIFICATE consumer=consumer:capacity-display activation=activation:restart-after judgment=UNKNOWN support_expires=none standing_inherited=false",
+      "[000000ms] RESTART historical_records=5 receipts=0 current_standing=UNKNOWN"
+    ]
+  },
+  "required_gate_commands": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "cargo test --workspace --all-targets --all-features"
+  ],
+  "nonclaims": [
+    "artifact generation does not replace running the listed gates",
+    "no production scheduler or hard real-time guarantee is qualified",
+    "no current standing is crash durable",
+    "no record grants mutation authority"
+  ]
+}

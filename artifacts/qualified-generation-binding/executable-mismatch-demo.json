@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "scenario": "valid checked package names different executable bytes",
+  "steps": [
+    {
+      "sequence": 1,
+      "action": "valid checked package names different executable bytes",
+      "binding_state": "executable_mismatch",
+      "judgment": "UNKNOWN",
+      "supporting_evidence_count": 1,
+      "active_deadlines": 0,
+      "activation_receipt_digest": "sha256:57bb60e445c51276c6d7516ffd46245a0ed5316bcf0dc5d1199f7acc814f8a92",
+      "qualified_generation_digest": null,
+      "qualified_manifest_digest": null,
+      "qualified_certificate_digest": null,
+      "qualified_activation_receipt_digest": null,
+      "mutation_authority": "none"
+    }
+  ],
+  "assertions": [
+    "activation state is ExecutableMismatch",
+    "current standing remains UNKNOWN",
+    "no active support deadline exists"
+  ],
+  "terminal_trace": [
+    "[000000ms] CERTIFICATE consumer=consumer:qualified-display activation=activation:qualified-one judgment=UNKNOWN support_expires=none standing_inherited=false",
+    "[000001ms] PULSE ordinal=1 observer=observer:qualified-binding sequence=1 arrival=1ms",
+    "[000001ms] CERTIFICATE consumer=consumer:qualified-display activation=activation:qualified-one judgment=UNKNOWN support_expires=none standing_inherited=false"
+  ],
+  "nonclaims": [
+    "digest identity is not authorship, authority, freshness, or qualification",
+    "local self-measurement is not independent attestation",
+    "source-to-binary correspondence is not established",
+    "compiler, toolchain, kernel, loader, and host integrity are not established",
+    "no continuation, diagnostic-execution, deployment, signing, revocation, or mutation authority is granted",
+    "no subject-health, complete-coverage, production, or product-plane claim is made"
+  ]
+}

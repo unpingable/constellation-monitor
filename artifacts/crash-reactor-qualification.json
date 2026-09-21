@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "campaign": "local crash-fault reactor and bounded historical journal",
+  "starting_commit": "668589e537e9cffe151913f72ca45a61ca32b1d7",
+  "checks": [
+    {
+      "name": "autonomous inclusive expiry",
+      "result": "pass",
+      "evidence": "real_actor_withdraws_current_without_external_run_until"
+    },
+    {
+      "name": "late wakeup measurement",
+      "result": "pass",
+      "evidence": "delayed_wakeup_reports_lateness_without_extending_encoded_deadline"
+    },
+    {
+      "name": "nearer deadline re-arm",
+      "result": "pass",
+      "evidence": "nearer_deadline_inserted_while_sleeping_is_rearmed"
+    },
+    {
+      "name": "earliest-first multiple deadlines",
+      "result": "pass",
+      "evidence": "two_deadlines_are_serviced_earliest_first"
+    },
+    {
+      "name": "generation barrier removes old deadline",
+      "result": "pass",
+      "evidence": "generation_transition_removes_old_deadline_before_expiry"
+    },
+    {
+      "name": "required journal failure is distinct",
+      "result": "pass",
+      "evidence": "required_journal_exhaustion_is_a_distinct_fail_closed_condition"
+    },
+    {
+      "name": "actor unwind fail-closed",
+      "result": "pass",
+      "evidence": "actor_unwind_immediately_withdraws_shared_temporal_custody"
+    },
+    {
+      "name": "bounded mailbox fail-closed",
+      "result": "pass",
+      "evidence": "bounded_mailbox_refuses_without_eviction_and_latches_blindness"
+    },
+    {
+      "name": "clean shutdown",
+      "result": "pass",
+      "evidence": "clean_shutdown_terminates_with_no_live_standing_surface"
+    },
+    {
+      "name": "restart UNKNOWN",
+      "result": "pass",
+      "evidence": "journal_recovery_starts_new_epoch_unknown_without_support_or_deadlines"
+    },
+    {
+      "name": "arbitrary-byte truncation",
+      "result": "pass",
+      "evidence": "truncation_at_every_byte_never_turns_a_partial_record_into_history"
+    },
+    {
+      "name": "interior corruption stop",
+      "result": "pass",
+      "evidence": "interior_corruption_stops_before_later_valid_looking_bytes"
+    },
+    {
+      "name": "duplicate/reorder/replay refusal",
+      "result": "pass",
+      "evidence": "duplicated_reordered_skipped_and_stale_frames_are_refused"
+    },
+    {
+      "name": "version, length, trailing damage",
+      "result": "pass",
+      "evidence": "unsupported_version_oversized_length_and_trailing_bytes_are_explicit"
+    },
+    {
+      "name": "journal bound refusal",
+      "result": "pass",
+      "evidence": "record_and_file_bounds_refuse_before_an_extra_append"
+    },
+    {
+      "name": "append I/O failure",
+      "result": "pass",
+      "evidence": "injected_io_failure_latches_append_and_leaves_detectable_damage"
+    },
+    {
+      "name": "monotonic epoch separation",
+      "result": "pass",
+      "evidence": "different_monotonic_epochs_remain_provenance_not_elapsed_time"
+    },
+    {
+      "name": "bounded arbitrary decode property",
+      "result": "pass",
+      "evidence": "bounded_arbitrary_bytes_never_create_unbounded_or_current_state"
+    },
+    {
+      "name": "12 named SIGKILL boundaries",
+      "result": "pass",
+      "evidence": "named_sigkill_boundaries_never_restore_current_support_or_deadlines"
+    },
+    {
+      "name": "contradiction non-laundering",
+      "result": "pass",
+      "evidence": "diagnostic_completion_does_not_clear_contradiction"
+    },
+    {
+      "name": "escalation deduplication",
+      "result": "pass",
+      "evidence": "repeated_expiry_reevaluation_deduplicates_escalation"
+    },
+    {
+      "name": "generation same-instant ordering",
+      "result": "pass",
+      "evidence": "simultaneous_policy_transition_precedes_inclusive_expiry"
+    }
+  ],
+  "required_gate_commands": [
+    "cargo fmt --all -- --check",
+    "cargo clippy --workspace --all-targets --all-features -- -D warnings",
+    "cargo test --workspace --all-targets --all-features"
+  ],
+  "artifact_commands": [
+    "cargo run -p pulse-runtime --bin pulse-crash-campaign -- reactor-demo",
+    "cargo run -p pulse-runtime --bin pulse-crash-campaign -- restart-demo",
+    "cargo run -p pulse-runtime --bin pulse-crash-campaign -- crash-harness",
+    "cargo run -p pulse-runtime --bin pulse-crash-campaign -- corruption-corpus",
+    "cargo run -p pulse-runtime --bin pulse-crash-campaign -- live-linux"
+  ],
+  "current_standing_durable": false,
+  "mutation_authority_emitted": false,
+  "nonclaims": [
+    "the manifest complements but does not replace executing the required gates",
+    "no hard-real-time, host-crash, or physical-media durability claim is made",
+    "no production deployment viability or product-plane status is established"
+  ]
+}

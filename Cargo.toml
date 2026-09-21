@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/monitor-project-concerns",
+    "crates/pulse-agent",
+    "crates/pulse-evaluator",
+    "crates/pulse-l3-bridge",
+    "crates/pulse-nq-load-support",
+    "crates/pulse-project-predicate-support",
+    "crates/pulse-qualification",
+    "crates/pulse-replay",
+    "crates/pulse-runtime",
+    "crates/pulse-transport-canary",
+    "crates/pulse-types",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+ctrlc = "3.4"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+proptest = { version = "1.9", default-features = false, features = ["std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_jcs = "0.1"
+sha2 = "0.10"
+time = { version = "0.3", features = ["parsing"] }
+toml = "0.9.12"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "deny"
