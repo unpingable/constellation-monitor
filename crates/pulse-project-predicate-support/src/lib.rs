@@ -27,7 +27,10 @@ pub const REPLAY_SCHEMA: &str = "pulse.project-predicate-support-replay/v1";
 pub const NQ_EVALUATION_SCHEMA: &str = "nq.bounded-predicate-support-evaluation/v1";
 const SIGNATURE_DOMAIN: &[u8] = b"pulse/project-predicate-support/evidence/v1\0";
 const MAX_ARTIFACT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_EXECUTABLE_BYTES: usize = 128 * 1024 * 1024;
+// Public NQ debug builds retain the documented local same-identity fixture path
+// and can exceed 128 MiB. Keep executable hashing bounded while admitting that
+// supported build product; installed release binaries remain preferable.
+const MAX_EXECUTABLE_BYTES: usize = 256 * 1024 * 1024;
 const MAX_VERIFIER_OUTPUT_BYTES: usize = 256 * 1024;
 const VERIFIER_TIMEOUT: Duration = Duration::from_secs(10);
 
