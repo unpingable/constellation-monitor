@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use pulse_evaluator::{EscalationPolicyV1, ReliancePolicyV1};
@@ -25,6 +26,13 @@ const SUBJECT: &str = "subject:reactor-test";
 const SUBJECT_INCAR: &str = "subject-incarnation:reactor-one";
 const OBSERVATION_GENERATION: &str = "observation-policy:reactor-one";
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
+static REACTOR_TEST_SERIALIZER: Mutex<()> = Mutex::new(());
+
+fn serial_reactor_test() -> MutexGuard<'static, ()> {
+    REACTOR_TEST_SERIALIZER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn temp_path(label: &str) -> PathBuf {
     let sequence = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
@@ -241,6 +249,7 @@ fn judgment(snapshot: &pulse_runtime::ReactorSnapshotV1, consumer: &str) -> Judg
 
 #[test]
 fn real_actor_withdraws_current_without_external_run_until() {
+    let _serial = serial_reactor_test();
     let (reactor, path, journal_config, _) = start_reactor(
         "real-expiry",
         "consumer:one",
@@ -286,6 +295,7 @@ fn real_actor_withdraws_current_without_external_run_until() {
 
 #[test]
 fn delayed_wakeup_reports_lateness_without_extending_encoded_deadline() {
+    let _serial = serial_reactor_test();
     let mut config = ReactorConfigV1::qualification();
     config.deliberate_deadline_delay_ms = 25;
     let (reactor, path, _, _) = start_reactor("late", "consumer:one", 35, config);
@@ -311,6 +321,7 @@ fn delayed_wakeup_reports_lateness_without_extending_encoded_deadline() {
 
 #[test]
 fn required_journal_exhaustion_is_a_distinct_fail_closed_condition() {
+    let _serial = serial_reactor_test();
     // This case qualifies journal exhaustion, not sub-second scheduling. Keep
     // enough separation between startup and expiry that a loaded test host can
     // observe the initial durable state before the deadline transition.
@@ -368,6 +379,7 @@ fn required_journal_exhaustion_is_a_distinct_fail_closed_condition() {
 
 #[test]
 fn nearer_deadline_inserted_while_sleeping_is_rearmed() {
+    let _serial = serial_reactor_test();
     let (reactor, path, _, _) = start_reactor(
         "rearm",
         "consumer:one",
@@ -398,6 +410,7 @@ fn nearer_deadline_inserted_while_sleeping_is_rearmed() {
 
 #[test]
 fn generation_transition_removes_old_deadline_before_expiry() {
+    let _serial = serial_reactor_test();
     let (reactor, path, _, _) = start_reactor(
         "generation",
         "consumer:one",
@@ -429,6 +442,7 @@ fn generation_transition_removes_old_deadline_before_expiry() {
 
 #[test]
 fn two_deadlines_are_serviced_earliest_first() {
+    let _serial = serial_reactor_test();
     let path = temp_path("two-deadlines");
     let runtime_config = runtime_config("receiver-incarnation:two", "clock:two");
     let mut runtime = ReceiverSchedulerRuntime::new(runtime_config.clone()).expect("runtime");
@@ -499,6 +513,7 @@ fn two_deadlines_are_serviced_earliest_first() {
 
 #[test]
 fn journal_recovery_starts_new_epoch_unknown_without_support_or_deadlines() {
+    let _serial = serial_reactor_test();
     let (reactor, path, journal_config, _) = start_reactor(
         "restart",
         "consumer:one",
@@ -539,6 +554,7 @@ fn journal_recovery_starts_new_epoch_unknown_without_support_or_deadlines() {
 
 #[test]
 fn clean_shutdown_terminates_with_no_live_standing_surface() {
+    let _serial = serial_reactor_test();
     let (reactor, path, _, _) = start_reactor(
         "shutdown",
         "consumer:one",
@@ -557,6 +573,7 @@ fn clean_shutdown_terminates_with_no_live_standing_surface() {
 
 #[test]
 fn abandoned_command_channel_withdraws_and_journals_temporal_custody() {
+    let _serial = serial_reactor_test();
     let (reactor, path, journal_config, _) = start_reactor(
         "abandoned",
         "consumer:one",
