@@ -1,8 +1,10 @@
 # Constellation Monitor
 
-Constellation Monitor is the private, experimental near-real-time
-present-confidence plane. Existing crate, protocol, and internal repository
-identities retain their current names.
+Constellation Monitor is the experimental near-real-time present-confidence
+plane. The canonical public source is
+[`unpingable/constellation-monitor`](https://github.com/unpingable/constellation-monitor);
+this repository retains the private implementation history. Existing crate,
+protocol, and internal repository identities retain their current names.
 
 The project asks one bounded question:
 
@@ -44,17 +46,19 @@ time.
 ## Jurisdiction
 
 ```text
-monitor plane   present freshness, continuity, coherence, contradiction,
+Monitor         bounded discovery and acquisition
+Pulse           present freshness, continuity, coherence, contradiction,
                 missingness, and consumer-indexed reliance
-NQ-NG           permission and execution semantics for a deeper diagnostic
-Witness         bounded evidence collected by that diagnostic
+Constellation NQ  diagnostic judgment and evidence admission
 Nightshift      recurrence, expiry, retry, and operational posture
-Docket          separately governed mutation
-Synesthesia     human presentation of present-state coherence or collapse
+Docket          execution custody, dispatch, settlement, and reconciliation
+Executor        bounded mechanics for an exact enrolled effect
+Phosphor        optional read-only presentation and inspection
 ```
 
-This repository owns only the first line and a stubbed, non-authorizing seam
-toward the second.
+This repository owns the first two lines. Its closed adapters connect named
+Pulse results to NQ and Nightshift for specific profiles; they do not collapse
+those components' judgment or temporal responsibilities into Monitor.
 
 Monitor discovers bounded observations and evaluates consumer-indexed present
 reliance. Pulse records and preserves the exact evidence, custody, freshness,
