@@ -73,12 +73,14 @@ Pulse           present freshness, continuity, coherence, contradiction,
                 missingness, and consumer-indexed reliance
 Constellation NQ  diagnostic judgment and evidence admission
 Nightshift      recurrence, expiry, retry, and operational posture
-Docket          separately governed mutation
+Docket          execution custody, dispatch, settlement, and reconciliation
+Executor        bounded mechanics for an exact enrolled effect
 Phosphor        optional read-only presentation and inspection
 ```
 
-This repository owns only the first line and a stubbed, non-authorizing seam
-toward the second.
+This repository owns the first two lines. Its closed adapters connect named
+Pulse results to NQ and Nightshift for specific profiles; they do not collapse
+those components' judgment or temporal responsibilities into Monitor.
 
 Monitor discovers bounded observations and evaluates consumer-indexed present
 reliance. Pulse records and preserves the exact evidence, custody, freshness,
