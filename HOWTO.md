@@ -39,6 +39,14 @@ cargo run -p pulse-runtime -- demo
 cargo run -p pulse-runtime -- restart-demo
 ```
 
+An embedding Pulse owner can expose one bounded local read through
+`LocalCrashReactor::serve_live_present_support_stream`; a caller uses
+`query_live_present_support_stream` and subtracts the returned exchange time
+from the response duration. These functions operate on an already connected
+Unix stream and do not create a listener or service. See
+[`docs/live-present-support-v1.md`](docs/live-present-support-v1.md) for exact
+request binding, replay, expiry, and transport responsibilities.
+
 The closed load-pressure family has separate producer, intake, and read-only
 resolver roles. Producer and intake require an absolute configuration path and
 an acquisition token:

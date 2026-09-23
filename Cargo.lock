@@ -491,6 +491,7 @@ name = "pulse-types"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_jcs",
  "serde_json",
  "sha2",
 ]

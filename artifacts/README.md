@@ -96,3 +96,9 @@ measurement is not labeled two-host. `live-two-host-measurements.json` records
 the unexecuted obligation because no second authorized reachable Linux host
 was available; the reachable configured candidate was Darwin. No private key
 was created for an unrun two-host exercise.
+
+The bounded live present-support export adds
+`live-present-support-v1/conformance-vectors.json`. Its duration, caller-decay,
+request-binding, expiry, indeterminate, and replay cases are loaded directly by
+the owning reactor test. The vectors describe a read-only local process
+boundary; they do not preserve or recreate live support.

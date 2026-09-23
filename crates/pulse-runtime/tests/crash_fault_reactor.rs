@@ -4,8 +4,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
 use pulse_evaluator::{EscalationPolicyV1, ReliancePolicyV1};
 use pulse_l3_bridge::stub_profile_identity;
+#[cfg(unix)]
+use pulse_runtime::query_live_present_support_stream;
 use pulse_runtime::{
     ConsumerActivationV1, ConsumerRegistrationV1, HistoricalJournal, JournalBoundsV1,
     JournalConfigV1, LocalCrashReactor, MonotonicEpochV1, PulseIngressV1, ReactorConditionV1,
@@ -16,6 +21,8 @@ use pulse_types::{
     AuthenticationFieldV1, AuthenticationResultV1, BoundedSignalValueV1, ClockId, ConsumerId,
     ConsumerProfileGenerationId, ContextActivationId, CoverageDescriptorV1, DiagnosticBoundsV1,
     EvaluatorSemanticGenerationId, GenerationTransitionCauseV1, IncarnationId, JudgmentCategoryV1,
+    LIVE_PRESENT_SUPPORT_REQUEST_SCHEMA_V1, LivePresentSupportDispositionV1,
+    LivePresentSupportNonce, LivePresentSupportRequestV1, LivePresentSupportResponseV1,
     ObservationPolicyGenerationId, ObservationProfileIdV1, ObserverId, ObserverSetGenerationId,
     PolicyGenerationId, PulseFrameV1, ReceiverId, RelianceContextV1, SCHEMA_VERSION_V1,
     SignalAssessmentV1, SubjectId, digest_parts,
@@ -237,6 +244,300 @@ fn judgment(snapshot: &pulse_runtime::ReactorSnapshotV1, consumer: &str) -> Judg
         .find(|certificate| certificate.consumer == ConsumerId::new(consumer))
         .expect("consumer certificate")
         .judgment
+}
+
+fn live_support_request(
+    snapshot: &pulse_runtime::ReactorSnapshotV1,
+    consumer: &str,
+    nonce: &str,
+) -> LivePresentSupportRequestV1 {
+    let certificate = snapshot
+        .certificates
+        .iter()
+        .find(|certificate| certificate.consumer == ConsumerId::new(consumer))
+        .expect("consumer certificate");
+    let qualified_generation = certificate
+        .qualified_generation
+        .as_ref()
+        .expect("current certificate has a qualified generation");
+    LivePresentSupportRequestV1 {
+        schema: LIVE_PRESENT_SUPPORT_REQUEST_SCHEMA_V1.to_owned(),
+        request_nonce: LivePresentSupportNonce::new(nonce),
+        consumer: certificate.consumer.clone(),
+        subject_scope: certificate.subject_scope.clone(),
+        reliance_context: certificate.context.clone(),
+        reliance_context_digest: certificate.context.identity_digest(),
+        support_certificate_id: certificate.certificate_id.clone(),
+        evidence_window_id: certificate.evidence_window_id.clone(),
+        qualified_generation_digest: qualified_generation.identity_digest(),
+        receiver: snapshot.monotonic_epoch.receiver.clone(),
+        receiver_incarnation: snapshot.monotonic_epoch.receiver_incarnation.clone(),
+        receiver_epoch_id: snapshot.monotonic_epoch.epoch_id.clone(),
+        receiver_clock_id: snapshot.monotonic_epoch.clock_id.clone(),
+    }
+}
+
+#[test]
+fn live_present_support_query_is_bounded_read_only_and_canonical() {
+    let (reactor, path, _, _) = start_reactor(
+        "live-query",
+        "consumer:one",
+        500,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 500)).expect("pulse");
+    let before = reactor.snapshot();
+    let request = live_support_request(&before, "consumer:one", "nonce:live-query-one");
+    let request_bytes = request.canonical_bytes().expect("canonical request");
+    let response_bytes = reactor
+        .query_live_present_support_canonical(&request_bytes)
+        .expect("canonical live response");
+    let response = LivePresentSupportResponseV1::decode_canonical(&response_bytes)
+        .expect("canonical response decodes");
+    response
+        .validate_against(&request)
+        .expect("response binds exact request");
+    assert_eq!(
+        response.disposition,
+        LivePresentSupportDispositionV1::SupportedCurrent
+    );
+    assert!(
+        response
+            .remaining_lifetime_ms_at_response
+            .is_some_and(|remaining| remaining > 0 && remaining < 500)
+    );
+    assert_eq!(
+        response.mutation_authority,
+        pulse_types::MutationAuthorityV1::None
+    );
+    let after = reactor.snapshot();
+    assert_eq!(before.certificates, after.certificates);
+    assert_eq!(before.active_deadline_count, after.active_deadline_count);
+    assert_eq!(
+        before.reactor_metrics.committed_journal_record_count,
+        after.reactor_metrics.committed_journal_record_count
+    );
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn live_present_support_replay_does_not_refresh_remaining_lifetime() {
+    let (reactor, path, _, _) = start_reactor(
+        "live-query-replay",
+        "consumer:one",
+        200,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 200)).expect("pulse");
+    let request = live_support_request(
+        &reactor.snapshot(),
+        "consumer:one",
+        "nonce:live-query-replay",
+    );
+    let response = reactor
+        .query_live_present_support(request.clone())
+        .expect("live response");
+    let retained_bytes = response.canonical_bytes().expect("retained response bytes");
+    let original_remaining = response
+        .remaining_lifetime_ms_at_response
+        .expect("positive remainder");
+    let replay = LivePresentSupportResponseV1::decode_canonical(&retained_bytes)
+        .expect("historical response decodes");
+    replay
+        .validate_against(&request)
+        .expect("historical bytes retain identity");
+    assert_eq!(
+        replay.remaining_lifetime_ms_at_response,
+        Some(original_remaining)
+    );
+    assert_eq!(
+        replay.conservative_remaining_lifetime_ms(original_remaining),
+        None
+    );
+    std::thread::sleep(Duration::from_millis(2));
+    let duplicate_query = reactor
+        .query_live_present_support(request.clone())
+        .expect("duplicate request is measured live, not served from a response cache");
+    assert!(
+        duplicate_query
+            .remaining_lifetime_ms_at_response
+            .is_some_and(|remaining| remaining <= original_remaining)
+    );
+    assert!(
+        duplicate_query.measured_at_receiver_monotonic_ms
+            >= response.measured_at_receiver_monotonic_ms
+    );
+    let fresh = reactor
+        .query_live_present_support(LivePresentSupportRequestV1 {
+            request_nonce: LivePresentSupportNonce::new("nonce:live-query-fresh"),
+            ..request
+        })
+        .expect("fresh query");
+    assert!(
+        fresh
+            .remaining_lifetime_ms_at_response
+            .is_some_and(|remaining| remaining <= original_remaining)
+    );
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn live_present_support_is_indeterminate_when_temporal_custody_is_blind() {
+    let (reactor, path, _, _) = start_reactor(
+        "live-query-blind",
+        "consumer:one",
+        500,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 500)).expect("pulse");
+    let request = live_support_request(
+        &reactor.snapshot(),
+        "consumer:one",
+        "nonce:live-query-blind",
+    );
+    reactor
+        .declare_blindness("qualification case")
+        .expect("blindness is recorded");
+    let response = reactor
+        .query_live_present_support(request)
+        .expect("blind reactor returns typed indeterminate");
+    assert_eq!(
+        response.disposition,
+        LivePresentSupportDispositionV1::Indeterminate
+    );
+    assert!(response.remaining_lifetime_ms_at_response.is_none());
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn historical_support_identity_is_not_live_after_expiry() {
+    let (reactor, path, _, _) = start_reactor(
+        "live-query-historical",
+        "consumer:one",
+        35,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 35)).expect("pulse");
+    let historical_request = live_support_request(
+        &reactor.snapshot(),
+        "consumer:one",
+        "nonce:live-query-historical",
+    );
+    reactor
+        .wait_until(Duration::from_secs(2), |snapshot| {
+            snapshot.certificates.iter().any(|certificate| {
+                certificate.consumer == ConsumerId::new("consumer:one")
+                    && certificate.judgment != JudgmentCategoryV1::Current
+            })
+        })
+        .expect("support expires");
+    let response = reactor
+        .query_live_present_support(historical_request)
+        .expect("historical selector has a bounded answer");
+    assert_eq!(
+        response.disposition,
+        LivePresentSupportDispositionV1::Unsupported
+    );
+    assert!(response.remaining_lifetime_ms_at_response.is_none());
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[test]
+fn live_present_support_refuses_selector_substitution() {
+    let (reactor, path, _, _) = start_reactor(
+        "live-query-substitution",
+        "consumer:one",
+        500,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 500)).expect("pulse");
+    let exact = live_support_request(
+        &reactor.snapshot(),
+        "consumer:one",
+        "nonce:live-query-exact",
+    );
+
+    let mut cases = Vec::new();
+    let mut wrong_consumer = exact.clone();
+    wrong_consumer.request_nonce = LivePresentSupportNonce::new("nonce:wrong-consumer");
+    wrong_consumer.consumer = ConsumerId::new("consumer:wrong");
+    cases.push(wrong_consumer);
+    let mut wrong_support = exact.clone();
+    wrong_support.request_nonce = LivePresentSupportNonce::new("nonce:wrong-support");
+    wrong_support.support_certificate_id = pulse_types::SupportCertificateId::new("support:wrong");
+    cases.push(wrong_support);
+    let mut wrong_window = exact.clone();
+    wrong_window.request_nonce = LivePresentSupportNonce::new("nonce:wrong-window");
+    wrong_window.evidence_window_id = pulse_types::EvidenceWindowId::new("window:wrong");
+    cases.push(wrong_window);
+    let mut wrong_context = exact.clone();
+    wrong_context.request_nonce = LivePresentSupportNonce::new("nonce:wrong-context");
+    wrong_context.reliance_context.reliance_policy_generation =
+        PolicyGenerationId::new("policy:wrong");
+    wrong_context.reliance_context_digest = wrong_context.reliance_context.identity_digest();
+    cases.push(wrong_context);
+    let mut wrong_binding = exact;
+    wrong_binding.request_nonce = LivePresentSupportNonce::new("nonce:wrong-binding");
+    wrong_binding.qualified_generation_digest = digest_parts("qualified", &[b"wrong"]);
+    cases.push(wrong_binding);
+
+    for request in cases {
+        let response = reactor
+            .query_live_present_support(request)
+            .expect("mismatch has a bounded answer");
+        assert_eq!(
+            response.disposition,
+            LivePresentSupportDispositionV1::Unsupported
+        );
+        assert!(response.remaining_lifetime_ms_at_response.is_none());
+    }
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_live_present_support_crosses_a_bounded_local_stream() {
+    let (reactor, path, _, _) = start_reactor(
+        "live-query-stream",
+        "consumer:one",
+        500,
+        ReactorConfigV1::qualification(),
+    );
+    reactor.submit_input(ingress(1, 500)).expect("pulse");
+    let request = live_support_request(
+        &reactor.snapshot(),
+        "consumer:one",
+        "nonce:live-query-stream",
+    );
+    let (mut client, mut server) = UnixStream::pair().expect("local stream pair");
+    let (response, elapsed_ms) = std::thread::scope(|scope| {
+        let server_task = scope.spawn(|| {
+            reactor
+                .serve_live_present_support_stream(&mut server, Duration::from_secs(2))
+                .expect("serve one bounded query");
+        });
+        let result =
+            query_live_present_support_stream(&mut client, &request, Duration::from_secs(2))
+                .expect("query over local process-capable stream");
+        server_task.join().expect("server task");
+        result
+    });
+    assert_eq!(
+        response.disposition,
+        LivePresentSupportDispositionV1::SupportedCurrent
+    );
+    assert!(
+        response
+            .conservative_remaining_lifetime_ms(elapsed_ms)
+            .is_some()
+    );
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove fixture");
 }
 
 #[test]

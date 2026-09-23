@@ -65,6 +65,7 @@ identity_type!(DiagnosticReceiptId);
 identity_type!(BridgeId);
 identity_type!(ConsumerId);
 identity_type!(SparseEventId);
+identity_type!(LivePresentSupportNonce);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdentityError {

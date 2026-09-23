@@ -113,7 +113,11 @@ certificates, and earliest-expiry reevaluation. It is not a production or
 distributed scheduler. The local crash-fault campaign encloses that semantic
 kernel in one dedicated monotonic wakeup thread and one bounded, checksummed,
 append-only historical journal. See the [runtime contract](docs/runtime-contract.md)
-and [crash-fault contract](docs/crash-fault-contract.md).
+and [crash-fault contract](docs/crash-fault-contract.md). Its additive
+[bounded live present-support export](docs/live-present-support-v1.md) lets a
+local process ask whether one exact installed support certificate remains
+current and receive only a conservatively bounded remaining duration. The
+export creates no listener, daemon, store, or authority.
 
 The new local claim is deliberately narrower than crash-durable reliance:
 
@@ -219,6 +223,7 @@ mutation authority.
 - [Local crash-fault campaign plan](docs/campaign-3-plan.md)
 - [Local crash-fault reconnaissance](docs/campaign-3-reconnaissance.md)
 - [Local crash-fault campaign report](docs/campaign-3-report.md)
+- [Bounded live present-support export v1](docs/live-present-support-v1.md)
 - [Qualified-generation binding contract](docs/qualified-generation-contract.md)
 - [Qualified-generation campaign plan](docs/campaign-4-plan.md)
 - [Qualified-generation reconnaissance](docs/campaign-4-reconnaissance.md)
