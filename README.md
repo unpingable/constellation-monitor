@@ -86,7 +86,7 @@ policy generation.
 
 ## Workspace
 
-The Rust workspace contains eleven crates spanning the experimental monitor
+The Rust workspace contains twelve crates spanning the experimental monitor
 plane, a generic repository-concern acquisition boundary, and closed
 proposition-exact support adapters:
 
@@ -105,7 +105,10 @@ proposition-exact support adapters:
   trusted bounded producer acquisition, structural correspondence validation,
   and required-observation inventory gaps; and
 - `pulse-nq-load-support`: a closed one-shot producer, separate intake, and
-  read-only resolver for exactly `nq.host.load_pressure/v1`.
+  read-only resolver for exactly `nq.host.load_pressure/v1`; and
+- `constellation-status-projection`: an experimental pure projector plus
+  bounded Pulse admission, disclosure-specific status artifacts, reduced
+  rendering, and local atomic publication helpers.
 
 `pulse-runtime` is a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
@@ -216,6 +219,7 @@ mutation authority.
 - [Hostile scenarios](docs/hostile-scenarios.md)
 - [Focused reconnaissance](docs/reconnaissance.md)
 - [Receiver/scheduler contract](docs/runtime-contract.md)
+- [Deterministic status projection v1](docs/status-projection-v1.md)
 - [Receiver/scheduler campaign plan](docs/campaign-2-plan.md)
 - [Receiver/scheduler reconnaissance](docs/campaign-2-reconnaissance.md)
 - [Receiver/scheduler campaign report](docs/campaign-2-report.md)
