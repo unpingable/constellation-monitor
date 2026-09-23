@@ -182,11 +182,18 @@ into a universal health verdict.
 
 ## Contract custody handover
 
-As of 2026-09-07, `atproto-ops` release candidate `v1.0.0-rc.1` at
-`c3fd2455a31dbf083f9628ef7c1e0298aacb80a5` is the canonical source for the
-three producer-facing schemas. `schemas/atproto.ops.contract.lock.json` pins
-the exact vendored bytes. Monitor remains the original implementation and owns
-acquisition/inventory semantics, but it no longer owns a separate copy of the
-producer contract by convention. A change to accepted v1 meaning requires an
-explicit contract version; a producer repair to satisfy established v1 does
-not.
+The retained compatibility lock currently names the external `atproto-ops`
+release candidate `v1.0.0-rc.2` at
+`a2e68b3499d538fd7ed2e23c14343d242621f473` for three producer-facing schemas.
+`schemas/atproto.ops.contract.lock.json` pins the exact vendored bytes. Monitor
+remains the original implementation and owns acquisition/inventory semantics.
+A change to accepted v1 meaning requires an explicit contract version; a
+producer repair to satisfy established v1 does not.
+
+**Current architecture note:** this application-repository vendor lock is a
+retained compatibility binding, not the desired dependency direction.
+Constellation's project-observation contract is application/protocol agnostic;
+an external consumer may adapt to that generic contract, but does not become
+its architectural owner. Moving canonical custody of these generic schemas to
+a Constellation-owned source is future compatibility work and is not performed
+by this documentation change.
