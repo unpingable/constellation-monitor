@@ -1,11 +1,13 @@
 # NQ host-load-pressure / Pulse correspondence v1
 
-Status: **Candidate**. The local implementation and synthetic qualification
-fixtures do not replace the required real disposable NQ run or independent
-review. The completed disposable run is recorded in the
-[qualification receipt](nq-host-load-pressure-correspondence-v1-qualification.md);
-standing remains Candidate until its exact source and evidence pass independent
-review.
+Status: **Qualified** for the bounded disposable, same-process profile
+recorded in the
+[qualification receipt](nq-host-load-pressure-correspondence-v1-qualification.md).
+The local implementation and synthetic fixtures did not replace the real
+disposable NQ run or the independent review; both were completed and accepted
+as that receipt records. Standing was Candidate until that acceptance. The
+projected component is an operator condition projection, not a public status
+component (see `status-projection-v1.md`, "Positioning").
 
 ## Ownership and claim boundary
 
@@ -100,11 +102,15 @@ offered to the consequence adapter. The adapter additionally requires a fresh
 live query whose current certificate lists exactly the paired evidence
 reference and subject incarnation.
 
-For a public projection, that adapter also requires the qualified
+For every audience, that adapter also requires the qualified
 load-pressure-condition label, the reason field, and the exact safe reason
-table that carries the condition's non-claims. Relabeling it as general host
-health or omitting those public non-claims is refused at the leaf adapter; the
-generic projector remains policy-generic.
+table that carries the condition's non-claims, and it refuses any hard or soft
+dependency edge that names the condition component as parent or dependency.
+Relabeling it as general host health, omitting those non-claims, or routing
+another component's state through it is refused by `fact_for` and by
+`admit_live`; the generic projector remains policy-generic. An embedding that
+builds facts by hand bypasses this guard; the adapter's tests record that as a
+known limit.
 
 ## Qualification material
 
@@ -117,12 +123,14 @@ Pulse reactor, lifetime boundaries, sequence gaps, restart and duplicate
 behavior, live-query admission, disclosure reduction, dependencies, and local
 atomic publication.
 
-Candidate standing remains until a disposable environment supplies a profile
-enrolled from NQ commit `6190218f1da817d6900d1dbc551d52818673154e`, a schema-13
-store with the required prior watcher history, an executable not writable by
-the embedding principal, fresh custody paths, real Present and
-ExplicitlyAbsent occurrences, and an independent frozen review. The ignored
-real-run harnesses do not themselves grant acceptance.
+Qualification required a disposable environment supplying a profile enrolled
+from NQ commit `6190218f1da817d6900d1dbc551d52818673154e`, a schema-13 store
+with the required prior watcher history, an executable not writable by the
+embedding principal, fresh custody paths, real Present and ExplicitlyAbsent
+occurrences, and an independent frozen review. The receipt records that run.
+The ignored real-run harnesses do not themselves grant acceptance. A changed
+profile, NQ commit, table, non-claim, or schema needs a new run; a tightening
+that only adds refusals, such as the 2026-09-24 guard extension, does not.
 
 ## Disposable real-NQ procedure
 

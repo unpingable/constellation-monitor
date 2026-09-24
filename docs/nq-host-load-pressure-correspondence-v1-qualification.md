@@ -56,6 +56,14 @@ explicitly absent. The public leaf adapter requires the condition label,
 reason field, and exact safe reason table carrying that non-claim. Relabeling
 the fact as general host health or omitting the non-claim is refused.
 
+*Amendment 2026-09-24.* That refusal is enforced by `fact_for`; the qualified
+run used single-component, dependency-free policies. After the 2026-09-24
+architecture review the guard also refuses hard or soft dependency edges on
+the condition component, applies to every audience, and runs in `admit_live`.
+A hand-built fact carrying the adapter's owner string bypasses the guard; the
+adapter's tests record that as a known limit. The qualified evidence above is
+unchanged by the amendment.
+
 The real harness passed three of three state runs. Twelve reactor cases,
 seven consequence/projection cases, and two shared-vector tests passed in the
 guest. The full workspace passed format checking, strict all-target/all-feature

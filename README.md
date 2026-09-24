@@ -109,11 +109,13 @@ proposition-exact support adapters:
 - `pulse-nq-load-correspondence`: a closed in-process co-producer that pairs
   one precommitted Pulse frame with one exact NQ local-successor acquisition;
   and
-- `constellation-status-nq-load-pressure`: the condition-specific projection
-  consequence adapter for that process-local verified correspondence; and
-- `constellation-status-projection`: an experimental pure projector plus
-  bounded Pulse admission, disclosure-specific status artifacts, reduced
-  rendering, and local atomic publication helpers.
+- `constellation-status-nq-load-pressure`: the condition-specific operator
+  projection adapter for that process-local verified correspondence; and
+- `constellation-status-projection`: an experimental operator read
+  projection: a pure projector plus bounded Pulse admission,
+  audience-reduced status artifacts, reduced rendering, and local atomic
+  publication helpers. It is not a public status source; see
+  `docs/status-projection-v1.md`, "Positioning".
 
 `pulse-runtime` is a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
