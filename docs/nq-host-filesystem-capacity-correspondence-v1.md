@@ -135,5 +135,12 @@ which every owner's list satisfies. The adapter's
 (no path, identity, or helper prose); the fact, the consequence table and
 identity, and the rendered text are unchanged, so unknown stays unknown. A
 mutated key fails the artifact identity; a malformed value or an unlisted
-code yields no explanation. Rendering the explanation needs a projector-side
-operator detail field and is a separate decision.
+code yields no explanation. An operator policy that discloses
+`ComponentOutputFieldV1::Detail` may carry that explanation as the
+component's `detail`: an optional bounded display-only text
+(`ComponentDetailV1`, attached to the component's one fact by
+`operator_detail()`) that the projector copies and never reads. It is absent
+by default, refused for a public policy, excluded from the basis digest, and
+takes no part in any evaluation, window or state; the projection decision is
+identical with or without it. The unavailable page then lists the condition,
+its unavailable state and `Detail: …`, and still states no conclusion.

@@ -24,10 +24,10 @@
 //! embedding, recorded as a known limit, not a type guarantee.
 
 use constellation_status_projection::{
-    AudienceClassV1, AvailabilityV1, ComponentOutputFieldV1, DependencyKindV1, FactRequirementV1,
-    ImpactV1, LiveQueryAnchorV1, LiveSupportObservationV1, LiveSupportSelectorV1, ProjectedStateV1,
-    ProjectionError, ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1,
-    SourceFactV1,
+    AudienceClassV1, AvailabilityV1, COMPONENT_DETAIL_SCHEMA_V1, ComponentDetailV1,
+    ComponentOutputFieldV1, DependencyKindV1, FactRequirementV1, ImpactV1, LiveQueryAnchorV1,
+    LiveSupportObservationV1, LiveSupportSelectorV1, ProjectedStateV1, ProjectionError,
+    ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1, SourceFactV1,
 };
 use pulse_nq_load_correspondence::{
     NqDetectorStateV1, OwnerFailureV1, QuestionV1, VerifiedCorrespondenceV1,
@@ -488,6 +488,35 @@ fn enforce_condition_contract(
         ));
     }
     Ok(())
+}
+
+/// The owner's display-only detail for an operator policy: this adapter's
+/// bounded explanation of a `cannot_evaluate`, attached to the component's
+/// one fact. It runs the same structural guard and subject check as
+/// [`fact_for`], so no detail exists without a verified correspondence for
+/// this question, and it is `None` for a public policy, for any state other
+/// than `cannot_evaluate`, and for a code this adapter does not explain. It
+/// changes nothing about the fact or the projected state.
+pub fn operator_detail(
+    verified: &VerifiedCorrespondenceV1,
+    policy: &ProjectionPolicyV1,
+    component_key: &str,
+) -> Result<Option<ComponentDetailV1>, ConsequenceError> {
+    let requirement = condition_requirement(policy, component_key)?;
+    check_subject(policy, component_key, requirement, verified)?;
+    if policy.disclosure.audience != AudienceClassV1::Operator {
+        return Ok(None);
+    }
+    let Some(explanation) = operator_explanation(verified) else {
+        return Ok(None);
+    };
+    let detail = ComponentDetailV1 {
+        schema: COMPONENT_DETAIL_SCHEMA_V1.to_owned(),
+        fact_id: requirement.fact_id.clone(),
+        text: explanation.text.to_owned(),
+    };
+    detail.validate()?;
+    Ok(Some(detail))
 }
 
 /// Build the projector's live-support selector for the consumer certificate

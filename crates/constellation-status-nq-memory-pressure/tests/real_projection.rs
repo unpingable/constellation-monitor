@@ -21,13 +21,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constellation_status_nq_memory_pressure::{
     CONSEQUENCE_SCHEMA_V1, FACT_OWNER, PUBLIC_COMPONENT_LABEL, REQUIRED_QUESTION, admit_live,
-    fact_for, live_support_selector, operator_explanation, recommended_safe_reasons,
+    fact_for, live_support_selector, operator_detail, operator_explanation,
+    recommended_safe_reasons,
 };
 use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
     FactRequirementV1, LiveSupportSelectorV1, OutputComponentV1, PROJECTION_POLICY_SCHEMA_V1,
-    ProjectionMomentV1, ProjectionPolicyV1, SourceFactClassV1, project, read_current_artifact,
-    stage_publication,
+    ProjectionMomentV1, ProjectionPolicyV1, SourceFactClassV1, project, project_with_details,
+    read_current_artifact, stage_publication,
 };
 use pulse_nq_load_correspondence::fixture::start_reactor;
 use pulse_nq_load_correspondence::{
@@ -129,6 +130,7 @@ fn operator_policy(selector: LiveSupportSelectorV1) -> ProjectionPolicyV1 {
                 ComponentOutputFieldV1::State,
                 ComponentOutputFieldV1::Mode,
                 ComponentOutputFieldV1::Reason,
+                ComponentOutputFieldV1::Detail,
             ],
             safe_reasons: recommended_safe_reasons(),
             include_basis_digest: true,
@@ -274,14 +276,23 @@ fn real_projection_chain() {
             ProjectionMomentV1::now(now_ms),
         )
         .expect("public projection");
-        let operator_artifact = project(
+        let detail = operator_detail(&verified, &operator_policy, "nq.host_memory.pressure_stall")
+            .expect("guarded detail");
+        let details = detail.iter().cloned().collect::<Vec<_>>();
+        let operator_artifact = project_with_details(
             &operator_policy,
             std::slice::from_ref(&fact),
             std::slice::from_ref(&live),
             &[],
+            &details,
             ProjectionMomentV1::now(now_ms),
         )
         .expect("operator projection");
+        println!(
+            "occurrence {} operator detail: {:?}",
+            result.sequence,
+            operator_artifact.components[0].detail.as_deref()
+        );
         assert_eq!(
             public_artifact.aggregate_state.as_str(),
             expected_projection,

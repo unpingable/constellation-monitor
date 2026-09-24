@@ -125,5 +125,8 @@ the filesystem list; the owning profile is this row's, pinned by the ladder
 before the code is read, and the memory adapter returns no explanation for
 any other question's value (its question check runs before a code is read).
 As for the filesystem row, the record embeds NQ's artifact with the keys and
-the seam adds no field. The adapter explains five codes with bounded
+the seam adds no field, and an operator policy disclosing `Detail` may carry
+the adapter's explanation as display-only component text that the projector
+copies and never reads (`operator_detail()`); unknown stays unknown, with or
+without it. The adapter explains five codes with bounded
 text; state, fact, identity (`a0311c04…`) and rendered text are unchanged.

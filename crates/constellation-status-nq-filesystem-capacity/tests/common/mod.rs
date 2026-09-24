@@ -154,12 +154,22 @@ pub fn disclosure(public: bool) -> DisclosurePolicyV1 {
         } else {
             AudienceClassV1::Operator
         },
-        component_fields: vec![
-            ComponentOutputFieldV1::DisplayName,
-            ComponentOutputFieldV1::State,
-            ComponentOutputFieldV1::Mode,
-            ComponentOutputFieldV1::Reason,
-        ],
+        component_fields: if public {
+            vec![
+                ComponentOutputFieldV1::DisplayName,
+                ComponentOutputFieldV1::State,
+                ComponentOutputFieldV1::Mode,
+                ComponentOutputFieldV1::Reason,
+            ]
+        } else {
+            vec![
+                ComponentOutputFieldV1::DisplayName,
+                ComponentOutputFieldV1::State,
+                ComponentOutputFieldV1::Mode,
+                ComponentOutputFieldV1::Reason,
+                ComponentOutputFieldV1::Detail,
+            ]
+        },
         safe_reasons: recommended_safe_reasons(),
         include_basis_digest: !public,
         include_observation_window: false,
