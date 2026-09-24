@@ -9,11 +9,20 @@
 //! exchange through the unchanged [`LiveQueryAnchorV1`], and carries fixed
 //! non-claims: no host or service health, reachability, capacity, or cause is
 //! ever asserted.
+//!
+//! The mapping is an operator condition projection, not a public status
+//! component. Its structural guard covers exactly the shape that was
+//! qualified: one dependency-free condition component whose label and reason
+//! table carry the condition's non-claims, in every audience. The generic
+//! projector cannot distinguish a fact built by [`fact_for`] from one built by
+//! hand with the same owner string; that is a convention boundary of the
+//! embedding, recorded as a known limit, not a type guarantee.
 
 use constellation_status_projection::{
-    AudienceClassV1, AvailabilityV1, ComponentOutputFieldV1, ImpactV1, LiveQueryAnchorV1,
-    LiveSupportObservationV1, LiveSupportSelectorV1, ProjectedStateV1, ProjectionError,
-    ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1, SourceFactV1,
+    AvailabilityV1, ComponentOutputFieldV1, DependencyKindV1, FactRequirementV1, ImpactV1,
+    LiveQueryAnchorV1, LiveSupportObservationV1, LiveSupportSelectorV1, ProjectedStateV1,
+    ProjectionError, ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1,
+    SourceFactV1,
 };
 use pulse_nq_load_correspondence::{NqDetectorStateV1, VerifiedCorrespondenceV1};
 use pulse_runtime::{LocalCrashReactor, ReactorSnapshotV1};
@@ -28,6 +37,8 @@ pub const CONSEQUENCE_SCHEMA_V1: &str = "constellation.status_consequence.nq_hos
 /// The fact owner named in projection policies. It is this adapter, not NQ
 /// and not the generic projector.
 pub const FACT_OWNER: &str = "constellation-status-nq-load-pressure";
+/// The qualified condition label. Every audience must use it; the constant
+/// keeps its original name for source compatibility.
 pub const PUBLIC_COMPONENT_LABEL: &str = "Host load-pressure condition";
 
 pub const CONSEQUENCE_NONCLAIMS: [&str; 5] = [
@@ -163,18 +174,21 @@ impl From<ProjectionError> for ConsequenceError {
     }
 }
 
-/// The one-fact guard plus the consequence table: build the single
-/// `SourceFactV1` for `component_key` from a verified correspondence.
+/// Structural guard shared by [`fact_for`] and [`admit_live`]: the condition
+/// component must have exactly the shape that was qualified.
 ///
-/// The component must declare exactly one required fact, owned by this
-/// adapter, with this schema and the `derived_admitted` class. Anything else
-/// is refused so the load-pressure condition can never be blended into a
-/// component that also claims other facts.
-pub fn fact_for(
-    verified: &VerifiedCorrespondenceV1,
-    policy: &ProjectionPolicyV1,
+/// It must declare exactly one required fact, owned by this adapter, with
+/// this schema and the `derived_admitted` class. No hard or soft dependency
+/// edge may name it as parent or as dependency, because the projector selects
+/// reason text by projected state and a dependency effect would attribute
+/// text to NQ that NQ never produced. For every audience, its label and reason
+/// table must carry the qualified condition wording and non-claims. Anything
+/// else is refused so the load-pressure condition can never be blended into,
+/// or blend into, another component's state.
+fn condition_requirement<'a>(
+    policy: &'a ProjectionPolicyV1,
     component_key: &str,
-) -> Result<SourceFactV1, ConsequenceError> {
+) -> Result<&'a FactRequirementV1, ConsequenceError> {
     policy.validate()?;
     let component = policy
         .components
@@ -196,6 +210,23 @@ pub fn fact_for(
             "component requirement does not name this adapter, schema, and derived_admitted class",
         ));
     }
+    if policy.dependencies.iter().any(|edge| {
+        edge.kind != DependencyKindV1::Informational
+            && (edge.parent == component_key || edge.dependency == component_key)
+    }) {
+        return Err(ConsequenceError::new(
+            "dependency_guard",
+            "the load-pressure condition component cannot carry or receive state through a hard or soft dependency edge",
+        ));
+    }
+    enforce_condition_contract(component.output.as_ref(), policy)?;
+    Ok(requirement)
+}
+
+fn check_subject(
+    requirement: &FactRequirementV1,
+    verified: &VerifiedCorrespondenceV1,
+) -> Result<(), ConsequenceError> {
     if requirement.live_support.subject != verified.subject().as_str()
         || requirement.live_support.subject_incarnation != verified.subject_incarnation().as_str()
     {
@@ -204,7 +235,18 @@ pub fn fact_for(
             "policy live-support selector names a different subject or incarnation",
         ));
     }
-    enforce_public_contract(component.output.as_ref(), policy)?;
+    Ok(())
+}
+
+/// The structural guard plus the consequence table: build the single
+/// `SourceFactV1` for `component_key` from a verified correspondence.
+pub fn fact_for(
+    verified: &VerifiedCorrespondenceV1,
+    policy: &ProjectionPolicyV1,
+    component_key: &str,
+) -> Result<SourceFactV1, ConsequenceError> {
+    let requirement = condition_requirement(policy, component_key)?;
+    check_subject(requirement, verified)?;
     let row = consequence_row(verified.nq_detector_state());
     let fact = SourceFactV1 {
         schema: SOURCE_FACT_SCHEMA_V1.to_owned(),
@@ -225,20 +267,17 @@ pub fn fact_for(
     Ok(fact)
 }
 
-/// Keep the qualified public wording at the consequence boundary. The generic
-/// projector remains policy-generic; this leaf alone owns the condition label
-/// and the reason text that carries its non-claims.
-fn enforce_public_contract(
+/// Keep the qualified condition wording at the consequence boundary for every
+/// audience. The generic projector remains policy-generic; this leaf alone
+/// owns the condition label and the reason text that carries its non-claims.
+fn enforce_condition_contract(
     output: Option<&constellation_status_projection::OutputComponentV1>,
     policy: &ProjectionPolicyV1,
 ) -> Result<(), ConsequenceError> {
-    if policy.disclosure.audience != AudienceClassV1::Public {
-        return Ok(());
-    }
     if output.is_none_or(|output| output.display_name != PUBLIC_COMPONENT_LABEL) {
         return Err(ConsequenceError::new(
-            "public_policy_mismatch",
-            "public load-pressure component label is not the qualified condition label",
+            "condition_contract_mismatch",
+            "load-pressure component label is not the qualified condition label",
         ));
     }
     if !policy
@@ -248,8 +287,8 @@ fn enforce_public_contract(
         || policy.disclosure.safe_reasons != recommended_safe_reasons()
     {
         return Err(ConsequenceError::new(
-            "public_policy_mismatch",
-            "public load-pressure policy must retain the qualified reason and non-claim text",
+            "condition_contract_mismatch",
+            "load-pressure policy must retain the qualified reason and non-claim text",
         ));
     }
     Ok(())
@@ -263,6 +302,13 @@ pub fn live_support_selector(
     consumer: &ConsumerId,
 ) -> Result<LiveSupportSelectorV1, ConsequenceError> {
     let certificate = consumer_certificate(snapshot, consumer)?;
+    selector_for(snapshot, &certificate)
+}
+
+fn selector_for(
+    snapshot: &ReactorSnapshotV1,
+    certificate: &RelianceSupportCertificateV1,
+) -> Result<LiveSupportSelectorV1, ConsequenceError> {
     let qualified = certificate.qualified_generation.as_ref().ok_or_else(|| {
         ConsequenceError::new(
             "no_qualified_generation",
@@ -294,19 +340,32 @@ pub fn live_support_selector(
 /// Query the live reactor for the exact certificate that supports this
 /// correspondence and admit it through the unchanged projector anchor.
 ///
-/// The anchor is created before the query and consumed once after it, so the
-/// admitted interval already excludes request transit, actor processing, and
-/// admission delay. A certificate that no longer lists exactly this frame, or
-/// that names another incarnation, is refused before any query is made.
+/// The same structural guard as [`fact_for`] runs first, and the policy's
+/// live-support selector must name exactly the reactor's current certificate
+/// lineage for the consumer it pins. The anchor is created before the query
+/// and consumed once after it, so the admitted interval already excludes
+/// request transit, actor processing, and admission delay. A certificate that
+/// no longer lists exactly this frame, or that names another incarnation, is
+/// refused before any query is made.
 pub fn admit_live(
     verified: &VerifiedCorrespondenceV1,
+    policy: &ProjectionPolicyV1,
+    component_key: &str,
     reactor: &LocalCrashReactor,
-    consumer: &ConsumerId,
     nonce: &str,
     maximum_trusted_lifetime_ms: u64,
 ) -> Result<LiveSupportObservationV1, ConsequenceError> {
+    let requirement = condition_requirement(policy, component_key)?;
+    check_subject(requirement, verified)?;
+    let consumer = ConsumerId::new(requirement.live_support.consumer.as_str());
     let snapshot = reactor.snapshot();
-    let certificate = consumer_certificate(&snapshot, consumer)?;
+    let certificate = consumer_certificate(&snapshot, &consumer)?;
+    if requirement.live_support != selector_for(&snapshot, &certificate)? {
+        return Err(ConsequenceError::new(
+            "selector_mismatch",
+            "policy live-support selector does not name the reactor's current certificate lineage",
+        ));
+    }
     if certificate.subject_scope.subject != *verified.subject()
         || certificate.subject_scope.subject_incarnation != *verified.subject_incarnation()
     {

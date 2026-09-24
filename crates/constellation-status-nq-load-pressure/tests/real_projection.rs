@@ -203,10 +203,16 @@ fn real_projection_chain() {
         let operator_policy = operator_policy(selector);
         let fact =
             fact_for(&verified, &public_policy, "nq.host.load_pressure").expect("shared fact");
+        assert_eq!(
+            fact_for(&verified, &operator_policy, "nq.host.load_pressure").expect("operator fact"),
+            fact,
+            "both audiences build the same fact from the same correspondence"
+        );
         let live = admit_live(
             &verified,
+            &public_policy,
+            "nq.host.load_pressure",
             &reactor,
-            &consumer,
             &format!("nonce:{}", verified.correspondence_id()),
             120_000,
         )

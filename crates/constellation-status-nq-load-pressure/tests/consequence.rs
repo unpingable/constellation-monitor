@@ -193,44 +193,57 @@ fn fact_for_binds_the_correspondence_and_the_one_fact_guard_is_structural() {
 }
 
 #[test]
-fn public_policy_must_keep_the_qualified_condition_label_reason_and_nonclaim() {
-    let harness = harness("public-boundary", SyntheticOutcome::ExplicitlyAbsent);
+fn every_audience_must_keep_the_qualified_condition_label_reason_and_nonclaim() {
+    let harness = harness("contract-boundary", SyntheticOutcome::ExplicitlyAbsent);
     let mut coproducer = harness.coproducer();
     let verified = harness.verified(&mut coproducer);
 
-    let mut relabeled = condition_policy(harness.selector(), true);
-    relabeled.components[0]
-        .output
-        .as_mut()
-        .expect("condition output")
-        .display_name = "Host health".to_owned();
-    assert_eq!(
-        fact_for(&verified, &relabeled, CONDITION_KEY)
-            .expect_err("generic host-health label is not this condition")
-            .code,
-        "public_policy_mismatch"
-    );
+    for public in [true, false] {
+        let mut relabeled = condition_policy(harness.selector(), public);
+        relabeled.components[0]
+            .output
+            .as_mut()
+            .expect("condition output")
+            .display_name = "Host health".to_owned();
+        assert_eq!(
+            fact_for(&verified, &relabeled, CONDITION_KEY)
+                .expect_err("generic host-health label is not this condition")
+                .code,
+            "condition_contract_mismatch",
+            "public={public}"
+        );
 
-    let mut omitted_reason = condition_policy(harness.selector(), true);
-    omitted_reason
-        .disclosure
-        .component_fields
-        .retain(|field| *field != ComponentOutputFieldV1::Reason);
-    assert_eq!(
-        fact_for(&verified, &omitted_reason, CONDITION_KEY)
-            .expect_err("public condition must include its reason")
-            .code,
-        "public_policy_mismatch"
-    );
+        let mut omitted_reason = condition_policy(harness.selector(), public);
+        omitted_reason
+            .disclosure
+            .component_fields
+            .retain(|field| *field != ComponentOutputFieldV1::Reason);
+        assert_eq!(
+            fact_for(&verified, &omitted_reason, CONDITION_KEY)
+                .expect_err("the condition must include its reason")
+                .code,
+            "condition_contract_mismatch",
+            "public={public}"
+        );
 
-    let mut rewritten_nonclaim = condition_policy(harness.selector(), true);
-    rewritten_nonclaim.disclosure.safe_reasons[0].text =
-        "The current component is healthy.".to_owned();
-    assert_eq!(
-        fact_for(&verified, &rewritten_nonclaim, CONDITION_KEY)
-            .expect_err("public condition must retain its fixed non-claim")
-            .code,
-        "public_policy_mismatch"
-    );
+        let mut rewritten_nonclaim = condition_policy(harness.selector(), public);
+        rewritten_nonclaim.disclosure.safe_reasons[0].text =
+            "The current component is healthy.".to_owned();
+        assert_eq!(
+            fact_for(&verified, &rewritten_nonclaim, CONDITION_KEY)
+                .expect_err("the condition must retain its fixed non-claim")
+                .code,
+            "condition_contract_mismatch",
+            "public={public}"
+        );
+
+        let mut hidden = condition_policy(harness.selector(), public);
+        hidden.components[0].output = None;
+        assert_eq!(
+            hidden.validate().unwrap_err().code,
+            "hidden_root",
+            "a hidden root is refused by the generic policy validator"
+        );
+    }
     harness.finish();
 }

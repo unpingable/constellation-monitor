@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use constellation_status_nq_load_pressure::{admit_live, fact_for};
 use constellation_status_projection::{
-    AvailabilityV1, DependencyBehaviorV1, DependencyEffectV1, DependencyKindV1, FactRequirementV1,
-    ImpactV1, LiveQueryAnchorV1, LiveSupportObservationV1, LiveSupportSelectorV1, ProjectedStateV1,
-    ProjectionMomentV1, RenderedStatusV1, SOURCE_FACT_SCHEMA_V1, SourceFactClassV1, SourceFactV1,
-    project, read_current_artifact, render_status, stage_publication,
+    AvailabilityV1, ComponentPolicyV1, DependencyBehaviorV1, DependencyEdgeV1, DependencyEffectV1,
+    DependencyKindV1, FactRequirementV1, ImpactV1, LiveQueryAnchorV1, LiveSupportObservationV1,
+    LiveSupportSelectorV1, OutputComponentV1, ProjectedStateV1, ProjectionMomentV1,
+    RenderedStatusV1, SOURCE_FACT_SCHEMA_V1, SourceFactClassV1, SourceFactV1, project,
+    read_current_artifact, render_status, stage_publication,
 };
 use pulse_nq_load_correspondence::fixture::SyntheticOutcome;
 use pulse_nq_load_correspondence::{Coproducer, FRAME_VALIDITY_MS};
@@ -28,7 +29,8 @@ use pulse_types::{
 };
 
 use common::{
-    CONDITION_KEY, CONDITION_OUTPUT, condition_policy, dependency_policy, hard_behavior, harness,
+    CONDITION_KEY, CONDITION_OUTPUT, condition_policy, dependency_policy, disclosure,
+    hard_behavior, harness,
 };
 
 const NOW: u64 = 1_900_000_000_000;
@@ -48,8 +50,9 @@ fn project_condition(
     let fact = fact_for(&verified, &policy, CONDITION_KEY).expect("fact");
     let live = admit_live(
         &verified,
+        &policy,
+        CONDITION_KEY,
         &harness.reactor,
-        &harness.profile.consumer(),
         &format!("nonce:{}", verified.correspondence_id()),
         120_000,
     )
@@ -126,6 +129,14 @@ fn public_reduction_leaks_no_source_identity_and_operator_keeps_a_basis_digest()
         public.components[0].display_name.as_deref(),
         Some("Host load-pressure condition")
     );
+    let RenderedStatusV1::Current { html } =
+        render_status(&public, public.generated_at_unix_ms + 1_000, 0).expect("render")
+    else {
+        panic!("artifact should be current")
+    };
+    assert!(html.contains("Host load-pressure condition"));
+    assert!(html.contains("No outage or cause is claimed."));
+    assert!(!html.contains("Operational"));
 
     let (operator, _) =
         project_condition(&harness, &mut coproducer, SyntheticOutcome::Present, false);
@@ -140,10 +151,12 @@ fn a_stale_verified_correspondence_is_refused_once_a_newer_frame_is_certified() 
     let mut coproducer = harness.coproducer();
     let first = harness.verified(&mut coproducer);
     let _second = harness.verified(&mut coproducer);
+    let policy = condition_policy(harness.selector(), true);
     let error = admit_live(
         &first,
+        &policy,
+        CONDITION_KEY,
         &harness.reactor,
-        &harness.profile.consumer(),
         "nonce:stale",
         120_000,
     )
@@ -159,10 +172,17 @@ fn expiry_and_caller_elapsed_time_only_shorten_and_never_extend() {
     let verified = harness.verified(&mut coproducer);
     let policy = condition_policy(harness.selector(), true);
     let fact = fact_for(&verified, &policy, CONDITION_KEY).expect("fact");
-    let consumer = harness.profile.consumer();
 
     // A trusted-lifetime bound below the remaining support bounds the window.
-    let live = admit_live(&verified, &harness.reactor, &consumer, "nonce:short", 40).expect("live");
+    let live = admit_live(
+        &verified,
+        &policy,
+        CONDITION_KEY,
+        &harness.reactor,
+        "nonce:short",
+        40,
+    )
+    .expect("live");
     let artifact = project(
         &policy,
         std::slice::from_ref(&fact),
@@ -180,8 +200,15 @@ fn expiry_and_caller_elapsed_time_only_shorten_and_never_extend() {
     let mut lenient = policy.clone();
     lenient.admitted_clock_uncertainty_ms = 0;
     lenient.timestamp_granularity_ms = 1;
-    let live =
-        admit_live(&verified, &harness.reactor, &consumer, "nonce:short-2", 40).expect("live");
+    let live = admit_live(
+        &verified,
+        &policy,
+        CONDITION_KEY,
+        &harness.reactor,
+        "nonce:short-2",
+        40,
+    )
+    .expect("live");
     let artifact = project(
         &lenient,
         std::slice::from_ref(&fact),
@@ -194,8 +221,15 @@ fn expiry_and_caller_elapsed_time_only_shorten_and_never_extend() {
     assert!(artifact.fresh_until_unix_ms - artifact.generated_at_unix_ms <= 40);
 
     // After the admitted interval elapses, the same observation projects unknown.
-    let live =
-        admit_live(&verified, &harness.reactor, &consumer, "nonce:short-3", 20).expect("live");
+    let live = admit_live(
+        &verified,
+        &policy,
+        CONDITION_KEY,
+        &harness.reactor,
+        "nonce:short-3",
+        20,
+    )
+    .expect("live");
     std::thread::sleep(Duration::from_millis(30));
     let artifact = project(
         &lenient,
@@ -231,6 +265,7 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
     let mut coproducer = harness.coproducer();
     let verified = harness.verified(&mut coproducer);
     let consumer = harness.profile.consumer();
+    let policy = condition_policy(harness.selector(), true);
     let source_deadline = harness
         .reactor
         .snapshot()
@@ -241,8 +276,9 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         .expect("source deadline");
     let first = admit_live(
         &verified,
+        &policy,
+        CONDITION_KEY,
         &harness.reactor,
-        &consumer,
         "nonce:once",
         FRAME_VALIDITY_MS,
     )
@@ -250,8 +286,9 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
     std::thread::sleep(Duration::from_millis(5));
     let second = admit_live(
         &verified,
+        &policy,
+        CONDITION_KEY,
         &harness.reactor,
-        &consumer,
         "nonce:once",
         FRAME_VALIDITY_MS,
     )
@@ -276,69 +313,106 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
 }
 
 #[test]
-fn dependency_behavior_is_explicit_and_never_invents_state() {
-    let harness = harness("dependency", SyntheticOutcome::Present);
+fn dependency_edges_cannot_carry_state_into_or_out_of_the_condition() {
+    let harness = harness("dependency", SyntheticOutcome::ExplicitlyAbsent);
     let mut coproducer = harness.coproducer();
     let verified = harness.verified(&mut coproducer);
-    let consumer = harness.profile.consumer();
 
     let (dependency_requirement, dependency_fact, dependency_support) = synthetic_dependency(
         "evidence:dependency",
-        AvailabilityV1::Available,
+        AvailabilityV1::Impaired,
         ImpactV1::None,
     );
-    let policy = dependency_policy(
-        harness.selector(),
-        dependency_requirement.clone(),
-        DependencyKindV1::Hard,
-        hard_behavior(),
-    );
-    let fact = fact_for(&verified, &policy, CONDITION_KEY).expect("fact");
-    let live = admit_live(
-        &verified,
-        &harness.reactor,
-        &consumer,
-        "nonce:dep-1",
-        120_000,
-    )
-    .expect("live");
-    let mut facts = vec![fact.clone(), dependency_fact];
-    facts.sort_by(|left, right| left.fact_id.cmp(&right.fact_id));
-    let mut support = vec![live, dependency_support];
-    support.sort_by(|left, right| left.evidence_id().cmp(right.evidence_id()));
-    let artifact =
-        project(&policy, &facts, &support, &[], ProjectionMomentV1::now(NOW)).expect("projection");
-    assert_eq!(artifact.aggregate_state, ProjectedStateV1::Degraded);
-    assert_eq!(
-        artifact.components.len(),
-        1,
-        "hidden dependency is not published"
-    );
 
-    // A failed hard dependency conflicts with the direct degraded state and
-    // the projector represents the conflict as unknown rather than choosing.
-    let (_, failed_fact, failed_support) = synthetic_dependency(
-        "evidence:dependency",
-        AvailabilityV1::Unavailable,
-        ImpactV1::Total,
-    );
-    let live = admit_live(
-        &verified,
-        &harness.reactor,
-        &consumer,
-        "nonce:dep-2",
-        120_000,
-    )
-    .expect("live");
-    let mut facts = vec![fact.clone(), failed_fact.clone()];
-    facts.sort_by(|left, right| left.fact_id.cmp(&right.fact_id));
-    let mut support = vec![live, failed_support];
-    support.sort_by(|left, right| left.evidence_id().cmp(right.evidence_id()));
-    let artifact =
-        project(&policy, &facts, &support, &[], ProjectionMomentV1::now(NOW)).expect("projection");
-    assert_eq!(artifact.aggregate_state, ProjectedStateV1::Unknown);
+    // A hard or soft edge from the condition to a degraded hidden dependency
+    // would make the projector select "condition present" reason text for an
+    // NQ explicitly-absent judgment. Both entry points refuse the policy, in
+    // both audiences, before any fact is built or any live query is made.
+    for public in [true, false] {
+        for kind in [DependencyKindV1::Hard, DependencyKindV1::Soft] {
+            let mut policy = dependency_policy(
+                harness.selector(),
+                dependency_requirement.clone(),
+                kind,
+                hard_behavior(),
+            );
+            policy.disclosure = disclosure(public);
+            assert_eq!(
+                fact_for(&verified, &policy, CONDITION_KEY)
+                    .unwrap_err()
+                    .code,
+                "dependency_guard",
+                "{kind:?} public={public}"
+            );
+            assert_eq!(
+                admit_live(
+                    &verified,
+                    &policy,
+                    CONDITION_KEY,
+                    &harness.reactor,
+                    "nonce:dep-refused",
+                    120_000,
+                )
+                .unwrap_err()
+                .code,
+                "dependency_guard",
+                "{kind:?} public={public}"
+            );
+        }
+    }
 
-    // An informational edge cannot alter the condition state.
+    // The reverse direction: a visible component that depends on the
+    // condition would carry an NQ warning into its own state. Refused for
+    // both edge kinds, both audiences, at both entry points.
+    for public in [true, false] {
+        for kind in [DependencyKindV1::Hard, DependencyKindV1::Soft] {
+            let mut reverse = condition_policy(harness.selector(), public);
+            reverse.components.push(ComponentPolicyV1 {
+                key: "synthetic.service".to_owned(),
+                output: Some(OutputComponentV1 {
+                    id: "service".to_owned(),
+                    display_name: "Synthetic service".to_owned(),
+                }),
+                required_facts: vec![dependency_requirement.clone()],
+                maintenance_assertion_ids: Vec::new(),
+            });
+            reverse.root_component = "synthetic.service".to_owned();
+            reverse.dependencies = vec![DependencyEdgeV1 {
+                parent: "synthetic.service".to_owned(),
+                dependency: CONDITION_KEY.to_owned(),
+                kind,
+                behavior: hard_behavior(),
+            }];
+            reverse
+                .validate()
+                .expect("the generic projector accepts this shape");
+            assert_eq!(
+                fact_for(&verified, &reverse, CONDITION_KEY)
+                    .unwrap_err()
+                    .code,
+                "dependency_guard",
+                "{kind:?} public={public}"
+            );
+            assert_eq!(
+                admit_live(
+                    &verified,
+                    &reverse,
+                    CONDITION_KEY,
+                    &harness.reactor,
+                    "nonce:reverse-refused",
+                    120_000,
+                )
+                .unwrap_err()
+                .code,
+                "dependency_guard",
+                "{kind:?} public={public}"
+            );
+        }
+    }
+
+    // An informational edge cannot alter the condition state and remains
+    // admitted: the degraded dependency leaves the explicitly-absent condition
+    // projected as condition-scoped healthy.
     let informational = dependency_policy(
         harness.selector(),
         dependency_requirement,
@@ -350,22 +424,19 @@ fn dependency_behavior_is_explicit_and_never_invents_state() {
             on_unknown: DependencyEffectV1::Ignore,
         },
     );
-    let (_, failed_fact, failed_support) = synthetic_dependency(
-        "evidence:dependency",
-        AvailabilityV1::Unavailable,
-        ImpactV1::Total,
-    );
+    let fact = fact_for(&verified, &informational, CONDITION_KEY).expect("fact");
     let live = admit_live(
         &verified,
+        &informational,
+        CONDITION_KEY,
         &harness.reactor,
-        &consumer,
-        "nonce:dep-3",
+        "nonce:dep-info",
         120_000,
     )
     .expect("live");
-    let mut facts = vec![fact, failed_fact];
+    let mut facts = vec![fact, dependency_fact];
     facts.sort_by(|left, right| left.fact_id.cmp(&right.fact_id));
-    let mut support = vec![live, failed_support];
+    let mut support = vec![live, dependency_support];
     support.sort_by(|left, right| left.evidence_id().cmp(right.evidence_id()));
     let artifact = project(
         &informational,
@@ -375,7 +446,111 @@ fn dependency_behavior_is_explicit_and_never_invents_state() {
         ProjectionMomentV1::now(NOW),
     )
     .expect("projection");
-    assert_eq!(artifact.aggregate_state, ProjectedStateV1::Degraded);
+    assert_eq!(artifact.aggregate_state, ProjectedStateV1::Healthy);
+    assert_eq!(artifact.components.len(), 1);
+    harness.finish();
+}
+
+#[test]
+fn live_admission_binds_the_policy_selector_to_the_reactor_certificate_lineage() {
+    let harness = harness("selector", SyntheticOutcome::ExplicitlyAbsent);
+    let mut coproducer = harness.coproducer();
+    let verified = harness.verified(&mut coproducer);
+
+    // The policy names another receiver incarnation: `fact_for` accepts the
+    // subject binding, but the live query is refused before it is made.
+    let mut other_lineage = condition_policy(harness.selector(), true);
+    other_lineage.components[0].required_facts[0]
+        .live_support
+        .receiver_incarnation = "receiver-incarnation:other".to_owned();
+    fact_for(&verified, &other_lineage, CONDITION_KEY).expect("subject binding holds");
+    assert_eq!(
+        admit_live(
+            &verified,
+            &other_lineage,
+            CONDITION_KEY,
+            &harness.reactor,
+            "nonce:other-lineage",
+            120_000,
+        )
+        .unwrap_err()
+        .code,
+        "selector_mismatch"
+    );
+
+    let mut other_generation = condition_policy(harness.selector(), true);
+    other_generation.components[0].required_facts[0]
+        .live_support
+        .qualified_generation_digest = format!("sha256:{}", "b".repeat(64));
+    assert_eq!(
+        admit_live(
+            &verified,
+            &other_generation,
+            CONDITION_KEY,
+            &harness.reactor,
+            "nonce:other-generation",
+            120_000,
+        )
+        .unwrap_err()
+        .code,
+        "selector_mismatch"
+    );
+
+    // A consumer the reactor holds no certificate for.
+    let mut other_consumer = condition_policy(harness.selector(), true);
+    other_consumer.components[0].required_facts[0]
+        .live_support
+        .consumer = "consumer:nobody".to_owned();
+    assert_eq!(
+        admit_live(
+            &verified,
+            &other_consumer,
+            CONDITION_KEY,
+            &harness.reactor,
+            "nonce:other-consumer",
+            120_000,
+        )
+        .unwrap_err()
+        .code,
+        "certificate_missing"
+    );
+    harness.finish();
+}
+
+#[test]
+fn the_generic_projector_cannot_distinguish_hand_built_facts_known_limit() {
+    let harness = harness("hand-built", SyntheticOutcome::Present);
+    let mut coproducer = harness.coproducer();
+    let verified = harness.verified(&mut coproducer);
+    let policy = condition_policy(harness.selector(), false);
+    let mut fact = fact_for(&verified, &policy, CONDITION_KEY).expect("fact");
+    assert_eq!(fact.availability, AvailabilityV1::Impaired);
+
+    // Known limit, recorded rather than implied away: an embedding that
+    // bypasses `fact_for` can hand the projector a fact carrying this
+    // adapter's owner string and the opposite axis, and the projector accepts
+    // it. The binding between NQ's judgment and the projected axes is a
+    // convention of the embedding, enforced only by calling `fact_for`. It is
+    // not a type guarantee of the generic projector. Likewise `fact_for`,
+    // `admit_live`, and `project` each take their own policy argument; nothing
+    // binds the three to one policy except the embedding.
+    fact.availability = AvailabilityV1::Available;
+    let live = admit_live(
+        &verified,
+        &policy,
+        CONDITION_KEY,
+        &harness.reactor,
+        "nonce:hand-built",
+        120_000,
+    )
+    .expect("live");
+    let artifact =
+        project(&policy, &[fact], &[live], &[], ProjectionMomentV1::now(NOW)).expect("projection");
+    assert_eq!(
+        artifact.aggregate_state,
+        ProjectedStateV1::Healthy,
+        "the generic projector trusts the caller's fact axes"
+    );
     harness.finish();
 }
 
