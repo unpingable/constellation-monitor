@@ -133,11 +133,11 @@ pub struct OperatorExplanationV1 {
 const OPERATOR_EXPLANATIONS: [(&str, &str); 6] = [
     (
         "filesystem_identity_mismatch",
-        "Filesystem identity could not be verified: the filesystem at the enrolled mountpoint is not the enrolled filesystem",
+        "Filesystem identity could not be verified: the filesystem at the enrolled mountpoint does not match the enrolled filesystem identity",
     ),
     (
         "machine_identity_mismatch",
-        "Machine identity could not be verified: the host is not the enrolled machine",
+        "Machine identity could not be verified: the host's machine identity differs from the enrolled one",
     ),
     (
         "not_a_mountpoint",

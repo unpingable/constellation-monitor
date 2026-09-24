@@ -110,3 +110,20 @@ policy identifier or text carrying the machine id is refused
 - Adapter tests mirror the filesystem adapter's minus the mountpoint label,
   plus refusal of load and filesystem correspondences and a presentation pin.
 - Real host: see the campaign receipt.
+
+## Typed owner failure (2026-09-24)
+
+As for the filesystem row: NQ carries `failure_code` and `failure_retriable`
+in the memory detector's incomplete-coverage refusal when the helper's single
+collection error is on `nq.host_memory`'s closed list (6 codes:
+`machine_identity_unavailable`, `machine_identity_mismatch`,
+`psi_read_failed`, `psi_malformed`, `psi_not_provided`,
+`boot_clock_unavailable`). NQ's own warm-up refusal
+(`psi_average_warming_up`) is a detector reason, not a helper code, and
+carries no `failure_code`. `machine_identity_mismatch` shares its text with
+the filesystem list; the owning profile is this row's, pinned by the ladder
+before the code is read, and the memory adapter returns no explanation for
+any other question's value (its question check runs before a code is read).
+As for the filesystem row, the record embeds NQ's artifact with the keys and
+the seam adds no field. The adapter explains five codes with bounded
+text; state, fact, identity (`a0311c04…`) and rendered text are unchanged.

@@ -116,3 +116,24 @@ sharing is otherwise a convention, not a check.
 - Real host: load explicitly absent, `/data` present, UUID substitution and
   machine-identity mismatch refused by NQ and projected unknown; every real
   record refused under the other question or subject.
+
+## Typed owner failure (2026-09-24)
+
+For a detector `cannot_evaluate`, NQ's refusal details may carry the owner's
+typed failure code and retriable flag (`failure_code`, `failure_retriable`),
+copied by NQ from the helper's single collection error when that code is on
+`nq.host_filesystem_capacity`'s closed list (13 codes, defined in the profile
+module). The seam parses the two keys strictly into an in-process
+`OwnerFailureV1 {code, retriable: Option<bool>}` on the verified value, only
+for a refusal already pinned to this row. The parsed value is not a record
+field and never enters a frame; the record embeds NQ's artifact exactly as
+NQ wrote it, which already carries the two detail keys, and the record
+schema did not change. The state never changes. The seam's only rule on a
+code is its shape: a lowercase token (`[a-z][a-z0-9_]*`, at most 64 bytes),
+which every owner's list satisfies. The adapter's
+`operator_explanation()` maps six of those codes to bounded operator text
+(no path, identity, or helper prose); the fact, the consequence table and
+identity, and the rendered text are unchanged, so unknown stays unknown. A
+mutated key fails the artifact identity; a malformed value or an unlisted
+code yields no explanation. Rendering the explanation needs a projector-side
+operator detail field and is a separate decision.

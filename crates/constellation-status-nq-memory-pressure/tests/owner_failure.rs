@@ -37,6 +37,14 @@ fn a_typed_cannot_evaluate_reaches_the_leaf_without_changing_the_projection() {
     ] {
         assert!(!explanation.text.contains(forbidden), "{forbidden}");
     }
+    // Retriability travels only as the owner's flag; no explanation may
+    // imply it in prose.
+    for transient in ["this time", "temporar", "retry", "transient", "again"] {
+        assert!(
+            !explanation.text.to_lowercase().contains(transient),
+            "{transient}"
+        );
+    }
     // The fact is the plain cannot_evaluate row: unknown stays unknown.
     let policy = condition_policy(harness.selector(), false);
     let fact = fact_for(&typed, &policy, CONDITION_KEY).expect("fact");

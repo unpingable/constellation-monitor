@@ -492,6 +492,7 @@ fn enrollment_overlap_is_refused_before_a_reactor_is_shared() {
 
 #[test]
 fn an_owner_failure_is_carried_in_process_for_a_typed_cannot_evaluate_only() {
+    use pulse_nq_load_correspondence::NqPort as _;
     use pulse_nq_load_correspondence::fixture::synthetic_owner_failure_code;
     for question in QuestionV1::ALL {
         let profile = synthetic_profile_for(question).expect("profile");
@@ -535,13 +536,50 @@ fn an_owner_failure_is_carried_in_process_for_a_typed_cannot_evaluate_only() {
             if let Some(failure) = verified.owner_failure() {
                 assert_eq!(failure.retriable, Some(false));
             }
-            // The persisted record carries the artifact as NQ wrote it and
-            // nothing the seam derived from it.
+            // The persisted record carries the artifact exactly as NQ wrote
+            // it (detail keys included) and no field the seam derived from
+            // it: its key set is the pre-existing record schema's.
             let record: serde_json::Value =
                 serde_json::from_slice(&fs::read(&result.record_path).expect("record"))
                     .expect("json");
-            assert!(record.get("owner_failure").is_none());
-            assert!(record.get("failure_code").is_none());
+            let mut keys = record
+                .as_object()
+                .expect("record object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "acquisition_id",
+                    "correspondence_id",
+                    "delivery",
+                    "mutation_authority",
+                    "nonclaims",
+                    "nq",
+                    "nq_detector_state",
+                    "profile_digest",
+                    "pulse",
+                    "schema",
+                ]
+            );
+            let acquired = nq
+                .replay_local_successor(&result.acquisition_id)
+                .expect("acquired bytes");
+            assert_eq!(
+                serde_jcs::to_vec(&record["nq"]["artifact"]).expect("canonical"),
+                acquired,
+                "the embedded artifact is NQ's bytes"
+            );
+            let carried = record["nq"]["artifact"]["outcome"]["refusals"]
+                .get(0)
+                .and_then(|refusal| refusal.pointer("/origin/payload/refusal/details/failure_code"))
+                .and_then(serde_json::Value::as_str);
+            assert_eq!(
+                carried, expected_code,
+                "the record carries NQ's key, not the seam's"
+            );
             // Audit verification of the record is unchanged by the keys.
             verify_audit_record(&fs::read(&result.record_path).expect("record"), &profile)
                 .expect("audit verifies");

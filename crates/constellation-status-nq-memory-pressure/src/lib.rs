@@ -81,15 +81,15 @@ pub struct OperatorExplanationV1 {
 const OPERATOR_EXPLANATIONS: [(&str, &str); 5] = [
     (
         "machine_identity_mismatch",
-        "Machine identity could not be verified: the host is not the enrolled machine",
+        "Machine identity could not be verified: the host's machine identity differs from the enrolled one",
     ),
     (
         "psi_not_provided",
-        "The kernel does not provide memory pressure accounting on this host",
+        "Memory pressure accounting is not available to the collector on this host",
     ),
     (
         "psi_read_failed",
-        "Memory pressure accounting could not be read this time",
+        "Memory pressure accounting could not be read",
     ),
     (
         "psi_malformed",
