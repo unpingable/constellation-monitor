@@ -97,9 +97,10 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
 
 /// The unavailable page. It states no conclusion. When a component carries
 /// an owner detail (operator artifacts only), the page lists that component
-/// with its unavailable state and the detail, so the operator can read why
-/// the condition could not be evaluated without the page claiming anything
-/// more; components without a detail are not listed.
+/// with its unavailable state and the detail, dated by the projection
+/// instant, so the operator can read why the condition could not be
+/// evaluated without the page claiming anything more; components without a
+/// detail are not listed.
 fn unavailable_html(artifact: &StatusArtifactV1) -> String {
     let mut html = String::from(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Status unavailable</title></head><body><main><h1>Status unavailable</h1><p>No current conclusion is supported.</p>",
@@ -110,7 +111,11 @@ fn unavailable_html(artifact: &StatusArtifactV1) -> String {
         .filter(|component| component.detail.is_some())
         .collect::<Vec<_>>();
     if !detailed.is_empty() {
-        html.push_str("<ul>");
+        // The page may be shown long after the artifact was produced; the
+        // detail is dated so a stale explanation never reads as current.
+        html.push_str("<p class=\"as-of\">Details as of the projection at ");
+        html.push_str(&format_unix_ms(artifact.generated_at_unix_ms));
+        html.push_str(" (UTC).</p><ul>");
         for component in detailed {
             html.push_str("<li><strong>");
             html.push_str(&escape_html(

@@ -17,9 +17,10 @@ pub const CURRENT_POINTER_SCHEMA_V1: &str = "constellation.status_current_pointe
 /// validation refuses them.
 pub const PROJECTION_DISCLOSURE_SCHEMA_V1: &str = "constellation.status_projection_disclosure.v1";
 pub const PROJECTION_BASIS_SCHEMA_V1: &str = "constellation.status_projection_basis.v1";
-pub const PROJECTOR_OWNED_SCHEMAS: [&str; 7] = [
+pub const PROJECTOR_OWNED_SCHEMAS: [&str; 8] = [
     PROJECTION_POLICY_SCHEMA_V1,
     SOURCE_FACT_SCHEMA_V1,
+    COMPONENT_DETAIL_SCHEMA_V1,
     MAINTENANCE_ASSERTION_SCHEMA_V1,
     STATUS_ARTIFACT_SCHEMA_V1,
     CURRENT_POINTER_SCHEMA_V1,
@@ -184,7 +185,7 @@ pub enum ComponentOutputFieldV1 {
     Detail,
 }
 
-pub const COMPONENT_DETAIL_SCHEMA_V1: &str = "constellation.component_detail.v1";
+pub const COMPONENT_DETAIL_SCHEMA_V1: &str = "constellation.status_component_detail.v1";
 
 /// Optional bounded display-only explanation supplied by a condition owner
 /// after its own verified correspondence, attached to the one fact it

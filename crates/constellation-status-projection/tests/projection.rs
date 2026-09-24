@@ -765,13 +765,14 @@ fn observation_windows_are_refused_in_v1() {
 #[test]
 fn every_schema_string_this_crate_emits_is_refused_as_a_fact_schema() {
     use constellation_status_projection::{
-        CURRENT_POINTER_SCHEMA_V1, MAINTENANCE_ASSERTION_SCHEMA_V1, PROJECTION_BASIS_SCHEMA_V1,
-        PROJECTION_DISCLOSURE_SCHEMA_V1, PROJECTION_POLICY_SCHEMA_V1, PROJECTOR_OWNED_SCHEMAS,
-        SOURCE_FACT_SCHEMA_V1, STATUS_ARTIFACT_SCHEMA_V1,
+        COMPONENT_DETAIL_SCHEMA_V1, CURRENT_POINTER_SCHEMA_V1, MAINTENANCE_ASSERTION_SCHEMA_V1,
+        PROJECTION_BASIS_SCHEMA_V1, PROJECTION_DISCLOSURE_SCHEMA_V1, PROJECTION_POLICY_SCHEMA_V1,
+        PROJECTOR_OWNED_SCHEMAS, SOURCE_FACT_SCHEMA_V1, STATUS_ARTIFACT_SCHEMA_V1,
     };
     let mut expected = vec![
         PROJECTION_POLICY_SCHEMA_V1,
         SOURCE_FACT_SCHEMA_V1,
+        COMPONENT_DETAIL_SCHEMA_V1,
         MAINTENANCE_ASSERTION_SCHEMA_V1,
         STATUS_ARTIFACT_SCHEMA_V1,
         CURRENT_POINTER_SCHEMA_V1,
@@ -787,4 +788,103 @@ fn every_schema_string_this_crate_emits_is_refused_as_a_fact_schema() {
             .iter()
             .all(|schema| schema.starts_with("constellation.status_"))
     );
+}
+
+#[test]
+fn owner_details_attach_only_to_single_fact_components_and_never_change_the_decision() {
+    use common::requirement;
+    use constellation_status_projection::{
+        COMPONENT_DETAIL_SCHEMA_V1, ComponentDetailV1, ComponentOutputFieldV1, RenderedStatusV1,
+        StatusArtifactV1, project_with_details, render_status,
+    };
+
+    let mut policy = policy(false);
+    policy
+        .disclosure
+        .component_fields
+        .push(ComponentOutputFieldV1::Detail);
+    policy.disclosure.component_fields.sort();
+    // The service component combines two facts; the dependency has one.
+    policy.components[1].required_facts = vec![
+        requirement("fact.synthetic.service"),
+        requirement("fact.synthetic.service.second"),
+    ];
+    policy.validate().expect("policy");
+    let facts = vec![
+        fact(
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
+            AvailabilityV1::Indeterminate,
+            ImpactV1::Indeterminate,
+        ),
+        fact(
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
+            AvailabilityV1::Available,
+            ImpactV1::None,
+        ),
+        fact(
+            "fact.synthetic.service.second",
+            "synthetic.service",
+            "evidence:service-second",
+            AvailabilityV1::Available,
+            ImpactV1::None,
+        ),
+    ];
+    let support = vec![
+        live_support("evidence:service", 30_000, 0),
+        live_support("evidence:service-second", 30_000, 0),
+        live_support("evidence:subordinate", 30_000, 0),
+    ];
+    let detail = |fact_id: &str, text: &str| ComponentDetailV1 {
+        schema: COMPONENT_DETAIL_SCHEMA_V1.to_owned(),
+        fact_id: fact_id.to_owned(),
+        text: text.to_owned(),
+    };
+    let details = vec![
+        detail("fact.synthetic.dependency", "Dependency owner text"),
+        detail("fact.synthetic.service", "First service owner text"),
+        detail("fact.synthetic.service.second", "Second service owner text"),
+    ];
+    let moment = ProjectionMomentV1::now(NOW);
+    let with = project_with_details(&policy, &facts, &support, &[], &details, moment)
+        .expect("details on a multi-fact component never refuse the projection");
+    let without = project(&policy, &facts, &support, &[], moment).expect("projection");
+
+    let strip = |artifact: &StatusArtifactV1| {
+        let mut artifact = artifact.clone();
+        artifact.artifact_id.clear();
+        for component in &mut artifact.components {
+            component.detail = None;
+        }
+        artifact
+    };
+    assert_eq!(strip(&with), strip(&without));
+    let by_id = |id: &str| {
+        with.components
+            .iter()
+            .find(|component| component.id == id)
+            .expect("component")
+            .detail
+            .clone()
+    };
+    assert_eq!(
+        by_id("subordinate").as_deref(),
+        Some("Dependency owner text")
+    );
+    // Neither combined nor chosen: the combining component carries none.
+    assert_eq!(by_id("service"), None);
+
+    // The unavailable page dates the detail by the projection instant.
+    let RenderedStatusV1::StatusUnavailable { html } =
+        render_status(&with, with.fresh_until_unix_ms, 0).expect("render")
+    else {
+        panic!("an expired artifact is never current")
+    };
+    assert!(html.contains("No current conclusion is supported."));
+    assert!(html.contains("Details as of the projection at 2030-03-17T17:46:40Z (UTC)."));
+    assert!(html.contains("Detail: Dependency owner text"));
+    assert!(!html.contains("service owner text"));
 }

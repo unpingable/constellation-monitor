@@ -11,13 +11,16 @@ of authority.
 bounded display-only text per component (`ProjectedComponentV1.detail`),
 supplied by the condition owner through `project_with_details` as a
 `ComponentDetailV1` attached to one fact. The projector validates its shape,
-attaches it to the component that requires the fact, and copies it; it never
+attaches it only to a component whose sole required fact is that fact (a
+component combining several facts carries none, so owner texts are never
+combined or moved onto another owner's component), and copies it; it never
 reads the text, never branches on it, and excludes it from the basis digest,
 so the projection decision (states, window, basis) is identical with or
 without a detail. A public policy cannot disclose it. The detail decorates a
 state and never replaces or strengthens one; an unknown component with a
 detail is rendered on the unavailable page as `Status unavailable` plus
-`Detail: …`, under "No current conclusion is supported."
+`Detail: …`, dated by the projection instant, under "No current conclusion
+is supported."
 
 ## Positioning: an operator read projection
 

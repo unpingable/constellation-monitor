@@ -46,9 +46,9 @@ pub fn project(
 }
 
 /// [`project`] with owner-supplied display-only details. Each detail names
-/// one fact; it is copied onto the component that requires that fact when
-/// the policy discloses [`ComponentOutputFieldV1::Detail`], and is otherwise
-/// dropped. Details take no part in any evaluation, window, state, or basis
+/// one fact; it is copied onto a component whose only required fact is that
+/// fact when the policy discloses [`ComponentOutputFieldV1::Detail`], and is
+/// otherwise dropped (a component requiring several facts carries none). Details take no part in any evaluation, window, state, or basis
 /// digest: the projection decision is identical with or without them.
 pub fn project_with_details(
     policy: &ProjectionPolicyV1,
@@ -102,27 +102,25 @@ pub fn project_with_details(
             let evaluation = evaluations
                 .get(component.key.as_str())
                 .expect("validated component has an evaluation");
-            let detail = if policy
-                .disclosure
-                .component_fields
-                .contains(&ComponentOutputFieldV1::Detail)
-            {
-                let mut texts = component
-                    .required_facts
-                    .iter()
-                    .filter_map(|requirement| details_by_fact.get(requirement.fact_id.as_str()));
-                let first = texts.next();
-                if texts.next().is_some() {
-                    return Some(Err(ProjectionError::new(
-                        "ambiguous_detail",
-                        "a component may carry at most one owner detail",
-                    )));
+            // A detail explains one owner's fact, so it is shown only on a
+            // component whose sole required fact is that fact. A component
+            // that combines several facts shows none: owner texts are never
+            // combined, never moved onto another owner's component, and
+            // their presence never turns a projection into a refusal.
+            let detail = match component.required_facts.as_slice() {
+                [requirement]
+                    if policy
+                        .disclosure
+                        .component_fields
+                        .contains(&ComponentOutputFieldV1::Detail) =>
+                {
+                    details_by_fact
+                        .get(requirement.fact_id.as_str())
+                        .map(|text| (*text).to_owned())
                 }
-                first.map(|text| (*text).to_owned())
-            } else {
-                None
+                _ => None,
             };
-            Some(Ok(ProjectedComponentV1 {
+            Some(ProjectedComponentV1 {
                 id: output.id.clone(),
                 display_name: policy
                     .disclosure
@@ -138,9 +136,9 @@ pub fn project_with_details(
                     .then(|| reasons.get(&evaluation.state).cloned())
                     .flatten(),
                 detail,
-            }))
+            })
         })
-        .collect::<Result<Vec<_>, ProjectionError>>()?;
+        .collect::<Vec<_>>();
     components.sort_by(|left, right| left.id.cmp(&right.id));
 
     let root = evaluations
