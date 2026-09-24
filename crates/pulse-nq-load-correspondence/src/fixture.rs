@@ -218,6 +218,19 @@ pub fn synthetic_artifact(
     outcome: SyntheticOutcome,
     tamper: Tamper,
 ) -> Result<Vec<u8>, CorrespondenceError> {
+    synthetic_artifact_with_code(profile, acquisition_id, outcome, tamper, None)
+}
+
+/// As [`synthetic_artifact`], with the owner failure code a
+/// `CannotEvaluateTyped` artifact carries overridden when `typed_code` is
+/// `Some`.
+pub fn synthetic_artifact_with_code(
+    profile: &CorrespondenceProfileV1,
+    acquisition_id: &str,
+    outcome: SyntheticOutcome,
+    tamper: Tamper,
+    typed_code: Option<&'static str>,
+) -> Result<Vec<u8>, CorrespondenceError> {
     let tag = short(acquisition_id);
     let run_id = format!("run:{tag}");
     let request_id = format!("request:{tag}");
@@ -392,8 +405,9 @@ pub fn synthetic_artifact(
             } else {
                 profile_refusal("cannot_evaluate", "the newest report has no host snapshot")
             };
+            let default_code = synthetic_owner_failure_code(profile.question()?);
             if outcome == SyntheticOutcome::CannotEvaluateTyped
-                && let Some(code) = synthetic_owner_failure_code(profile.question()?)
+                && let Some(code) = typed_code.or(default_code)
             {
                 refusal["origin"]["payload"]["refusal"]["details"]["failure_code"] =
                     Value::String(code.to_owned());
@@ -637,6 +651,9 @@ pub struct FakeNq {
     profile: CorrespondenceProfileV1,
     outcome: Mutex<SyntheticOutcome>,
     tamper: Mutex<Tamper>,
+    /// Overrides the owner code a `CannotEvaluateTyped` artifact carries
+    /// (the fixture's default is per question); `None` means the default.
+    typed_code: Mutex<Option<&'static str>>,
     acquired: Mutex<BTreeMap<String, Vec<u8>>>,
     acquire_attempts: AtomicUsize,
     replay_attempts: AtomicUsize,
@@ -649,6 +666,7 @@ impl FakeNq {
             profile,
             outcome: Mutex::new(outcome),
             tamper: Mutex::new(Tamper::None),
+            typed_code: Mutex::new(None),
             acquired: Mutex::new(BTreeMap::new()),
             acquire_attempts: AtomicUsize::new(0),
             replay_attempts: AtomicUsize::new(0),
@@ -661,6 +679,13 @@ impl FakeNq {
 
     pub fn set_tamper(&self, tamper: Tamper) {
         *self.tamper.lock().expect("tamper lock") = tamper;
+    }
+
+    /// Make the next `CannotEvaluateTyped` artifacts carry `code` as the
+    /// owner's failure code (any token; the seam and the adapters decide
+    /// what to make of it). `None` restores the per-question default.
+    pub fn set_typed_code(&self, code: Option<&'static str>) {
+        *self.typed_code.lock().expect("typed code lock") = code;
     }
 
     fn tamper(&self) -> Tamper {
@@ -707,7 +732,14 @@ impl NqPort for FakeNq {
             return Ok(existing.clone());
         }
         let outcome = *self.outcome.lock().expect("outcome lock");
-        let bytes = synthetic_artifact(&self.profile, acquisition_id, outcome, self.tamper())?;
+        let typed_code = *self.typed_code.lock().expect("typed code lock");
+        let bytes = synthetic_artifact_with_code(
+            &self.profile,
+            acquisition_id,
+            outcome,
+            self.tamper(),
+            typed_code,
+        )?;
         acquired.insert(acquisition_id.to_owned(), bytes.clone());
         if self.tamper() == Tamper::AcquireResponseLost {
             return Err(CorrespondenceError::new(
