@@ -141,7 +141,7 @@ const OPERATOR_EXPLANATIONS: [(&str, &str); 6] = [
     ),
     (
         "not_a_mountpoint",
-        "The enrolled mountpoint is not currently a mountpoint",
+        "The enrolled mountpoint is not currently a single mount point",
     ),
     (
         "unsupported_filesystem_type",

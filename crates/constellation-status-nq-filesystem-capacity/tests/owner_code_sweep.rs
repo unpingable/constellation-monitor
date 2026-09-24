@@ -22,7 +22,7 @@ const EXPLAINED: &[(&str, &str)] = &[
     ),
     (
         "not_a_mountpoint",
-        "The enrolled mountpoint is not currently a mountpoint",
+        "The enrolled mountpoint is not currently a single mount point",
     ),
     (
         "unsupported_filesystem_type",
