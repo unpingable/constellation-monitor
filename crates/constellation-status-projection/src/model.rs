@@ -12,6 +12,24 @@ pub const MAINTENANCE_ASSERTION_SCHEMA_V1: &str = "constellation.status_maintena
 pub const STATUS_ARTIFACT_SCHEMA_V1: &str = "constellation.status_artifact.v1";
 pub const CURRENT_POINTER_SCHEMA_V1: &str = "constellation.status_current_pointer.v1";
 
+/// Schemas this crate owns. A source fact or policy requirement naming one of
+/// them would feed a projection's own output back in as source evidence, so
+/// validation refuses them.
+pub const PROJECTION_DISCLOSURE_SCHEMA_V1: &str = "constellation.status_projection_disclosure.v1";
+pub const PROJECTION_BASIS_SCHEMA_V1: &str = "constellation.status_projection_basis.v1";
+pub const PROJECTOR_OWNED_SCHEMAS: [&str; 7] = [
+    PROJECTION_POLICY_SCHEMA_V1,
+    SOURCE_FACT_SCHEMA_V1,
+    MAINTENANCE_ASSERTION_SCHEMA_V1,
+    STATUS_ARTIFACT_SCHEMA_V1,
+    CURRENT_POINTER_SCHEMA_V1,
+    PROJECTION_DISCLOSURE_SCHEMA_V1,
+    PROJECTION_BASIS_SCHEMA_V1,
+];
+/// The owner string this crate would carry if it were ever named as a fact
+/// owner. It never is: a projection is not a producer.
+pub const PROJECTOR_OWNER: &str = "constellation-status-projection";
+
 pub const MAX_COMPONENTS: usize = 256;
 pub const MAX_FACTS: usize = 1_024;
 pub const MAX_DEPENDENCIES: usize = 1_024;
@@ -176,6 +194,8 @@ pub struct DisclosurePolicyV1 {
     pub component_fields: Vec<ComponentOutputFieldV1>,
     pub safe_reasons: Vec<SafeReasonV1>,
     pub include_basis_digest: bool,
+    /// Retained for schema compatibility. It must be `false`: v1 does not
+    /// order producer timestamps from different clocks into one window.
     pub include_observation_window: bool,
 }
 
@@ -257,8 +277,13 @@ pub struct ProjectionPolicyV1 {
     pub disclosure: DisclosurePolicyV1,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+/// Projection-local input built in process by a leaf adapter from an exact
+/// owner record. It serializes only into the operator basis digest. It is not
+/// a wire format: it deliberately implements no deserialization, so its bytes
+/// cannot be decoded back into a fact. Its availability and impact axes mean
+/// only what the constructing adapter's contract says they mean; relabelled
+/// content under another owner or schema is not detected (a known limit).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SourceFactV1 {
     pub schema: String,
     pub fact_id: String,
@@ -394,6 +419,7 @@ impl ProjectionPolicyV1 {
                 validate_token("required fact id", &requirement.fact_id)?;
                 validate_token("required fact owner", &requirement.owner)?;
                 validate_token("required fact native schema", &requirement.native_schema)?;
+                refuse_projection_reingestion(&requirement.owner, &requirement.native_schema)?;
                 requirement.live_support.validate()?;
                 if !requirement.class.may_establish_state() {
                     return Err(ProjectionError::new(
@@ -514,7 +540,7 @@ impl ProjectionPolicyV1 {
             .collect::<Vec<_>>();
         outputs.sort_by(|left, right| left.id.cmp(&right.id));
         let surface = Surface {
-            schema: "constellation.status_projection_disclosure.v1",
+            schema: PROJECTION_DISCLOSURE_SCHEMA_V1,
             projection_id: &self.projection_id,
             generation: &self.generation,
             maximum_age_ms: self.maximum_age_ms,
@@ -531,12 +557,16 @@ impl ProjectionPolicyV1 {
 
 impl DisclosurePolicyV1 {
     fn validate(&self) -> Result<(), ProjectionError> {
-        if self.audience == AudienceClassV1::Public
-            && (self.include_basis_digest || self.include_observation_window)
-        {
+        if self.include_observation_window {
+            return Err(ProjectionError::new(
+                "observation_window_unsupported",
+                "v1 refuses observation windows: producer timestamps from unrelated clocks cannot be ordered into one window",
+            ));
+        }
+        if self.audience == AudienceClassV1::Public && self.include_basis_digest {
             return Err(ProjectionError::new(
                 "public_disclosure",
-                "public artifacts cannot include rich-input basis or observation metadata",
+                "public artifacts cannot include a rich-input basis digest",
             ));
         }
         validate_sorted_unique("component fields", &self.component_fields)?;
@@ -616,6 +646,7 @@ impl SourceFactV1 {
         ] {
             validate_token(name, value)?;
         }
+        refuse_projection_reingestion(&self.owner, &self.native_schema)?;
         validate_sha256("basis_digest", &self.basis_digest)
     }
 }
@@ -702,6 +733,12 @@ impl StatusArtifactV1 {
         if let Some(digest) = &self.basis_digest {
             validate_sha256("basis_digest", digest)?;
         }
+        if self.observation_window.is_some() {
+            return Err(ProjectionError::new(
+                "observation_window_unsupported",
+                "v1 artifacts carry no observation window",
+            ));
+        }
         if self.mutation_authority != "none"
             || self.non_authorization
                 != "Derived status is read-only and grants no authority or permission."
@@ -747,6 +784,16 @@ impl StatusArtifactV1 {
 
 pub(crate) fn sha256_id(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn refuse_projection_reingestion(owner: &str, native_schema: &str) -> Result<(), ProjectionError> {
+    if owner == PROJECTOR_OWNER || PROJECTOR_OWNED_SCHEMAS.contains(&native_schema) {
+        return Err(ProjectionError::new(
+            "projection_reingestion",
+            "projection output is not source evidence and cannot be admitted as a fact",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_token(name: &str, value: &str) -> Result<(), ProjectionError> {

@@ -57,44 +57,44 @@ pub fn policy(public: bool) -> ProjectionPolicyV1 {
             ),
         ],
         include_basis_digest: !public,
-        include_observation_window: !public,
+        include_observation_window: false,
     };
     ProjectionPolicyV1 {
         schema: PROJECTION_POLICY_SCHEMA_V1.to_owned(),
         projection_id: if public {
-            "public-atproto"
+            "synthetic-public-reduction"
         } else {
-            "neutral-zone-operator"
+            "synthetic-operator-reduction"
         }
         .to_owned(),
         generation: "synthetic-1".to_owned(),
-        root_component: "public.api".to_owned(),
+        root_component: "synthetic.service".to_owned(),
         maximum_age_ms: 60_000,
         admitted_clock_uncertainty_ms: 250,
         timestamp_granularity_ms: 1_000,
         components: vec![
             ComponentPolicyV1 {
-                key: "internal.cache".to_owned(),
+                key: "synthetic.dependency".to_owned(),
                 output: (!public).then(|| OutputComponentV1 {
-                    id: "cache".to_owned(),
-                    display_name: "Internal cache".to_owned(),
+                    id: "subordinate".to_owned(),
+                    display_name: "Synthetic dependency".to_owned(),
                 }),
-                required_facts: vec![requirement("fact.internal.cache")],
+                required_facts: vec![requirement("fact.synthetic.dependency")],
                 maintenance_assertion_ids: Vec::new(),
             },
             ComponentPolicyV1 {
-                key: "public.api".to_owned(),
+                key: "synthetic.service".to_owned(),
                 output: Some(OutputComponentV1 {
-                    id: "api".to_owned(),
-                    display_name: "Public API".to_owned(),
+                    id: "service".to_owned(),
+                    display_name: "Synthetic service".to_owned(),
                 }),
-                required_facts: vec![requirement("fact.public.api")],
-                maintenance_assertion_ids: vec!["maintenance.public.api".to_owned()],
+                required_facts: vec![requirement("fact.synthetic.service")],
+                maintenance_assertion_ids: vec!["maintenance.synthetic.service".to_owned()],
             },
         ],
         dependencies: vec![DependencyEdgeV1 {
-            parent: "public.api".to_owned(),
-            dependency: "internal.cache".to_owned(),
+            parent: "synthetic.service".to_owned(),
+            dependency: "synthetic.dependency".to_owned(),
             kind: DependencyKindV1::Hard,
             behavior: DependencyBehaviorV1 {
                 on_unavailable: DependencyEffectV1::MajorOutage,

@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::{
     ComponentOutputFieldV1, DependencyEffectV1, DependencyKindV1, FreshnessV1,
-    LiveSupportObservationV1, MaintenanceAssertionV1, ModeV1, ObservationWindowV1,
+    LiveSupportObservationV1, MaintenanceAssertionV1, ModeV1, PROJECTION_BASIS_SCHEMA_V1,
     ProjectedComponentV1, ProjectedStateV1, ProjectionError, ProjectionMomentV1,
     ProjectionPolicyV1, STATUS_ARTIFACT_SCHEMA_V1, SourceFactV1, StatusArtifactV1,
     canonical_digest, map_state, safe_reason_map,
@@ -167,7 +167,7 @@ pub fn project(
         .collect::<Vec<_>>();
     let basis_digest = policy.disclosure.include_basis_digest.then(|| {
         canonical_digest(&ProjectionBasis {
-            schema: "constellation.status_projection_basis.v1",
+            schema: PROJECTION_BASIS_SCHEMA_V1,
             policy_digest: &full_policy_digest,
             facts,
             maintenance,
@@ -175,11 +175,6 @@ pub fn project(
         })
     });
     let basis_digest = basis_digest.transpose()?;
-    let observation_window = if policy.disclosure.include_observation_window {
-        observation_window(facts)
-    } else {
-        None
-    };
 
     let mut artifact = StatusArtifactV1 {
         schema: STATUS_ARTIFACT_SCHEMA_V1.to_owned(),
@@ -191,7 +186,8 @@ pub fn project(
         generated_at_unix_ms: generated_at,
         fresh_until_unix_ms: fresh_until,
         admitted_clock_uncertainty_ms: policy.admitted_clock_uncertainty_ms,
-        observation_window,
+        // v1 refuses `include_observation_window` at policy validation.
+        observation_window: None,
         aggregate_state,
         components,
         basis_digest,
@@ -418,16 +414,4 @@ fn dependency_order(policy: &ProjectionPolicyV1) -> Result<Vec<&str>, Projection
 
 fn floor_time(value: u64, granularity: u64) -> u64 {
     value - (value % granularity)
-}
-
-fn observation_window(facts: &[SourceFactV1]) -> Option<ObservationWindowV1> {
-    let mut values = facts
-        .iter()
-        .filter_map(|fact| fact.observed_at_unix_ms)
-        .collect::<Vec<_>>();
-    values.sort_unstable();
-    Some(ObservationWindowV1 {
-        earliest_observed_at_unix_ms: *values.first()?,
-        latest_observed_at_unix_ms: *values.last()?,
-    })
 }

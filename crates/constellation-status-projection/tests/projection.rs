@@ -16,23 +16,23 @@ const NOW: u64 = 1_900_000_000_000;
 fn same_inputs_produce_independent_disclosure_bounded_artifacts() {
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
     ];
     let support = vec![
-        live_support("evidence:api", 30_000, 0),
-        live_support("evidence:cache", 30_000, 0),
+        live_support("evidence:service", 30_000, 0),
+        live_support("evidence:subordinate", 30_000, 0),
     ];
     let moment = ProjectionMomentV1::now(NOW);
     let public = project(&policy(true), &facts, &support, &[], moment).expect("public projection");
@@ -47,13 +47,16 @@ fn same_inputs_produce_independent_disclosure_bounded_artifacts() {
     let public_text = String::from_utf8(public.canonical_bytes().expect("canonical")).unwrap();
     assert_eq!(
         public_text,
-        include_str!("../fixtures/public-atproto.artifact.json").trim()
+        include_str!("../fixtures/synthetic-public-reduction.artifact.json").trim()
     );
     for forbidden in [
-        "internal.cache",
-        "evidence:cache",
+        "synthetic.dependency",
+        "fact.synthetic.dependency",
+        "evidence:subordinate",
         "native.fact",
         "constellation-nq",
+        "synthetic-fixture",
+        "synthetic.status_fact.v1",
     ] {
         assert!(
             !public_text.contains(forbidden),
@@ -66,16 +69,16 @@ fn same_inputs_produce_independent_disclosure_bounded_artifacts() {
 fn missing_or_replayed_support_cannot_establish_health_or_extend_expiry() {
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
@@ -91,13 +94,13 @@ fn missing_or_replayed_support_cannot_establish_health_or_extend_expiry() {
     assert_eq!(missing.aggregate_state, ProjectedStateV1::Unknown);
     assert_eq!(missing.generated_at_unix_ms, missing.fresh_until_unix_ms);
 
-    assert!(try_live_support("evidence:api", 1, 2).is_err());
+    assert!(try_live_support("evidence:service", 1, 2).is_err());
     let short = project(
         &policy(true),
         &facts,
         &[
-            live_support("evidence:api", 1_500, 0),
-            live_support("evidence:cache", 1_500, 0),
+            live_support("evidence:service", 1_500, 0),
+            live_support("evidence:subordinate", 1_500, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -110,23 +113,23 @@ fn missing_or_replayed_support_cannot_establish_health_or_extend_expiry() {
 fn reusing_one_live_observation_never_moves_its_absolute_presentation_deadline() {
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
     ];
     let support = vec![
-        live_support("evidence:api", 30_000, 0),
-        live_support("evidence:cache", 30_000, 0),
+        live_support("evidence:service", 30_000, 0),
+        live_support("evidence:subordinate", 30_000, 0),
     ];
     let first = project(
         &policy(true),
@@ -151,8 +154,8 @@ fn reusing_one_live_observation_never_moves_its_absolute_presentation_deadline()
     expiry_policy.timestamp_granularity_ms = 1;
     expiry_policy.admitted_clock_uncertainty_ms = 0;
     let short_support = vec![
-        live_support("evidence:api", 5, 0),
-        live_support("evidence:cache", 5, 0),
+        live_support("evidence:service", 5, 0),
+        live_support("evidence:subordinate", 5, 0),
     ];
     std::thread::sleep(Duration::from_millis(10));
     let expired = project(
@@ -171,16 +174,16 @@ fn reusing_one_live_observation_never_moves_its_absolute_presentation_deadline()
 fn state_bearing_dependency_always_bounds_parent_freshness() {
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
@@ -189,8 +192,8 @@ fn state_bearing_dependency_always_bounds_parent_freshness() {
         &policy(true),
         &facts,
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 5_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 5_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -204,24 +207,24 @@ fn public_output_is_independent_of_unreferenced_hidden_inventory() {
     let base_policy = policy(true);
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
     ];
     let make_support = || {
         vec![
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ]
     };
     let base = project(
@@ -237,9 +240,9 @@ fn public_output_is_independent_of_unreferenced_hidden_inventory() {
     expanded_policy.components.insert(
         1,
         constellation_status_projection::ComponentPolicyV1 {
-            key: "internal.lab".to_owned(),
+            key: "synthetic.lab".to_owned(),
             output: None,
-            required_facts: vec![common::requirement("fact.internal.lab")],
+            required_facts: vec![common::requirement("fact.synthetic.lab")],
             maintenance_assertion_ids: Vec::new(),
         },
     );
@@ -261,16 +264,16 @@ fn public_output_is_independent_of_unreferenced_hidden_inventory() {
 fn direct_service_failure_is_distinct_from_observer_unavailability() {
     let failed_facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Unavailable,
             ImpactV1::Total,
         ),
@@ -279,8 +282,8 @@ fn direct_service_failure_is_distinct_from_observer_unavailability() {
         &policy(true),
         &failed_facts,
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -291,7 +294,7 @@ fn direct_service_failure_is_distinct_from_observer_unavailability() {
     let observer_unavailable = project(
         &policy(true),
         &failed_facts,
-        &[live_support("evidence:cache", 30_000, 0)],
+        &[live_support("evidence:subordinate", 30_000, 0)],
         &[],
         ProjectionMomentV1::now(NOW),
     )
@@ -305,18 +308,18 @@ fn direct_service_failure_is_distinct_from_observer_unavailability() {
 #[test]
 fn source_owner_schema_and_class_are_policy_bound() {
     let mut api = fact(
-        "fact.public.api",
-        "public.api",
-        "evidence:api",
+        "fact.synthetic.service",
+        "synthetic.service",
+        "evidence:service",
         AvailabilityV1::Available,
         ImpactV1::None,
     );
     api.owner = "substituted-owner".to_owned();
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
@@ -326,8 +329,8 @@ fn source_owner_schema_and_class_are_policy_bound() {
         &policy(true),
         &facts,
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -346,23 +349,23 @@ fn live_support_consumer_and_lineage_are_policy_bound() {
         &mismatched,
         &[
             fact(
-                "fact.internal.cache",
-                "internal.cache",
-                "evidence:cache",
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
                 AvailabilityV1::Available,
                 ImpactV1::None,
             ),
             fact(
-                "fact.public.api",
-                "public.api",
-                "evidence:api",
+                "fact.synthetic.service",
+                "synthetic.service",
+                "evidence:service",
                 AvailabilityV1::Available,
                 ImpactV1::None,
             ),
         ],
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -374,18 +377,18 @@ fn live_support_consumer_and_lineage_are_policy_bound() {
 #[test]
 fn contradictory_or_non_state_facts_become_unknown() {
     let mut historical = fact(
-        "fact.public.api",
-        "public.api",
-        "evidence:api",
+        "fact.synthetic.service",
+        "synthetic.service",
+        "evidence:service",
         AvailabilityV1::Available,
         ImpactV1::None,
     );
     historical.class = SourceFactClassV1::QualificationLifecycle;
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
@@ -395,8 +398,8 @@ fn contradictory_or_non_state_facts_become_unknown() {
         &policy(true),
         &facts,
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -409,30 +412,30 @@ fn contradictory_or_non_state_facts_become_unknown() {
 fn dependency_behaviors_are_explicit_and_maintenance_does_not_override_truth() {
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Unavailable,
             ImpactV1::Total,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
     ];
     let maintenance = vec![MaintenanceAssertionV1 {
         schema: MAINTENANCE_ASSERTION_SCHEMA_V1.to_owned(),
-        assertion_id: "maintenance.public.api".to_owned(),
-        component_key: "public.api".to_owned(),
+        assertion_id: "maintenance.synthetic.service".to_owned(),
+        component_key: "synthetic.service".to_owned(),
         active: true,
         basis_digest: DIGEST_A.to_owned(),
     }];
     let support = vec![
-        live_support("evidence:api", 30_000, 0),
-        live_support("evidence:cache", 30_000, 0),
+        live_support("evidence:service", 30_000, 0),
+        live_support("evidence:subordinate", 30_000, 0),
     ];
     let artifact = project(
         &policy(true),
@@ -452,8 +455,8 @@ fn dependency_behaviors_are_explicit_and_maintenance_does_not_override_truth() {
         &soft,
         &facts,
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -472,8 +475,8 @@ fn dependency_behaviors_are_explicit_and_maintenance_does_not_override_truth() {
         &informational,
         &facts,
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -486,16 +489,16 @@ fn dependency_behaviors_are_explicit_and_maintenance_does_not_override_truth() {
 fn serialization_and_identity_are_deterministic_and_extensions_fail_closed() {
     let facts = vec![
         fact(
-            "fact.internal.cache",
-            "internal.cache",
-            "evidence:cache",
+            "fact.synthetic.dependency",
+            "synthetic.dependency",
+            "evidence:subordinate",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
         fact(
-            "fact.public.api",
-            "public.api",
-            "evidence:api",
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
             AvailabilityV1::Available,
             ImpactV1::None,
         ),
@@ -505,8 +508,8 @@ fn serialization_and_identity_are_deterministic_and_extensions_fail_closed() {
             &policy(true),
             &facts,
             &[
-                live_support("evidence:api", 30_000, 0),
-                live_support("evidence:cache", 30_000, 0),
+                live_support("evidence:service", 30_000, 0),
+                live_support("evidence:subordinate", 30_000, 0),
             ],
             &[],
             ProjectionMomentV1::now(NOW),
@@ -532,10 +535,12 @@ fn serialization_and_identity_are_deterministic_and_extensions_fail_closed() {
 
 #[test]
 fn checked_in_synthetic_policies_are_valid_and_audience_specific() {
-    let public: constellation_status_projection::ProjectionPolicyV1 =
-        serde_json::from_str(include_str!("../fixtures/public-atproto.policy.json")).unwrap();
+    let public: constellation_status_projection::ProjectionPolicyV1 = serde_json::from_str(
+        include_str!("../fixtures/synthetic-public-reduction.policy.json"),
+    )
+    .unwrap();
     let operator: constellation_status_projection::ProjectionPolicyV1 = serde_json::from_str(
-        include_str!("../fixtures/neutral-zone-operator.policy.json"),
+        include_str!("../fixtures/synthetic-operator-reduction.policy.json"),
     )
     .unwrap();
     public.validate().unwrap();
@@ -579,23 +584,23 @@ fn artifact_identity_covers_the_complete_serialized_surface() {
         &policy(true),
         &[
             fact(
-                "fact.internal.cache",
-                "internal.cache",
-                "evidence:cache",
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
                 AvailabilityV1::Available,
                 ImpactV1::None,
             ),
             fact(
-                "fact.public.api",
-                "public.api",
-                "evidence:api",
+                "fact.synthetic.service",
+                "synthetic.service",
+                "evidence:service",
                 AvailabilityV1::Available,
                 ImpactV1::None,
             ),
         ],
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(NOW),
@@ -608,4 +613,178 @@ fn artifact_identity_covers_the_complete_serialized_surface() {
         changed.compute_id().unwrap()
     );
     assert_eq!(changed.validate().unwrap_err().code, "authority_boundary");
+}
+
+#[test]
+fn projection_output_cannot_be_re_ingested_as_source_evidence() {
+    use constellation_status_projection::{
+        PROJECTOR_OWNED_SCHEMAS, PROJECTOR_OWNER, STATUS_ARTIFACT_SCHEMA_V1,
+    };
+
+    // A policy that would require a status artifact as a fact is refused.
+    for schema in PROJECTOR_OWNED_SCHEMAS {
+        let mut requires_projection = policy(true);
+        requires_projection.components[1].required_facts[0].native_schema = schema.to_owned();
+        assert_eq!(
+            requires_projection.validate().unwrap_err().code,
+            "projection_reingestion",
+            "{schema}"
+        );
+    }
+    let mut owned_by_projector = policy(true);
+    owned_by_projector.components[1].required_facts[0].owner = PROJECTOR_OWNER.to_owned();
+    assert_eq!(
+        owned_by_projector.validate().unwrap_err().code,
+        "projection_reingestion"
+    );
+
+    // A fact built from a projection's own output is refused, whatever its
+    // class and whoever offers it.
+    let artifact = project(
+        &policy(true),
+        &[
+            fact(
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+            fact(
+                "fact.synthetic.service",
+                "synthetic.service",
+                "evidence:service",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+        ],
+        &[
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
+        ],
+        &[],
+        ProjectionMomentV1::now(NOW),
+    )
+    .unwrap();
+    let mut from_artifact = fact(
+        "fact.synthetic.service",
+        "synthetic.service",
+        "evidence:service",
+        AvailabilityV1::Available,
+        ImpactV1::None,
+    );
+    from_artifact.native_schema = STATUS_ARTIFACT_SCHEMA_V1.to_owned();
+    from_artifact.native_record_id = artifact.artifact_id.clone();
+    from_artifact.basis_digest = artifact.artifact_id;
+    assert_eq!(
+        from_artifact.validate().unwrap_err().code,
+        "projection_reingestion"
+    );
+    let mut owner_is_projector = fact(
+        "fact.synthetic.service",
+        "synthetic.service",
+        "evidence:service",
+        AvailabilityV1::Available,
+        ImpactV1::None,
+    );
+    owner_is_projector.owner = PROJECTOR_OWNER.to_owned();
+    assert_eq!(
+        owner_is_projector.validate().unwrap_err().code,
+        "projection_reingestion"
+    );
+    let refused = project(
+        &policy(true),
+        &[
+            fact(
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+            owner_is_projector,
+        ],
+        &[
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
+        ],
+        &[],
+        ProjectionMomentV1::now(NOW),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, "projection_reingestion");
+}
+
+#[test]
+fn observation_windows_are_refused_in_v1() {
+    let mut windowed = policy(false);
+    windowed.disclosure.include_observation_window = true;
+    assert_eq!(
+        windowed.validate().unwrap_err().code,
+        "observation_window_unsupported"
+    );
+    let artifact = project(
+        &policy(false),
+        &[
+            fact(
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+            fact(
+                "fact.synthetic.service",
+                "synthetic.service",
+                "evidence:service",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+        ],
+        &[
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
+        ],
+        &[],
+        ProjectionMomentV1::now(NOW),
+    )
+    .unwrap();
+    assert!(artifact.observation_window.is_none());
+    let mut with_window = artifact;
+    with_window.observation_window = Some(constellation_status_projection::ObservationWindowV1 {
+        earliest_observed_at_unix_ms: NOW,
+        latest_observed_at_unix_ms: NOW,
+    });
+    with_window.artifact_id = with_window.compute_id().unwrap();
+    assert_eq!(
+        with_window.validate().unwrap_err().code,
+        "observation_window_unsupported"
+    );
+}
+
+#[test]
+fn every_schema_string_this_crate_emits_is_refused_as_a_fact_schema() {
+    use constellation_status_projection::{
+        CURRENT_POINTER_SCHEMA_V1, MAINTENANCE_ASSERTION_SCHEMA_V1, PROJECTION_BASIS_SCHEMA_V1,
+        PROJECTION_DISCLOSURE_SCHEMA_V1, PROJECTION_POLICY_SCHEMA_V1, PROJECTOR_OWNED_SCHEMAS,
+        SOURCE_FACT_SCHEMA_V1, STATUS_ARTIFACT_SCHEMA_V1,
+    };
+    let mut expected = vec![
+        PROJECTION_POLICY_SCHEMA_V1,
+        SOURCE_FACT_SCHEMA_V1,
+        MAINTENANCE_ASSERTION_SCHEMA_V1,
+        STATUS_ARTIFACT_SCHEMA_V1,
+        CURRENT_POINTER_SCHEMA_V1,
+        PROJECTION_DISCLOSURE_SCHEMA_V1,
+        PROJECTION_BASIS_SCHEMA_V1,
+    ];
+    let mut owned = PROJECTOR_OWNED_SCHEMAS.to_vec();
+    expected.sort_unstable();
+    owned.sort_unstable();
+    assert_eq!(owned, expected);
+    assert!(
+        owned
+            .iter()
+            .all(|schema| schema.starts_with("constellation.status_"))
+    );
 }

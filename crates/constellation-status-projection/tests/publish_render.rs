@@ -14,23 +14,23 @@ fn artifact() -> constellation_status_projection::StatusArtifactV1 {
         &policy(true),
         &[
             fact(
-                "fact.internal.cache",
-                "internal.cache",
-                "evidence:cache",
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
                 AvailabilityV1::Available,
                 ImpactV1::None,
             ),
             fact(
-                "fact.public.api",
-                "public.api",
-                "evidence:api",
+                "fact.synthetic.service",
+                "synthetic.service",
+                "evidence:service",
                 AvailabilityV1::Available,
                 ImpactV1::None,
             ),
         ],
         &[
-            live_support("evidence:api", 30_000, 0),
-            live_support("evidence:cache", 30_000, 0),
+            live_support("evidence:service", 30_000, 0),
+            live_support("evidence:subordinate", 30_000, 0),
         ],
         &[],
         ProjectionMomentV1::now(1_900_000_000_000),
@@ -166,4 +166,19 @@ fn artifact_without_positive_window_cannot_claim_a_positive_state() {
     artifact.artifact_id = artifact.compute_id().unwrap();
     let error = artifact.validate().unwrap_err();
     assert_eq!(error.code, "invalid_expiry_state");
+}
+
+#[test]
+fn rendered_page_scopes_its_labels_and_shows_the_as_of_time() {
+    let artifact = artifact();
+    let RenderedStatusV1::Current { html } =
+        render_status(&artifact, artifact.generated_at_unix_ms + 1_000, 0).unwrap()
+    else {
+        panic!("artifact should be current")
+    };
+    assert!(html.contains("Overall projection: No issue reported"));
+    assert!(html.contains("As of 2030-03-17T17:46:40Z (UTC)"));
+    assert!(html.contains("presentation deadline 2030-03-17T"));
+    assert!(html.contains(&artifact.non_authorization));
+    assert!(!html.contains("Operational"));
 }
