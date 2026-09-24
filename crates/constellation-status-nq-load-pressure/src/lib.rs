@@ -24,7 +24,7 @@ use constellation_status_projection::{
     ProjectionError, ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1,
     SourceFactV1,
 };
-use pulse_nq_load_correspondence::{NqDetectorStateV1, VerifiedCorrespondenceV1};
+use pulse_nq_load_correspondence::{NqDetectorStateV1, QuestionV1, VerifiedCorrespondenceV1};
 use pulse_runtime::{LocalCrashReactor, ReactorSnapshotV1};
 use pulse_types::{
     ConsumerId, JudgmentCategoryV1, LIVE_PRESENT_SUPPORT_REQUEST_SCHEMA_V1,
@@ -34,6 +34,9 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 pub const CONSEQUENCE_SCHEMA_V1: &str = "constellation.status_consequence.nq_host_load_pressure.v1";
+/// The only correspondence question this adapter maps. A verified value for
+/// any other question is refused before the consequence table is consulted.
+pub const REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostLoadPressureV1;
 /// The fact owner named in projection policies. It is this adapter, not NQ
 /// and not the generic projector.
 pub const FACT_OWNER: &str = "constellation-status-nq-load-pressure";
@@ -227,6 +230,18 @@ fn check_subject(
     requirement: &FactRequirementV1,
     verified: &VerifiedCorrespondenceV1,
 ) -> Result<(), ConsequenceError> {
+    if verified.question() != REQUIRED_QUESTION {
+        return Err(ConsequenceError::new(
+            "question_mismatch",
+            "verified correspondence is for a question this adapter does not map",
+        ));
+    }
+    if requirement.live_support.scope != REQUIRED_QUESTION.spec().pulse_scope {
+        return Err(ConsequenceError::new(
+            "selector_mismatch",
+            "policy live-support selector names a scope other than the load-pressure question",
+        ));
+    }
     if requirement.live_support.subject != verified.subject().as_str()
         || requirement.live_support.subject_incarnation != verified.subject_incarnation().as_str()
     {
