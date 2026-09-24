@@ -13,6 +13,7 @@
 //! `publish/public` and `publish/operator` respectively.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -160,8 +161,12 @@ fn real_projection_chain() {
     fs::create_dir_all(&publish_root).expect("publish root");
     let public_publish_root = publish_root.join("public");
     let operator_publish_root = publish_root.join("operator");
-    fs::create_dir_all(&public_publish_root).expect("public publish root");
-    fs::create_dir_all(&operator_publish_root).expect("operator publish root");
+    // The publisher refuses group- or other-writable roots; do not inherit the
+    // process umask (a real host with umask 0002 made the harness fail here).
+    for root in [&publish_root, &public_publish_root, &operator_publish_root] {
+        fs::create_dir_all(root).expect("publish root");
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).expect("publish root mode");
+    }
     let reactor = start_reactor(
         &profile,
         incarnation,
