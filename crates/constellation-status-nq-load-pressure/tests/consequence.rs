@@ -4,13 +4,14 @@ use constellation_status_nq_load_pressure::{
     CONSEQUENCE_NONCLAIMS, CONSEQUENCE_SCHEMA_V1, FACT_OWNER, consequence_identity,
     consequence_row, consequence_table, fact_for, recommended_safe_reasons,
 };
+use constellation_status_nq_load_pressure::{REQUIRED_QUESTION, admit_live};
 use constellation_status_projection::{
     AvailabilityV1, ComponentOutputFieldV1, ImpactV1, ProjectedStateV1, SourceFactClassV1,
 };
-use pulse_nq_load_correspondence::NqDetectorStateV1;
 use pulse_nq_load_correspondence::fixture::SyntheticOutcome;
+use pulse_nq_load_correspondence::{NqDetectorStateV1, QuestionV1};
 
-use common::{CONDITION_KEY, FACT_ID, condition_policy, harness, requirement};
+use common::{CONDITION_KEY, FACT_ID, condition_policy, harness, harness_for, requirement};
 
 /// Pinned identity of the mapping contract. A deliberate table change must
 /// update this constant and the contract document together.
@@ -188,6 +189,61 @@ fn fact_for_binds_the_correspondence_and_the_one_fact_guard_is_structural() {
     assert_eq!(
         fact_for(&verified, &policy, "missing").unwrap_err().code,
         "unknown_component"
+    );
+    harness.finish();
+}
+
+#[test]
+fn a_filesystem_capacity_correspondence_is_refused_by_this_adapter() {
+    assert_eq!(REQUIRED_QUESTION, QuestionV1::HostLoadPressureV1);
+    let filesystem = harness_for(
+        QuestionV1::HostFilesystemCapacityPressureV1,
+        "filesystem-refused",
+        SyntheticOutcome::Present,
+    );
+    let mut coproducer = filesystem.coproducer();
+    let verified = filesystem.verified(&mut coproducer);
+    assert_eq!(
+        verified.question(),
+        QuestionV1::HostFilesystemCapacityPressureV1
+    );
+    let policy = condition_policy(filesystem.selector(), false);
+    assert_eq!(
+        fact_for(&verified, &policy, CONDITION_KEY)
+            .unwrap_err()
+            .code,
+        "question_mismatch"
+    );
+    assert_eq!(
+        admit_live(
+            &verified,
+            &policy,
+            CONDITION_KEY,
+            &filesystem.reactor,
+            "nonce:filesystem-refused",
+            120_000,
+        )
+        .unwrap_err()
+        .code,
+        "question_mismatch"
+    );
+    filesystem.finish();
+
+    let harness = harness("scope", SyntheticOutcome::ExplicitlyAbsent);
+    let mut coproducer = harness.coproducer();
+    let verified = harness.verified(&mut coproducer);
+    let mut other_scope = condition_policy(harness.selector(), false);
+    other_scope.components[0].required_facts[0]
+        .live_support
+        .scope = QuestionV1::HostFilesystemCapacityPressureV1
+        .spec()
+        .pulse_scope
+        .to_owned();
+    assert_eq!(
+        fact_for(&verified, &other_scope, CONDITION_KEY)
+            .unwrap_err()
+            .code,
+        "selector_mismatch"
     );
     harness.finish();
 }

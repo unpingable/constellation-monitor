@@ -14,10 +14,10 @@ use constellation_status_projection::{
     SourceFactClassV1,
 };
 use pulse_nq_load_correspondence::fixture::{
-    FakeNq, SYNTHETIC_SUBJECT_INCARNATION, SyntheticOutcome, start_reactor, synthetic_profile,
+    FakeNq, SYNTHETIC_SUBJECT_INCARNATION, SyntheticOutcome, start_reactor, synthetic_profile_for,
 };
 use pulse_nq_load_correspondence::{
-    Coproducer, CorrespondenceProfileV1, FixedSubjectIncarnation, OccurrenceOutcomeV1,
+    Coproducer, CorrespondenceProfileV1, FixedSubjectIncarnation, OccurrenceOutcomeV1, QuestionV1,
     VerifiedCorrespondenceV1,
 };
 use pulse_runtime::LocalCrashReactor;
@@ -40,7 +40,13 @@ pub struct Harness {
 }
 
 pub fn harness(label: &str, outcome: SyntheticOutcome) -> Harness {
-    let profile = synthetic_profile().expect("profile");
+    harness_for(QuestionV1::HostLoadPressureV1, label, outcome)
+}
+
+/// A harness for any question of the closed table; the filesystem question
+/// is used only to prove this adapter refuses it.
+pub fn harness_for(question: QuestionV1, label: &str, outcome: SyntheticOutcome) -> Harness {
+    let profile = synthetic_profile_for(question).expect("profile");
     let root = tempfile::tempdir().expect("tempdir");
     let unique = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let journal = root.path().join(format!("{label}-{unique}.journal"));
