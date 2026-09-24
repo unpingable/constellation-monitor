@@ -29,7 +29,9 @@ use constellation_status_projection::{
     ProjectionError, ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1,
     SourceFactV1,
 };
-use pulse_nq_load_correspondence::{NqDetectorStateV1, QuestionV1, VerifiedCorrespondenceV1};
+use pulse_nq_load_correspondence::{
+    NqDetectorStateV1, OwnerFailureV1, QuestionV1, VerifiedCorrespondenceV1,
+};
 use pulse_runtime::{LocalCrashReactor, ReactorSnapshotV1};
 use pulse_types::{
     ConsumerId, JudgmentCategoryV1, LIVE_PRESENT_SUPPORT_REQUEST_SCHEMA_V1,
@@ -57,6 +59,70 @@ pub const CONSEQUENCE_NONCLAIMS: [&str; 5] = [
     "the component represents the memory pressure-stall condition of one enrolled machine itself, never memory, a host, or a service as a whole",
     "this mapping is a projection-policy consequence, not an NQ claim, and grants no authority",
 ];
+
+/// A bounded operator explanation of why the memory condition could not be
+/// evaluated, chosen by this adapter from the owner's typed failure code.
+/// The code is `nq.host_memory`'s own vocabulary; `machine_identity_mismatch`
+/// here means the memory owner's refusal and nothing about any filesystem,
+/// however the text matches. An explanation never changes the projected
+/// state, and the projector never sees it. No PSI figure, path, or helper
+/// detail is restated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OperatorExplanationV1 {
+    /// The owner's code, verbatim, for an operator record.
+    pub code: &'static str,
+    /// Bounded explanation text.
+    pub text: &'static str,
+    /// The owner's own retriable statement, when carried.
+    pub retriable: Option<bool>,
+}
+
+/// The closed set of owner codes this adapter explains.
+const OPERATOR_EXPLANATIONS: [(&str, &str); 5] = [
+    (
+        "machine_identity_mismatch",
+        "Machine identity could not be verified: the host is not the enrolled machine",
+    ),
+    (
+        "psi_not_provided",
+        "The kernel does not provide memory pressure accounting on this host",
+    ),
+    (
+        "psi_read_failed",
+        "Memory pressure accounting could not be read this time",
+    ),
+    (
+        "psi_malformed",
+        "Memory pressure accounting was present but not in the expected form",
+    ),
+    (
+        "boot_clock_unavailable",
+        "The boot clock could not be read, so the warm-up guard could not be applied",
+    ),
+];
+
+/// The explanation for a verified correspondence's owner failure, if this
+/// adapter explains that code. `None` for every state other than
+/// `cannot_evaluate`, for a `cannot_evaluate` NQ carried no code for (for
+/// example NQ's own warm-up refusal), and for a code this adapter does not
+/// explain; the caller then keeps the plain unknown text.
+#[must_use]
+pub fn operator_explanation(verified: &VerifiedCorrespondenceV1) -> Option<OperatorExplanationV1> {
+    if verified.question() != REQUIRED_QUESTION
+        || verified.nq_detector_state() != NqDetectorStateV1::CannotEvaluate
+    {
+        return None;
+    }
+    let OwnerFailureV1 { code, retriable } = verified.owner_failure()?;
+    OPERATOR_EXPLANATIONS
+        .iter()
+        .find(|(known, _)| known == code)
+        .map(|(known, text)| OperatorExplanationV1 {
+            code: known,
+            text,
+            retriable: *retriable,
+        })
+}
 
 /// One row of the closed consequence table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

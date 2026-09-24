@@ -43,6 +43,58 @@ impl NqDetectorStateV1 {
     }
 }
 
+/// The owner's typed reason for a `cannot_evaluate`, copied from the
+/// detector refusal's details when NQ carried one. The code is the owning
+/// profile's own vocabulary; the owning profile is the question's NQ profile,
+/// already pinned by the ladder, never re-read from artifact text. The seam
+/// carries this identity in process only and interprets nothing: it is not
+/// persisted in the record, never enters a Pulse frame, and never changes the
+/// detector state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnerFailureV1 {
+    /// Helper code exactly as NQ carried it (a token: `[a-z][a-z0-9_]*`).
+    pub code: String,
+    /// The owner's own retriable statement when NQ carried one.
+    pub retriable: Option<bool>,
+}
+
+/// Bound on an owner failure code.
+const MAX_OWNER_FAILURE_CODE_BYTES: usize = 64;
+
+/// Strictly parse the two optional detail keys of a detector refusal.
+/// Anything not exactly a token code with an optional `"true"`/`"false"`
+/// retriable is `None`: a malformed detail never becomes a reason.
+fn owner_failure(refusal: &Value) -> Option<OwnerFailureV1> {
+    let details = refusal
+        .get("origin")?
+        .get("payload")?
+        .get("refusal")?
+        .get("details")?;
+    let code = details.get("failure_code")?.as_str()?;
+    let is_token = !code.is_empty()
+        && code.len() <= MAX_OWNER_FAILURE_CODE_BYTES
+        && code
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    if !is_token {
+        return None;
+    }
+    let retriable = match details.get("failure_retriable").and_then(Value::as_str) {
+        None => None,
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        Some(_) => return None,
+    };
+    Some(OwnerFailureV1 {
+        code: code.to_owned(),
+        retriable,
+    })
+}
+
 /// One exact artifact that passed V5 and V6 against a profile.
 #[derive(Clone, Debug)]
 pub struct VerifiedNqArtifactV1 {
@@ -56,6 +108,9 @@ pub struct VerifiedNqArtifactV1 {
     pub raw_sha256: String,
     pub profile_semantic_id: String,
     pub state: NqDetectorStateV1,
+    /// The owner's typed reason, only for a detector `cannot_evaluate` that
+    /// carried one.
+    pub owner_failure: Option<OwnerFailureV1>,
 }
 
 const EMPTY_SHA256: &str =
@@ -152,6 +207,7 @@ pub(crate) fn verify_artifact_value(
     require_token("run_id", run_id)?;
 
     let state = classify_outcome_for(value, question, Some(question.spec().claim_id))?;
+    let mut owner_failure_value = None;
     if state == NqDetectorStateV1::CannotEvaluate {
         let [refusal] = array(field(value, "outcome")?, "refusals")?.as_slice() else {
             return Err(CorrespondenceError::new(
@@ -168,6 +224,7 @@ pub(crate) fn verify_artifact_value(
                 "detector refusal names a different enrolled NQ instance",
             ));
         }
+        owner_failure_value = owner_failure(refusal);
     }
     let (provider_intake_id, raw_sha256) = single_acquisition(inputs, state)?;
     Ok(VerifiedNqArtifactV1 {
@@ -179,6 +236,7 @@ pub(crate) fn verify_artifact_value(
         raw_sha256,
         profile_semantic_id: nq.profile_semantic_id.clone(),
         state,
+        owner_failure: owner_failure_value,
     })
 }
 

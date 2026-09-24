@@ -228,6 +228,7 @@ impl<'a> Coproducer<'a> {
             Ok(certificate_id) => {
                 OccurrenceOutcomeV1::Verified(Box::new(VerifiedCorrespondenceV1::new(
                     self.question,
+                    artifact.owner_failure.clone(),
                     record.correspondence_id.clone(),
                     occurrence.acquisition_id.clone(),
                     occurrence.evidence_ref.clone(),

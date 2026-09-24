@@ -148,6 +148,12 @@ pub enum SyntheticOutcome {
     Present,
     ExplicitlyAbsent,
     CannotEvaluate,
+    /// A detector `cannot_evaluate` whose refusal details carry the owner's
+    /// typed failure code and retriable flag, as NQ emits since typed
+    /// failure retention (filesystem: `filesystem_identity_mismatch`,
+    /// memory: `machine_identity_mismatch`, both `retriable: false`; load
+    /// carries none and this variant then equals `CannotEvaluate`).
+    CannotEvaluateTyped,
     /// A helper-origin received-input refusal: governed refusal disposition.
     InputRefusal,
     /// Provider no response: acquisition-failure disposition, no bytes.
@@ -160,7 +166,7 @@ impl SyntheticOutcome {
         match self {
             Self::Present => NqDetectorStateV1::Present,
             Self::ExplicitlyAbsent => NqDetectorStateV1::ExplicitlyAbsent,
-            Self::CannotEvaluate => NqDetectorStateV1::CannotEvaluate,
+            Self::CannotEvaluate | Self::CannotEvaluateTyped => NqDetectorStateV1::CannotEvaluate,
             Self::InputRefusal | Self::ProviderNoResponse => NqDetectorStateV1::NotEvaluated,
         }
     }
@@ -189,6 +195,16 @@ pub enum Tamper {
     ArtifactClaimDependsOnOtherInput,
     ArtifactPresentWithPartialCoverage,
     ArtifactHelperRefusalLabelledCannotEvaluate,
+}
+
+/// The owner code the typed synthetic refusal carries for each question.
+#[must_use]
+pub const fn synthetic_owner_failure_code(question: QuestionV1) -> Option<&'static str> {
+    match question {
+        QuestionV1::HostLoadPressureV1 => None,
+        QuestionV1::HostFilesystemCapacityPressureV1 => Some("filesystem_identity_mismatch"),
+        QuestionV1::HostMemoryPressureStallV1 => Some("machine_identity_mismatch"),
+    }
 }
 
 fn short(value: &str) -> String {
@@ -370,12 +386,20 @@ pub fn synthetic_artifact(
                 }),
             )
         }
-        SyntheticOutcome::CannotEvaluate => {
-            let refusal = if tamper == Tamper::ArtifactHelperRefusalLabelledCannotEvaluate {
+        SyntheticOutcome::CannotEvaluate | SyntheticOutcome::CannotEvaluateTyped => {
+            let mut refusal = if tamper == Tamper::ArtifactHelperRefusalLabelledCannotEvaluate {
                 helper_refusal.clone()
             } else {
                 profile_refusal("cannot_evaluate", "the newest report has no host snapshot")
             };
+            if outcome == SyntheticOutcome::CannotEvaluateTyped
+                && let Some(code) = synthetic_owner_failure_code(profile.question()?)
+            {
+                refusal["origin"]["payload"]["refusal"]["details"]["failure_code"] =
+                    Value::String(code.to_owned());
+                refusal["origin"]["payload"]["refusal"]["details"]["failure_retriable"] =
+                    Value::String("false".to_owned());
+            }
             (
                 json!({
                     "selection_rule": selection_rule,

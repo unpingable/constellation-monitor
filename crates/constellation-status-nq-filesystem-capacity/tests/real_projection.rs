@@ -21,7 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constellation_status_nq_filesystem_capacity::{
     CONSEQUENCE_SCHEMA_V1, FACT_OWNER, PUBLIC_COMPONENT_LABEL, admit_live, fact_for,
-    live_support_selector, operator_component_label, recommended_safe_reasons,
+    live_support_selector, operator_component_label, operator_explanation,
+    recommended_safe_reasons,
 };
 use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
@@ -208,6 +209,14 @@ fn real_projection_chain() {
             expected_state,
             "occurrence {} produced the wrong NQ state",
             result.sequence
+        );
+        // The owner's typed reason, when NQ carried one, and this leaf's
+        // bounded explanation of it; neither changes the state above.
+        println!(
+            "occurrence {} owner failure: {:?} explanation: {:?}",
+            result.sequence,
+            verified.owner_failure(),
+            operator_explanation(&verified).map(|explanation| explanation.text)
         );
         let selector = live_support_selector(&reactor.snapshot(), &consumer).expect("selector");
         let public_policy = public_policy(selector.clone());

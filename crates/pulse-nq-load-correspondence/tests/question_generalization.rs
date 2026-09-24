@@ -489,3 +489,155 @@ fn enrollment_overlap_is_refused_before_a_reactor_is_shared() {
         "enrollment_overlap"
     );
 }
+
+#[test]
+fn an_owner_failure_is_carried_in_process_for_a_typed_cannot_evaluate_only() {
+    use pulse_nq_load_correspondence::fixture::synthetic_owner_failure_code;
+    for question in QuestionV1::ALL {
+        let profile = synthetic_profile_for(question).expect("profile");
+        let root = tempfile::tempdir().expect("tempdir");
+        let journal = root.path().join("owner-failure.journal");
+        let reactor =
+            start_reactor(&profile, incarnation(), "owner-failure", &journal).expect("reactor");
+        let nq = FakeNq::new(profile.clone(), SyntheticOutcome::CannotEvaluateTyped);
+        let witness = FixedSubjectIncarnation(incarnation());
+        let mut coproducer = Coproducer::begin(
+            &profile,
+            &nq,
+            &witness,
+            &root.path().join("intent"),
+            &root.path().join("audit"),
+        )
+        .expect("coproducer");
+        for (outcome, expected_code) in [
+            (
+                SyntheticOutcome::CannotEvaluateTyped,
+                synthetic_owner_failure_code(question),
+            ),
+            (SyntheticOutcome::CannotEvaluate, None),
+            (SyntheticOutcome::ExplicitlyAbsent, None),
+            (SyntheticOutcome::Present, None),
+            (SyntheticOutcome::InputRefusal, None),
+        ] {
+            nq.set_outcome(outcome);
+            let result = coproducer.run_occurrence(&reactor).expect("occurrence");
+            assert_eq!(result.nq_detector_state, outcome.expected_state());
+            let OccurrenceOutcomeV1::Verified(verified) = result.outcome else {
+                panic!("audit only")
+            };
+            assert_eq!(
+                verified
+                    .owner_failure()
+                    .map(|failure| failure.code.as_str()),
+                expected_code,
+                "{question:?} {outcome:?}"
+            );
+            if let Some(failure) = verified.owner_failure() {
+                assert_eq!(failure.retriable, Some(false));
+            }
+            // The persisted record carries the artifact as NQ wrote it and
+            // nothing the seam derived from it.
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&result.record_path).expect("record"))
+                    .expect("json");
+            assert!(record.get("owner_failure").is_none());
+            assert!(record.get("failure_code").is_none());
+            // Audit verification of the record is unchanged by the keys.
+            verify_audit_record(&fs::read(&result.record_path).expect("record"), &profile)
+                .expect("audit verifies");
+        }
+        reactor.shutdown().expect("shutdown");
+    }
+}
+
+#[test]
+fn malformed_or_mutated_owner_failure_details_never_become_a_reason() {
+    use pulse_nq_load_correspondence::fixture::reidentify_artifact;
+    let profile = synthetic_profile_for(FS).expect("filesystem profile");
+    let typed =
+        synthetic_record(&profile, SyntheticOutcome::CannotEvaluateTyped, 1, 7, 3).expect("record");
+    let artifact = &typed.nq.artifact;
+    let verified =
+        verify_artifact(&serde_jcs::to_vec(artifact).expect("canonical"), &profile).expect("ok");
+    assert_eq!(
+        verified
+            .owner_failure
+            .as_ref()
+            .map(|failure| failure.code.as_str()),
+        Some("filesystem_identity_mismatch")
+    );
+    // Mutating either key without re-identifying the artifact fails the
+    // artifact identity, never yields a different reason.
+    for (key, value) in [
+        ("failure_code", "psi_not_provided"),
+        ("failure_retriable", "true"),
+    ] {
+        let mut mutated = artifact.clone();
+        mutated["outcome"]["refusals"][0]["origin"]["payload"]["refusal"]["details"][key] =
+            serde_json::Value::String(value.to_owned());
+        assert_eq!(
+            verify_artifact(&serde_jcs::to_vec(&mutated).expect("canonical"), &profile)
+                .unwrap_err()
+                .code,
+            "artifact_identity_mismatch",
+            "{key}"
+        );
+    }
+    // Malformed values with a recomputed identity: the artifact still
+    // verifies, the state is still cannot_evaluate, and no reason is carried.
+    for (code, retriable) in [
+        ("Filesystem_Identity_Mismatch", "false"),
+        ("/etc/machine-id", "false"),
+        ("filesystem identity mismatch", "false"),
+        ("", "false"),
+        ("filesystem_identity_mismatch", "maybe"),
+        ("filesystem_identity_mismatch", "TRUE"),
+    ] {
+        let mut malformed = artifact.clone();
+        malformed["outcome"]["refusals"][0]["origin"]["payload"]["refusal"]["details"]["failure_code"] =
+            serde_json::Value::String(code.to_owned());
+        malformed["outcome"]["refusals"][0]["origin"]["payload"]["refusal"]["details"]["failure_retriable"] =
+            serde_json::Value::String(retriable.to_owned());
+        reidentify_artifact(&mut malformed).expect("reidentify");
+        let verified =
+            verify_artifact(&serde_jcs::to_vec(&malformed).expect("canonical"), &profile)
+                .expect("still a valid cannot_evaluate");
+        assert_eq!(verified.state, NqDetectorStateV1::CannotEvaluate);
+        assert!(verified.owner_failure.is_none(), "{code:?} {retriable:?}");
+    }
+    // A code without a retriable flag is carried with `None`; the flag alone
+    // is nothing.
+    let mut code_only = artifact.clone();
+    code_only["outcome"]["refusals"][0]["origin"]["payload"]["refusal"]["details"]
+        .as_object_mut()
+        .expect("details")
+        .remove("failure_retriable");
+    reidentify_artifact(&mut code_only).expect("reidentify");
+    let verified = verify_artifact(&serde_jcs::to_vec(&code_only).expect("canonical"), &profile)
+        .expect("valid");
+    assert_eq!(
+        verified.owner_failure,
+        Some(pulse_nq_load_correspondence::OwnerFailureV1 {
+            code: "filesystem_identity_mismatch".to_owned(),
+            retriable: None
+        })
+    );
+    // The typed filesystem artifact under the memory row is still a foreign
+    // detector refusal; a carried code changes nothing about that.
+    let memory = synthetic_profile_for(QuestionV1::HostMemoryPressureStallV1).expect("memory");
+    let mut relabelled = artifact.clone();
+    relabelled["subject"]["id"] = serde_json::Value::String(memory.nq.subject_id.clone());
+    reidentify_artifact(&mut relabelled).expect("reidentify");
+    assert_eq!(
+        verify_artifact(&serde_jcs::to_vec(&relabelled).expect("canonical"), &memory)
+            .unwrap_err()
+            .code,
+        "artifact_pin_mismatch"
+    );
+    assert_eq!(
+        classify_outcome_for(&relabelled, QuestionV1::HostMemoryPressureStallV1, None)
+            .unwrap_err()
+            .code,
+        "artifact_ladder"
+    );
+}

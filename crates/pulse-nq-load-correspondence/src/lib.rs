@@ -38,8 +38,8 @@ pub use deliver::{
     elapsed_ceil_ms, frame_ingress, frame_ingress_for, verify_certificate_binding,
 };
 pub use nq_artifact::{
-    NqDetectorStateV1, VerifiedNqArtifactV1, classify_outcome, classify_outcome_for,
-    verify_artifact,
+    NqDetectorStateV1, OwnerFailureV1, VerifiedNqArtifactV1, classify_outcome,
+    classify_outcome_for, verify_artifact,
 };
 pub use nq_cli::{
     MAX_NQ_OUTPUT_BYTES, NQ_ACQUIRE_TIMEOUT, NQ_READ_TIMEOUT, NqPort, PinnedNqExecutable,

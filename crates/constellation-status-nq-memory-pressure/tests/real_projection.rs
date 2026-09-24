@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constellation_status_nq_memory_pressure::{
     CONSEQUENCE_SCHEMA_V1, FACT_OWNER, PUBLIC_COMPONENT_LABEL, REQUIRED_QUESTION, admit_live,
-    fact_for, live_support_selector, recommended_safe_reasons,
+    fact_for, live_support_selector, operator_explanation, recommended_safe_reasons,
 };
 use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
@@ -230,6 +230,14 @@ fn real_projection_chain() {
             Some(REQUIRED_QUESTION.frame_validity_ms() - verified.delivery().holding_delay_ms),
             "occurrence {} support window is not V - d",
             result.sequence
+        );
+        // The owner's typed reason, when NQ carried one, and this leaf's
+        // bounded explanation of it; neither changes the state above.
+        println!(
+            "occurrence {} owner failure: {:?} explanation: {:?}",
+            result.sequence,
+            verified.owner_failure(),
+            operator_explanation(&verified).map(|explanation| explanation.text)
         );
         let selector = live_support_selector(&snapshot, &consumer).expect("selector");
         let public_policy = public_policy(selector.clone());
