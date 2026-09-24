@@ -34,7 +34,8 @@ pub fn elapsed_ceil_ms(from: Instant, to: Instant) -> u64 {
     u64::try_from(nanos.saturating_add(999_999) / 1_000_000).unwrap_or(u64::MAX)
 }
 
-/// `d < V` for load v1.
+/// `d < V` for load v1 only; every other caller uses
+/// [`check_holding_delay_for`].
 pub fn check_holding_delay(holding_delay_ms: u64) -> Result<(), CorrespondenceError> {
     check_holding_delay_for(QuestionV1::HostLoadPressureV1, holding_delay_ms)
 }
@@ -65,7 +66,9 @@ pub fn check_ingress_fence(ingress_fence_ms: u64) -> Result<(), CorrespondenceEr
     Ok(())
 }
 
-/// The load v1 ingress record.
+/// The load v1 ingress record only; every other caller uses
+/// [`frame_ingress_for`]. Submitting another question's frame through this
+/// path would name the load transport path.
 #[must_use]
 pub fn frame_ingress(frame: PulseFrameV1, holding_delay_ms: u64) -> RuntimeInputV1 {
     frame_ingress_for(QuestionV1::HostLoadPressureV1, frame, holding_delay_ms)

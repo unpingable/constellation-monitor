@@ -1,6 +1,6 @@
 {
   "acquisition_id": "constellation-nq-fs-capacity:v1:sha256:3ee1fc45ac6b1a06d2edaa0adb268b09421debde31fdd5e076ae7ce63c2a4726",
-  "correspondence_id": "sha256:005dc70a2eba4980418132a6f3e08cd9b28e6a0035f2fd67669bef95fcee4647",
+  "correspondence_id": "sha256:47d1a9221cd701a72b541bcaf0b1ca77ccb5b87ea4d6757245fcd2ec6a83a1f5",
   "delivery": {
     "holding_delay_ms": 7,
     "ingress_fence_ms": 3,
@@ -18,9 +18,9 @@
   "nq": {
     "admission_provenance": {
       "artifact": {
-        "artifact_id": "sha256:1ca9c39185456448993717b5fc76ec0b431cda6350b09914d62039261333f1b8",
-        "canonical_bytes_length": 6046,
-        "canonical_bytes_sha256": "sha256:09f2a186f160cd9a9d6964bc66e4cc3c51d7e3178c7786ee701aa69745e92846",
+        "artifact_id": "sha256:8542d4d6a6496f9fefb339c41fb94a4c25067780d20b81c53bed05c118854ec6",
+        "canonical_bytes_length": 6076,
+        "canonical_bytes_sha256": "sha256:ead057f11c07711e4d4591b0809e6f032e442a49e65a9b158c000022424e56ff",
         "contract_schema": "nq.diagnostic_execution.v2"
       },
       "disposition": "admitted_report",
@@ -40,7 +40,7 @@
         "evaluation_id": "evaluation:e6197d0370f140be",
         "run_id": "run:547eb3fa02589d3a"
       },
-      "provenance_id": "sha256:c0b99522152592aae71beaf9cdbe0c1458cda9edf99f8f2387c6df12bf5f1718",
+      "provenance_id": "sha256:b52f914d0e68a1c49963a3c7c84e572ccb6bb4ecab923ac78bbbcb3cb4b4f47f",
       "provider": {
         "admission_context_digest": "sha256:0341d904d8aae2f2f0c4e11bca1e1c7f3db7bcb67b84bf5d79c64c475e12ee92",
         "profile_semantic_id": "sha256:cf5ee93c24430cf33cea1c0e77349b4e01b586a3d984beba3e1e086dc3a342f1",
@@ -56,7 +56,7 @@
       }
     },
     "artifact": {
-      "artifact_id": "sha256:1ca9c39185456448993717b5fc76ec0b431cda6350b09914d62039261333f1b8",
+      "artifact_id": "sha256:8542d4d6a6496f9fefb339c41fb94a4c25067780d20b81c53bed05c118854ec6",
       "attempt_interval": {
         "clock": {
           "digest": "sha256:cd98c427dda523155589e22c798fbd25086c7c8f479aebda2acea9fc1d393529",
@@ -86,7 +86,7 @@
           ],
           "dependency_refusal_ids": [],
           "limitations": [
-            "One scheduler snapshot does not identify the workload causing load"
+            "One statfs snapshot establishes no storage health, integrity, performance, quota, or growth fact"
           ],
           "nonclaims": [
             "the causal source of the bounded condition is not established",

@@ -10,8 +10,6 @@
 //! The load row reproduces the qualified load-only constants byte for byte.
 //! Adding a row is a source change reviewed like any other identity pin.
 
-use serde::{Deserialize, Serialize};
-
 use crate::{
     ACQUISITION_ID_PREFIX, COVERAGE_TAG, INGRESS_FENCE_MS, INTENT_SCHEMA_V1, NQ_CLAIM_ID,
     NQ_CONDITION, NQ_PROFILE_DIGEST, NQ_PROFILE_ID, NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST,
@@ -20,10 +18,10 @@ use crate::{
     SemanticIdentityV1, TRANSPORT_PATH,
 };
 
-/// One qualified NQ question. The variant is carried in memory only; on disk
-/// every carrier names its question through its schema string.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
+/// One qualified NQ question. The variant is carried in memory only and is
+/// never serialized; on disk every carrier names its question through its
+/// schema string, and a verifier resolves that string against this table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QuestionV1 {
     /// `nq.host.load_pressure/1` against `nq.host/1`; subject `host:<id>`.
     HostLoadPressureV1,
@@ -113,6 +111,14 @@ const HOST_FILESYSTEM_CAPACITY_PRESSURE_V1: QuestionSpecV1 = QuestionSpecV1 {
     record_schema: "constellation.nq_host_filesystem_capacity_correspondence.v1",
     pulse_profile_name: "constellation.nq_host_filesystem_capacity_correspondence",
     pulse_profile_domain: "constellation.nq_host_filesystem_capacity_correspondence.pulse_profile.v1",
+};
+
+/// Every row's reliance window must exceed the ingress fence by more than one
+/// millisecond, or the frame validity would underflow. Checked at compile
+/// time for every row.
+const _: () = {
+    assert!(HOST_LOAD_PRESSURE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
+    assert!(HOST_FILESYSTEM_CAPACITY_PRESSURE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
 };
 
 impl QuestionV1 {

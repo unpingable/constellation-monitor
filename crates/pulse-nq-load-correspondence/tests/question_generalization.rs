@@ -17,9 +17,9 @@ use pulse_nq_load_correspondence::fixture::{
 use pulse_nq_load_correspondence::{
     Coproducer, CorrespondenceConstantsV1, CorrespondenceProfileV1, CorrespondenceRecordV1,
     FRAME_VALIDITY_MS, FixedSubjectIncarnation, NqDetectorStateV1, OccurrenceOutcomeV1, QuestionV1,
-    acquisition_id, build_frame, check_holding_delay_for, classify_outcome_for, evidence_ref,
-    frame_ingress_for, verify_artifact, verify_audit_record, verify_certificate_binding,
-    verify_frame,
+    acquisition_id, build_frame, check_disjoint_enrollment, check_holding_delay_for,
+    classify_outcome_for, evidence_ref, frame_ingress_for, verify_artifact, verify_audit_record,
+    verify_certificate_binding, verify_frame,
 };
 use pulse_runtime::RuntimeInputV1;
 use pulse_types::IncarnationId;
@@ -171,13 +171,14 @@ fn the_ladder_pins_the_filesystem_claim_and_refusal_profile() {
         classify_outcome_for(&refused.nq.artifact, FS, None).expect("classifies"),
         NqDetectorStateV1::CannotEvaluate
     );
-    // Under the load row the same refusal names the wrong NQ profile, so it
-    // is not a detector refusal and falls to the undetermined bucket, as any
-    // foreign refusal does for load v1. The artifact verifier refuses the
-    // profile pin before the ladder is ever consulted.
+    // Under the load row the same refusal names another NQ profile: it is
+    // refused as a foreign detector refusal, never downgraded to the
+    // undetermined bucket.
     assert_eq!(
-        classify_outcome_for(&refused.nq.artifact, LOAD, None).expect("classifies"),
-        NqDetectorStateV1::NotEvaluated
+        classify_outcome_for(&refused.nq.artifact, LOAD, None)
+            .unwrap_err()
+            .code,
+        "artifact_ladder"
     );
     let canonical = serde_jcs::to_vec(artifact).expect("canonical");
     assert!(verify_artifact(&canonical, &profile).is_ok());
@@ -401,22 +402,6 @@ fn a_port_enrolled_for_the_other_question_is_refused_before_custody() {
     assert_eq!(refusal.code, "nq_enrollment_mismatch");
 }
 
-/// Decode a sealed real profile named by `NQ_CORRESPONDENCE_PROFILE_CHECK`
-/// and print its digest and question, for the regression gate.
-#[test]
-#[ignore = "reads a profile path from the environment"]
-fn decode_real_profile_from_env() {
-    let path = std::env::var("NQ_CORRESPONDENCE_PROFILE_CHECK").expect("profile path");
-    let bytes = fs::read(&path).expect("profile bytes");
-    let profile = CorrespondenceProfileV1::decode(&bytes).expect("profile decodes");
-    println!(
-        "PROFILE {} question={:?} subject={}",
-        profile.digest(),
-        profile.question().expect("question"),
-        profile.nq.subject_id
-    );
-}
-
 /// Cross-verify two real audit record sets: every record verifies under its
 /// own profile and is refused under the other question's profile. Reads
 /// `NQ_CORRESPONDENCE_REAL_{A,B}_PROFILE` and `_RECORD_DIR` from the
@@ -455,8 +440,15 @@ fn cross_verify_real_records_from_env() {
             let verdict = verify_audit_record(&bytes, own).expect("own profile verifies");
             let refusal =
                 verify_audit_record(&bytes, other).expect_err("other profile must refuse");
-            assert!(
-                refusal.code == "record_question_mismatch" || refusal.code == "profile_mismatch",
+            let expected_code =
+                if own.question().expect("question") == other.question().expect("question") {
+                    "profile_mismatch"
+                } else {
+                    "record_question_mismatch"
+                };
+            assert_eq!(
+                refusal.code,
+                expected_code,
                 "{}: {refusal}",
                 record.display()
             );
@@ -469,4 +461,28 @@ fn cross_verify_real_records_from_env() {
             );
         }
     }
+}
+
+#[test]
+fn enrollment_overlap_is_refused_before_a_reactor_is_shared() {
+    let load = synthetic_profile().expect("load profile");
+    let filesystem = synthetic_profile_for(FS).expect("filesystem profile");
+    check_disjoint_enrollment(&[&load, &filesystem]).expect("disjoint by question and ids");
+    // Same question and subject twice.
+    assert_eq!(
+        check_disjoint_enrollment(&[&filesystem, &filesystem])
+            .unwrap_err()
+            .code,
+        "enrollment_overlap"
+    );
+    // Different subject, reused consumer id.
+    let (mut nq, pulse) = synthetic_enrollment_for(FS);
+    nq.subject_id = "host-filesystem:0123456789abcdef0123456789abcdef/other".to_owned();
+    let other_subject = CorrespondenceProfileV1::seal_for(FS, nq, pulse).expect("seals");
+    assert_eq!(
+        check_disjoint_enrollment(&[&filesystem, &other_subject])
+            .unwrap_err()
+            .code,
+        "enrollment_overlap"
+    );
 }

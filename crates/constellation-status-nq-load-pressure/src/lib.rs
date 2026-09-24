@@ -316,7 +316,18 @@ pub fn live_support_selector(
     snapshot: &ReactorSnapshotV1,
     consumer: &ConsumerId,
 ) -> Result<LiveSupportSelectorV1, ConsequenceError> {
-    let certificate = consumer_certificate(snapshot, consumer)?;
+    let certificate = consumer_certificate(snapshot, consumer, None)?;
+    selector_for(snapshot, &certificate)
+}
+
+/// As [`live_support_selector`], for one subject, when the consumer holds
+/// certificates on more than one subject.
+pub fn live_support_selector_for(
+    snapshot: &ReactorSnapshotV1,
+    consumer: &ConsumerId,
+    subject: &str,
+) -> Result<LiveSupportSelectorV1, ConsequenceError> {
+    let certificate = consumer_certificate(snapshot, consumer, Some(subject))?;
     selector_for(snapshot, &certificate)
 }
 
@@ -374,7 +385,11 @@ pub fn admit_live(
     check_subject(requirement, verified)?;
     let consumer = ConsumerId::new(requirement.live_support.consumer.as_str());
     let snapshot = reactor.snapshot();
-    let certificate = consumer_certificate(&snapshot, &consumer)?;
+    let certificate = consumer_certificate(
+        &snapshot,
+        &consumer,
+        Some(requirement.live_support.subject.as_str()),
+    )?;
     if requirement.live_support != selector_for(&snapshot, &certificate)? {
         return Err(ConsequenceError::new(
             "selector_mismatch",
@@ -431,9 +446,14 @@ pub fn admit_live(
     )?)
 }
 
+/// The one certificate for a consumer on this question's scope, optionally
+/// on one subject. Pulse keys consumers by subject and consumer, so one
+/// consumer id may hold certificates on several subjects; more than one
+/// match is refused rather than picked.
 fn consumer_certificate(
     snapshot: &ReactorSnapshotV1,
     consumer: &ConsumerId,
+    subject: Option<&str>,
 ) -> Result<RelianceSupportCertificateV1, ConsequenceError> {
     if !snapshot.condition.exposes_live_standing() {
         return Err(ConsequenceError::new(
@@ -441,15 +461,23 @@ fn consumer_certificate(
             format!("reactor condition is {:?}", snapshot.condition),
         ));
     }
-    snapshot
-        .certificates
-        .iter()
-        .find(|certificate| &certificate.consumer == consumer)
-        .cloned()
-        .ok_or_else(|| {
-            ConsequenceError::new(
-                "certificate_missing",
-                "reactor holds no certificate for the consumer",
-            )
-        })
+    let scope = REQUIRED_QUESTION.spec().pulse_scope;
+    let mut matches = snapshot.certificates.iter().filter(|certificate| {
+        &certificate.consumer == consumer
+            && certificate.subject_scope.scope == scope
+            && subject.is_none_or(|subject| certificate.subject_scope.subject.as_str() == subject)
+    });
+    let Some(certificate) = matches.next() else {
+        return Err(ConsequenceError::new(
+            "certificate_missing",
+            "reactor holds no certificate for the consumer on this question's scope and subject",
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(ConsequenceError::new(
+            "certificate_ambiguous",
+            "reactor holds more than one certificate for the consumer on this question's scope; name the subject",
+        ));
+    }
+    Ok(certificate.clone())
 }

@@ -6,20 +6,22 @@ use constellation_status_nq_filesystem_capacity::{
 };
 use constellation_status_nq_filesystem_capacity::{
     MAX_MOUNTPOINT_LABEL_BYTES, PUBLIC_COMPONENT_LABEL, REQUIRED_QUESTION, admit_live,
-    operator_component_label,
+    live_support_selector, live_support_selector_for, operator_component_label,
 };
 use constellation_status_projection::{
     AvailabilityV1, ComponentOutputFieldV1, ImpactV1, ProjectedStateV1, SourceFactClassV1,
 };
+use pulse_nq_load_correspondence::fixture::SYNTHETIC_FILESYSTEM_SUBJECT;
 use pulse_nq_load_correspondence::fixture::SyntheticOutcome;
 use pulse_nq_load_correspondence::{NqDetectorStateV1, QuestionV1};
+use pulse_types::SubjectId;
 
 use common::{CONDITION_KEY, FACT_ID, condition_policy, harness, harness_for, requirement};
 
 /// Pinned identity of the mapping contract. A deliberate table change must
 /// update this constant and the contract document together.
 const CONSEQUENCE_IDENTITY: &str =
-    "sha256:65996c751929c2545eb916507ccabd5289243a99e1b1401105ed0bbbce3a7a4d";
+    "sha256:5206fd63ee678a4b39c5222af0214c46a5cf125329ebeb70a5370a8c959d3920";
 
 #[test]
 fn the_table_is_exactly_the_accepted_mapping_and_total() {
@@ -227,7 +229,7 @@ fn a_load_pressure_correspondence_is_refused_by_this_adapter() {
     // A policy authored for this adapter but pointed at the load reactor's
     // certificate lineage: the question check fires before any selector or
     // certificate comparison.
-    let policy = condition_policy(load.selector(), false);
+    let policy = condition_policy(load.selector_any_scope(), false);
     assert_eq!(
         fact_for(&verified, &policy, CONDITION_KEY)
             .unwrap_err()
@@ -299,8 +301,18 @@ fn the_operator_label_may_carry_the_enrolled_mountpoint_and_the_public_label_may
     // validator before this adapter sees them, so they are not listed here.
     for bad in [
         operator_component_label(""),
-        operator_component_label(&"x".repeat(MAX_MOUNTPOINT_LABEL_BYTES + 1)),
+        operator_component_label(&format!("/{}", "x".repeat(MAX_MOUNTPOINT_LABEL_BYTES))),
         operator_component_label("/data (a)"),
+        operator_component_label("Operational"),
+        operator_component_label("storage healthy"),
+        operator_component_label("data"),
+        operator_component_label("/a/../b"),
+        operator_component_label("/a/./b"),
+        operator_component_label("/a//b"),
+        operator_component_label("/data/"),
+        operator_component_label("/data mount"),
+        operator_component_label("/00000000-0000-4000-8000-0000000000f5"),
+        operator_component_label("/srv/0123456789abcdef0123456789abcdef"),
         format!("{PUBLIC_COMPONENT_LABEL} /data"),
         format!("{PUBLIC_COMPONENT_LABEL} (/data) extra"),
     ] {
@@ -318,6 +330,124 @@ fn the_operator_label_may_carry_the_enrolled_mountpoint_and_the_public_label_may
             "{bad:?}"
         );
     }
+    harness.finish();
+}
+
+#[test]
+fn a_public_policy_may_not_carry_the_machine_id_or_uuid_in_any_identifier_or_text() {
+    let harness = harness("public-leak", SyntheticOutcome::Present);
+    let mut coproducer = harness.coproducer();
+    let verified = harness.verified(&mut coproducer);
+    let uuid = "00000000-0000-4000-8000-0000000000f5";
+    let machine = "0123456789abcdef0123456789abcdef";
+    let clean = condition_policy(harness.selector(), true);
+    fact_for(&verified, &clean, CONDITION_KEY).expect("clean public policy");
+
+    // Component key, projection id, fact id, and safe-reason text.
+    let mut key = condition_policy(harness.selector(), true);
+    key.components[0].key = format!("fs-{uuid}");
+    key.root_component = key.components[0].key.clone();
+    assert_eq!(
+        fact_for(&verified, &key, &format!("fs-{uuid}"))
+            .unwrap_err()
+            .code,
+        "public_identity_leak"
+    );
+    let mut projection = condition_policy(harness.selector(), true);
+    projection.projection_id = format!("public-{machine}");
+    assert_eq!(
+        fact_for(&verified, &projection, CONDITION_KEY)
+            .unwrap_err()
+            .code,
+        "public_identity_leak"
+    );
+    let mut fact_id = condition_policy(harness.selector(), true);
+    fact_id.components[0].required_facts[0].fact_id = format!("fact.{machine}");
+    assert_eq!(
+        fact_for(&verified, &fact_id, CONDITION_KEY)
+            .unwrap_err()
+            .code,
+        "public_identity_leak"
+    );
+    assert_eq!(
+        admit_live(
+            &verified,
+            &fact_id,
+            CONDITION_KEY,
+            &harness.reactor,
+            "nonce:leak",
+            120_000,
+        )
+        .unwrap_err()
+        .code,
+        "public_identity_leak"
+    );
+    // The same identifiers are allowed in an operator policy, whose basis is
+    // disclosed anyway; only the label is guarded there.
+    let mut operator = condition_policy(harness.selector(), false);
+    operator.components[0].required_facts[0].fact_id = format!("fact.{machine}");
+    fact_for(&verified, &operator, CONDITION_KEY).expect("operator fact id");
+    let mut operator_label = condition_policy(harness.selector(), false);
+    operator_label.components[0]
+        .output
+        .as_mut()
+        .expect("output")
+        .display_name = operator_component_label(&format!("/{uuid}"));
+    assert_eq!(
+        fact_for(&verified, &operator_label, CONDITION_KEY)
+            .unwrap_err()
+            .code,
+        "condition_contract_mismatch"
+    );
+    harness.finish();
+}
+
+#[test]
+fn certificate_lookup_names_the_subject_and_scope_and_refuses_ambiguity() {
+    let harness = harness("lookup", SyntheticOutcome::ExplicitlyAbsent);
+    let mut coproducer = harness.coproducer();
+    let _verified = harness.verified(&mut coproducer);
+    let consumer = harness.profile.consumer();
+    let snapshot = harness.reactor.snapshot();
+    let by_consumer = live_support_selector(&snapshot, &consumer).expect("one certificate");
+    let by_subject = live_support_selector_for(&snapshot, &consumer, SYNTHETIC_FILESYSTEM_SUBJECT)
+        .expect("same certificate by subject");
+    assert_eq!(by_consumer, by_subject);
+    assert_eq!(by_subject.scope, REQUIRED_QUESTION.spec().pulse_scope);
+    assert_eq!(
+        live_support_selector_for(&snapshot, &consumer, "host-filesystem:other/other")
+            .unwrap_err()
+            .code,
+        "certificate_missing"
+    );
+
+    // Pulse keys consumers by subject and consumer, so one consumer id may
+    // hold a certificate on a second subject: the consumer-only lookup is
+    // then ambiguous and refused, while the subject lookup still selects.
+    let mut doubled = snapshot.clone();
+    let mut second = doubled.certificates[0].clone();
+    second.subject_scope.subject = SubjectId::new("host-filesystem:other/other");
+    second.certificate_id = second.compute_id();
+    doubled.certificates.push(second);
+    assert_eq!(
+        live_support_selector(&doubled, &consumer).unwrap_err().code,
+        "certificate_ambiguous"
+    );
+    assert_eq!(
+        live_support_selector_for(&doubled, &consumer, SYNTHETIC_FILESYSTEM_SUBJECT)
+            .expect("subject selects"),
+        by_subject
+    );
+    // A certificate on another scope is never this adapter's.
+    let mut other_scope = snapshot.clone();
+    other_scope.certificates[0].subject_scope.scope =
+        QuestionV1::HostLoadPressureV1.spec().pulse_scope.to_owned();
+    assert_eq!(
+        live_support_selector(&other_scope, &consumer)
+            .unwrap_err()
+            .code,
+        "certificate_missing"
+    );
     harness.finish();
 }
 

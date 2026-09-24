@@ -77,5 +77,15 @@ if rg -n 'std::process|Command::new|/proc|/dev/disk|std::fs|mountinfo|nix::|libc
 fi
 rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostFilesystemCapacityPressureV1' "$fscap_dir/lib.rs" || fail "filesystem-capacity adapter must pin its question"
 rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostLoadPressureV1' "$cons_dir/lib.rs" || fail "load-pressure adapter must pin its question"
+if rg -n 'statfs|statvfs|permille|non-reserved' "$fscap_dir"; then
+  fail "filesystem-capacity consequence adapter restates NQ's measurement or threshold"
+fi
+
+# The load-default wrappers exist for the frozen load v1 tests only. No
+# crate source or example may call them; production paths name the question.
+if rg -n '(^|[^_a-zA-Z])classify_outcome\(|(^|[^_a-zA-Z])check_holding_delay\(|(^|[^_a-zA-Z])frame_ingress\(|CorrespondenceProfileV1::seal\(|synthetic_profile\(\)|synthetic_enrollment\(\)' "$root"/crates/*/src "$root"/crates/*/examples --glob '!**/nq_cli.rs' \
+  | rg -v 'pub fn (classify_outcome|check_holding_delay|frame_ingress|synthetic_profile|synthetic_enrollment)\(|pub fn seal\('; then
+  fail "a crate source or example calls a load-default wrapper; use the *_for form with a question"
+fi
 
 echo "nq-load-correspondence: closed co-production surface; consequence adapters: no acquisition or recomputation surface, one question each"

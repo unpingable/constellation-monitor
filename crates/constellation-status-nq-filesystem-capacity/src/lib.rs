@@ -53,8 +53,8 @@ pub const PUBLIC_COMPONENT_LABEL: &str = "Filesystem capacity pressure";
 pub const MAX_MOUNTPOINT_LABEL_BYTES: usize = 64;
 
 pub const CONSEQUENCE_NONCLAIMS: [&str; 5] = [
-    "degraded means NQ found the bounded filesystem capacity-pressure condition present on the exact enrolled filesystem: available space at or below 10% of non-reserved capacity in one statfs snapshot; NQ rates that condition warning, not error, and no impairment, outage, impact, or cause is claimed",
-    "healthy means only that available space was above 10% of non-reserved capacity on the exact enrolled filesystem with complete current local coverage; it says nothing about storage health, integrity, performance, quota, growth, host or service health, or cause",
+    "degraded means NQ found the bounded filesystem capacity-pressure condition present on the exact enrolled filesystem under NQ's qualified capacity threshold; NQ rates that condition warning, not error, and no impairment, outage, impact, or cause is claimed",
+    "healthy means only that the enrolled filesystem was below NQ's qualified capacity threshold with complete current local coverage; it says nothing about storage health, integrity, performance, quota, growth, host or service health, or cause",
     "unknown means neither presence nor absence was established and is not an outage",
     "the component represents the filesystem capacity-pressure condition of one enrolled filesystem itself, never a filesystem, host, or service as a whole",
     "this mapping is a projection-policy consequence, not an NQ claim, and grants no authority",
@@ -70,7 +70,8 @@ pub fn operator_component_label(mountpoint: &str) -> String {
 }
 
 /// Whether a label is the qualified label or, for the operator audience, the
-/// qualified label with bounded mountpoint text.
+/// qualified label with an absolute, normalized mountpoint path. Words are
+/// not mountpoints: "Operational" or "storage healthy" never fit.
 fn label_is_qualified(label: &str, public: bool) -> bool {
     if label == PUBLIC_COMPONENT_LABEL {
         return true;
@@ -87,10 +88,26 @@ fn label_is_qualified(label: &str, public: bool) -> bool {
     else {
         return false;
     };
-    !mountpoint.is_empty()
-        && mountpoint.len() <= MAX_MOUNTPOINT_LABEL_BYTES
-        && !mountpoint.chars().any(char::is_control)
+    mountpoint_is_normalized(mountpoint)
+}
+
+/// An absolute path with no whitespace, control characters, parentheses,
+/// empty, `.` or `..` segments, and no trailing slash except for `/`.
+fn mountpoint_is_normalized(mountpoint: &str) -> bool {
+    if mountpoint == "/" {
+        return true;
+    }
+    let Some(rest) = mountpoint.strip_prefix('/') else {
+        return false;
+    };
+    mountpoint.len() <= MAX_MOUNTPOINT_LABEL_BYTES
+        && !mountpoint
+            .chars()
+            .any(|character| character.is_control() || character.is_ascii_whitespace())
         && !mountpoint.contains(['(', ')'])
+        && rest
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 /// One row of the closed consequence table.
@@ -267,7 +284,22 @@ fn condition_requirement<'a>(
     Ok(requirement)
 }
 
+/// The subject text after the question's prefix and its `/`-separated
+/// segments (machine id, filesystem UUID): none may appear in any public
+/// identifier or text, nor in an operator label.
+fn subject_segments(subject: &str) -> Vec<&str> {
+    let identity = subject
+        .strip_prefix(REQUIRED_QUESTION.spec().subject_prefix)
+        .unwrap_or(subject);
+    std::iter::once(identity)
+        .chain(identity.split('/'))
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
 fn check_subject(
+    policy: &ProjectionPolicyV1,
+    component_key: &str,
     requirement: &FactRequirementV1,
     verified: &VerifiedCorrespondenceV1,
 ) -> Result<(), ConsequenceError> {
@@ -291,6 +323,43 @@ fn check_subject(
             "policy live-support selector names a different subject or incarnation",
         ));
     }
+    let segments = subject_segments(verified.subject().as_str());
+    let display_name = policy
+        .components
+        .iter()
+        .find(|component| component.key == component_key)
+        .and_then(|component| component.output.as_ref())
+        .map(|output| output.display_name.as_str())
+        .unwrap_or_default();
+    let carries_subject = |text: &str| segments.iter().any(|segment| text.contains(segment));
+    if policy.disclosure.audience == AudienceClassV1::Public {
+        let leaks = [
+            component_key,
+            policy.projection_id.as_str(),
+            requirement.fact_id.as_str(),
+            display_name,
+        ]
+        .into_iter()
+        .chain(
+            policy
+                .disclosure
+                .safe_reasons
+                .iter()
+                .map(|reason| reason.text.as_str()),
+        )
+        .any(carries_subject);
+        if leaks {
+            return Err(ConsequenceError::new(
+                "public_identity_leak",
+                "a public policy identifier or text carries the machine id or filesystem UUID",
+            ));
+        }
+    } else if carries_subject(display_name) {
+        return Err(ConsequenceError::new(
+            "condition_contract_mismatch",
+            "operator label carries the machine id or filesystem UUID",
+        ));
+    }
     Ok(())
 }
 
@@ -302,7 +371,7 @@ pub fn fact_for(
     component_key: &str,
 ) -> Result<SourceFactV1, ConsequenceError> {
     let requirement = condition_requirement(policy, component_key)?;
-    check_subject(requirement, verified)?;
+    check_subject(policy, component_key, requirement, verified)?;
     let row = consequence_row(verified.nq_detector_state());
     let fact = SourceFactV1 {
         schema: SOURCE_FACT_SCHEMA_V1.to_owned(),
@@ -358,7 +427,18 @@ pub fn live_support_selector(
     snapshot: &ReactorSnapshotV1,
     consumer: &ConsumerId,
 ) -> Result<LiveSupportSelectorV1, ConsequenceError> {
-    let certificate = consumer_certificate(snapshot, consumer)?;
+    let certificate = consumer_certificate(snapshot, consumer, None)?;
+    selector_for(snapshot, &certificate)
+}
+
+/// As [`live_support_selector`], for one subject, when the consumer holds
+/// certificates on more than one subject.
+pub fn live_support_selector_for(
+    snapshot: &ReactorSnapshotV1,
+    consumer: &ConsumerId,
+    subject: &str,
+) -> Result<LiveSupportSelectorV1, ConsequenceError> {
+    let certificate = consumer_certificate(snapshot, consumer, Some(subject))?;
     selector_for(snapshot, &certificate)
 }
 
@@ -413,10 +493,14 @@ pub fn admit_live(
     maximum_trusted_lifetime_ms: u64,
 ) -> Result<LiveSupportObservationV1, ConsequenceError> {
     let requirement = condition_requirement(policy, component_key)?;
-    check_subject(requirement, verified)?;
+    check_subject(policy, component_key, requirement, verified)?;
     let consumer = ConsumerId::new(requirement.live_support.consumer.as_str());
     let snapshot = reactor.snapshot();
-    let certificate = consumer_certificate(&snapshot, &consumer)?;
+    let certificate = consumer_certificate(
+        &snapshot,
+        &consumer,
+        Some(requirement.live_support.subject.as_str()),
+    )?;
     if requirement.live_support != selector_for(&snapshot, &certificate)? {
         return Err(ConsequenceError::new(
             "selector_mismatch",
@@ -473,9 +557,14 @@ pub fn admit_live(
     )?)
 }
 
+/// The one certificate for a consumer on this question's scope, optionally
+/// on one subject. Pulse keys consumers by subject and consumer, so one
+/// consumer id may hold certificates on several subjects; more than one
+/// match is refused rather than picked.
 fn consumer_certificate(
     snapshot: &ReactorSnapshotV1,
     consumer: &ConsumerId,
+    subject: Option<&str>,
 ) -> Result<RelianceSupportCertificateV1, ConsequenceError> {
     if !snapshot.condition.exposes_live_standing() {
         return Err(ConsequenceError::new(
@@ -483,15 +572,23 @@ fn consumer_certificate(
             format!("reactor condition is {:?}", snapshot.condition),
         ));
     }
-    snapshot
-        .certificates
-        .iter()
-        .find(|certificate| &certificate.consumer == consumer)
-        .cloned()
-        .ok_or_else(|| {
-            ConsequenceError::new(
-                "certificate_missing",
-                "reactor holds no certificate for the consumer",
-            )
-        })
+    let scope = REQUIRED_QUESTION.spec().pulse_scope;
+    let mut matches = snapshot.certificates.iter().filter(|certificate| {
+        &certificate.consumer == consumer
+            && certificate.subject_scope.scope == scope
+            && subject.is_none_or(|subject| certificate.subject_scope.subject.as_str() == subject)
+    });
+    let Some(certificate) = matches.next() else {
+        return Err(ConsequenceError::new(
+            "certificate_missing",
+            "reactor holds no certificate for the consumer on this question's scope and subject",
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(ConsequenceError::new(
+            "certificate_ambiguous",
+            "reactor holds more than one certificate for the consumer on this question's scope; name the subject",
+        ));
+    }
+    Ok(certificate.clone())
 }

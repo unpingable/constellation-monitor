@@ -12,14 +12,15 @@ use pulse_nq_load_correspondence::fixture::{
     start_reactor, synthetic_profile,
 };
 use pulse_nq_load_correspondence::{
-    ACQUISITION_ID_PREFIX, COVERAGE_TAG, Coproducer, CorrespondenceConstantsV1, FRAME_DISCLOSURE,
-    FRAME_VALIDITY_MS, FixedSubjectIncarnation, INGRESS_DISCLOSURE, INGRESS_FENCE_MS,
-    INTENT_SCHEMA_V1, NQ_CLAIM_ID, NQ_CONDITION, NQ_PROFILE_DIGEST, NQ_PROFILE_ID,
-    NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST, NQ_QUESTION_ID, NQ_QUESTION_VERSION,
-    NQ_RELIANCE_WINDOW_MS, NQ_SELECTION_RULE_ID, OCCURRENCE_SCHEMA_V1, ObserverLineage,
-    PROFILE_SCHEMA_V1, PULSE_PROFILE_DOMAIN, PULSE_PROFILE_NAME, PULSE_PROFILE_VERSION,
-    PULSE_SCOPE, QuestionV1, RECORD_SCHEMA_V1, TRANSPORT_PATH, acquisition_id, build_frame,
-    evidence_ref, frame_ingress, occurrence_path, pulse_profile_digest,
+    ACQUISITION_ID_PREFIX, COVERAGE_TAG, Coproducer, CorrespondenceConstantsV1,
+    CorrespondenceProfileV1, FRAME_DISCLOSURE, FRAME_VALIDITY_MS, FixedSubjectIncarnation,
+    INGRESS_DISCLOSURE, INGRESS_FENCE_MS, INTENT_SCHEMA_V1, NQ_CLAIM_ID, NQ_CONDITION,
+    NQ_PROFILE_DIGEST, NQ_PROFILE_ID, NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST, NQ_QUESTION_ID,
+    NQ_QUESTION_VERSION, NQ_RELIANCE_WINDOW_MS, NQ_SELECTION_RULE_ID, OCCURRENCE_SCHEMA_V1,
+    ObserverLineage, PROFILE_SCHEMA_V1, PULSE_PROFILE_DOMAIN, PULSE_PROFILE_NAME,
+    PULSE_PROFILE_VERSION, PULSE_SCOPE, QuestionV1, RECORD_SCHEMA_V1, TRANSPORT_PATH,
+    acquisition_id, build_frame, evidence_ref, frame_ingress, occurrence_path,
+    pulse_profile_digest,
 };
 use pulse_runtime::RuntimeInputV1;
 use pulse_types::{AuthenticationResultV1, IncarnationId};
@@ -126,6 +127,56 @@ fn compiled_load_row_is_literal() {
     assert_eq!(
         QuestionV1::HostLoadPressureV1.frame_validity_ms(),
         FRAME_VALIDITY_MS
+    );
+    let row = QuestionV1::HostLoadPressureV1.spec();
+    assert_eq!(row.question_id, "nq.host.load_pressure");
+    assert_eq!(row.question_version, "1");
+    assert_eq!(
+        row.question_digest,
+        "sha256:7de797da3d9d3a6ae8e21e5d77b95095453336cd38f606ffb3eb29ff6a32e2cf"
+    );
+    assert_eq!(row.nq_profile_id, "nq.host");
+    assert_eq!(row.nq_profile_version, "1");
+    assert_eq!(
+        row.nq_profile_digest,
+        "sha256:c8c10fed1cc5598d953b4defbc98e8c106fc59e035c249d43681698a5c7b4ff9"
+    );
+    assert_eq!(row.refusal_profile_version, 1);
+    assert_eq!(row.claim_id, "claim:host_load_pressure");
+    assert_eq!(row.condition, "host_load_pressure");
+    assert_eq!(row.subject_prefix, "host:");
+    assert_eq!(row.reliance_window_ms, 300_000);
+    assert_eq!(row.pulse_scope, "nq.host.load_pressure/v1");
+    assert_eq!(
+        row.coverage_tag,
+        "nq_host_load_pressure_v1_terminal_artifact"
+    );
+    assert_eq!(row.acquisition_id_prefix, "constellation-nq-load:v1:");
+    assert_eq!(row.transport_path, "in-process:nq-load-correspondence/v1");
+    assert_eq!(row.failure_domain, "domain:nq-load-correspondence");
+    assert_eq!(
+        row.profile_schema,
+        "constellation.nq_host_load_pressure_correspondence_profile.v1"
+    );
+    assert_eq!(
+        row.occurrence_schema,
+        "constellation.nq_host_load_pressure_correspondence_occurrence.v1"
+    );
+    assert_eq!(
+        row.intent_schema,
+        "constellation.nq_host_load_pressure_correspondence_intent.v1"
+    );
+    assert_eq!(
+        row.record_schema,
+        "constellation.nq_host_load_pressure_correspondence.v1"
+    );
+    assert_eq!(
+        row.pulse_profile_name,
+        "constellation.nq_host_load_pressure_correspondence"
+    );
+    assert_eq!(
+        row.pulse_profile_domain,
+        "constellation.nq_host_load_pressure_correspondence.pulse_profile.v1"
     );
     let compiled = CorrespondenceConstantsV1::compiled();
     assert_eq!(
@@ -239,8 +290,9 @@ fn load_v1_digests_intent_bytes_and_acquisition_identity_are_pinned() {
         fs::read(occurrence_path(&intent_dir, &result.acquisition_id)).expect("intent");
     let intent: serde_json::Value = serde_json::from_slice(&intent_bytes).expect("intent json");
     // The evidence reference carries the frame digest, which covers real
-    // issue times, so the bytes are pinned by shape with the two derived
-    // fields taken from the occurrence itself.
+    // issue times, so the bytes are pinned by shape (key-sorted canonical
+    // JSON on both sides) with the two derived fields taken from the
+    // occurrence itself.
     assert_eq!(
         intent,
         serde_json::json!({
@@ -254,7 +306,7 @@ fn load_v1_digests_intent_bytes_and_acquisition_identity_are_pinned() {
     assert_eq!(
         intent_bytes,
         serde_json::to_vec(&intent).expect("canonical intent"),
-        "intent bytes must be the compact serialization in declared field order"
+        "intent bytes must be the compact key-sorted serialization"
     );
     assert_eq!(
         result.acquisition_id,
@@ -268,4 +320,32 @@ fn load_v1_digests_intent_bytes_and_acquisition_identity_are_pinned() {
         "occurrence acquisition identity must be the pure derivation"
     );
     assert!(result.acquisition_id.starts_with(ACQUISITION_ID_PREFIX));
+}
+
+/// The real profile sealed on the qualification host before this table
+/// existed (slice 0, load-only implementation) decodes under the table to
+/// the same digest and to the load question. It carries only the host name
+/// `host:crow` and absolute paths of that disposable run.
+#[test]
+fn the_real_slice_0_profile_decodes_to_its_original_digest() {
+    let bytes = fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/slice0-crow-load-profile.json"
+    ))
+    .expect("slice 0 profile fixture");
+    let profile = CorrespondenceProfileV1::decode(&bytes).expect("profile decodes");
+    assert_eq!(
+        profile.digest(),
+        "sha256:e0fcfc3897295570dd8856043087267a1cf7b188a91b2dc445568b1e319d7cd5"
+    );
+    assert_eq!(
+        profile.question().expect("question"),
+        QuestionV1::HostLoadPressureV1
+    );
+    assert_eq!(profile.nq.subject_id, "host:crow");
+    assert_eq!(
+        serde_jcs::to_vec(&profile).expect("canonical"),
+        bytes,
+        "the checked-in profile is canonical"
+    );
 }

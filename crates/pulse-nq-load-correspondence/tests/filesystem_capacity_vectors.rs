@@ -38,7 +38,7 @@ const FRAME_VALIDITY_MS: u64 = QUESTION.frame_validity_ms();
 const MANIFEST_SCHEMA: &str = "constellation.nq_host_filesystem_capacity_correspondence_vectors.v1";
 /// Pinned digest of `manifest.json`. Regeneration prints the new value.
 const MANIFEST_SHA256: &str =
-    "sha256:4b28432bf903eb6c58d99a916bb4085e369b5a668e268179622d5b3ffc9610eb";
+    "sha256:e506c4424d730af36fd8ea0bd063c0df28a98ed49fd1676762e7f2a511da9176";
 
 fn vector_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -409,6 +409,17 @@ fn cases(profile: &CorrespondenceProfileV1) -> Vec<Case> {
             },
         ),
         "artifact_pin_mismatch",
+    ));
+    cases.push(negative_record(
+        "cross_source_detector_refusal_names_other_profile",
+        with_artifact(
+            base(profile, SyntheticOutcome::CannotEvaluate),
+            |artifact| {
+                artifact["outcome"]["refusals"][0]["origin"]["payload"]["refusal"]["profile"] =
+                    json!({"id": QuestionV1::HostLoadPressureV1.spec().nq_profile_id, "version": 1});
+            },
+        ),
+        "artifact_ladder",
     ));
     cases.push(negative_record(
         "recomputation_bridge_state_offered_as_nq_state",

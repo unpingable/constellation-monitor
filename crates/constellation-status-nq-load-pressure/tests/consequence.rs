@@ -207,7 +207,7 @@ fn a_filesystem_capacity_correspondence_is_refused_by_this_adapter() {
         verified.question(),
         QuestionV1::HostFilesystemCapacityPressureV1
     );
-    let policy = condition_policy(filesystem.selector(), false);
+    let policy = condition_policy(filesystem.selector_any_scope(), false);
     assert_eq!(
         fact_for(&verified, &policy, CONDITION_KEY)
             .unwrap_err()

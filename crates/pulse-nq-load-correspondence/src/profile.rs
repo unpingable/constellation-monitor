@@ -412,6 +412,35 @@ impl CorrespondenceProfileV1 {
     }
 }
 
+/// Profiles that may share one reactor: every pair must differ in question
+/// or subject, and no observer or consumer identity may be reused across
+/// them. One reactor per question remains the qualified shape; this is the
+/// check an embedding runs before departing from it.
+pub fn check_disjoint_enrollment(
+    profiles: &[&CorrespondenceProfileV1],
+) -> Result<(), CorrespondenceError> {
+    for (index, left) in profiles.iter().enumerate() {
+        left.validate()?;
+        for right in &profiles[index + 1..] {
+            if left.question()? == right.question()? && left.nq.subject_id == right.nq.subject_id {
+                return Err(CorrespondenceError::new(
+                    "enrollment_overlap",
+                    "two profiles name the same question and subject",
+                ));
+            }
+            if left.pulse.observer_id == right.pulse.observer_id
+                || left.pulse.consumer_id == right.pulse.consumer_id
+            {
+                return Err(CorrespondenceError::new(
+                    "enrollment_overlap",
+                    "two profiles reuse an observer or consumer identity",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The Pulse observation profile digest of one correspondence profile under
 /// its question's domain.
 #[must_use]

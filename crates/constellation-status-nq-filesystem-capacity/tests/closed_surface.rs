@@ -26,6 +26,10 @@ fn consequence_adapter_has_no_acquisition_surface() {
             "pulse_nq_load_support",
             "LivePresentSupportResponseV1::new",
             "HostLoadPressureV1",
+            "statfs",
+            "statvfs",
+            "permille",
+            "non-reserved",
         ] {
             assert!(
                 !text.contains(needle),

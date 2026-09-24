@@ -95,6 +95,42 @@ impl Harness {
         live_support_selector(&self.reactor.snapshot(), &self.profile.consumer()).expect("selector")
     }
 
+    /// The selector of this harness's certificate whatever its scope, built
+    /// by hand so a harness for the other question can author a policy that
+    /// this adapter must then refuse.
+    pub fn selector_any_scope(&self) -> LiveSupportSelectorV1 {
+        let snapshot = self.reactor.snapshot();
+        let certificate = snapshot
+            .certificates
+            .iter()
+            .find(|certificate| certificate.consumer == self.profile.consumer())
+            .expect("certificate");
+        let qualified = certificate
+            .qualified_generation
+            .as_ref()
+            .expect("qualified generation");
+        LiveSupportSelectorV1 {
+            consumer: certificate.consumer.as_str().to_owned(),
+            subject: certificate.subject_scope.subject.as_str().to_owned(),
+            subject_incarnation: certificate
+                .subject_scope
+                .subject_incarnation
+                .as_str()
+                .to_owned(),
+            scope: certificate.subject_scope.scope.clone(),
+            reliance_context_digest: certificate.context.identity_digest().as_str().to_owned(),
+            qualified_generation_digest: qualified.identity_digest().as_str().to_owned(),
+            receiver: snapshot.monotonic_epoch.receiver.as_str().to_owned(),
+            receiver_incarnation: snapshot
+                .monotonic_epoch
+                .receiver_incarnation
+                .as_str()
+                .to_owned(),
+            receiver_epoch_id: snapshot.monotonic_epoch.epoch_id.as_str().to_owned(),
+            receiver_clock_id: snapshot.monotonic_epoch.clock_id.as_str().to_owned(),
+        }
+    }
+
     pub fn finish(self) {
         self.reactor.shutdown().expect("shutdown");
         let _ = std::fs::remove_file(self.journal);

@@ -336,7 +336,10 @@ pub fn synthetic_artifact(
                     "dependency_failure_ids": [],
                     "state_binding_ids": ["state:subject_identity"],
                     "required_distinctions": ["subject_identity"],
-                    "limitations": ["One scheduler snapshot does not identify the workload causing load"],
+                    "limitations": [match profile.question()? {
+                        QuestionV1::HostLoadPressureV1 => "One scheduler snapshot does not identify the workload causing load",
+                        QuestionV1::HostFilesystemCapacityPressureV1 => "One statfs snapshot establishes no storage health, integrity, performance, quota, or growth fact",
+                    }],
                     "nonclaims": ["the causal source of the bounded condition is not established", "the host boot or deployment generation is not established"]
                 }]),
                 Some(claim_id.to_owned()),

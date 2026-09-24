@@ -182,8 +182,9 @@ pub(crate) fn verify_artifact_value(
     })
 }
 
-/// The load v1 outcome ladder: [`classify_outcome_for`] under
-/// [`QuestionV1::HostLoadPressureV1`].
+/// The load v1 outcome ladder only: [`classify_outcome_for`] under
+/// [`QuestionV1::HostLoadPressureV1`]. Another question's detector refusal
+/// does not name `nq.host` and is refused here rather than classified.
 pub fn classify_outcome(
     value: &Value,
     expected_claim_id: Option<&str>,
@@ -277,6 +278,18 @@ pub fn classify_outcome_for(
     if cannot_evaluate {
         return Ok(NqDetectorStateV1::CannotEvaluate);
     }
+    // A detector cannot_evaluate refusal that names another NQ profile is
+    // another question's judgment, never this question's undetermined
+    // outcome.
+    if refusals
+        .iter()
+        .any(|refusal| is_foreign_detector_refusal(refusal, question.spec()))
+    {
+        return Err(CorrespondenceError::new(
+            "artifact_ladder",
+            "detector refusal names an NQ profile other than the question's",
+        ));
+    }
 
     // Any other NQ outcome in which no determinate condition was derived:
     // provider no response, acquisition failure, received-input refusal,
@@ -292,6 +305,37 @@ pub fn classify_outcome_for(
         ));
     }
     Ok(NqDetectorStateV1::NotEvaluated)
+}
+
+/// A profile-origin detector `cannot_evaluate` refusal whose profile is not
+/// the question's.
+fn is_foreign_detector_refusal(refusal: &Value, spec: &QuestionSpecV1) -> bool {
+    let Ok(origin) = field(refusal, "origin") else {
+        return false;
+    };
+    let profile_refusal = origin
+        .get("payload")
+        .and_then(|payload| payload.get("refusal"));
+    let profile = profile_refusal.and_then(|refusal| refusal.get("profile"));
+    let named = (
+        profile
+            .and_then(|profile| profile.get("id"))
+            .and_then(Value::as_str),
+        profile
+            .and_then(|profile| profile.get("version"))
+            .and_then(Value::as_u64),
+    );
+    origin.get("kind").and_then(Value::as_str) == Some("profile")
+        && profile_refusal
+            .and_then(|refusal| refusal.get("boundary"))
+            .and_then(Value::as_str)
+            == Some(NQ_REFUSAL_BOUNDARY)
+        && profile_refusal
+            .and_then(|refusal| refusal.get("code"))
+            .and_then(Value::as_str)
+            == Some(NQ_REFUSAL_CODE)
+        && named.0.is_some()
+        && named != (Some(spec.nq_profile_id), Some(spec.refusal_profile_version))
 }
 
 fn is_detector_cannot_evaluate(refusal: &Value, spec: &QuestionSpecV1) -> bool {

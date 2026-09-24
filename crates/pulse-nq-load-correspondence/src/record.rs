@@ -95,8 +95,10 @@ impl CorrespondenceRecordV1 {
         Ok(bytes)
     }
 
-    /// The question this record names through its schema.
-    pub fn question(&self) -> Result<QuestionV1, CorrespondenceError> {
+    /// The question this record names through its schema. Crate-private:
+    /// a record's schema is compared with a profile's question, never used
+    /// to choose one.
+    pub(crate) fn question(&self) -> Result<QuestionV1, CorrespondenceError> {
         QuestionV1::from_record_schema(&self.schema).ok_or_else(|| {
             CorrespondenceError::new(
                 "unsupported_schema",
@@ -106,7 +108,9 @@ impl CorrespondenceRecordV1 {
     }
 
     /// V1: bound, closed fields, a schema of the closed question table,
-    /// canonical bytes, identity.
+    /// canonical bytes, identity. Decoding is not verification: a decoded
+    /// record has not been checked against any profile and may name any
+    /// question of the table.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, CorrespondenceError> {
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(CorrespondenceError::new(
