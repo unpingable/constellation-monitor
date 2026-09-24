@@ -12,9 +12,9 @@ use serde_json::Value;
 use crate::nq_artifact::verify_artifact_value;
 use crate::provenance::verify_provenance_value;
 use crate::{
-    CorrespondenceError, CorrespondenceProfileV1, NqDetectorStateV1, RECORD_SCHEMA_V1,
-    TRANSPORT_PATH, acquisition_id, canonical_bytes, check_holding_delay, check_ingress_fence,
-    evidence_ref, object_id, require_digest, verify_frame,
+    CorrespondenceError, CorrespondenceProfileV1, NqDetectorStateV1, QuestionV1, acquisition_id,
+    canonical_bytes, check_holding_delay_for, check_ingress_fence, evidence_ref, object_id,
+    require_digest, verify_frame,
 };
 
 pub const MAX_RECORD_BYTES: usize = 256 * 1_024;
@@ -68,8 +68,8 @@ pub struct CorrespondenceRecordV1 {
 }
 
 impl CorrespondenceRecordV1 {
-    pub(crate) fn seal(mut self) -> Result<Self, CorrespondenceError> {
-        RECORD_SCHEMA_V1.clone_into(&mut self.schema);
+    pub(crate) fn seal(mut self, question: QuestionV1) -> Result<Self, CorrespondenceError> {
+        question.spec().record_schema.clone_into(&mut self.schema);
         self.nonclaims = RECORD_NONCLAIMS
             .iter()
             .map(|text| (*text).to_owned())
@@ -95,7 +95,18 @@ impl CorrespondenceRecordV1 {
         Ok(bytes)
     }
 
-    /// V1: bound, closed fields, exact schema, canonical bytes, identity.
+    /// The question this record names through its schema.
+    pub fn question(&self) -> Result<QuestionV1, CorrespondenceError> {
+        QuestionV1::from_record_schema(&self.schema).ok_or_else(|| {
+            CorrespondenceError::new(
+                "unsupported_schema",
+                "correspondence record schema is unsupported",
+            )
+        })
+    }
+
+    /// V1: bound, closed fields, a schema of the closed question table,
+    /// canonical bytes, identity.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, CorrespondenceError> {
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(CorrespondenceError::new(
@@ -105,12 +116,7 @@ impl CorrespondenceRecordV1 {
         }
         let record: Self = serde_json::from_slice(bytes)
             .map_err(|error| CorrespondenceError::new("record_decode", error.to_string()))?;
-        if record.schema != RECORD_SCHEMA_V1 {
-            return Err(CorrespondenceError::new(
-                "unsupported_schema",
-                "correspondence record schema is unsupported",
-            ));
-        }
+        record.question()?;
         if canonical_bytes(&record)? != bytes {
             return Err(CorrespondenceError::new(
                 "record_noncanonical",
@@ -161,7 +167,14 @@ pub fn verify_audit_record(
     profile: &CorrespondenceProfileV1,
 ) -> Result<AuditVerdictV1, CorrespondenceError> {
     profile.validate()?;
+    let question = profile.question()?;
     let record = CorrespondenceRecordV1::decode_canonical(bytes)?;
+    if record.question()? != question {
+        return Err(CorrespondenceError::new(
+            "record_question_mismatch",
+            "record was produced for a different question than the profile names",
+        ));
+    }
     if record.profile_digest != profile.digest() {
         return Err(CorrespondenceError::new(
             "profile_mismatch",
@@ -177,6 +190,7 @@ pub fn verify_audit_record(
         ));
     }
     let expected_acquisition = acquisition_id(
+        question,
         profile.digest(),
         &profile.nq.instance_id,
         &record.pulse.evidence_ref,
@@ -196,13 +210,13 @@ pub fn verify_audit_record(
             "recorded detector state differs from the state recomputed from the artifact",
         ));
     }
-    if record.delivery.transport_path != TRANSPORT_PATH {
+    if record.delivery.transport_path != question.spec().transport_path {
         return Err(CorrespondenceError::new(
             "transport_path_mismatch",
             "record names a transport path other than the in-process co-producer",
         ));
     }
-    check_holding_delay(record.delivery.holding_delay_ms)?;
+    check_holding_delay_for(question, record.delivery.holding_delay_ms)?;
     check_ingress_fence(record.delivery.ingress_fence_ms)?;
     Ok(AuditVerdictV1 {
         correspondence_id: record.correspondence_id,

@@ -3,16 +3,16 @@
 //! This qualification helper copies NQ-owned runtime identities from the
 //! artifact, hashes the exact executable and configuration bytes, and writes a
 //! create-new canonical profile. It does not acquire evidence or infer an NQ
-//! identity from configuration text.
+//! identity from configuration text. `NQ_CORRESPONDENCE_QUESTION` names the
+//! question by its NQ question id and must match the artifact exactly.
 
 use std::env;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use pulse_nq_load_correspondence::{
-    CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NQ_PROFILE_DIGEST, NQ_PROFILE_ID,
-    NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST, NQ_QUESTION_ID, NQ_QUESTION_VERSION, NqEnrollmentV1,
-    NqProducerV1, PulseEnrollmentV1, SemanticIdentityV1, sha256_hex_of_file, write_create_new,
+    CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NqEnrollmentV1, NqProducerV1, PulseEnrollmentV1,
+    QuestionV1, SemanticIdentityV1, sha256_hex_of_file, write_create_new,
 };
 use serde_json::Value;
 
@@ -49,6 +49,11 @@ fn string(value: &Value, pointer: &str) -> String {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let question_id = required_string("NQ_CORRESPONDENCE_QUESTION");
+    let question = QuestionV1::ALL
+        .into_iter()
+        .find(|question| question.spec().question_id == question_id)
+        .unwrap_or_else(|| panic!("NQ_CORRESPONDENCE_QUESTION names no question: {question_id}"));
     let artifact_path = required_path("NQ_CORRESPONDENCE_INITIAL_ARTIFACT");
     let executable_path = required_path("NQ_CORRESPONDENCE_NQ_EXECUTABLE");
     let config_path = required_path("NQ_CORRESPONDENCE_NQ_CONFIG");
@@ -64,16 +69,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         identity(&artifact, "/profile"),
-        SemanticIdentityV1::new(NQ_PROFILE_ID, NQ_PROFILE_VERSION, NQ_PROFILE_DIGEST),
+        question.nq_profile_identity(),
         "initial artifact has the wrong NQ profile identity"
     );
     assert_eq!(
         identity(&artifact, "/question"),
-        SemanticIdentityV1::new(NQ_QUESTION_ID, NQ_QUESTION_VERSION, NQ_QUESTION_DIGEST),
+        question.question_identity(),
         "initial artifact has the wrong NQ question identity"
     );
 
-    let profile = CorrespondenceProfileV1::seal(
+    let profile = CorrespondenceProfileV1::seal_for(
+        question,
         NqEnrollmentV1 {
             instance_id: required_string("NQ_CORRESPONDENCE_INSTANCE_ID"),
             subject_id: string(&artifact, "/subject/id"),

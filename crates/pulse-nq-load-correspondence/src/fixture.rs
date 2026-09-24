@@ -17,12 +17,11 @@ use serde_json::{Value, json};
 
 use crate::record::encode_hex;
 use crate::{
-    CorrespondenceError, CorrespondenceProfileV1, CorrespondenceRecordV1, DeliveryV1, NQ_CLAIM_ID,
-    NQ_CONDITION, NQ_JUDGMENT_SCHEMA, NQ_PROFILE_DIGEST, NQ_PROFILE_ID, NQ_PROVENANCE_SCHEMA,
-    NQ_QUESTION_DIGEST, NQ_QUESTION_ID, NQ_REFUSAL_SCHEMA, NQ_SELECTION_RULE_ID, NQ_SOURCE_KIND,
-    NqDetectorStateV1, NqEnrollmentV1, NqPort, NqProducerV1, NqSideV1, PulseEnrollmentV1,
-    PulseSideV1, SemanticIdentityV1, TRANSPORT_PATH, acquisition_id, build_frame, canonical_bytes,
-    evidence_ref, object_id, sha256_hex, sha256_prefixed,
+    CorrespondenceError, CorrespondenceProfileV1, CorrespondenceRecordV1, DeliveryV1,
+    NQ_JUDGMENT_SCHEMA, NQ_PROVENANCE_SCHEMA, NQ_REFUSAL_SCHEMA, NQ_SELECTION_RULE_ID,
+    NQ_SOURCE_KIND, NqDetectorStateV1, NqEnrollmentV1, NqPort, NqProducerV1, NqSideV1,
+    PulseEnrollmentV1, PulseSideV1, QuestionV1, SemanticIdentityV1, acquisition_id, build_frame,
+    canonical_bytes, evidence_ref, object_id, sha256_hex, sha256_prefixed,
 };
 
 pub const SYNTHETIC_SUBJECT: &str = "host:synthetic-correspondence";
@@ -30,6 +29,13 @@ pub const SYNTHETIC_INSTANCE: &str = "host-local";
 pub const SYNTHETIC_NODE: &str = "nq-store-genesis:00000000-0000-4000-8000-000000000001";
 pub const SYNTHETIC_OBSERVER: &str = "observer:nq-load-correspondence";
 pub const SYNTHETIC_CONSUMER: &str = "consumer:status-projection-nq-load";
+/// Filesystem-capacity synthetic identities. The subject follows NQ's
+/// `host-filesystem:<machine-id>/<filesystem-uuid>` rule with fixed values.
+pub const SYNTHETIC_FILESYSTEM_SUBJECT: &str =
+    "host-filesystem:0123456789abcdef0123456789abcdef/00000000-0000-4000-8000-0000000000f5";
+pub const SYNTHETIC_FILESYSTEM_INSTANCE: &str = "fs-data-capacity";
+pub const SYNTHETIC_FILESYSTEM_OBSERVER: &str = "observer:nq-filesystem-capacity-correspondence";
+pub const SYNTHETIC_FILESYSTEM_CONSUMER: &str = "consumer:status-projection-nq-filesystem-capacity";
 pub const SYNTHETIC_SUBJECT_INCARNATION: &str = "linux-boot:00000000-0000-4000-8000-0000000000b0";
 pub const SYNTHETIC_OBSERVER_INCARNATION: &str = "observer-incarnation:synthetic:1";
 
@@ -41,18 +47,52 @@ fn identity(id: &str, version: &str, label: &str) -> SemanticIdentityV1 {
     SemanticIdentityV1::new(id, version, &fixed_digest(label))
 }
 
-/// A complete synthetic enrollment. Paths are absolute but need not exist;
-/// the fake port never spawns anything.
+/// The complete synthetic load v1 enrollment. Paths are absolute but need
+/// not exist; the fake port never spawns anything.
 #[must_use]
 pub fn synthetic_enrollment() -> (NqEnrollmentV1, PulseEnrollmentV1) {
+    synthetic_enrollment_for(QuestionV1::HostLoadPressureV1)
+}
+
+/// The complete synthetic enrollment of one question. The load row is
+/// byte-identical to the qualified load fixture.
+#[must_use]
+pub fn synthetic_enrollment_for(question: QuestionV1) -> (NqEnrollmentV1, PulseEnrollmentV1) {
+    let (instance, subject, scope_id, observer, consumer, lineage) = match question {
+        QuestionV1::HostLoadPressureV1 => (
+            SYNTHETIC_INSTANCE,
+            SYNTHETIC_SUBJECT,
+            "nq.scope.host",
+            SYNTHETIC_OBSERVER,
+            SYNTHETIC_CONSUMER,
+            "nq-load-correspondence",
+        ),
+        QuestionV1::HostFilesystemCapacityPressureV1 => (
+            SYNTHETIC_FILESYSTEM_INSTANCE,
+            SYNTHETIC_FILESYSTEM_SUBJECT,
+            "nq.scope.host_filesystem",
+            SYNTHETIC_FILESYSTEM_OBSERVER,
+            SYNTHETIC_FILESYSTEM_CONSUMER,
+            "nq-filesystem-capacity-correspondence",
+        ),
+    };
+    let question_id = question.spec().question_id;
     (
         NqEnrollmentV1 {
-            instance_id: SYNTHETIC_INSTANCE.to_owned(),
-            subject_id: SYNTHETIC_SUBJECT.to_owned(),
-            subject_scope: identity("nq.scope.host", "1", "scope"),
-            vantage: identity("nq.vantage.local.synthetic.host-local", "1", "vantage"),
+            instance_id: instance.to_owned(),
+            subject_id: subject.to_owned(),
+            subject_scope: identity(scope_id, "1", "scope"),
+            vantage: identity(
+                &format!("nq.vantage.local.synthetic.{instance}"),
+                "1",
+                "vantage",
+            ),
             profile_semantic_id: fixed_digest("profile-semantic"),
-            threshold_policy: identity("nq.host.load_pressure.threshold_policy", "1", "threshold"),
+            threshold_policy: identity(
+                &format!("{question_id}.threshold_policy"),
+                "1",
+                "threshold",
+            ),
             evaluator: identity("nq-ng.evaluator", "1", "evaluator"),
             state_model: identity("nq.state_model.subject_identity", "1", "state-model"),
             producer: NqProducerV1 {
@@ -66,17 +106,25 @@ pub fn synthetic_enrollment() -> (NqEnrollmentV1, PulseEnrollmentV1) {
             config_sha256: fixed_digest("config"),
         },
         PulseEnrollmentV1 {
-            observer_id: SYNTHETIC_OBSERVER.to_owned(),
-            consumer_id: SYNTHETIC_CONSUMER.to_owned(),
-            policy_generation: "policy:nq-load-correspondence:1".to_owned(),
-            observation_policy_generation: "observation-policy:nq-load-correspondence:1".to_owned(),
+            observer_id: observer.to_owned(),
+            consumer_id: consumer.to_owned(),
+            policy_generation: format!("policy:{lineage}:1"),
+            observation_policy_generation: format!("observation-policy:{lineage}:1"),
         },
     )
 }
 
+/// The synthetic load v1 profile.
 pub fn synthetic_profile() -> Result<CorrespondenceProfileV1, CorrespondenceError> {
-    let (nq, pulse) = synthetic_enrollment();
-    CorrespondenceProfileV1::seal(nq, pulse)
+    synthetic_profile_for(QuestionV1::HostLoadPressureV1)
+}
+
+/// The synthetic profile of one question.
+pub fn synthetic_profile_for(
+    question: QuestionV1,
+) -> Result<CorrespondenceProfileV1, CorrespondenceError> {
+    let (nq, pulse) = synthetic_enrollment_for(question);
+    CorrespondenceProfileV1::seal_for(question, nq, pulse)
 }
 
 /// Which NQ outcome the fake port fabricates.
@@ -145,13 +193,16 @@ pub fn synthetic_artifact(
     let intake_id = format!("intake:{tag}");
     let raw_sha256 = sha256_prefixed(format!("raw:{tag}").as_bytes());
     let nq = &profile.nq;
+    let spec = profile.question()?.spec();
+    let claim_id = spec.claim_id;
+    let condition_name = spec.condition;
     let subject_id = if tamper == Tamper::ArtifactOtherSubject {
-        "host:other".to_owned()
+        format!("{}other", spec.subject_prefix)
     } else {
         nq.subject_id.clone()
     };
     let mut question = json!({
-        "id": NQ_QUESTION_ID, "version": "1", "digest": NQ_QUESTION_DIGEST
+        "id": spec.question_id, "version": spec.question_version, "digest": spec.question_digest
     });
     if tamper == Tamper::ArtifactOtherQuestionDigest {
         question["digest"] = Value::String(fixed_digest("other-question"));
@@ -217,7 +268,7 @@ pub fn synthetic_artifact(
                 "profile_semantic_id": profile_semantic_id,
                 "refusal": {
                     "instance_id": nq.instance_id,
-                    "profile": {"id": NQ_PROFILE_ID, "version": 1},
+                    "profile": {"id": spec.nq_profile_id, "version": spec.refusal_profile_version},
                     "boundary": "detector",
                     "code": code,
                     "message": message,
@@ -276,8 +327,8 @@ pub fn synthetic_artifact(
                 }),
                 json!([state_binding]),
                 json!([{
-                    "claim_id": NQ_CLAIM_ID,
-                    "proposition": format!("bounded condition {NQ_CONDITION} is {}", condition.replace('_', " ")),
+                    "claim_id": claim_id,
+                    "proposition": format!("bounded condition {condition_name} is {}", condition.replace('_', " ")),
                     "status": "established",
                     "condition_effect": condition,
                     "dependency_input_ids": dependency,
@@ -288,7 +339,7 @@ pub fn synthetic_artifact(
                     "limitations": ["One scheduler snapshot does not identify the workload causing load"],
                     "nonclaims": ["the causal source of the bounded condition is not established", "the host boot or deployment generation is not established"]
                 }]),
-                Some(NQ_CLAIM_ID.to_owned()),
+                Some(claim_id.to_owned()),
                 json!({
                     "derivation": "completed",
                     "condition": condition,
@@ -394,13 +445,13 @@ pub fn synthetic_artifact(
         "run_id": run_id,
         "question": question,
         "subject": {"id": subject_id, "scope": nq.subject_scope},
-        "profile": {"id": NQ_PROFILE_ID, "version": "1", "digest": NQ_PROFILE_DIGEST},
+        "profile": {"id": spec.nq_profile_id, "version": spec.nq_profile_version, "digest": spec.nq_profile_digest},
         "profile_semantic_id": profile_semantic_id,
         "vantage": nq.vantage,
         "state_model": nq.state_model,
         "evaluator": evaluator,
         "threshold_policy": nq.threshold_policy,
-        "projection": {"identity": identity("nq.host.load_pressure.projection", "1", "projection-identity"), "omitted_distinctions": []},
+        "projection": {"identity": identity(&format!("{}.projection", spec.question_id), "1", "projection-identity"), "omitted_distinctions": []},
         "execution_clock": clock,
         "started_at": "2026-09-23T12:00:00Z",
         "completed_at": "2026-09-23T12:00:02Z",
@@ -429,7 +480,7 @@ pub fn synthetic_provenance(
 ) -> Result<Vec<u8>, CorrespondenceError> {
     let artifact: Value = serde_json::from_slice(artifact_bytes)
         .map_err(|error| CorrespondenceError::new("decode", error.to_string()))?;
-    let state = crate::classify_outcome(&artifact, None)?;
+    let state = crate::classify_outcome_for(&artifact, profile.question()?, None)?;
     let artifact_id = artifact["artifact_id"]
         .as_str()
         .unwrap_or_default()
@@ -680,7 +731,13 @@ pub fn synthetic_record(
         sequence.saturating_mul(1_000_000_000),
     )?;
     let evidence_ref = evidence_ref(&frame);
-    let acquisition = acquisition_id(profile.digest(), &profile.nq.instance_id, &evidence_ref)?;
+    let question = profile.question()?;
+    let acquisition = acquisition_id(
+        question,
+        profile.digest(),
+        &profile.nq.instance_id,
+        &evidence_ref,
+    )?;
     let artifact_bytes = synthetic_artifact(profile, &acquisition, outcome, Tamper::None)?;
     let provenance_bytes = synthetic_provenance(profile, &artifact_bytes, Tamper::None)?;
     let artifact: Value = serde_json::from_slice(&artifact_bytes)
@@ -706,22 +763,24 @@ pub fn synthetic_record(
         },
         nq_detector_state: outcome.expected_state(),
         delivery: DeliveryV1 {
-            transport_path: TRANSPORT_PATH.to_owned(),
+            transport_path: question.spec().transport_path.to_owned(),
             holding_delay_ms,
             ingress_fence_ms,
         },
         nonclaims: Vec::new(),
         mutation_authority: String::new(),
     }
-    .seal()
+    .seal(question)
 }
 
 /// Re-seal a record after a deliberate mutation so only the intended rule
-/// fails, not the identity check.
+/// fails, not the identity check. The record keeps the question its schema
+/// names.
 pub fn reseal(
     record: CorrespondenceRecordV1,
 ) -> Result<CorrespondenceRecordV1, CorrespondenceError> {
-    record.seal()
+    let question = record.question()?;
+    record.seal(question)
 }
 
 /// Recompute an artifact's self-identity after a deliberate mutation.
@@ -770,7 +829,7 @@ pub fn start_reactor(
     let mut runtime = ReceiverSchedulerRuntime::new(runtime_config.clone())
         .map_err(|error| CorrespondenceError::new("reactor_setup", error.to_string()))?;
     let registration =
-        profile.consumer_registration(subject_incarnation, &format!("activation:{label}"));
+        profile.consumer_registration(subject_incarnation, &format!("activation:{label}"))?;
     runtime
         .qualify_and_activate_local_binding(
             &registration,

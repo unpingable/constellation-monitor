@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    CorrespondenceError, CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NQ_CLAIM_ID, NQ_PROFILE_ID,
-    NQ_REFUSAL_BOUNDARY, NQ_REFUSAL_CODE, NQ_REFUSAL_SCHEMA, NQ_SELECTION_RULE_ID,
+    CorrespondenceError, CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NQ_REFUSAL_BOUNDARY,
+    NQ_REFUSAL_CODE, NQ_REFUSAL_SCHEMA, NQ_SELECTION_RULE_ID, QuestionSpecV1, QuestionV1,
     SemanticIdentityV1, canonical_bytes, object_id, require_digest, require_token,
 };
 
@@ -108,6 +108,7 @@ pub(crate) fn verify_artifact_value(
             "artifact is not nq.diagnostic_execution.v2",
         ));
     }
+    let question = profile.question()?;
     let constants = &profile.constants;
     let nq = &profile.nq;
     require_identity(value, "question", &constants.question)?;
@@ -150,7 +151,7 @@ pub(crate) fn verify_artifact_value(
     let run_id = string(value, "run_id")?;
     require_token("run_id", run_id)?;
 
-    let state = classify_outcome(value, Some(NQ_CLAIM_ID))?;
+    let state = classify_outcome_for(value, question, Some(question.spec().claim_id))?;
     if state == NqDetectorStateV1::CannotEvaluate {
         let [refusal] = array(field(value, "outcome")?, "refusals")?.as_slice() else {
             return Err(CorrespondenceError::new(
@@ -181,12 +182,23 @@ pub(crate) fn verify_artifact_value(
     })
 }
 
+/// The load v1 outcome ladder: [`classify_outcome_for`] under
+/// [`QuestionV1::HostLoadPressureV1`].
+pub fn classify_outcome(
+    value: &Value,
+    expected_claim_id: Option<&str>,
+) -> Result<NqDetectorStateV1, CorrespondenceError> {
+    classify_outcome_for(value, QuestionV1::HostLoadPressureV1, expected_claim_id)
+}
+
 /// The accepted outcome ladder. `expected_claim_id` pins the primary claim
 /// for production; `None` classifies an artifact under its own claim id (used
 /// only for NQ's cross-repository fixture mirror, whose fixtures predate the
-/// production claim identity).
-pub fn classify_outcome(
+/// production claim identity). A detector refusal must name the question's
+/// NQ profile.
+pub fn classify_outcome_for(
     value: &Value,
+    question: QuestionV1,
     expected_claim_id: Option<&str>,
 ) -> Result<NqDetectorStateV1, CorrespondenceError> {
     let outcome = field(value, "outcome")?;
@@ -217,7 +229,7 @@ pub fn classify_outcome(
         if expected_claim_id.is_some_and(|expected| expected != primary) {
             return Err(CorrespondenceError::new(
                 "artifact_claim_mismatch",
-                "primary claim is not the enrolled load-pressure claim",
+                "primary claim is not the enrolled claim for the question",
             ));
         }
         let [claim] = claims.as_slice() else {
@@ -261,7 +273,7 @@ pub fn classify_outcome(
         && unsupported.is_empty()
         && refusals.len() == 1
         && selected.len() == 1
-        && is_detector_cannot_evaluate(&refusals[0]);
+        && is_detector_cannot_evaluate(&refusals[0], question.spec());
     if cannot_evaluate {
         return Ok(NqDetectorStateV1::CannotEvaluate);
     }
@@ -282,7 +294,7 @@ pub fn classify_outcome(
     Ok(NqDetectorStateV1::NotEvaluated)
 }
 
-fn is_detector_cannot_evaluate(refusal: &Value) -> bool {
+fn is_detector_cannot_evaluate(refusal: &Value, spec: &QuestionSpecV1) -> bool {
     let Ok(origin) = field(refusal, "origin") else {
         return false;
     };
@@ -302,11 +314,11 @@ fn is_detector_cannot_evaluate(refusal: &Value) -> bool {
         && profile
             .and_then(|profile| profile.get("id"))
             .and_then(Value::as_str)
-            == Some(NQ_PROFILE_ID)
+            == Some(spec.nq_profile_id)
         && profile
             .and_then(|profile| profile.get("version"))
             .and_then(Value::as_u64)
-            == Some(1)
+            == Some(spec.refusal_profile_version)
 }
 
 /// V6: exactly one provider-intake occurrence, and for evaluated outcomes the

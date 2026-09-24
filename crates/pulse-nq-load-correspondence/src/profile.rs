@@ -3,6 +3,11 @@
 //! The profile digest `P` binds every fixed constant and every enrolled NQ and
 //! Pulse identity. It is the only policy input to the acquisition identity, the
 //! Pulse observation profile, and the audit record.
+//!
+//! The profile's schema string names its question in the closed
+//! [`QuestionV1`] table; the constants it carries must equal that question's
+//! compiled row. The load constants below are the qualified load v1 literals
+//! and also the load row of the table.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -17,7 +22,7 @@ use pulse_types::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{CorrespondenceError, object_id, require_digest, require_token};
+use crate::{CorrespondenceError, QuestionV1, object_id, require_digest, require_token};
 
 pub const PROFILE_SCHEMA_V1: &str = "constellation.nq_host_load_pressure_correspondence_profile.v1";
 pub const OCCURRENCE_SCHEMA_V1: &str =
@@ -144,26 +149,30 @@ pub struct CorrespondenceConstantsV1 {
 }
 
 impl CorrespondenceConstantsV1 {
+    /// The compiled load v1 constants.
     #[must_use]
     pub fn compiled() -> Self {
+        Self::compiled_for(QuestionV1::HostLoadPressureV1)
+    }
+
+    /// The compiled constants of one question row.
+    #[must_use]
+    pub fn compiled_for(question: QuestionV1) -> Self {
+        let spec = question.spec();
         Self {
-            reliance_window_ms: NQ_RELIANCE_WINDOW_MS,
+            reliance_window_ms: spec.reliance_window_ms,
             ingress_fence_ms: INGRESS_FENCE_MS,
-            frame_validity_ms: FRAME_VALIDITY_MS,
-            coverage_tag: COVERAGE_TAG.to_owned(),
-            transport_path: TRANSPORT_PATH.to_owned(),
+            frame_validity_ms: question.frame_validity_ms(),
+            coverage_tag: spec.coverage_tag.to_owned(),
+            transport_path: spec.transport_path.to_owned(),
             frame_disclosure: FRAME_DISCLOSURE.to_owned(),
             ingress_disclosure: INGRESS_DISCLOSURE.to_owned(),
-            pulse_scope: PULSE_SCOPE.to_owned(),
-            claim_id: NQ_CLAIM_ID.to_owned(),
-            condition: NQ_CONDITION.to_owned(),
+            pulse_scope: spec.pulse_scope.to_owned(),
+            claim_id: spec.claim_id.to_owned(),
+            condition: spec.condition.to_owned(),
             selection_rule_id: NQ_SELECTION_RULE_ID.to_owned(),
-            question: SemanticIdentityV1::new(
-                NQ_QUESTION_ID,
-                NQ_QUESTION_VERSION,
-                NQ_QUESTION_DIGEST,
-            ),
-            profile: SemanticIdentityV1::new(NQ_PROFILE_ID, NQ_PROFILE_VERSION, NQ_PROFILE_DIGEST),
+            question: question.question_identity(),
+            profile: question.nq_profile_identity(),
         }
     }
 }
@@ -179,13 +188,22 @@ pub struct CorrespondenceProfileV1 {
 }
 
 impl CorrespondenceProfileV1 {
-    /// Build and seal a profile from enrollment. Constants are always the
-    /// compiled ones.
+    /// Build and seal a load v1 profile from enrollment. Constants are always
+    /// the compiled ones.
     pub fn seal(nq: NqEnrollmentV1, pulse: PulseEnrollmentV1) -> Result<Self, CorrespondenceError> {
+        Self::seal_for(QuestionV1::HostLoadPressureV1, nq, pulse)
+    }
+
+    /// Build and seal a profile for one question of the closed table.
+    pub fn seal_for(
+        question: QuestionV1,
+        nq: NqEnrollmentV1,
+        pulse: PulseEnrollmentV1,
+    ) -> Result<Self, CorrespondenceError> {
         let mut profile = Self {
-            schema: PROFILE_SCHEMA_V1.to_owned(),
+            schema: question.spec().profile_schema.to_owned(),
             profile_digest: String::new(),
-            constants: CorrespondenceConstantsV1::compiled(),
+            constants: CorrespondenceConstantsV1::compiled_for(question),
             nq,
             pulse,
         };
@@ -194,15 +212,22 @@ impl CorrespondenceProfileV1 {
         Ok(profile)
     }
 
-    /// V2: the profile matches the compiled constants and is well formed.
-    pub fn validate(&self) -> Result<(), CorrespondenceError> {
-        if self.schema != PROFILE_SCHEMA_V1 {
-            return Err(CorrespondenceError::new(
+    /// The question this profile names through its schema. Unknown schemas
+    /// are refused; there is no default question.
+    pub fn question(&self) -> Result<QuestionV1, CorrespondenceError> {
+        QuestionV1::from_profile_schema(&self.schema).ok_or_else(|| {
+            CorrespondenceError::new(
                 "unsupported_schema",
                 "correspondence profile schema is unsupported",
-            ));
-        }
-        if self.constants != CorrespondenceConstantsV1::compiled() {
+            )
+        })
+    }
+
+    /// V2: the profile matches its question's compiled constants and is well
+    /// formed.
+    pub fn validate(&self) -> Result<(), CorrespondenceError> {
+        let question = self.question()?;
+        if self.constants != CorrespondenceConstantsV1::compiled_for(question) {
             return Err(CorrespondenceError::new(
                 "profile_constant_drift",
                 "profile constants differ from the compiled correspondence constants",
@@ -210,12 +235,14 @@ impl CorrespondenceProfileV1 {
         }
         require_token("nq.instance_id", &self.nq.instance_id)?;
         require_token("nq.subject_id", &self.nq.subject_id)?;
+        let subject_prefix = question.spec().subject_prefix;
         if self.nq.subject_id.len() > pulse_types::MAX_IDENTITY_BYTES
-            || !self.nq.subject_id.starts_with("host:")
+            || !self.nq.subject_id.starts_with(subject_prefix)
+            || self.nq.subject_id.len() == subject_prefix.len()
         {
             return Err(CorrespondenceError::new(
                 "invalid_subject",
-                "NQ subject must be a bounded host: identity",
+                format!("NQ subject must be a bounded {subject_prefix} identity"),
             ));
         }
         self.nq.subject_scope.validate("nq.subject_scope")?;
@@ -307,48 +334,51 @@ impl CorrespondenceProfileV1 {
     }
 
     /// Pulse observation profile whose semantic digest is bound to `P`.
-    #[must_use]
-    pub fn pulse_observation_profile(&self) -> ObservationProfileIdV1 {
-        ObservationProfileIdV1 {
-            name: PULSE_PROFILE_NAME.to_owned(),
+    pub fn pulse_observation_profile(&self) -> Result<ObservationProfileIdV1, CorrespondenceError> {
+        let question = self.question()?;
+        Ok(ObservationProfileIdV1 {
+            name: question.spec().pulse_profile_name.to_owned(),
             version: PULSE_PROFILE_VERSION,
-            semantic_digest: pulse_profile_digest(&self.profile_digest),
-        }
+            semantic_digest: pulse_profile_digest(question, &self.profile_digest),
+        })
     }
 
     /// The exact reliance policy for this correspondence: one observer, one
     /// coverage tag, one failure domain, validity `V`, no escalation, and no
     /// verified-authentication requirement (the frame is in-process and
     /// unauthenticated by disclosure).
-    #[must_use]
-    pub fn reliance_policy(&self) -> ReliancePolicyV1 {
+    pub fn reliance_policy(&self) -> Result<ReliancePolicyV1, CorrespondenceError> {
+        let question = self.question()?;
+        let spec = question.spec();
         let mut observer_failure_domains = BTreeMap::new();
         observer_failure_domains.insert(
             self.pulse.observer_id.clone(),
-            "domain:nq-load-correspondence".to_owned(),
+            spec.failure_domain.to_owned(),
         );
-        ReliancePolicyV1 {
+        Ok(ReliancePolicyV1 {
             schema_version: SCHEMA_VERSION_V1,
             subject: self.subject(),
-            scope: PULSE_SCOPE.to_owned(),
+            scope: spec.pulse_scope.to_owned(),
             consumer: self.consumer(),
             generation: PolicyGenerationId::new(self.pulse.policy_generation.clone()),
             observation_policy_generation: self.observation_policy_generation(),
-            observation_profile: self.pulse_observation_profile(),
-            required_coverage: vec![COVERAGE_TAG.to_owned()],
+            observation_profile: self.pulse_observation_profile()?,
+            required_coverage: vec![spec.coverage_tag.to_owned()],
             minimum_observers: 1,
-            maximum_validity_ms: FRAME_VALIDITY_MS,
+            maximum_validity_ms: question.frame_validity_ms(),
             require_verified_authentication: false,
             coherence_tolerances: BTreeMap::new(),
             observer_failure_domains,
             escalation: None,
-        }
+        })
     }
 
-    #[must_use]
-    pub fn reliance_context(&self, activation_id: &str) -> RelianceContextV1 {
-        let policy = self.reliance_policy();
-        RelianceContextV1 {
+    pub fn reliance_context(
+        &self,
+        activation_id: &str,
+    ) -> Result<RelianceContextV1, CorrespondenceError> {
+        let policy = self.reliance_policy()?;
+        Ok(RelianceContextV1 {
             schema_version: SCHEMA_VERSION_V1,
             activation_id: ContextActivationId::new(activation_id),
             reliance_policy_generation: policy.generation.clone(),
@@ -366,26 +396,30 @@ impl CorrespondenceProfileV1 {
                 short_digest(&self.profile_digest)
             )),
             observation_policy_generation: policy.observation_policy_generation,
-        }
+        })
     }
 
-    #[must_use]
     pub fn consumer_registration(
         &self,
         subject_incarnation: IncarnationId,
         activation_id: &str,
-    ) -> ConsumerRegistrationV1 {
-        ConsumerRegistrationV1 {
-            policy: self.reliance_policy(),
-            context: self.reliance_context(activation_id),
+    ) -> Result<ConsumerRegistrationV1, CorrespondenceError> {
+        Ok(ConsumerRegistrationV1 {
+            policy: self.reliance_policy()?,
+            context: self.reliance_context(activation_id)?,
             subject_incarnation,
-        }
+        })
     }
 }
 
+/// The Pulse observation profile digest of one correspondence profile under
+/// its question's domain.
 #[must_use]
-pub fn pulse_profile_digest(profile_digest: &str) -> DigestV1 {
-    digest_parts(PULSE_PROFILE_DOMAIN, &[profile_digest.as_bytes()])
+pub fn pulse_profile_digest(question: QuestionV1, profile_digest: &str) -> DigestV1 {
+    digest_parts(
+        question.spec().pulse_profile_domain,
+        &[profile_digest.as_bytes()],
+    )
 }
 
 fn short_digest(digest: &str) -> &str {

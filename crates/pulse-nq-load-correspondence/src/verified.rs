@@ -9,10 +9,11 @@ use std::time::Instant;
 
 use pulse_types::{IncarnationId, SubjectId};
 
-use crate::{DeliveryMeasurementV1, NqDetectorStateV1};
+use crate::{DeliveryMeasurementV1, NqDetectorStateV1, QuestionV1};
 
 #[derive(Debug)]
 pub struct VerifiedCorrespondenceV1 {
+    question: QuestionV1,
     correspondence_id: String,
     acquisition_id: String,
     evidence_ref: String,
@@ -29,6 +30,7 @@ pub struct VerifiedCorrespondenceV1 {
 impl VerifiedCorrespondenceV1 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        question: QuestionV1,
         correspondence_id: String,
         acquisition_id: String,
         evidence_ref: String,
@@ -42,6 +44,7 @@ impl VerifiedCorrespondenceV1 {
         sealed_at: Instant,
     ) -> Self {
         Self {
+            question,
             correspondence_id,
             acquisition_id,
             evidence_ref,
@@ -54,6 +57,13 @@ impl VerifiedCorrespondenceV1 {
             delivery,
             sealed_at,
         }
+    }
+
+    /// The question this correspondence was co-produced for. A consumer that
+    /// maps one question must refuse any other.
+    #[must_use]
+    pub fn question(&self) -> QuestionV1 {
+        self.question
     }
 
     #[must_use]

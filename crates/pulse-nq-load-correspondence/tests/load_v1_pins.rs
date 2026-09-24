@@ -18,8 +18,8 @@ use pulse_nq_load_correspondence::{
     NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST, NQ_QUESTION_ID, NQ_QUESTION_VERSION,
     NQ_RELIANCE_WINDOW_MS, NQ_SELECTION_RULE_ID, OCCURRENCE_SCHEMA_V1, ObserverLineage,
     PROFILE_SCHEMA_V1, PULSE_PROFILE_DOMAIN, PULSE_PROFILE_NAME, PULSE_PROFILE_VERSION,
-    PULSE_SCOPE, RECORD_SCHEMA_V1, TRANSPORT_PATH, acquisition_id, build_frame, evidence_ref,
-    frame_ingress, occurrence_path, pulse_profile_digest,
+    PULSE_SCOPE, QuestionV1, RECORD_SCHEMA_V1, TRANSPORT_PATH, acquisition_id, build_frame,
+    evidence_ref, frame_ingress, occurrence_path, pulse_profile_digest,
 };
 use pulse_runtime::RuntimeInputV1;
 use pulse_types::{AuthenticationResultV1, IncarnationId};
@@ -119,7 +119,19 @@ fn compiled_load_row_is_literal() {
     assert_eq!(INGRESS_FENCE_MS, 1_000);
     assert_eq!(FRAME_VALIDITY_MS, 298_999);
     assert_eq!(PULSE_PROFILE_VERSION, 1);
+    assert_eq!(
+        QuestionV1::from_profile_schema(PROFILE_SCHEMA_V1),
+        Some(QuestionV1::HostLoadPressureV1)
+    );
+    assert_eq!(
+        QuestionV1::HostLoadPressureV1.frame_validity_ms(),
+        FRAME_VALIDITY_MS
+    );
     let compiled = CorrespondenceConstantsV1::compiled();
+    assert_eq!(
+        compiled,
+        CorrespondenceConstantsV1::compiled_for(QuestionV1::HostLoadPressureV1)
+    );
     assert_eq!(compiled.reliance_window_ms, 300_000);
     assert_eq!(compiled.frame_validity_ms, 298_999);
     assert_eq!(compiled.coverage_tag, COVERAGE_TAG);
@@ -139,17 +151,25 @@ fn load_v1_digests_intent_bytes_and_acquisition_identity_are_pinned() {
     );
     print_or_assert(
         "reliance_policy_semantic_digest",
-        profile.reliance_policy().semantic_digest().as_str(),
+        profile
+            .reliance_policy()
+            .expect("policy")
+            .semantic_digest()
+            .as_str(),
         "sha256:c573daa13c3a7469bd108200fdf7004a599af1c9740fe7072eac7eea52e065bb",
     );
     print_or_assert(
         "reliance_context_identity_digest",
-        profile.reliance_context("a").identity_digest().as_str(),
+        profile
+            .reliance_context("a")
+            .expect("context")
+            .identity_digest()
+            .as_str(),
         "sha256:f67656f7efeb2071c5152179f622da02195e0bcd15afe261bc3cd9bd0991c78c",
     );
     print_or_assert(
         "pulse_profile_digest",
-        pulse_profile_digest(profile.digest()).as_str(),
+        pulse_profile_digest(QuestionV1::HostLoadPressureV1, profile.digest()).as_str(),
         "sha256:46d745ffd47650d7abad02cab92b8ffae961a980d61c8897199eb6f80b53abe3",
     );
     let frame = build_frame(
@@ -166,7 +186,13 @@ fn load_v1_digests_intent_bytes_and_acquisition_identity_are_pinned() {
         &reference,
         "observer:nq-load-correspondence/observer-incarnation:synthetic:1/seq=1/sha256:7f3bbc4e0f448d15becf1e93a1263521a83e2c5206b8fc8b0181e2ed73632192",
     );
-    let acquisition = acquisition_id(profile.digest(), "host-local", &reference).expect("id");
+    let acquisition = acquisition_id(
+        QuestionV1::HostLoadPressureV1,
+        profile.digest(),
+        "host-local",
+        &reference,
+    )
+    .expect("id");
     print_or_assert(
         "acquisition_id",
         &acquisition,
@@ -232,7 +258,13 @@ fn load_v1_digests_intent_bytes_and_acquisition_identity_are_pinned() {
     );
     assert_eq!(
         result.acquisition_id,
-        acquisition_id(profile.digest(), "host-local", &result.evidence_ref).expect("id"),
+        acquisition_id(
+            QuestionV1::HostLoadPressureV1,
+            profile.digest(),
+            "host-local",
+            &result.evidence_ref
+        )
+        .expect("id"),
         "occurrence acquisition identity must be the pure derivation"
     );
     assert!(result.acquisition_id.starts_with(ACQUISITION_ID_PREFIX));

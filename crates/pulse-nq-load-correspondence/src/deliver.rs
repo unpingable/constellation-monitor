@@ -15,8 +15,8 @@ use pulse_types::{
 };
 
 use crate::{
-    CorrespondenceError, CorrespondenceProfileV1, FRAME_VALIDITY_MS, INGRESS_DISCLOSURE,
-    INGRESS_FENCE_MS, PULSE_SCOPE, SealedOccurrenceV1, TRANSPORT_PATH,
+    CorrespondenceError, CorrespondenceProfileV1, INGRESS_DISCLOSURE, INGRESS_FENCE_MS, QuestionV1,
+    SealedOccurrenceV1,
 };
 
 /// Measured delivery intervals for one occurrence.
@@ -34,12 +34,21 @@ pub fn elapsed_ceil_ms(from: Instant, to: Instant) -> u64 {
     u64::try_from(nanos.saturating_add(999_999) / 1_000_000).unwrap_or(u64::MAX)
 }
 
-/// `d < V`: a frame held for its whole validity is not delivered.
+/// `d < V` for load v1.
 pub fn check_holding_delay(holding_delay_ms: u64) -> Result<(), CorrespondenceError> {
-    if holding_delay_ms >= FRAME_VALIDITY_MS {
+    check_holding_delay_for(QuestionV1::HostLoadPressureV1, holding_delay_ms)
+}
+
+/// `d < V`: a frame held for its whole validity is not delivered.
+pub fn check_holding_delay_for(
+    question: QuestionV1,
+    holding_delay_ms: u64,
+) -> Result<(), CorrespondenceError> {
+    let validity_ms = question.frame_validity_ms();
+    if holding_delay_ms >= validity_ms {
         return Err(CorrespondenceError::new(
             "holding_delay_exceeds_validity",
-            format!("frame was held {holding_delay_ms} ms, not below {FRAME_VALIDITY_MS} ms"),
+            format!("frame was held {holding_delay_ms} ms, not below {validity_ms} ms"),
         ));
     }
     Ok(())
@@ -56,13 +65,24 @@ pub fn check_ingress_fence(ingress_fence_ms: u64) -> Result<(), CorrespondenceEr
     Ok(())
 }
 
-/// The exact ingress record: fixed transport path, measured holding delay,
-/// and an unauthenticated disclosure. Nothing here is a Pulse assessment.
+/// The load v1 ingress record.
 #[must_use]
 pub fn frame_ingress(frame: PulseFrameV1, holding_delay_ms: u64) -> RuntimeInputV1 {
+    frame_ingress_for(QuestionV1::HostLoadPressureV1, frame, holding_delay_ms)
+}
+
+/// The exact ingress record: the question's fixed transport path, measured
+/// holding delay, and an unauthenticated disclosure. Nothing here is a Pulse
+/// assessment.
+#[must_use]
+pub fn frame_ingress_for(
+    question: QuestionV1,
+    frame: PulseFrameV1,
+    holding_delay_ms: u64,
+) -> RuntimeInputV1 {
     RuntimeInputV1::Pulse(PulseIngressV1 {
         frame,
-        transport_path: TRANSPORT_PATH.to_owned(),
+        transport_path: question.spec().transport_path.to_owned(),
         transport_observed_delay_ms: Some(holding_delay_ms),
         authentication: AuthenticationResultV1::Unauthenticated {
             disclosure: INGRESS_DISCLOSURE.to_owned(),
@@ -83,9 +103,10 @@ pub fn verify_certificate_binding(
     certificate
         .validate()
         .map_err(|error| CorrespondenceError::new("invalid_certificate", error.to_string()))?;
+    let question = profile.question()?;
     if certificate.consumer != profile.consumer()
         || certificate.subject_scope.subject != profile.subject()
-        || certificate.subject_scope.scope != PULSE_SCOPE
+        || certificate.subject_scope.scope != question.spec().pulse_scope
     {
         return Err(CorrespondenceError::new(
             "certificate_binding_mismatch",
@@ -120,7 +141,9 @@ pub fn verify_certificate_binding(
         ));
     };
     let remaining = expiry.saturating_sub(certificate.evaluated_at_monotonic_ms);
-    let permitted = FRAME_VALIDITY_MS.saturating_sub(holding_delay_ms);
+    let permitted = question
+        .frame_validity_ms()
+        .saturating_sub(holding_delay_ms);
     if remaining == 0 || remaining > permitted {
         return Err(CorrespondenceError::new(
             "certificate_window_exceeds_law",
@@ -137,13 +160,18 @@ pub fn verify_certificate_binding(
 /// ingress; the caller applies [`verify_certificate_binding`].
 pub(crate) fn deliver(
     reactor: &LocalCrashReactor,
+    question: QuestionV1,
     occurrence: &SealedOccurrenceV1,
 ) -> Result<DeliveryMeasurementV1, CorrespondenceError> {
     let delivered_at = Instant::now();
     let holding_delay_ms = elapsed_ceil_ms(occurrence.sealed_at, delivered_at);
-    check_holding_delay(holding_delay_ms)?;
+    check_holding_delay_for(question, holding_delay_ms)?;
     reactor
-        .submit_input(frame_ingress(occurrence.frame.clone(), holding_delay_ms))
+        .submit_input(frame_ingress_for(
+            question,
+            occurrence.frame.clone(),
+            holding_delay_ms,
+        ))
         .map_err(|error| CorrespondenceError::new("reactor_refused", error.to_string()))?;
     let returned_at = Instant::now();
     Ok(DeliveryMeasurementV1 {
@@ -152,11 +180,13 @@ pub(crate) fn deliver(
     })
 }
 
-/// Find the consumer certificate in a reactor snapshot.
+/// Find the certificate for the profile's consumer, subject, and scope in a
+/// reactor snapshot.
 pub(crate) fn consumer_certificate(
     reactor: &LocalCrashReactor,
     profile: &CorrespondenceProfileV1,
 ) -> Result<RelianceSupportCertificateV1, CorrespondenceError> {
+    let scope = profile.question()?.spec().pulse_scope;
     let snapshot = reactor.snapshot();
     if !snapshot.condition.exposes_live_standing() {
         return Err(CorrespondenceError::new(
@@ -170,6 +200,7 @@ pub(crate) fn consumer_certificate(
         .find(|certificate| {
             certificate.consumer == profile.consumer()
                 && certificate.subject_scope.subject == profile.subject()
+                && certificate.subject_scope.scope == scope
         })
         .ok_or_else(|| {
             CorrespondenceError::new(

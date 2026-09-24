@@ -21,10 +21,10 @@ use crate::nq_cli::acquire_error_may_follow_launch;
 use crate::record::encode_hex;
 use crate::{
     CorrespondenceError, CorrespondenceProfileV1, CorrespondenceRecordV1, DeliveryMeasurementV1,
-    DeliveryV1, INTENT_SCHEMA_V1, NqDetectorStateV1, NqPort, NqSideV1, ObserverLineage,
-    PulseSideV1, SealedOccurrenceV1, SubjectIncarnationWitness, TRANSPORT_PATH,
-    VerifiedCorrespondenceV1, canonical_bytes, check_ingress_fence, sha256_hex, verify_artifact,
-    verify_certificate_binding, verify_provenance, write_create_new,
+    DeliveryV1, NqDetectorStateV1, NqPort, NqSideV1, ObserverLineage, PulseSideV1, QuestionV1,
+    SealedOccurrenceV1, SubjectIncarnationWitness, VerifiedCorrespondenceV1, canonical_bytes,
+    check_ingress_fence, sha256_hex, verify_artifact, verify_certificate_binding,
+    verify_provenance, write_create_new,
 };
 
 #[derive(Serialize)]
@@ -63,6 +63,7 @@ pub enum OccurrenceOutcomeV1 {
 /// One process's co-producer for one enrolled correspondence.
 pub struct Coproducer<'a> {
     profile: &'a CorrespondenceProfileV1,
+    question: QuestionV1,
     port: &'a dyn NqPort,
     witness: &'a dyn SubjectIncarnationWitness,
     lineage: ObserverLineage,
@@ -95,6 +96,7 @@ impl<'a> Coproducer<'a> {
         audit_dir: &Path,
     ) -> Result<Self, CorrespondenceError> {
         profile.validate()?;
+        let question = profile.question()?;
         if port.enrollment() != &profile.nq {
             return Err(CorrespondenceError::new(
                 "nq_enrollment_mismatch",
@@ -116,6 +118,7 @@ impl<'a> Coproducer<'a> {
             .map_err(|error| CorrespondenceError::new("invalid_incarnation", error.to_string()))?;
         Ok(Self {
             profile,
+            question,
             port,
             witness,
             lineage,
@@ -133,6 +136,11 @@ impl<'a> Coproducer<'a> {
     #[must_use]
     pub fn lineage(&self) -> &ObserverLineage {
         &self.lineage
+    }
+
+    #[must_use]
+    pub fn question(&self) -> QuestionV1 {
+        self.question
     }
 
     /// Seal, acquire, verify, deliver, record. A failure before delivery
@@ -185,7 +193,7 @@ impl<'a> Coproducer<'a> {
         let provenance_bytes = self.port.qualify(&artifact.artifact_id)?;
         let provenance = verify_provenance(&provenance_bytes, &artifact, self.profile)?;
 
-        let delivery = deliver(reactor, &occurrence)?;
+        let delivery = deliver(reactor, self.question, &occurrence)?;
 
         let record = CorrespondenceRecordV1 {
             schema: String::new(),
@@ -204,14 +212,14 @@ impl<'a> Coproducer<'a> {
             },
             nq_detector_state: artifact.state,
             delivery: DeliveryV1 {
-                transport_path: TRANSPORT_PATH.to_owned(),
+                transport_path: self.question.spec().transport_path.to_owned(),
                 holding_delay_ms: delivery.holding_delay_ms,
                 ingress_fence_ms: delivery.ingress_fence_ms,
             },
             nonclaims: Vec::new(),
             mutation_authority: String::new(),
         }
-        .seal()?;
+        .seal(self.question)?;
         let record_bytes = record.canonical_bytes()?;
         let record_path = occurrence_path(&self.audit_dir, &occurrence.acquisition_id);
         write_create_new(&record_path, &record_bytes, 0o640)?;
@@ -219,6 +227,7 @@ impl<'a> Coproducer<'a> {
         let outcome = match self.verify_live_binding(reactor, &occurrence, delivery) {
             Ok(certificate_id) => {
                 OccurrenceOutcomeV1::Verified(Box::new(VerifiedCorrespondenceV1::new(
+                    self.question,
                     record.correspondence_id.clone(),
                     occurrence.acquisition_id.clone(),
                     occurrence.evidence_ref.clone(),
@@ -270,7 +279,7 @@ impl<'a> Coproducer<'a> {
         sequence: u64,
     ) -> Result<(), CorrespondenceError> {
         let intent = IntentV1 {
-            schema: INTENT_SCHEMA_V1,
+            schema: self.question.spec().intent_schema,
             profile_digest: self.profile.digest(),
             acquisition_id: &occurrence.acquisition_id,
             pulse_evidence_ref: &occurrence.evidence_ref,

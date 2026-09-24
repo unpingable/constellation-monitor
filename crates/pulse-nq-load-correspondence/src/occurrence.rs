@@ -14,8 +14,8 @@ use rand_core::{OsRng, RngCore as _};
 use serde::Serialize;
 
 use crate::{
-    ACQUISITION_ID_PREFIX, COVERAGE_TAG, CorrespondenceError, CorrespondenceProfileV1,
-    FRAME_DISCLOSURE, FRAME_VALIDITY_MS, OCCURRENCE_SCHEMA_V1, canonical_bytes, sha256_prefixed,
+    CorrespondenceError, CorrespondenceProfileV1, FRAME_DISCLOSURE, QuestionV1, canonical_bytes,
+    sha256_prefixed,
 };
 
 /// Supplies the subject incarnation at start and at every seal. The
@@ -142,8 +142,12 @@ impl SealedOccurrenceV1 {
     ) -> Result<Self, CorrespondenceError> {
         verify_frame(&frame, profile)?;
         let evidence_ref = evidence_ref(&frame);
-        let acquisition_id =
-            acquisition_id(profile.digest(), &profile.nq.instance_id, &evidence_ref)?;
+        let acquisition_id = acquisition_id(
+            profile.question()?,
+            profile.digest(),
+            &profile.nq.instance_id,
+            &evidence_ref,
+        )?;
         Ok(Self {
             frame,
             evidence_ref,
@@ -168,6 +172,8 @@ pub fn build_frame(
     sequence: u64,
     observer_monotonic_ns: u64,
 ) -> Result<PulseFrameV1, CorrespondenceError> {
+    let question = profile.question()?;
+    let coverage_tag = question.spec().coverage_tag;
     let frame = PulseFrameV1 {
         schema_version: SCHEMA_VERSION_V1,
         subject: profile.subject(),
@@ -176,12 +182,12 @@ pub fn build_frame(
         observer_incarnation,
         sequence,
         observer_monotonic_ns,
-        validity_ms: FRAME_VALIDITY_MS,
-        profile: profile.pulse_observation_profile(),
+        validity_ms: question.frame_validity_ms(),
+        profile: profile.pulse_observation_profile()?,
         observation_policy_generation: profile.observation_policy_generation(),
         coverage: CoverageDescriptorV1 {
-            expected: vec![COVERAGE_TAG.to_owned()],
-            observed: vec![COVERAGE_TAG.to_owned()],
+            expected: vec![coverage_tag.to_owned()],
+            observed: vec![coverage_tag.to_owned()],
         },
         signals: Vec::new(),
         observation_digest: digest_parts("unsealed", &[]),
@@ -202,9 +208,11 @@ pub fn verify_frame(
     frame
         .validate()
         .map_err(|error| CorrespondenceError::new("invalid_frame", error.to_string()))?;
+    let question = profile.question()?;
+    let coverage_tag = question.spec().coverage_tag;
     if frame.subject != profile.subject()
         || frame.observer != profile.observer()
-        || frame.profile != profile.pulse_observation_profile()
+        || frame.profile != profile.pulse_observation_profile()?
         || frame.observation_policy_generation != profile.observation_policy_generation()
     {
         return Err(CorrespondenceError::new(
@@ -212,14 +220,14 @@ pub fn verify_frame(
             "frame subject, observer, profile, or observation policy differs from the profile",
         ));
     }
-    if frame.validity_ms != FRAME_VALIDITY_MS {
+    if frame.validity_ms != question.frame_validity_ms() {
         return Err(CorrespondenceError::new(
             "frame_validity_mismatch",
             "frame validity is not the exact correspondence validity",
         ));
     }
-    if frame.coverage.expected != [COVERAGE_TAG.to_owned()]
-        || frame.coverage.observed != [COVERAGE_TAG.to_owned()]
+    if frame.coverage.expected != [coverage_tag.to_owned()]
+        || frame.coverage.observed != [coverage_tag.to_owned()]
     {
         return Err(CorrespondenceError::new(
             "frame_coverage_mismatch",
@@ -270,21 +278,25 @@ struct OccurrencePreimage<'a> {
     pulse_evidence_ref: &'a str,
 }
 
-/// The caller-named NQ acquisition identity: a fixed prefix plus the SHA-256
-/// of the canonical occurrence preimage. Ninety-six bytes, within NQ's bound.
+/// The caller-named NQ acquisition identity: the question's fixed prefix plus
+/// the SHA-256 of the canonical occurrence preimage under the question's
+/// occurrence schema. Within NQ's identity bound for every row.
 pub fn acquisition_id(
+    question: QuestionV1,
     profile_digest: &str,
     nq_instance_id: &str,
     evidence_ref: &str,
 ) -> Result<String, CorrespondenceError> {
+    let spec = question.spec();
     let preimage = OccurrencePreimage {
-        schema: OCCURRENCE_SCHEMA_V1,
+        schema: spec.occurrence_schema,
         correspondence_profile_digest: profile_digest,
         nq_instance_id,
         pulse_evidence_ref: evidence_ref,
     };
     Ok(format!(
-        "{ACQUISITION_ID_PREFIX}{}",
+        "{}{}",
+        spec.acquisition_id_prefix,
         sha256_prefixed(&canonical_bytes(&preimage)?)
     ))
 }

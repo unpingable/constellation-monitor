@@ -1,7 +1,8 @@
 #![forbid(unsafe_code)]
 //! Deliberately co-produced correspondence between one exact NQ
-//! `nq.host.load_pressure/v1` local-successor acquisition and one precommitted
-//! Pulse frame.
+//! local-successor acquisition and one precommitted Pulse frame, for each
+//! question in the closed [`QuestionV1`] table (`nq.host.load_pressure/v1`
+//! and `nq.host_filesystem_capacity.pressure/v1`).
 //!
 //! This crate owns only the pairing. It seals an empty-signal Pulse frame,
 //! derives the NQ acquisition identity from that frame, asks NQ to acquire and
@@ -23,6 +24,7 @@ mod nq_cli;
 mod occurrence;
 mod profile;
 mod provenance;
+mod question;
 mod record;
 mod verified;
 
@@ -32,10 +34,13 @@ pub mod fixture;
 pub use coproducer::{Coproducer, OccurrenceOutcomeV1, OccurrenceResultV1, occurrence_path};
 pub use custody::{read_regular_bounded, sha256_hex_of_file, write_create_new};
 pub use deliver::{
-    DeliveryMeasurementV1, check_holding_delay, check_ingress_fence, elapsed_ceil_ms,
-    frame_ingress, verify_certificate_binding,
+    DeliveryMeasurementV1, check_holding_delay, check_holding_delay_for, check_ingress_fence,
+    elapsed_ceil_ms, frame_ingress, frame_ingress_for, verify_certificate_binding,
 };
-pub use nq_artifact::{NqDetectorStateV1, VerifiedNqArtifactV1, classify_outcome, verify_artifact};
+pub use nq_artifact::{
+    NqDetectorStateV1, VerifiedNqArtifactV1, classify_outcome, classify_outcome_for,
+    verify_artifact,
+};
 pub use nq_cli::{
     MAX_NQ_OUTPUT_BYTES, NQ_ACQUIRE_TIMEOUT, NQ_READ_TIMEOUT, NqPort, PinnedNqExecutable,
 };
@@ -45,6 +50,7 @@ pub use occurrence::{
 };
 pub use profile::*;
 pub use provenance::verify_provenance;
+pub use question::{QuestionSpecV1, QuestionV1};
 pub use record::{
     AuditVerdictV1, CorrespondenceRecordV1, DeliveryV1, MAX_RECORD_BYTES, NqSideV1, PulseSideV1,
     RECORD_NONCLAIMS, verify_audit_record,
