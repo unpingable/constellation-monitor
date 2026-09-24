@@ -88,4 +88,37 @@ if rg -n '(^|[^_a-zA-Z])classify_outcome\(|(^|[^_a-zA-Z])check_holding_delay\(|(
   fail "a crate source or example calls a load-default wrapper; use the *_for form with a question"
 fi
 
+# --- constellation-status-nq-memory-pressure: third consequence adapter ------
+# Additive. The adapter never reads or restates PSI, the threshold, the boot
+# age, or any other NQ parameter, and maps exactly one question.
+mem_dir="$root/crates/constellation-status-nq-memory-pressure/src"
+[ -d "$mem_dir" ] || fail "memory-pressure consequence adapter source missing"
+if rg -n 'std::process|Command::new|/proc|std::fs|nix::|libc::|derive_state|pulse_nq_load_support|LivePresentSupportResponseV1::new|HostLoadPressureV1|HostFilesystemCapacityPressureV1' "$mem_dir"; then
+  fail "memory-pressure consequence adapter acquires, recomputes, fabricates, or maps another question"
+fi
+if rg -n 'avg10|avg60|avg300|centipercent|boot_age|MemAvailable|meminfo|SwapFree|SwapTotal|10\.00' "$mem_dir"; then
+  fail "memory-pressure consequence adapter restates NQ's PSI parameters"
+fi
+rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostMemoryPressureStallV1' "$mem_dir/lib.rs" || fail "memory-pressure adapter must pin its question"
+
+# The seam carries a state, never a PSI value: no PSI source or vocabulary in
+# the correspondence crate.
+if rg -n '/proc/pressure|avg60|centipercent|boot_age|MemAvailable' "$corr_dir"; then
+  fail "correspondence crate names a PSI source or vocabulary"
+fi
+
+# The load constants belong to the load row alone. Outside their definitions
+# and the frozen load v1 tests, every crate source and every non-load test
+# reads validity from its question.
+if rg -n 'FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS' "$root"/crates/*/src "$root"/crates/*/examples \
+  | rg -v 'pulse-nq-load-correspondence/src/(profile|question)\.rs'; then
+  fail "a crate source reads a load constant instead of its question's validity"
+fi
+if rg -n 'pulse_nq_load_correspondence::\{[^}]*(FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS)' \
+  "$root"/crates/constellation-status-nq-filesystem-capacity/tests "$root"/crates/constellation-status-nq-memory-pressure/tests \
+  "$root"/crates/pulse-nq-load-correspondence/tests/question_generalization.rs "$root"/crates/pulse-nq-load-correspondence/tests/filesystem_capacity_vectors.rs \
+  "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_vectors.rs "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_seam.rs "$root"/crates/pulse-nq-load-correspondence/tests/common; then
+  fail "a non-load test imports a load constant instead of its question's validity"
+fi
+
 echo "nq-load-correspondence: closed co-production surface; consequence adapters: no acquisition or recomputation surface, one question each"
