@@ -1,6 +1,6 @@
 # NQ host-load-pressure / Pulse correspondence v1 qualification
 
-Status: **Candidate pending independent review**
+Status: **Qualified for the bounded disposable, same-process profile described here**
 
 This receipt records one disposable, non-production qualification of
 `constellation.nq_host_load_pressure_correspondence.v1` and
@@ -104,6 +104,10 @@ They are retained in private campaign custody because they contain local
 qualification paths and detailed records. The identities above allow review
 without making those campaign archives part of the public product tree.
 
+An independent reviewer accepted the corrected product receipt and frozen
+evidence. The retained acceptance record has SHA-256
+`f8b3f4ba83c79e56d1148db155170a480efbae2b33ec4bac99d904d4f4bad690`.
+
 ## Deliberate limits
 
 - The observed subject and helper data were synthetic and disposable.
@@ -113,5 +117,8 @@ without making those campaign archives part of the public product tree.
   route, notification destination, or production consumer changed.
 - Historical audit verification checks byte-exact consistency but cannot
   reconstruct `VerifiedCorrespondenceV1` or current support.
+- The shared vectors do not include a fully re-derived historical pairing.
+  This does not weaken the live constructor boundary, but historical audit
+  verification must not be described as authenticating acquisition history.
 - An independently acquired legacy NQ record cannot be promoted into this
   contract by matching names, times, or semantic similarity.
