@@ -109,16 +109,27 @@ fi
 
 # The load constants belong to the load row alone. Outside their definitions
 # and the frozen load v1 tests, every crate source and every non-load test
-# reads validity from its question.
+# reads validity from its question. Multi-line `use` lists and fully
+# qualified paths are matched too (rg -U).
 if rg -n 'FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS' "$root"/crates/*/src "$root"/crates/*/examples \
   | rg -v 'pulse-nq-load-correspondence/src/(profile|question)\.rs'; then
   fail "a crate source reads a load constant instead of its question's validity"
 fi
-if rg -n 'pulse_nq_load_correspondence::\{[^}]*(FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS)' \
-  "$root"/crates/constellation-status-nq-filesystem-capacity/tests "$root"/crates/constellation-status-nq-memory-pressure/tests \
-  "$root"/crates/pulse-nq-load-correspondence/tests/question_generalization.rs "$root"/crates/pulse-nq-load-correspondence/tests/filesystem_capacity_vectors.rs \
-  "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_vectors.rs "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_seam.rs "$root"/crates/pulse-nq-load-correspondence/tests/common; then
-  fail "a non-load test imports a load constant instead of its question's validity"
+non_load_tests=(
+  "$root"/crates/constellation-status-nq-filesystem-capacity/tests
+  "$root"/crates/constellation-status-nq-memory-pressure/tests
+  "$root"/crates/pulse-nq-load-correspondence/tests/question_generalization.rs
+  "$root"/crates/pulse-nq-load-correspondence/tests/question_row_pins.rs
+  "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_vectors.rs
+  "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_seam.rs
+  "$root"/crates/pulse-nq-load-correspondence/tests/common
+)
+if rg -nU 'pulse_nq_load_correspondence::\{[^}]*\b(FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS)\b' "${non_load_tests[@]}" \
+  || rg -n 'pulse_nq_load_correspondence::(FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS)\b|(^|[^_A-Za-z])(FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS)\b' "${non_load_tests[@]}"; then
+  fail "a non-load test reads a load constant instead of its question's validity"
 fi
+# (filesystem_capacity_vectors.rs keeps a local constant of that name from
+# before this guard; it is derived from its own question and frozen with its
+# manifest.)
 
 echo "nq-load-correspondence: closed co-production surface; consequence adapters: no acquisition or recomputation surface, one question each"

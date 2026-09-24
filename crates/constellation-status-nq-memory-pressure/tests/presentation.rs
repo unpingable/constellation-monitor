@@ -41,6 +41,18 @@ fn rendered(
         assert_eq!(artifact.aggregate_state, ProjectedStateV1::Healthy);
         assert_eq!(artifact.aggregate_state.as_str(), "healthy");
     }
+    if outcome == SyntheticOutcome::CannotEvaluate {
+        // Unknown carries no presentation window: the artifact expires at
+        // its own generation instant and renders as unavailable.
+        assert_eq!(artifact.aggregate_state, ProjectedStateV1::Unknown);
+        assert_eq!(artifact.fresh_until_unix_ms, artifact.generated_at_unix_ms);
+        let RenderedStatusV1::StatusUnavailable { html } =
+            render_status(&artifact, NOW, 0).expect("render")
+        else {
+            panic!("an unknown artifact is never current")
+        };
+        return html;
+    }
     let RenderedStatusV1::Current { html } =
         render_status(&artifact, NOW + 1_000, 250).expect("render")
     else {
@@ -63,26 +75,45 @@ fn memory_states_render_condition_scoped_text_only() {
         assert!(absent.contains(
             "<strong>Memory pressure stall</strong>: No issue reported — Qualified memory pressure-stall condition absent in the current NQ observation. This is not a memory sufficiency or host health claim."
         ));
+        assert!(absent.contains("Overall projection: No issue reported"));
         let present = rendered(&harness, &mut coproducer, SyntheticOutcome::Present, public);
         assert!(present.contains(
             "<strong>Memory pressure stall</strong>: Degraded — Qualified memory pressure-stall condition present in the current NQ observation. No outage, service impact, or cause is claimed."
         ));
-        for html in [&absent, &present] {
+        assert!(present.contains("Overall projection: Degraded"));
+        let unknown = rendered(
+            &harness,
+            &mut coproducer,
+            SyntheticOutcome::CannotEvaluate,
+            public,
+        );
+        assert!(unknown.contains("Status unavailable"));
+        assert!(unknown.contains("No current conclusion is supported."));
+        for html in [&absent, &present, &unknown] {
             for unscoped in [
                 "Healthy",
                 "healthy",
                 "Memory healthy",
+                "memory healthy",
                 "Host healthy",
                 "Operational",
                 "operational",
                 "avg60",
                 "PSI",
+                "MemAvailable",
+                "swap",
+                "0123456789abcdef0123456789abcdef",
+                "host:",
             ] {
                 assert!(
                     !html.contains(unscoped),
                     "public={public}: rendered text carries `{unscoped}`"
                 );
             }
+        }
+        // The unavailable page carries no artifact fields at all; the current
+        // pages carry the non-authorization line.
+        for html in [&absent, &present] {
             assert!(html.contains("grants no authority or permission"));
         }
     }

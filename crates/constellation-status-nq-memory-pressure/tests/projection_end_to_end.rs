@@ -1,5 +1,5 @@
 //! Co-production, live admission, projection, reduction, dependency behavior,
-//! expiry, and atomic publication for the filesystem capacity-pressure
+//! expiry, and atomic publication for the memory pressure-stall
 //! condition component. This mirrors the load-pressure adapter's
 //! qualification against the second question of the correspondence table.
 
@@ -21,7 +21,7 @@ use pulse_nq_load_correspondence::fixture::SyntheticOutcome;
 use pulse_nq_load_correspondence::{Coproducer, QuestionV1};
 
 /// This question's own frame validity; never the load constant.
-const FRAME_VALIDITY_MS: u64 = QuestionV1::HostMemoryPressureStallV1.frame_validity_ms();
+const ROW_FRAME_VALIDITY_MS: u64 = QuestionV1::HostMemoryPressureStallV1.frame_validity_ms();
 use pulse_types::{
     AuthorityGrantsV1, ClockId, ConsumerId, ConsumerProfileGenerationId, ContextActivationId,
     CoverageSummaryV1, EscalationStateV1, EvaluatorSemanticGenerationId, EvidenceWindowId,
@@ -59,7 +59,7 @@ fn project_condition(
         CONDITION_KEY,
         &harness.reactor,
         &format!("nonce:{}", verified.correspondence_id()),
-        120_000,
+        60_000,
     )
     .expect("live admission");
     let artifact =
@@ -168,7 +168,7 @@ fn a_stale_verified_correspondence_is_refused_once_a_newer_frame_is_certified() 
         CONDITION_KEY,
         &harness.reactor,
         "nonce:stale",
-        120_000,
+        60_000,
     )
     .expect_err("the earlier frame is no longer the supporting evidence");
     assert_eq!(error.code, "certificate_evidence_mismatch");
@@ -290,7 +290,7 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         CONDITION_KEY,
         &harness.reactor,
         "nonce:once",
-        FRAME_VALIDITY_MS,
+        ROW_FRAME_VALIDITY_MS,
     )
     .expect("live");
     std::thread::sleep(Duration::from_millis(5));
@@ -300,7 +300,7 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         CONDITION_KEY,
         &harness.reactor,
         "nonce:once",
-        FRAME_VALIDITY_MS,
+        ROW_FRAME_VALIDITY_MS,
     )
     .expect("a repeated query is a new measurement, not a refresh");
     let now = std::time::Instant::now();
@@ -361,7 +361,7 @@ fn dependency_edges_cannot_carry_state_into_or_out_of_the_condition() {
                     CONDITION_KEY,
                     &harness.reactor,
                     "nonce:dep-refused",
-                    120_000,
+                    60_000,
                 )
                 .unwrap_err()
                 .code,
@@ -410,7 +410,7 @@ fn dependency_edges_cannot_carry_state_into_or_out_of_the_condition() {
                     CONDITION_KEY,
                     &harness.reactor,
                     "nonce:reverse-refused",
-                    120_000,
+                    60_000,
                 )
                 .unwrap_err()
                 .code,
@@ -441,7 +441,7 @@ fn dependency_edges_cannot_carry_state_into_or_out_of_the_condition() {
         CONDITION_KEY,
         &harness.reactor,
         "nonce:dep-info",
-        120_000,
+        60_000,
     )
     .expect("live");
     let mut facts = vec![fact, dependency_fact];
@@ -481,7 +481,7 @@ fn live_admission_binds_the_policy_selector_to_the_reactor_certificate_lineage()
             CONDITION_KEY,
             &harness.reactor,
             "nonce:other-lineage",
-            120_000,
+            60_000,
         )
         .unwrap_err()
         .code,
@@ -499,7 +499,7 @@ fn live_admission_binds_the_policy_selector_to_the_reactor_certificate_lineage()
             CONDITION_KEY,
             &harness.reactor,
             "nonce:other-generation",
-            120_000,
+            60_000,
         )
         .unwrap_err()
         .code,
@@ -518,7 +518,7 @@ fn live_admission_binds_the_policy_selector_to_the_reactor_certificate_lineage()
             CONDITION_KEY,
             &harness.reactor,
             "nonce:other-consumer",
-            120_000,
+            60_000,
         )
         .unwrap_err()
         .code,
@@ -551,7 +551,7 @@ fn the_generic_projector_cannot_distinguish_hand_built_facts_known_limit() {
         CONDITION_KEY,
         &harness.reactor,
         "nonce:hand-built",
-        120_000,
+        60_000,
     )
     .expect("live");
     let artifact =

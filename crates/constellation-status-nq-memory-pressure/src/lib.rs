@@ -259,7 +259,7 @@ fn check_subject(
     if requirement.live_support.scope != REQUIRED_QUESTION.spec().pulse_scope {
         return Err(ConsequenceError::new(
             "selector_mismatch",
-            "policy live-support selector names a scope other than the filesystem capacity-pressure question",
+            "policy live-support selector names a scope other than the memory pressure-stall question",
         ));
     }
     if requirement.live_support.subject != verified.subject().as_str()

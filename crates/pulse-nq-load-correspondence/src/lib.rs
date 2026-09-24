@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! Deliberately co-produced correspondence between one exact NQ
 //! local-successor acquisition and one precommitted Pulse frame, for each
-//! question in the closed [`QuestionV1`] table (`nq.host.load_pressure/v1`
-//! and `nq.host_filesystem_capacity.pressure/v1`).
+//! question in the closed [`QuestionV1`] table (`nq.host.load_pressure/v1`,
+//! `nq.host_filesystem_capacity.pressure/v1`, `nq.host_memory.pressure_stall/v1`).
 //!
 //! This crate owns only the pairing. It seals an empty-signal Pulse frame,
 //! derives the NQ acquisition identity from that frame, asks NQ to acquire and

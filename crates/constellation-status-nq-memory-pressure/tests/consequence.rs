@@ -238,7 +238,7 @@ fn a_load_or_filesystem_correspondence_is_refused_by_this_adapter() {
                 CONDITION_KEY,
                 &load.reactor,
                 "nonce:other-refused",
-                120_000,
+                60_000,
             )
             .unwrap_err()
             .code,
@@ -247,7 +247,7 @@ fn a_load_or_filesystem_correspondence_is_refused_by_this_adapter() {
         load.finish();
     }
 
-    // A filesystem correspondence with a selector whose scope names the load
+    // A memory correspondence with a selector whose scope names the load
     // question is refused as a selector mismatch.
     let harness = harness("scope", SyntheticOutcome::ExplicitlyAbsent);
     let mut coproducer = harness.coproducer();
@@ -307,7 +307,7 @@ fn a_public_policy_may_not_carry_the_machine_id_in_any_identifier_or_text() {
             CONDITION_KEY,
             &harness.reactor,
             "nonce:leak",
-            120_000,
+            60_000,
         )
         .unwrap_err()
         .code,
@@ -347,9 +347,13 @@ fn certificate_lookup_names_the_subject_and_scope_and_refuses_ambiguity() {
     assert_eq!(by_consumer, by_subject);
     assert_eq!(by_subject.scope, REQUIRED_QUESTION.spec().pulse_scope);
     assert_eq!(
-        live_support_selector_for(&snapshot, &consumer, "host-filesystem:other/other")
-            .unwrap_err()
-            .code,
+        live_support_selector_for(
+            &snapshot,
+            &consumer,
+            "host:ffffffffffffffffffffffffffffffff"
+        )
+        .unwrap_err()
+        .code,
         "certificate_missing"
     );
 
@@ -358,7 +362,7 @@ fn certificate_lookup_names_the_subject_and_scope_and_refuses_ambiguity() {
     // then ambiguous and refused, while the subject lookup still selects.
     let mut doubled = snapshot.clone();
     let mut second = doubled.certificates[0].clone();
-    second.subject_scope.subject = SubjectId::new("host-filesystem:other/other");
+    second.subject_scope.subject = SubjectId::new("host:ffffffffffffffffffffffffffffffff");
     second.certificate_id = second.compute_id();
     doubled.certificates.push(second);
     assert_eq!(

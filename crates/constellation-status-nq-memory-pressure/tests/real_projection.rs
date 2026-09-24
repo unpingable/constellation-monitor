@@ -222,6 +222,15 @@ fn real_projection_chain() {
             verified.delivery().holding_delay_ms,
             verified.delivery().ingress_fence_ms
         );
+        // The lifetime law: Pulse grants exactly the row's validity less the
+        // measured holding delay, so support never outlives NQ's 120 s
+        // reliance window measured from before the acquisition.
+        assert_eq!(
+            support_window_ms,
+            Some(REQUIRED_QUESTION.frame_validity_ms() - verified.delivery().holding_delay_ms),
+            "occurrence {} support window is not V - d",
+            result.sequence
+        );
         let selector = live_support_selector(&snapshot, &consumer).expect("selector");
         let public_policy = public_policy(selector.clone());
         let operator_policy = operator_policy(selector);
@@ -239,7 +248,7 @@ fn real_projection_chain() {
             "nq.host_memory.pressure_stall",
             &reactor,
             &format!("nonce:{}", verified.correspondence_id()),
-            120_000,
+            60_000,
         )
         .expect("live admission");
         let now_ms = u64::try_from(
@@ -330,6 +339,48 @@ fn real_projection_chain() {
             public_published,
             operator_artifact.aggregate_state.as_str(),
             operator_published
+        );
+    }
+    if std::env::var_os("NQ_CORRESPONDENCE_WAIT_FOR_SOURCE_EXPIRY").is_some() {
+        // Opt-in: wait out the row's own support window on the real reactor
+        // and observe the source expiry, not the presentation deadline.
+        let snapshot = reactor.snapshot();
+        let certificate = snapshot
+            .certificates
+            .iter()
+            .find(|certificate| certificate.consumer == consumer)
+            .expect("certificate");
+        let remaining = certificate
+            .earliest_support_expiry_monotonic_ms
+            .expect("expiry")
+            .saturating_sub(certificate.evaluated_at_monotonic_ms);
+        println!("waiting {remaining} ms plus 2 s for the source window to expire");
+        std::thread::sleep(Duration::from_millis(remaining + 2_000));
+        let expired = reactor
+            .wait_until(Duration::from_secs(10), |snapshot| {
+                snapshot
+                    .certificates
+                    .iter()
+                    .find(|certificate| certificate.consumer == consumer)
+                    .is_some_and(|certificate| {
+                        certificate.judgment != pulse_types::JudgmentCategoryV1::Current
+                    })
+            })
+            .expect("reactor reports expiry");
+        let certificate = expired
+            .certificates
+            .iter()
+            .find(|certificate| certificate.consumer == consumer)
+            .expect("certificate");
+        println!(
+            "source expiry observed: judgment {:?}, supporting evidence {:?}, expiry {:?}",
+            certificate.judgment,
+            certificate.supporting_evidence_ids,
+            certificate.earliest_support_expiry_monotonic_ms
+        );
+        assert_ne!(
+            certificate.judgment,
+            pulse_types::JudgmentCategoryV1::Current
         );
     }
     reactor.shutdown().expect("shutdown");

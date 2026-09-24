@@ -21,7 +21,7 @@ use pulse_nq_load_correspondence::fixture::SyntheticOutcome;
 use pulse_nq_load_correspondence::{Coproducer, QuestionV1};
 
 /// This question's own frame validity; never the load constant.
-const FRAME_VALIDITY_MS: u64 = QuestionV1::HostFilesystemCapacityPressureV1.frame_validity_ms();
+const ROW_FRAME_VALIDITY_MS: u64 = QuestionV1::HostFilesystemCapacityPressureV1.frame_validity_ms();
 use pulse_types::{
     AuthorityGrantsV1, ClockId, ConsumerId, ConsumerProfileGenerationId, ContextActivationId,
     CoverageSummaryV1, EscalationStateV1, EvaluatorSemanticGenerationId, EvidenceWindowId,
@@ -327,7 +327,7 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         CONDITION_KEY,
         &harness.reactor,
         "nonce:once",
-        FRAME_VALIDITY_MS,
+        ROW_FRAME_VALIDITY_MS,
     )
     .expect("live");
     std::thread::sleep(Duration::from_millis(5));
@@ -337,7 +337,7 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         CONDITION_KEY,
         &harness.reactor,
         "nonce:once",
-        FRAME_VALIDITY_MS,
+        ROW_FRAME_VALIDITY_MS,
     )
     .expect("a repeated query is a new measurement, not a refresh");
     let now = std::time::Instant::now();

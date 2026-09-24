@@ -194,40 +194,40 @@ fn fact_for_binds_the_correspondence_and_the_one_fact_guard_is_structural() {
 }
 
 #[test]
-fn a_filesystem_capacity_correspondence_is_refused_by_this_adapter() {
+fn a_filesystem_capacity_or_memory_correspondence_is_refused_by_this_adapter() {
     assert_eq!(REQUIRED_QUESTION, QuestionV1::HostLoadPressureV1);
-    let filesystem = harness_for(
+    // Memory shares load's `host:` subject prefix; the refusal is on the
+    // question, never on the prefix.
+    for other in [
         QuestionV1::HostFilesystemCapacityPressureV1,
-        "filesystem-refused",
-        SyntheticOutcome::Present,
-    );
-    let mut coproducer = filesystem.coproducer();
-    let verified = filesystem.verified(&mut coproducer);
-    assert_eq!(
-        verified.question(),
-        QuestionV1::HostFilesystemCapacityPressureV1
-    );
-    let policy = condition_policy(filesystem.selector_any_scope(), false);
-    assert_eq!(
-        fact_for(&verified, &policy, CONDITION_KEY)
+        QuestionV1::HostMemoryPressureStallV1,
+    ] {
+        let filesystem = harness_for(other, "other-refused", SyntheticOutcome::Present);
+        let mut coproducer = filesystem.coproducer();
+        let verified = filesystem.verified(&mut coproducer);
+        assert_eq!(verified.question(), other);
+        let policy = condition_policy(filesystem.selector_any_scope(), false);
+        assert_eq!(
+            fact_for(&verified, &policy, CONDITION_KEY)
+                .unwrap_err()
+                .code,
+            "question_mismatch"
+        );
+        assert_eq!(
+            admit_live(
+                &verified,
+                &policy,
+                CONDITION_KEY,
+                &filesystem.reactor,
+                "nonce:filesystem-refused",
+                120_000,
+            )
             .unwrap_err()
             .code,
-        "question_mismatch"
-    );
-    assert_eq!(
-        admit_live(
-            &verified,
-            &policy,
-            CONDITION_KEY,
-            &filesystem.reactor,
-            "nonce:filesystem-refused",
-            120_000,
-        )
-        .unwrap_err()
-        .code,
-        "question_mismatch"
-    );
-    filesystem.finish();
+            "question_mismatch"
+        );
+        filesystem.finish();
+    }
 
     let harness = harness("scope", SyntheticOutcome::ExplicitlyAbsent);
     let mut coproducer = harness.coproducer();

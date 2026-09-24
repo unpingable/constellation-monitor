@@ -87,7 +87,10 @@ text, fixed per state:
 
 `healthy` is the projector's closed axis vocabulary and appears only in the
 artifact's machine-readable `state` fields; the renderer shows
-`Memory pressure stall: No issue reported — …`. The non-claims say the
+`Memory pressure stall: No issue reported — …`. The renderer's
+`Overall projection:` line is the projector's aggregate over the policy's
+components and is not itself condition-scoped; with one component it repeats
+the component's label text. The non-claims say the
 condition is kernel stall accounting under NQ's qualified threshold and name
 no PSI figure, threshold, or boot age (the adapter cannot bind them). A public
 policy identifier or text carrying the machine id is refused

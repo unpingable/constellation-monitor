@@ -286,6 +286,25 @@ fn memory_co_production_verifies_with_the_120_s_window_and_its_question() {
             verified.delivery().holding_delay_ms,
         )
         .expect("binding under the memory row");
+        // The same certificate, same subject and consumer id, never binds
+        // under a load-row profile sealed over this enrollment: the scope is
+        // the memory row's.
+        let (nq_enrollment, pulse_enrollment) = synthetic_enrollment_for(MEMORY);
+        let load_over_memory =
+            CorrespondenceProfileV1::seal_for(LOAD, nq_enrollment, pulse_enrollment)
+                .expect("shared prefix seals");
+        assert_eq!(
+            verify_certificate_binding(
+                &certificate,
+                &load_over_memory,
+                verified.evidence_ref(),
+                verified.subject_incarnation(),
+                verified.delivery().holding_delay_ms,
+            )
+            .unwrap_err()
+            .code,
+            "certificate_binding_mismatch"
+        );
         let bytes = std::fs::read(&result.record_path).expect("record");
         assert_eq!(
             verify_audit_record(&bytes, &profile)
