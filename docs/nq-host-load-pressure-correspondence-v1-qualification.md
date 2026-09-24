@@ -76,12 +76,20 @@ restart of the same overlay, the checker:
 No retained record recreated a process-local timing anchor or refreshed Pulse
 support.
 
-A separate qualification case lost the original command response after NQ
-had committed `provider_intake_completed`. Exact read-only replay recovered
-the same NQ artifact. Because the embedding process and its monotonic anchor
-had ended, the correspondence was not resumed, no Pulse frame was delivered,
-and no projection was published. This is the intended recovery boundary, not
-permission to submit a replacement acquisition.
+The deterministic response-loss qualification case completed one acquisition
+and reconciled the same occurrence with two byte-identical reads. It did not
+submit a replacement acquisition.
+
+A separate disposable run reached NQ's terminal `provider_intake_completed`
+phase and stored its exact artifact, then the embedding path ended with a
+bounded read timeout before correspondence delivery. Retained store inspection
+established the terminal acquisition and artifact identity; the frozen run did
+not retain a separate later replay-command transcript, so it does not establish
+loss of the original command response. Because the embedding process and its
+monotonic anchor had ended, the correspondence was not resumed, no Pulse frame
+was delivered, and no projection was published. Stored terminal data permits
+read-only reconciliation, but does not permit a replacement acquisition or
+recreate live support.
 
 ## Evidence custody
 
