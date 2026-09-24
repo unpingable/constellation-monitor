@@ -2,6 +2,9 @@
 
 Status: **Candidate**. The local implementation and synthetic qualification
 fixtures do not replace the required real disposable NQ run or independent
+review. The completed disposable run is recorded in the
+[qualification receipt](nq-host-load-pressure-correspondence-v1-qualification.md);
+standing remains Candidate until its exact source and evidence pass independent
 review.
 
 ## Ownership and claim boundary
