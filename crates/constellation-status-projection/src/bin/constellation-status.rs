@@ -1,4 +1,9 @@
-use std::{env, fs, path::Path, process::ExitCode};
+use std::{
+    env, fs,
+    io::{self, Write as _},
+    path::Path,
+    process::ExitCode,
+};
 
 use constellation_status_projection::{
     RenderedStatusV1, StatusArtifactV1, read_current_artifact, render_status, stage_publication,
@@ -48,7 +53,10 @@ fn run() -> Result<(), String> {
             let artifact = read_current_artifact(Path::new(root))
                 .map_err(|error| error.to_string())?;
             let bytes = artifact.canonical_bytes().map_err(|error| error.to_string())?;
-            println!("{}", String::from_utf8(bytes).map_err(|error| error.to_string())?);
+            io::stdout()
+                .lock()
+                .write_all(&bytes)
+                .map_err(|error| error.to_string())?;
             Ok(())
         }
         _ => Err("usage: constellation-status validate ARTIFACT | render ARTIFACT NOW_UNIX_MS UNCERTAINTY_MS | publish ROOT ARTIFACT | read-current ROOT".to_owned()),
