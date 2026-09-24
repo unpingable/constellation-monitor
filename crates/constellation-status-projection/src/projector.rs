@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::{
-    ComponentOutputFieldV1, DependencyEffectV1, DependencyKindV1, FreshnessV1,
+    ComponentDetailV1, ComponentOutputFieldV1, DependencyEffectV1, DependencyKindV1, FreshnessV1,
     LiveSupportObservationV1, MaintenanceAssertionV1, ModeV1, PROJECTION_BASIS_SCHEMA_V1,
     ProjectedComponentV1, ProjectedStateV1, ProjectionError, ProjectionMomentV1,
     ProjectionPolicyV1, STATUS_ARTIFACT_SCHEMA_V1, SourceFactV1, StatusArtifactV1,
@@ -42,8 +42,25 @@ pub fn project(
     maintenance: &[MaintenanceAssertionV1],
     moment: ProjectionMomentV1,
 ) -> Result<StatusArtifactV1, ProjectionError> {
+    project_with_details(policy, facts, support, maintenance, &[], moment)
+}
+
+/// [`project`] with owner-supplied display-only details. Each detail names
+/// one fact; it is copied onto the component that requires that fact when
+/// the policy discloses [`ComponentOutputFieldV1::Detail`], and is otherwise
+/// dropped. Details take no part in any evaluation, window, state, or basis
+/// digest: the projection decision is identical with or without them.
+pub fn project_with_details(
+    policy: &ProjectionPolicyV1,
+    facts: &[SourceFactV1],
+    support: &[LiveSupportObservationV1],
+    maintenance: &[MaintenanceAssertionV1],
+    details: &[ComponentDetailV1],
+    moment: ProjectionMomentV1,
+) -> Result<StatusArtifactV1, ProjectionError> {
     policy.validate()?;
     validate_inputs(facts, support, maintenance)?;
+    let details_by_fact = validate_details(details, facts)?;
 
     let facts_by_id = facts
         .iter()
@@ -85,7 +102,27 @@ pub fn project(
             let evaluation = evaluations
                 .get(component.key.as_str())
                 .expect("validated component has an evaluation");
-            Some(ProjectedComponentV1 {
+            let detail = if policy
+                .disclosure
+                .component_fields
+                .contains(&ComponentOutputFieldV1::Detail)
+            {
+                let mut texts = component
+                    .required_facts
+                    .iter()
+                    .filter_map(|requirement| details_by_fact.get(requirement.fact_id.as_str()));
+                let first = texts.next();
+                if texts.next().is_some() {
+                    return Some(Err(ProjectionError::new(
+                        "ambiguous_detail",
+                        "a component may carry at most one owner detail",
+                    )));
+                }
+                first.map(|text| (*text).to_owned())
+            } else {
+                None
+            };
+            Some(Ok(ProjectedComponentV1 {
                 id: output.id.clone(),
                 display_name: policy
                     .disclosure
@@ -100,9 +137,10 @@ pub fn project(
                     .contains(&ComponentOutputFieldV1::Reason)
                     .then(|| reasons.get(&evaluation.state).cloned())
                     .flatten(),
-            })
+                detail,
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, ProjectionError>>()?;
     components.sort_by(|left, right| left.id.cmp(&right.id));
 
     let root = evaluations
@@ -198,6 +236,34 @@ pub fn project(
     artifact.artifact_id = artifact.compute_id()?;
     artifact.validate()?;
     Ok(artifact)
+}
+
+/// Owner details must be well formed, name a supplied fact, and name each
+/// fact at most once. Their text is never read.
+fn validate_details<'a>(
+    details: &'a [ComponentDetailV1],
+    facts: &[SourceFactV1],
+) -> Result<BTreeMap<&'a str, &'a str>, ProjectionError> {
+    let mut by_fact = BTreeMap::new();
+    for detail in details {
+        detail.validate()?;
+        if !facts.iter().any(|fact| fact.fact_id == detail.fact_id) {
+            return Err(ProjectionError::new(
+                "unknown_detail_fact",
+                "an owner detail names a fact that was not supplied",
+            ));
+        }
+        if by_fact
+            .insert(detail.fact_id.as_str(), detail.text.as_str())
+            .is_some()
+        {
+            return Err(ProjectionError::new(
+                "duplicate_detail",
+                "an owner detail names the same fact twice",
+            ));
+        }
+    }
+    Ok(by_fact)
 }
 
 fn validate_inputs(

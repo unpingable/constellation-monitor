@@ -22,7 +22,7 @@ pub fn render_status(
         || latest_possible_now >= artifact.fresh_until_unix_ms
     {
         return Ok(RenderedStatusV1::StatusUnavailable {
-            html: unavailable_html(),
+            html: unavailable_html(artifact),
         });
     }
     Ok(RenderedStatusV1::Current {
@@ -58,6 +58,7 @@ fn render_html(artifact: &StatusArtifactV1) -> String {
             html.push_str(" — ");
             html.push_str(&escape_html(reason));
         }
+        push_detail(&mut html, component.detail.as_deref());
         html.push_str("</li>");
     }
     html.push_str("</ul><p class=\"nonclaim\">");
@@ -94,8 +95,46 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
     (year, month, day)
 }
 
-fn unavailable_html() -> String {
-    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Status unavailable</title></head><body><main><h1>Status unavailable</h1><p>No current conclusion is supported.</p></main></body></html>".to_owned()
+/// The unavailable page. It states no conclusion. When a component carries
+/// an owner detail (operator artifacts only), the page lists that component
+/// with its unavailable state and the detail, so the operator can read why
+/// the condition could not be evaluated without the page claiming anything
+/// more; components without a detail are not listed.
+fn unavailable_html(artifact: &StatusArtifactV1) -> String {
+    let mut html = String::from(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Status unavailable</title></head><body><main><h1>Status unavailable</h1><p>No current conclusion is supported.</p>",
+    );
+    let detailed = artifact
+        .components
+        .iter()
+        .filter(|component| component.detail.is_some())
+        .collect::<Vec<_>>();
+    if !detailed.is_empty() {
+        html.push_str("<ul>");
+        for component in detailed {
+            html.push_str("<li><strong>");
+            html.push_str(&escape_html(
+                component.display_name.as_deref().unwrap_or(&component.id),
+            ));
+            html.push_str("</strong>: ");
+            html.push_str(state_label(ProjectedStateV1::Unknown));
+            push_detail(&mut html, component.detail.as_deref());
+            html.push_str("</li>");
+        }
+        html.push_str("</ul>");
+    }
+    html.push_str("</main></body></html>");
+    html
+}
+
+/// Append an owner detail as a separate labelled line. The text is copied
+/// and escaped; nothing about it is read.
+fn push_detail(html: &mut String, detail: Option<&str>) {
+    if let Some(detail) = detail {
+        html.push_str("<br><span class=\"detail\">Detail: ");
+        html.push_str(&escape_html(detail));
+        html.push_str("</span>");
+    }
 }
 
 const fn state_label(state: ProjectedStateV1) -> &'static str {

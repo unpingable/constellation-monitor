@@ -178,6 +178,42 @@ pub enum ComponentOutputFieldV1 {
     State,
     Mode,
     Reason,
+    /// Optional bounded display-only text supplied by the condition owner
+    /// for one component (see [`ComponentDetailV1`]). Operator audience
+    /// only. The projector copies it and never reads it.
+    Detail,
+}
+
+pub const COMPONENT_DETAIL_SCHEMA_V1: &str = "constellation.component_detail.v1";
+
+/// Optional bounded display-only explanation supplied by a condition owner
+/// after its own verified correspondence, attached to the one fact it
+/// explains. It is presentation metadata: it is not a state, a reason code,
+/// a classification, a retry policy, or an input to any projection decision,
+/// and the projector never branches on its contents. It never enters the
+/// basis digest. Absent by default.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentDetailV1 {
+    pub schema: String,
+    /// The fact this text accompanies; the projector attaches it to the
+    /// component that requires that fact.
+    pub fact_id: String,
+    /// Bounded text with no control characters.
+    pub text: String,
+}
+
+impl ComponentDetailV1 {
+    pub fn validate(&self) -> Result<(), ProjectionError> {
+        if self.schema != COMPONENT_DETAIL_SCHEMA_V1 {
+            return Err(ProjectionError::new(
+                "unsupported_schema",
+                "component detail schema",
+            ));
+        }
+        validate_token("fact_id", &self.fact_id)?;
+        validate_safe_text("detail", &self.text)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -344,6 +380,11 @@ pub struct ProjectedComponentV1 {
     pub mode: ModeV1,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Owner-supplied display-only detail (operator audience only); absent
+    /// unless the policy discloses it and the owner supplied it. It decorates
+    /// the state and never replaces or changes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -569,6 +610,16 @@ impl DisclosurePolicyV1 {
                 "public artifacts cannot include a rich-input basis digest",
             ));
         }
+        if self.audience == AudienceClassV1::Public
+            && self
+                .component_fields
+                .contains(&ComponentOutputFieldV1::Detail)
+        {
+            return Err(ProjectionError::new(
+                "public_disclosure",
+                "public artifacts cannot include owner detail text",
+            ));
+        }
         validate_sorted_unique("component fields", &self.component_fields)?;
         if !self
             .component_fields
@@ -728,6 +779,9 @@ impl StatusArtifactV1 {
             }
             if let Some(reason) = &component.reason {
                 validate_safe_text("reason", reason)?;
+            }
+            if let Some(detail) = &component.detail {
+                validate_safe_text("detail", detail)?;
             }
         }
         if let Some(digest) = &self.basis_digest {

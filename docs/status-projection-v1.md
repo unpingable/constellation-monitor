@@ -5,6 +5,20 @@ versioned Constellation records into a small audience-specific snapshot. It is
 not a monitor, scheduler, database, health service, incident system, or source
 of authority.
 
+## Owner detail (operator audience only)
+
+`ComponentOutputFieldV1::Detail` lets an operator policy disclose one optional
+bounded display-only text per component (`ProjectedComponentV1.detail`),
+supplied by the condition owner through `project_with_details` as a
+`ComponentDetailV1` attached to one fact. The projector validates its shape,
+attaches it to the component that requires the fact, and copies it; it never
+reads the text, never branches on it, and excludes it from the basis digest,
+so the projection decision (states, window, basis) is identical with or
+without a detail. A public policy cannot disclose it. The detail decorates a
+state and never replaces or strengthens one; an unknown component with a
+detail is rendered on the unavailable page as `Status unavailable` plus
+`Detail: …`, under "No current conclusion is supported."
+
 ## Positioning: an operator read projection
 
 This crate is an **operator read projection**: an audience-specific,

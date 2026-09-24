@@ -17,6 +17,6 @@ mod render;
 
 pub use adapter::{LiveQueryAnchorV1, LiveSupportObservationV1};
 pub use model::*;
-pub use projector::project;
+pub use projector::{project, project_with_details};
 pub use publish::{CurrentPointerV1, StagedPublication, read_current_artifact, stage_publication};
 pub use render::{RenderedStatusV1, render_status};
