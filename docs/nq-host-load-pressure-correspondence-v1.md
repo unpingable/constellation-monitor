@@ -38,6 +38,14 @@ current local coverage. It establishes no general host or service health,
 reachability, capacity, or cause. `unknown` is not an outage. The mapping
 grants no authority.
 
+Presentation: `healthy` is the projector's closed axis vocabulary (available
+and no impact) and appears only in the artifact's machine-readable `state`
+fields. The renderer labels that state `No issue reported` and appends the
+condition reason with its non-claim, so the operator reads
+`Host load-pressure condition: No issue reported — Qualified load-pressure
+condition absent … This is not a host or service health claim.` No audience is
+shown "Healthy" or "Operational"; `tests/presentation.rs` pins this.
+
 ## One co-produced occurrence
 
 The co-producer and Pulse reactor operate in one process. At process start the
