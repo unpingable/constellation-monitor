@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/constellation-status-nq-filesystem-capacity",
     "crates/constellation-status-nq-load-pressure",
     "crates/constellation-status-projection",
     "crates/monitor-project-concerns",

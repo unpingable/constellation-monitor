@@ -67,4 +67,15 @@ if rg -n 'std::process|Command::new|/proc|derive_state|load_pressure_state|norma
   fail "consequence adapter acquires, recomputes, or fabricates"
 fi
 
-echo "nq-load-correspondence: closed co-production surface; consequence adapter: no acquisition or recomputation surface"
+# --- constellation-status-nq-filesystem-capacity: second consequence adapter -
+# Additive. Same closed surface as the load adapter, plus: it maps exactly one
+# question and never names the load question.
+fscap_dir="$root/crates/constellation-status-nq-filesystem-capacity/src"
+[ -d "$fscap_dir" ] || fail "filesystem-capacity consequence adapter source missing"
+if rg -n 'std::process|Command::new|/proc|/dev/disk|std::fs|mountinfo|nix::|libc::|derive_state|pulse_nq_load_support|LivePresentSupportResponseV1::new|HostLoadPressureV1' "$fscap_dir"; then
+  fail "filesystem-capacity consequence adapter acquires, recomputes, fabricates, or maps another question"
+fi
+rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostFilesystemCapacityPressureV1' "$fscap_dir/lib.rs" || fail "filesystem-capacity adapter must pin its question"
+rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostLoadPressureV1' "$cons_dir/lib.rs" || fail "load-pressure adapter must pin its question"
+
+echo "nq-load-correspondence: closed co-production surface; consequence adapters: no acquisition or recomputation surface, one question each"
