@@ -29,6 +29,10 @@ pub enum QuestionV1 {
     /// `nq.host_filesystem_capacity/1`; subject
     /// `host-filesystem:<machine-id>/<filesystem-uuid>`.
     HostFilesystemCapacityPressureV1,
+    /// `nq.host_memory.pressure_stall/1` against `nq.host_memory/1`; subject
+    /// `host:<machine-id>`; NQ reliance 120 s, the first row whose frame
+    /// validity differs from load's.
+    HostMemoryPressureStallV1,
 }
 
 /// The identity row of one question. Every field is a compiled literal.
@@ -113,19 +117,46 @@ const HOST_FILESYSTEM_CAPACITY_PRESSURE_V1: QuestionSpecV1 = QuestionSpecV1 {
     pulse_profile_domain: "constellation.nq_host_filesystem_capacity_correspondence.pulse_profile.v1",
 };
 
+const HOST_MEMORY_PRESSURE_STALL_V1: QuestionSpecV1 = QuestionSpecV1 {
+    question_id: "nq.host_memory.pressure_stall",
+    question_version: "1",
+    question_digest: "sha256:3fe0860e73a1b3e039aaf3f94f4cc2eaf9658485d280be1ea4675e54b8bc7278",
+    nq_profile_id: "nq.host_memory",
+    nq_profile_version: "1",
+    nq_profile_digest: "sha256:e4eb42dd954e7e4cd13514a5c787caa905fb395f9aaadc82e5b060638edf523e",
+    refusal_profile_version: 1,
+    claim_id: "claim:memory_pressure_stall",
+    condition: "memory_pressure_stall",
+    subject_prefix: "host:",
+    reliance_window_ms: 120_000,
+    pulse_scope: "nq.host_memory.pressure_stall/v1",
+    coverage_tag: "nq_host_memory_pressure_stall_v1_terminal_artifact",
+    acquisition_id_prefix: "constellation-nq-memory-stall:v1:",
+    transport_path: "in-process:nq-memory-pressure-stall-correspondence/v1",
+    failure_domain: "domain:nq-memory-pressure-stall-correspondence",
+    profile_schema: "constellation.nq_host_memory_pressure_stall_correspondence_profile.v1",
+    occurrence_schema: "constellation.nq_host_memory_pressure_stall_correspondence_occurrence.v1",
+    intent_schema: "constellation.nq_host_memory_pressure_stall_correspondence_intent.v1",
+    record_schema: "constellation.nq_host_memory_pressure_stall_correspondence.v1",
+    pulse_profile_name: "constellation.nq_host_memory_pressure_stall_correspondence",
+    pulse_profile_domain: "constellation.nq_host_memory_pressure_stall_correspondence.pulse_profile.v1",
+};
+
 /// Every row's reliance window must exceed the ingress fence by more than one
 /// millisecond, or the frame validity would underflow. Checked at compile
 /// time for every row.
 const _: () = {
     assert!(HOST_LOAD_PRESSURE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
     assert!(HOST_FILESYSTEM_CAPACITY_PRESSURE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
+    assert!(HOST_MEMORY_PRESSURE_STALL_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
 };
 
 impl QuestionV1 {
     /// Every question in the closed table, in declaration order.
-    pub const ALL: [Self; 2] = [
+    pub const ALL: [Self; 3] = [
         Self::HostLoadPressureV1,
         Self::HostFilesystemCapacityPressureV1,
+        Self::HostMemoryPressureStallV1,
     ];
 
     #[must_use]
@@ -133,6 +164,7 @@ impl QuestionV1 {
         match self {
             Self::HostLoadPressureV1 => &HOST_LOAD_PRESSURE_V1,
             Self::HostFilesystemCapacityPressureV1 => &HOST_FILESYSTEM_CAPACITY_PRESSURE_V1,
+            Self::HostMemoryPressureStallV1 => &HOST_MEMORY_PRESSURE_STALL_V1,
         }
     }
 

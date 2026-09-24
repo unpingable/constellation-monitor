@@ -18,7 +18,10 @@ use constellation_status_projection::{
     read_current_artifact, render_status, stage_publication,
 };
 use pulse_nq_load_correspondence::fixture::SyntheticOutcome;
-use pulse_nq_load_correspondence::{Coproducer, FRAME_VALIDITY_MS};
+use pulse_nq_load_correspondence::{Coproducer, QuestionV1};
+
+/// This question's own frame validity; never the load constant.
+const FRAME_VALIDITY_MS: u64 = QuestionV1::HostFilesystemCapacityPressureV1.frame_validity_ms();
 use pulse_types::{
     AuthorityGrantsV1, ClockId, ConsumerId, ConsumerProfileGenerationId, ContextActivationId,
     CoverageSummaryV1, EscalationStateV1, EvaluatorSemanticGenerationId, EvidenceWindowId,

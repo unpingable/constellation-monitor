@@ -16,7 +16,7 @@ use pulse_nq_load_correspondence::fixture::{
 };
 use pulse_nq_load_correspondence::{
     Coproducer, CorrespondenceConstantsV1, CorrespondenceProfileV1, CorrespondenceRecordV1,
-    FRAME_VALIDITY_MS, FixedSubjectIncarnation, NqDetectorStateV1, OccurrenceOutcomeV1, QuestionV1,
+    FixedSubjectIncarnation, INGRESS_FENCE_MS, NqDetectorStateV1, OccurrenceOutcomeV1, QuestionV1,
     acquisition_id, build_frame, check_disjoint_enrollment, check_holding_delay_for,
     classify_outcome_for, evidence_ref, frame_ingress_for, verify_artifact, verify_audit_record,
     verify_certificate_binding, verify_frame,
@@ -54,7 +54,10 @@ fn the_filesystem_profile_seals_under_its_own_row_and_the_load_profile_is_unchan
             .maximum_validity_ms,
         FS.frame_validity_ms()
     );
-    assert_eq!(FS.frame_validity_ms(), FRAME_VALIDITY_MS);
+    assert_eq!(
+        FS.frame_validity_ms(),
+        FS.spec().reliance_window_ms - INGRESS_FENCE_MS - 1
+    );
     assert_ne!(
         fs_profile.pulse_observation_profile().expect("profile"),
         load_profile.pulse_observation_profile().expect("profile")

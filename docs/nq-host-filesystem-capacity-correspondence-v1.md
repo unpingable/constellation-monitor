@@ -12,7 +12,8 @@ projection, not a public status component.
 ## The question row
 
 `pulse-nq-load-correspondence` carries a closed compile-time table
-`QuestionV1` with two rows. Every persisted carrier (profile, occurrence
+`QuestionV1` (load, filesystem capacity, and since the memory tranche
+memory pressure stall). Every persisted carrier (profile, occurrence
 preimage, intent, record) names its question through its schema string; a
 verifier resolves the string against the table and checks the profile's
 constants against the row. Nothing is inferred from payload content, and no

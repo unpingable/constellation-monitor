@@ -36,6 +36,13 @@ pub const SYNTHETIC_FILESYSTEM_SUBJECT: &str =
 pub const SYNTHETIC_FILESYSTEM_INSTANCE: &str = "fs-data-capacity";
 pub const SYNTHETIC_FILESYSTEM_OBSERVER: &str = "observer:nq-filesystem-capacity-correspondence";
 pub const SYNTHETIC_FILESYSTEM_CONSUMER: &str = "consumer:status-projection-nq-filesystem-capacity";
+/// Memory synthetic identities. The subject follows NQ's `host:<machine-id>`
+/// rule and shares load's `host:` prefix on purpose: the seam keys on the
+/// question, never on the prefix.
+pub const SYNTHETIC_MEMORY_SUBJECT: &str = "host:0123456789abcdef0123456789abcdef";
+pub const SYNTHETIC_MEMORY_INSTANCE: &str = "mem-local";
+pub const SYNTHETIC_MEMORY_OBSERVER: &str = "observer:nq-memory-pressure-stall-correspondence";
+pub const SYNTHETIC_MEMORY_CONSUMER: &str = "consumer:status-projection-nq-memory-pressure";
 pub const SYNTHETIC_SUBJECT_INCARNATION: &str = "linux-boot:00000000-0000-4000-8000-0000000000b0";
 pub const SYNTHETIC_OBSERVER_INCARNATION: &str = "observer-incarnation:synthetic:1";
 
@@ -74,6 +81,14 @@ pub fn synthetic_enrollment_for(question: QuestionV1) -> (NqEnrollmentV1, PulseE
             SYNTHETIC_FILESYSTEM_OBSERVER,
             SYNTHETIC_FILESYSTEM_CONSUMER,
             "nq-filesystem-capacity-correspondence",
+        ),
+        QuestionV1::HostMemoryPressureStallV1 => (
+            SYNTHETIC_MEMORY_INSTANCE,
+            SYNTHETIC_MEMORY_SUBJECT,
+            "nq.scope.host_memory",
+            SYNTHETIC_MEMORY_OBSERVER,
+            SYNTHETIC_MEMORY_CONSUMER,
+            "nq-memory-pressure-stall-correspondence",
         ),
     };
     let question_id = question.spec().question_id;
@@ -339,6 +354,7 @@ pub fn synthetic_artifact(
                     "limitations": [match profile.question()? {
                         QuestionV1::HostLoadPressureV1 => "One scheduler snapshot does not identify the workload causing load",
                         QuestionV1::HostFilesystemCapacityPressureV1 => "One statfs snapshot establishes no storage health, integrity, performance, quota, or growth fact",
+                        QuestionV1::HostMemoryPressureStallV1 => "The condition is kernel stall accounting, not memory sufficiency, OOM risk, swap health, or service impact",
                     }],
                     "nonclaims": ["the causal source of the bounded condition is not established", "the host boot or deployment generation is not established"]
                 }]),
