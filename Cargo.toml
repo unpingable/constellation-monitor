@@ -1,10 +1,12 @@
 [workspace]
 members = [
+    "crates/constellation-status-nq-load-pressure",
     "crates/constellation-status-projection",
     "crates/monitor-project-concerns",
     "crates/pulse-agent",
     "crates/pulse-evaluator",
     "crates/pulse-l3-bridge",
+    "crates/pulse-nq-load-correspondence",
     "crates/pulse-nq-load-support",
     "crates/pulse-project-predicate-support",
     "crates/pulse-qualification",

@@ -57,6 +57,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "constellation-status-nq-load-pressure"
+version = "0.1.0"
+dependencies = [
+ "constellation-status-projection",
+ "pulse-evaluator",
+ "pulse-nq-load-correspondence",
+ "pulse-runtime",
+ "pulse-types",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "constellation-status-projection"
 version = "0.1.0"
 dependencies = [
@@ -419,6 +435,21 @@ version = "0.1.0"
 dependencies = [
  "pulse-types",
  "serde_json",
+]
+
+[[package]]
+name = "pulse-nq-load-correspondence"
+version = "0.1.0"
+dependencies = [
+ "pulse-evaluator",
+ "pulse-runtime",
+ "pulse-types",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

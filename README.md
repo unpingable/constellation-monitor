@@ -86,7 +86,7 @@ policy generation.
 
 ## Workspace
 
-The Rust workspace contains twelve crates spanning the experimental monitor
+The Rust workspace contains fourteen crates spanning the experimental monitor
 plane, a generic repository-concern acquisition boundary, and closed
 proposition-exact support adapters:
 
@@ -106,6 +106,11 @@ proposition-exact support adapters:
   and required-observation inventory gaps; and
 - `pulse-nq-load-support`: a closed one-shot producer, separate intake, and
   read-only resolver for exactly `nq.host.load_pressure/v1`; and
+- `pulse-nq-load-correspondence`: a closed in-process co-producer that pairs
+  one precommitted Pulse frame with one exact NQ local-successor acquisition;
+  and
+- `constellation-status-nq-load-pressure`: the condition-specific projection
+  consequence adapter for that process-local verified correspondence; and
 - `constellation-status-projection`: an experimental pure projector plus
   bounded Pulse admission, disclosure-specific status artifacts, reduced
   rendering, and local atomic publication helpers.
@@ -237,6 +242,7 @@ mutation authority.
 - [Receiver-boundary reconnaissance](docs/campaign-5-reconnaissance.md)
 - [Receiver-boundary campaign report](docs/campaign-5-report.md)
 - [Exact NQ host-load-pressure support contract](docs/nq-host-load-pressure-support-v1.md)
+- [NQ host-load-pressure / Pulse correspondence v1](docs/nq-host-load-pressure-correspondence-v1.md)
 - [Generic project-concern discovery and acquisition contract](docs/project-concern-contract.md)
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and

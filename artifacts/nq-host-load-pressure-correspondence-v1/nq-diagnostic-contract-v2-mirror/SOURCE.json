@@ -1,0 +1,19 @@
+{
+  "schema": "constellation.vendored_nq_contract_mirror.v1",
+  "owner": "constellation-nq",
+  "source_repository_path": "diagnostic-contract-v2",
+  "nq_commit": "6190218f1da817d6900d1dbc551d52818673154e",
+  "nq_tree": "3d88e212e211d4aa9e6302d1da647d30f967325b",
+  "manifest_sha256": "sha256:706aab7a5a71472a5dda6f1514f1748b460c06d606df6af7620a66b6574053e8",
+  "copied_paths": [
+    "manifest.json",
+    "fixtures/valid/*.json",
+    "fixtures/hostile/*.json"
+  ],
+  "purpose": "Digest-pinned read-only mirror used by Monitor to prove identity-recompute equivalence with NQ's canonical rule and to classify NQ fixture outcomes under the correspondence ladder without pins. These fixtures use NQ's fixture question digest and fresh selection rule; none is a production correspondence vector and none is present.",
+  "nonclaims": [
+    "the mirror does not make NQ's contract Monitor-owned",
+    "no fixture here establishes anything about a host",
+    "a changed NQ manifest requires a deliberate re-vendoring with a new recorded commit"
+  ]
+}

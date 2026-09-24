@@ -1,0 +1,51 @@
+# Replace every @ROOT@ and @EXECUTION_UID@ before use. This is a disposable
+# qualification fixture, not an installed NQ configuration.
+schema = "nq.config.v1"
+database_path = "@ROOT@/nq.db"
+socket_path = "@ROOT@/nqd.sock"
+admissions_dir = "@ROOT@/admissions"
+helper_runtime_dir = "@ROOT@/helpers"
+
+[[watchers]]
+instance_id = "host-diagnostic.primary"
+carrier = "stdio"
+subject = "host:diagnostic-fixture"
+capability_ceiling = ["read_procfs", "read_system_info"]
+checkpoint_policy = "disabled"
+
+[watchers.command]
+executable = "/usr/bin/python3"
+args = ["@ROOT@/nq_host_diagnostic_helper.py"]
+env = { NQ_DIAGNOSTIC_TEST_MODE = "@ROOT@/mode" }
+execution_account = "@EXECUTION_UID@"
+allow_same_identity_in_debug = true
+working_directory = "@ROOT@"
+
+[watchers.profile]
+id = "nq.host"
+version = 1
+
+[watchers.scope]
+kind = "host"
+value = { id = "diagnostic-fixture" }
+
+[watchers.vantage]
+kind = "local"
+value = {}
+
+[watchers.schedule]
+interval_seconds = 60
+jitter_seconds = 0
+deadline_ms = 5000
+retry_backoff_seconds = 1
+max_retry_backoff_seconds = 10
+
+[watchers.resources]
+max_response_bytes = 1048576
+max_stderr_bytes = 65536
+max_observations = 1
+max_address_space_bytes = 536870912
+max_cpu_seconds = 60
+max_processes = 32
+max_open_files = 128
+max_file_bytes = 67108864

@@ -78,6 +78,35 @@ cargo run -p pulse-project-predicate-support -- qualify \
 Output paths are create-only where documented. Use fresh paths; never infer
 permission to replace an existing record.
 
+The Candidate NQ/Pulse correspondence is a separate in-process composition.
+Its persisted record is audit-only; only the process-local verified value from
+the same co-production call can feed the narrow consequence adapter. Run its
+local qualification cases and closed-surface check with:
+
+```sh
+cargo test -p pulse-nq-load-correspondence -p constellation-status-nq-load-pressure \
+  --all-targets --all-features
+./scripts/check_exact_load_support_surface.sh
+```
+
+The ignored real-NQ harness requires a profile enrolled from the pinned NQ
+build, a schema-13 store with admitted prior watcher history, a non-writable
+digest-pinned NQ executable, and fresh absolute custody paths. It is only for
+the separately authorized disposable environment:
+
+```sh
+NQ_CORRESPONDENCE_PROFILE=/absolute/profile.json \
+NQ_CORRESPONDENCE_CUSTODY_ROOT=/absolute/fresh/custody \
+NQ_CORRESPONDENCE_OCCURRENCES=3 \
+NQ_CORRESPONDENCE_CADENCE_MS=2000 \
+cargo test -p pulse-nq-load-correspondence --all-features \
+  --test real_nq -- --ignored --nocapture
+```
+
+See `docs/nq-host-load-pressure-correspondence-v1.md`. A harness transcript is
+not qualification acceptance, and a retained record never recreates live
+support.
+
 ## Resume an existing campaign
 
 Read its checkpoint before starting anything. Reconcile the exact

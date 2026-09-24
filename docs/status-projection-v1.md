@@ -67,6 +67,27 @@ absent, and it is not bound to the Pulse evidence identity used here. Treating
 that view as a normalized availability fact would invent meaning, so the
 earlier proposed NQ adapter was removed.
 
+### Candidate NQ load-pressure consequence adapter
+
+The leaf `constellation-status-nq-load-pressure` crate is a Candidate adapter
+for one deliberately co-produced relationship defined by
+[`nq-host-load-pressure-correspondence-v1.md`](nq-host-load-pressure-correspondence-v1.md).
+It does not admit `nq.status_snapshot.v3`, a retained correspondence record, or
+the independent `pulse-nq-load-support` family. It accepts only the
+non-serializable `VerifiedCorrespondenceV1` created during the same-process NQ
+acquire/replay/qualify and Pulse-ingress sequence, plus a fresh live query for
+the exact paired evidence reference.
+
+The adapter owns only
+`constellation.status_consequence.nq_host_load_pressure.v1`. Present maps to
+`impaired/none` and the condition component displays `degraded`; explicitly
+absent maps to `available/none` and that condition component displays
+`healthy`. Cannot-evaluate, other unevaluated outcomes, stale support, and any
+mismatch map to `unknown`. A structural guard requires the component to have
+exactly this one fact. These are condition-specific projection consequences,
+not NQ claims about general host or service health. Candidate standing remains
+until the real disposable run and independent frozen review succeed.
+
 There are no v1 adapters for Nightshift, Standing, AG, Phosphor, or free-form
 Monitor project-concern records. Their historical records must not be
 reinterpreted as present health.

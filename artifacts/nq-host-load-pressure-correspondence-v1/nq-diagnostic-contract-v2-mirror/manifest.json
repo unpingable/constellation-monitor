@@ -1,0 +1,154 @@
+{
+  "schema": "nq.diagnostic_contract_assets.v2",
+  "digest_basis": "SHA-256 of exact file bytes; artifact_id is SHA-256 of RFC 8785 canonical artifact bytes with artifact_id omitted",
+  "contract": {
+    "schema": "nq.diagnostic_execution.v2",
+    "canonicalization": {
+      "id": "rfc8785-jcs",
+      "version": "1",
+      "digest": "sha256:e49d92d4e86052e66ed2a481b9386d3b214ce3d2df5fd109a6491ccb9ffb24f3"
+    },
+    "schema_path": "schemas/nq.diagnostic_execution.v2.schema.json",
+    "schema_sha256": "sha256:cb42376d1a1dd551b4bd1b6f2f5e3ecd771a043eb47bb58dcf289616c29f8976"
+  },
+  "documentation": {
+    "path": "README.md",
+    "sha256": "sha256:0ab93a1028f50d50ae3c3d91c95bd07c1be101289756103601c396d39614c805"
+  },
+  "fixtures": [
+    {
+      "id": "acquisition_failure",
+      "class": "valid",
+      "path": "fixtures/valid/acquisition_failure.json",
+      "sha256": "sha256:0a63887d54a98a84109a9dc443ae4c0287721efa6cd4ac144aff6307278b676f",
+      "artifact_id": "sha256:ad7d675472581968eff853c69f210d52fd45d49b273ba141f637e51a63fce16b",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "completed_bounded_clock",
+      "class": "valid",
+      "path": "fixtures/valid/completed_bounded_clock.json",
+      "sha256": "sha256:1abad047be8f475c75be645d687481a928e3d5a963f19373649ce11079a764a2",
+      "artifact_id": "sha256:22e195c711b0a856f68805ed37b3b595ea1e3913222b03af5045e755f5ae1c1b",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "completed_unqualified_clock",
+      "class": "valid",
+      "path": "fixtures/valid/completed_unqualified_clock.json",
+      "sha256": "sha256:139728d72143f286c4bcc74cf7db0c587af154f79a049e0492a64de616850956",
+      "artifact_id": "sha256:28e58c8b72ef7ec09817c33869707a4518961568cf1ee1d81353f02b9c9de20a",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "detector_refusal_detail_a",
+      "class": "valid",
+      "path": "fixtures/valid/detector_refusal_detail_a.json",
+      "sha256": "sha256:96a2e8d8e9cfe4b412f1302c6b58140c16106db8bad14b72803d67b1c001a68d",
+      "artifact_id": "sha256:0d96e8e8738ac0619061b159f829003b4bca3e702d90d78daa8910f9dbb0ba48",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "detector_refusal_detail_b",
+      "class": "valid",
+      "path": "fixtures/valid/detector_refusal_detail_b.json",
+      "sha256": "sha256:4c2811f2c14b2ded6d62bcd41ece0752a2fa7718fe23620b7228195225277820",
+      "artifact_id": "sha256:b2abdd424c127e843bca0608654f05e08901bf75e439cd3ea7673e3069cbe064",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "multiple_input_refusals",
+      "class": "valid",
+      "path": "fixtures/valid/multiple_input_refusals.json",
+      "sha256": "sha256:690e35b34f3298bb64d4f474165fa186922198e1324f000c374c51ab613131b3",
+      "artifact_id": "sha256:01cf8ab574e3499e9811e955d03b3f71fbf531a2b4f368359222d832d6178415",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "provider_no_response",
+      "class": "valid",
+      "path": "fixtures/valid/provider_no_response.json",
+      "sha256": "sha256:7e012dfda2d372c0dfab9e5a032198bbe874e520f0a8cf38e2edd28151159c7d",
+      "artifact_id": "sha256:38d5ff58a5905b0d1a9239d2c3a185d01388973d4e108dbc07d080d8f1c46754",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "received_input_refusal",
+      "class": "valid",
+      "path": "fixtures/valid/received_input_refusal.json",
+      "sha256": "sha256:96d90162193eb19326937d5cb208e04ebddefd069af97bc04c1aedf420e923a6",
+      "artifact_id": "sha256:c8ae44ac6f82b40398c0e0cac1445f6a2facc302844b2b7e2c06f65960253d70",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "retained_acquisition_refusal",
+      "class": "valid",
+      "path": "fixtures/valid/retained_acquisition_refusal.json",
+      "sha256": "sha256:6c67feb997af11bf2dbccd21a4dc00e40aaa4edd1f16190613e036020ecc6a4a",
+      "artifact_id": "sha256:f31ea7589e33b6a80bb0041c02c5523104647b441b56c8d056deb41efb8a760f",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "typed_unsupported",
+      "class": "valid",
+      "path": "fixtures/valid/typed_unsupported.json",
+      "sha256": "sha256:9dd86054485201b18be986345436061c0aec10f13a6ef7960051475a6732b078",
+      "artifact_id": "sha256:c83df92791ca63b39c2a0415386eabc97131bd17539ceb1af404159227c77136",
+      "expected_disposition": "accepted"
+    },
+    {
+      "id": "acquisition_failure_with_timeout",
+      "class": "hostile",
+      "path": "fixtures/hostile/acquisition_failure_with_timeout.json",
+      "sha256": "sha256:42955382d82491074922f8ece9e39a17d47a976ed6b9ae702114440c315296d6",
+      "artifact_id": "sha256:ce5bcc83b2eae896ab80a5ff65533588739b3b3937f7cf09cc238cb9f02aa6f3",
+      "expected_disposition": "rejected_semantic_invariant",
+      "expected_error": "acquisition_failed carries a provider-no-response failure class"
+    },
+    {
+      "id": "missing_refusal_frontier_member",
+      "class": "hostile",
+      "path": "fixtures/hostile/missing_refusal_frontier_member.json",
+      "sha256": "sha256:b41bcc826ed206722007bd7dceede8a9818c0fc2b6b51f0b548993cc5c149032",
+      "artifact_id": "sha256:645b20e2eda021a27af7ed5359cadace08deb3aa129e4fe14c0d1579b5ec2052",
+      "expected_disposition": "rejected_semantic_invariant",
+      "expected_error": "refused outcome must preserve the complete exact refusal frontier"
+    },
+    {
+      "id": "missing_unsupported_frontier",
+      "class": "hostile",
+      "path": "fixtures/hostile/missing_unsupported_frontier.json",
+      "sha256": "sha256:cb53c2178ee13af30590ad648461d108be71af1a80987c4d7bd3523d669103f7",
+      "artifact_id": "sha256:a06f32e653a9bcfa919fc4ddff7f24fbec96c13ab05ba0dade0adc78601a6a0d",
+      "expected_disposition": "rejected_schema",
+      "expected_error": "unsupported outcome requires at least one typed unsupported cause"
+    },
+    {
+      "id": "no_response_with_spawn",
+      "class": "hostile",
+      "path": "fixtures/hostile/no_response_with_spawn.json",
+      "sha256": "sha256:5bbea55f97bca30c36844ffbc992d58e8a62feb0a9839ba7f17828772830ebe1",
+      "artifact_id": "sha256:51d749127fd3edee84c7723d65e48defb36c19bbe0065cad9df3933860b8123d",
+      "expected_disposition": "rejected_semantic_invariant",
+      "expected_error": "provider_no_response carries an acquisition-failure class"
+    },
+    {
+      "id": "received_before_acquisition",
+      "class": "hostile",
+      "path": "fixtures/hostile/received_before_acquisition.json",
+      "sha256": "sha256:99096642e06250217a0c0bbc0b7634aba7298efe6a8f851cab07a8114a2d2983",
+      "artifact_id": "sha256:03bf25965148d522f0d2f47982908a9e8616da5617dbc966c45b2caa2dd11fa4",
+      "expected_disposition": "rejected_semantic_invariant",
+      "expected_error": "received_at falls before acquisition completion or after diagnostic completion"
+    },
+    {
+      "id": "substituted_failure_dependency",
+      "class": "hostile",
+      "path": "fixtures/hostile/substituted_failure_dependency.json",
+      "sha256": "sha256:ce959be05465e794625bcce78b9f136393d48a8ab92a9b860afdeb3c0db88d60",
+      "artifact_id": "sha256:b6e0f810878600a2902e2f1975c22326bc5d8754f358254985c078c3913a1080",
+      "expected_disposition": "rejected_semantic_invariant",
+      "expected_error": "claim references an unknown failed-input occurrence"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+[package]
+name = "pulse-nq-load-correspondence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Synthetic NQ artifact/provenance fixtures and an in-process NQ port double.
+# They exist only so the correspondence and consequence crates can qualify
+# their verifiers without a live NQ store. They are never NQ output.
+synthetic-fixtures = []
+
+[dependencies]
+pulse-evaluator = { path = "../pulse-evaluator" }
+pulse-runtime = { path = "../pulse-runtime" }
+pulse-types = { path = "../pulse-types" }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true
