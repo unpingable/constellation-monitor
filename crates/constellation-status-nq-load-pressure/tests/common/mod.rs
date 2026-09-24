@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use constellation_status_nq_load_pressure::{
-    CONSEQUENCE_SCHEMA_V1, FACT_OWNER, live_support_selector, recommended_safe_reasons,
+    CONSEQUENCE_SCHEMA_V1, FACT_OWNER, PUBLIC_COMPONENT_LABEL, live_support_selector,
+    recommended_safe_reasons,
 };
 use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DependencyBehaviorV1,
@@ -141,7 +142,7 @@ pub fn condition_policy(selector: LiveSupportSelectorV1, public: bool) -> Projec
             key: CONDITION_KEY.to_owned(),
             output: Some(OutputComponentV1 {
                 id: CONDITION_OUTPUT.to_owned(),
-                display_name: "Host load-pressure condition".to_owned(),
+                display_name: PUBLIC_COMPONENT_LABEL.to_owned(),
             }),
             required_facts: vec![requirement(selector)],
             maintenance_assertion_ids: Vec::new(),

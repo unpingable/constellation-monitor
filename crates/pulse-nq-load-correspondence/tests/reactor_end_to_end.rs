@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use pulse_nq_load_correspondence::fixture::{
     FakeNq, SYNTHETIC_SUBJECT_INCARNATION, SyntheticOutcome, Tamper, start_reactor,
-    synthetic_profile,
+    synthetic_enrollment, synthetic_profile,
 };
 use pulse_nq_load_correspondence::{
     Coproducer, CorrespondenceProfileV1, FRAME_VALIDITY_MS, FixedSubjectIncarnation,
@@ -126,6 +126,37 @@ fn co_production_binds_the_frame_pulse_certifies_and_the_record_verifies() {
     assert_eq!(verdict.nq_detector_state, NqDetectorStateV1::Present);
     assert_eq!(verdict.artifact_id, verified.artifact_id());
     assert_eq!(nq.acquisition_count(), 1);
+    harness.finish();
+}
+
+#[test]
+fn an_alternate_coherent_port_enrollment_refuses_before_occurrence_custody() {
+    let harness = harness("enrollment-mismatch");
+    let (mut alternate_nq, alternate_pulse) = synthetic_enrollment();
+    alternate_nq.instance_id = "host-local-alternate".to_owned();
+    let alternate_profile = CorrespondenceProfileV1::seal(alternate_nq, alternate_pulse)
+        .expect("coherent alternate profile");
+    let alternate_port = FakeNq::new(alternate_profile, SyntheticOutcome::Present);
+    let witness = harness.witness();
+
+    let result = Coproducer::begin(
+        &harness.profile,
+        &alternate_port,
+        &witness,
+        &harness.intent_dir,
+        &harness.audit_dir,
+    );
+    let error = match result {
+        Ok(_) => panic!("a port for another sealed enrollment cannot enter this occurrence"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "nq_enrollment_mismatch");
+    assert!(
+        !harness.intent_dir.exists() && !harness.audit_dir.exists(),
+        "the mismatch is refused before custody paths are created"
+    );
+    assert_eq!(alternate_port.acquire_attempt_count(), 0);
+    assert_eq!(alternate_port.replay_attempt_count(), 0);
     harness.finish();
 }
 

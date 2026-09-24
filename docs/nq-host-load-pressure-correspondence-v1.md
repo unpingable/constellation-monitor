@@ -49,8 +49,10 @@ origin. For each finite occurrence it:
 4. writes a create-new intent before invoking NQ;
 5. invokes only `acquire-next-local`, `replay-local-successor`, and `qualify`
    through a bounded, cleared-environment, null-stdin, digest-pinned port; the
-   port trait is sealed so downstream code cannot substitute another command
-   carrier while retaining the verified correspondence type;
+   port trait is sealed, and its complete enrollment must exactly match the
+   correspondence profile before custody paths are created, so downstream
+   code cannot substitute another enrolled command carrier while retaining the
+   verified correspondence type;
 6. requires a canonical pinned NQ v2 artifact, byte-identical replay, and
    matching NQ admission provenance;
 7. submits the exact frame to the in-process reactor with its measured holding
@@ -94,6 +96,12 @@ recreate currentness. Only the non-cloneable, non-serializable
 offered to the consequence adapter. The adapter additionally requires a fresh
 live query whose current certificate lists exactly the paired evidence
 reference and subject incarnation.
+
+For a public projection, that adapter also requires the qualified
+load-pressure-condition label, the reason field, and the exact safe reason
+table that carries the condition's non-claims. Relabeling it as general host
+health or omitting those public non-claims is refused at the leaf adapter; the
+generic projector remains policy-generic.
 
 ## Qualification material
 

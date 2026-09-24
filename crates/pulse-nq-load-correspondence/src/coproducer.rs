@@ -95,6 +95,12 @@ impl<'a> Coproducer<'a> {
         audit_dir: &Path,
     ) -> Result<Self, CorrespondenceError> {
         profile.validate()?;
+        if port.enrollment() != &profile.nq {
+            return Err(CorrespondenceError::new(
+                "nq_enrollment_mismatch",
+                "NQ port enrollment differs from the correspondence profile",
+            ));
+        }
         if !intent_dir.is_absolute() || !audit_dir.is_absolute() || intent_dir == audit_dir {
             return Err(CorrespondenceError::new(
                 "invalid_custody_paths",

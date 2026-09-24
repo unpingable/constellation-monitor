@@ -11,9 +11,9 @@
 //! ever asserted.
 
 use constellation_status_projection::{
-    AvailabilityV1, ImpactV1, LiveQueryAnchorV1, LiveSupportObservationV1, LiveSupportSelectorV1,
-    ProjectedStateV1, ProjectionError, ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1,
-    SourceFactClassV1, SourceFactV1,
+    AudienceClassV1, AvailabilityV1, ComponentOutputFieldV1, ImpactV1, LiveQueryAnchorV1,
+    LiveSupportObservationV1, LiveSupportSelectorV1, ProjectedStateV1, ProjectionError,
+    ProjectionPolicyV1, SOURCE_FACT_SCHEMA_V1, SafeReasonV1, SourceFactClassV1, SourceFactV1,
 };
 use pulse_nq_load_correspondence::{NqDetectorStateV1, VerifiedCorrespondenceV1};
 use pulse_runtime::{LocalCrashReactor, ReactorSnapshotV1};
@@ -28,6 +28,7 @@ pub const CONSEQUENCE_SCHEMA_V1: &str = "constellation.status_consequence.nq_hos
 /// The fact owner named in projection policies. It is this adapter, not NQ
 /// and not the generic projector.
 pub const FACT_OWNER: &str = "constellation-status-nq-load-pressure";
+pub const PUBLIC_COMPONENT_LABEL: &str = "Host load-pressure condition";
 
 pub const CONSEQUENCE_NONCLAIMS: [&str; 5] = [
     "degraded means NQ found the bounded load-pressure condition present; NQ rates that condition warning, not error, and no impairment, outage, impact, or cause is claimed",
@@ -112,9 +113,9 @@ pub fn consequence_identity() -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-/// Public reason text that names the condition (stop condition S9). Policy
-/// authors may copy these verbatim; the projector only ever emits reason text
-/// that a policy allowlists.
+/// Required public reason text that names the condition (stop condition S9).
+/// The leaf adapter requires these exact entries for a public policy; the
+/// projector only ever emits reason text that the policy allowlists.
 #[must_use]
 pub fn recommended_safe_reasons() -> Vec<SafeReasonV1> {
     vec![
@@ -203,6 +204,7 @@ pub fn fact_for(
             "policy live-support selector names a different subject or incarnation",
         ));
     }
+    enforce_public_contract(component.output.as_ref(), policy)?;
     let row = consequence_row(verified.nq_detector_state());
     let fact = SourceFactV1 {
         schema: SOURCE_FACT_SCHEMA_V1.to_owned(),
@@ -221,6 +223,36 @@ pub fn fact_for(
     };
     fact.validate()?;
     Ok(fact)
+}
+
+/// Keep the qualified public wording at the consequence boundary. The generic
+/// projector remains policy-generic; this leaf alone owns the condition label
+/// and the reason text that carries its non-claims.
+fn enforce_public_contract(
+    output: Option<&constellation_status_projection::OutputComponentV1>,
+    policy: &ProjectionPolicyV1,
+) -> Result<(), ConsequenceError> {
+    if policy.disclosure.audience != AudienceClassV1::Public {
+        return Ok(());
+    }
+    if output.is_none_or(|output| output.display_name != PUBLIC_COMPONENT_LABEL) {
+        return Err(ConsequenceError::new(
+            "public_policy_mismatch",
+            "public load-pressure component label is not the qualified condition label",
+        ));
+    }
+    if !policy
+        .disclosure
+        .component_fields
+        .contains(&ComponentOutputFieldV1::Reason)
+        || policy.disclosure.safe_reasons != recommended_safe_reasons()
+    {
+        return Err(ConsequenceError::new(
+            "public_policy_mismatch",
+            "public load-pressure policy must retain the qualified reason and non-claim text",
+        ));
+    }
+    Ok(())
 }
 
 /// Build the projector's live-support selector for the consumer certificate

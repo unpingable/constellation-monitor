@@ -590,6 +590,10 @@ impl FakeNq {
 }
 
 impl NqPort for FakeNq {
+    fn enrollment(&self) -> &NqEnrollmentV1 {
+        &self.profile.nq
+    }
+
     fn acquire_next_local(&self, acquisition_id: &str) -> Result<Vec<u8>, CorrespondenceError> {
         self.acquire_attempts.fetch_add(1, Ordering::Relaxed);
         if self.tamper() == Tamper::AcquirePreLaunchFails {

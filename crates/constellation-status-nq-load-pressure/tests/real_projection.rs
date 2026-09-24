@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use constellation_status_nq_load_pressure::{
-    CONSEQUENCE_SCHEMA_V1, FACT_OWNER, admit_live, fact_for, live_support_selector,
-    recommended_safe_reasons,
+    CONSEQUENCE_SCHEMA_V1, FACT_OWNER, PUBLIC_COMPONENT_LABEL, admit_live, fact_for,
+    live_support_selector, recommended_safe_reasons,
 };
 use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
@@ -69,7 +69,7 @@ fn load_component(selector: LiveSupportSelectorV1) -> ComponentPolicyV1 {
         key: "nq.host.load_pressure".to_owned(),
         output: Some(OutputComponentV1 {
             id: "load-pressure".to_owned(),
-            display_name: "Host load-pressure condition".to_owned(),
+            display_name: PUBLIC_COMPONENT_LABEL.to_owned(),
         }),
         required_facts: vec![FactRequirementV1 {
             fact_id: "fact.nq.host.load_pressure".to_owned(),
