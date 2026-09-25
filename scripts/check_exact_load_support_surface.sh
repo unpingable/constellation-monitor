@@ -117,6 +117,24 @@ if rg -n 'ActiveState|LoadState|SubState|ListUnitsByNames|org\.freedesktop|/run/
   fail "correspondence crate names a systemd source or vocabulary"
 fi
 
+# --- constellation-status-nq-filesystem-inodes: fifth consequence adapter ---
+# Additive. The inode question is asked of the exact subject the capacity
+# question enrolls, under the same reliance window; the adapter maps the
+# inode question alone and never restates an inode count, statfs field, or
+# threshold.
+fsino_dir="$root/crates/constellation-status-nq-filesystem-inodes/src"
+[ -d "$fsino_dir" ] || fail "filesystem-inodes consequence adapter source missing"
+if rg -n 'std::process|Command::new|/proc|/dev/disk|std::fs|mountinfo|nix::|libc::|derive_state|pulse_nq_load_support|LivePresentSupportResponseV1::new|HostLoadPressureV1|HostFilesystemCapacityPressureV1|HostMemoryPressureStallV1|SystemdUnitRequiredActiveV1' "$fsino_dir"; then
+  fail "filesystem-inodes consequence adapter acquires, recomputes, fabricates, or maps another question"
+fi
+if rg -n 'statfs|statvfs|permille|non-reserved|f_files|f_ffree|f_favail|inodes_total|inodes_free|inode count' "$fsino_dir"; then
+  fail "filesystem-inodes consequence adapter restates NQ's inode measurement or threshold"
+fi
+rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostFilesystemInodePressureV1' "$fsino_dir/lib.rs" || fail "filesystem-inodes adapter must pin its question"
+if rg -n 'f_files|f_ffree|f_favail|inodes_total|inodes_free' "$corr_dir"; then
+  fail "correspondence crate names an inode source or vocabulary"
+fi
+
 # The seam carries a state, never a PSI value: no PSI source or vocabulary in
 # the correspondence crate.
 if rg -n '/proc/pressure|avg60|centipercent|boot_age|MemAvailable' "$corr_dir"; then
@@ -133,6 +151,9 @@ if rg -n 'FRAME_VALIDITY_MS|NQ_RELIANCE_WINDOW_MS' "$root"/crates/*/src "$root"/
 fi
 non_load_tests=(
   "$root"/crates/constellation-status-nq-filesystem-capacity/tests
+  "$root"/crates/constellation-status-nq-filesystem-inodes/tests
+  "$root"/crates/pulse-nq-load-correspondence/tests/filesystem_inodes_vectors.rs
+  "$root"/crates/pulse-nq-load-correspondence/tests/filesystem_inodes_seam.rs
   "$root"/crates/constellation-status-nq-memory-pressure/tests
   "$root"/crates/constellation-status-nq-systemd-unit/tests
   "$root"/crates/pulse-nq-load-correspondence/tests/systemd_unit_required_active_vectors.rs

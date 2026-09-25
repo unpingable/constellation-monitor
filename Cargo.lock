@@ -73,6 +73,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "constellation-status-nq-filesystem-inodes"
+version = "0.1.0"
+dependencies = [
+ "constellation-status-projection",
+ "pulse-evaluator",
+ "pulse-nq-load-correspondence",
+ "pulse-runtime",
+ "pulse-types",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "constellation-status-nq-load-pressure"
 version = "0.1.0"
 dependencies = [
