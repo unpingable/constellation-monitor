@@ -228,14 +228,18 @@ fn real_projection_chain() {
             verified.delivery().holding_delay_ms,
             verified.delivery().ingress_fence_ms
         );
-        // The lifetime law: Pulse grants exactly the row's validity less the
-        // measured holding delay, so support never outlives NQ's 60 s
-        // reliance window measured from before the acquisition.
-        assert_eq!(
-            support_window_ms,
-            Some(REQUIRED_QUESTION.frame_validity_ms() - verified.delivery().holding_delay_ms),
-            "occurrence {} support window is not V - d",
-            result.sequence
+        // The lifetime law: support never outlives the row's validity less
+        // the measured holding delay, so it never outlives NQ's 60 s reliance
+        // window measured from before the acquisition. Pulse evaluates at
+        // millisecond granularity, so a loaded host may evaluate one tick
+        // after admission and grant one millisecond less, never more.
+        let bound = REQUIRED_QUESTION.frame_validity_ms() - verified.delivery().holding_delay_ms;
+        let window = support_window_ms.expect("support window");
+        assert!(
+            window <= bound && window + 1 >= bound,
+            "occurrence {} support window {window} ms is outside [V - d - 1, V - d] = [{}, {bound}]",
+            result.sequence,
+            bound - 1
         );
         // The owner's typed reason, when NQ carried one, and this leaf's
         // bounded explanation of it; neither changes the state above.
