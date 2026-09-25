@@ -208,3 +208,90 @@ fn memory_pressure_stall_row_is_literal_and_its_validity_differs_from_load() {
         "sha256:a8eba7ee4778043ceb26e939b44bda143bc6c51500f42324e589842bd7ba84d8",
     );
 }
+
+#[test]
+fn systemd_unit_required_active_row_is_literal_and_names_the_second_profile_revision() {
+    let question = QuestionV1::SystemdUnitRequiredActiveV1;
+    let row = question.spec();
+    assert_eq!(row.question_id, "nq.systemd_unit.required_active");
+    assert_eq!(row.question_version, "1");
+    assert_eq!(
+        row.question_digest,
+        "sha256:f8df6308f2af9d4cc12d107c310e86d22b9ef5f37ab72b71aa1b7d57446c159f"
+    );
+    assert_eq!(row.nq_profile_id, "nq.systemd_unit");
+    assert_eq!(row.nq_profile_version, "2");
+    assert_eq!(
+        row.nq_profile_digest,
+        "sha256:5691c4db8d736df5a7cf7da3557f8e07a9d9523d27ff16326963734e2b737b49"
+    );
+    // NQ writes a detector refusal's profile version as a number; v1 is the
+    // operator-beta fixture contract and must never be accepted here.
+    assert_eq!(row.refusal_profile_version, 2);
+    assert_eq!(row.claim_id, "claim:systemd_unit_not_active");
+    assert_eq!(row.condition, "systemd_unit_not_active");
+    assert_eq!(row.subject_prefix, "systemd-unit:");
+    assert_eq!(row.reliance_window_ms, 60_000);
+    assert_eq!(question.frame_validity_ms(), 58_999);
+    assert_eq!(
+        question.frame_validity_ms(),
+        row.reliance_window_ms - INGRESS_FENCE_MS - 1
+    );
+    for other in [
+        QuestionV1::HostLoadPressureV1,
+        QuestionV1::HostFilesystemCapacityPressureV1,
+        QuestionV1::HostMemoryPressureStallV1,
+    ] {
+        assert_ne!(question.frame_validity_ms(), other.frame_validity_ms());
+        assert!(!other.spec().subject_prefix.starts_with(row.subject_prefix));
+        assert!(!row.subject_prefix.starts_with(other.spec().subject_prefix));
+    }
+    assert_eq!(row.pulse_scope, "nq.systemd_unit.required_active/v1");
+    assert_eq!(
+        row.coverage_tag,
+        "nq_systemd_unit_required_active_v1_terminal_artifact"
+    );
+    assert_eq!(
+        row.acquisition_id_prefix,
+        "constellation-nq-systemd-unit:v1:"
+    );
+    assert_eq!(
+        row.transport_path,
+        "in-process:nq-systemd-unit-required-active-correspondence/v1"
+    );
+    assert_eq!(
+        row.failure_domain,
+        "domain:nq-systemd-unit-required-active-correspondence"
+    );
+    assert_eq!(
+        row.profile_schema,
+        "constellation.nq_systemd_unit_required_active_correspondence_profile.v1"
+    );
+    assert_eq!(
+        row.occurrence_schema,
+        "constellation.nq_systemd_unit_required_active_correspondence_occurrence.v1"
+    );
+    assert_eq!(
+        row.intent_schema,
+        "constellation.nq_systemd_unit_required_active_correspondence_intent.v1"
+    );
+    assert_eq!(
+        row.record_schema,
+        "constellation.nq_systemd_unit_required_active_correspondence.v1"
+    );
+    assert_eq!(
+        row.pulse_profile_name,
+        "constellation.nq_systemd_unit_required_active_correspondence"
+    );
+    assert_eq!(
+        row.pulse_profile_domain,
+        "constellation.nq_systemd_unit_required_active_correspondence.pulse_profile.v1"
+    );
+    pin_digests(
+        question,
+        "systemd_unit",
+        "sha256:5bf7ff289f83fadaf797b0c63f5257caae2fcf223e23a850e8930d5422e8fd79",
+        "sha256:46c996df2945753ca920ef10603bd977258c03ae59c4e8d593ddc35e056585c0",
+        "sha256:62cd2c7581e1ffdea5facbdff3ec13d3f03c75edd6bc6a3fd52f387bdee87f20",
+    );
+}

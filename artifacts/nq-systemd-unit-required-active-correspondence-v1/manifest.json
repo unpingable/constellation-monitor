@@ -1,0 +1,603 @@
+{
+  "schema": "constellation.nq_systemd_unit_required_active_correspondence_vectors.v1",
+  "digest_basis": "SHA-256 of exact file bytes; records are RFC 8785 canonical JSON whose correspondence_id is SHA-256 of the canonical record with that field omitted",
+  "profile": {
+    "path": "profile.json",
+    "sha256": "sha256:b0c3b02fbddc0d996387ae44751ab4e5ac3c3c3cfd92fa99fc482fb9aca9bf95",
+    "profile_digest": "sha256:5bf7ff289f83fadaf797b0c63f5257caae2fcf223e23a850e8930d5422e8fd79"
+  },
+  "vectors": [
+    {
+      "id": "present",
+      "class": "valid",
+      "path": "valid/present.json",
+      "sha256": "sha256:d58852b2be6af84d0fcb33a843335687a2156966542d73ffe3bd588fe0db8ebe",
+      "expected": "verified",
+      "nq_detector_state": "present"
+    },
+    {
+      "id": "explicitly_absent",
+      "class": "valid",
+      "path": "valid/explicitly_absent.json",
+      "sha256": "sha256:dc5dea3db333ba7131a7109d7784a59279b6a0dd59bdf6ce8217d0c954a29c70",
+      "expected": "verified",
+      "nq_detector_state": "explicitly_absent"
+    },
+    {
+      "id": "cannot_evaluate",
+      "class": "valid",
+      "path": "valid/cannot_evaluate.json",
+      "sha256": "sha256:7bf8ba74d49ed3d86d96037f3ebac15968996b100e18d6e1e79657c59789203e",
+      "expected": "verified",
+      "nq_detector_state": "cannot_evaluate"
+    },
+    {
+      "id": "not_evaluated_input_refusal",
+      "class": "valid",
+      "path": "valid/not_evaluated_input_refusal.json",
+      "sha256": "sha256:f6b6e33a4cf42cd40a97a028d045467d786ba72158b91354e5f9921673bb97fa",
+      "expected": "verified",
+      "nq_detector_state": "not_evaluated"
+    },
+    {
+      "id": "not_evaluated_provider_no_response",
+      "class": "valid",
+      "path": "valid/not_evaluated_provider_no_response.json",
+      "sha256": "sha256:964a4f9ead1d461d61d06492569412f4abc717bc5a1026b60b9349cedacc55c7",
+      "expected": "verified",
+      "nq_detector_state": "not_evaluated"
+    },
+    {
+      "id": "boundary_holding_delay_below_validity_and_fence_at_bound",
+      "class": "valid",
+      "path": "valid/boundary_holding_delay_below_validity_and_fence_at_bound.json",
+      "sha256": "sha256:2f2c21432556ddf368ad74c7b500ad530b906282f437db912f72490a12fb5436",
+      "expected": "verified",
+      "nq_detector_state": "explicitly_absent"
+    },
+    {
+      "id": "format_unknown_field",
+      "class": "negative",
+      "path": "negative/format_unknown_field.json",
+      "sha256": "sha256:e142809bff85e043f7f9f92aa318d8f1a9d4ed5188b6848a6a0e9e4e9102a27a",
+      "expected": "refused",
+      "expected_code": "record_decode"
+    },
+    {
+      "id": "format_noncanonical_bytes",
+      "class": "negative",
+      "path": "negative/format_noncanonical_bytes.json",
+      "sha256": "sha256:cea8785d57903b979e5861e118d3484887646eba5ccde79f751b185c62992f67",
+      "expected": "refused",
+      "expected_code": "record_noncanonical"
+    },
+    {
+      "id": "format_flipped_identity_byte",
+      "class": "negative",
+      "path": "negative/format_flipped_identity_byte.json",
+      "sha256": "sha256:36dbfe47f898b90daed8dd10a349593daa48f45421fe65da129e9ac6b8ba4316",
+      "expected": "refused",
+      "expected_code": "record_identity_mismatch"
+    },
+    {
+      "id": "format_duplicate_key",
+      "class": "negative",
+      "path": "negative/format_duplicate_key.json",
+      "sha256": "sha256:50f9c8d687fe1eee8565fe33758fd7dfcb741af790b11770fedd8e760a72231e",
+      "expected": "refused",
+      "expected_code": "record_decode"
+    },
+    {
+      "id": "format_oversized_record",
+      "class": "negative",
+      "path": "negative/format_oversized_record.json",
+      "sha256": "sha256:27cb03b898e978f2493818e414119edabc05246a6697a65ea42b21b682dc07d4",
+      "expected": "refused",
+      "expected_code": "bound_exceeded"
+    },
+    {
+      "id": "format_malformed_frame_wire_hex",
+      "class": "negative",
+      "path": "negative/format_malformed_frame_wire_hex.json",
+      "sha256": "sha256:2a2acb5f5bee5a7e973bafb483c02362be8763b41cdfb9498b22a5d475592756",
+      "expected": "refused",
+      "expected_code": "invalid_hex"
+    },
+    {
+      "id": "format_unsupported_schema_version",
+      "class": "negative",
+      "path": "negative/format_unsupported_schema_version.json",
+      "sha256": "sha256:3e7820c4c272131253468d284f13ea242ed7ebee5f374289e8eeaddd959624ef",
+      "expected": "refused",
+      "expected_code": "unsupported_schema"
+    },
+    {
+      "id": "format_load_record_schema",
+      "class": "negative",
+      "path": "negative/format_load_record_schema.json",
+      "sha256": "sha256:73fa5cdb966877c009fe4a2116e35cff4743cea983e615a495948bb7b6151627",
+      "expected": "refused",
+      "expected_code": "record_question_mismatch"
+    },
+    {
+      "id": "format_filesystem_record_schema",
+      "class": "negative",
+      "path": "negative/format_filesystem_record_schema.json",
+      "sha256": "sha256:b277b645ce5e26a47a966feffcd142fb74450aeacb5359efee5b62c6f6c2c67c",
+      "expected": "refused",
+      "expected_code": "record_question_mismatch"
+    },
+    {
+      "id": "format_memory_record_schema",
+      "class": "negative",
+      "path": "negative/format_memory_record_schema.json",
+      "sha256": "sha256:a5767e0fabcd0a28542c1d018b3d3e9bfc0483650a6df38c8882b21c5756f1c8",
+      "expected": "refused",
+      "expected_code": "record_question_mismatch"
+    },
+    {
+      "id": "format_altered_nonclaims",
+      "class": "negative",
+      "path": "negative/format_altered_nonclaims.json",
+      "sha256": "sha256:3d897b004860b861e8037a8af0b8c0fb4ab6787fe46aeaa2583f6b68db4488d2",
+      "expected": "refused",
+      "expected_code": "authority_boundary"
+    },
+    {
+      "id": "cross_source_bridge_evidence_in_artifact_slot",
+      "class": "negative",
+      "path": "negative/cross_source_bridge_evidence_in_artifact_slot.json",
+      "sha256": "sha256:75bcc00801ad4a71bc924aa1ce70aaaaa7ca6058ca5823c29eb9ed8cea547ace",
+      "expected": "refused",
+      "expected_code": "artifact_shape"
+    },
+    {
+      "id": "cross_source_nightshift_qualified_support_in_artifact_slot",
+      "class": "negative",
+      "path": "negative/cross_source_nightshift_qualified_support_in_artifact_slot.json",
+      "sha256": "sha256:7595c8329db1c901a32906c8bae1321165d34d1e0426cf7a4c0cce128ed9f8cc",
+      "expected": "refused",
+      "expected_code": "artifact_shape"
+    },
+    {
+      "id": "cross_source_status_snapshot_v3_in_artifact_slot",
+      "class": "negative",
+      "path": "negative/cross_source_status_snapshot_v3_in_artifact_slot.json",
+      "sha256": "sha256:eb08f0e3217967aea159281c51f0e88d8102282beb7bb8ffe3ee4f1cbff6aac4",
+      "expected": "refused",
+      "expected_code": "artifact_shape"
+    },
+    {
+      "id": "cross_source_finding_snapshot_v3_in_artifact_slot",
+      "class": "negative",
+      "path": "negative/cross_source_finding_snapshot_v3_in_artifact_slot.json",
+      "sha256": "sha256:3bc8fe38deff31d69068e64cbd8e6be1919e8e5bac2488d8134ea6138344e791",
+      "expected": "refused",
+      "expected_code": "artifact_shape"
+    },
+    {
+      "id": "cross_source_diagnostic_execution_v1_schema",
+      "class": "negative",
+      "path": "negative/cross_source_diagnostic_execution_v1_schema.json",
+      "sha256": "sha256:200a2a4a25558892e6592cee4d15d59ee13100fda62e0527eed6b16bfa23a3fe",
+      "expected": "refused",
+      "expected_code": "artifact_schema"
+    },
+    {
+      "id": "cross_source_initial_execute_fresh_selection_rule",
+      "class": "negative",
+      "path": "negative/cross_source_initial_execute_fresh_selection_rule.json",
+      "sha256": "sha256:13c0ff54ef8c495f3687f0013f92ffedfc45d38efced13680afb2caa0ef55792",
+      "expected": "refused",
+      "expected_code": "artifact_selection_rule"
+    },
+    {
+      "id": "cross_source_imported_artifact_selection_rule",
+      "class": "negative",
+      "path": "negative/cross_source_imported_artifact_selection_rule.json",
+      "sha256": "sha256:5901a01e8fa9090b9b501a826d445de58c3f055f0e6a6e92f699a1a5cd835af9",
+      "expected": "refused",
+      "expected_code": "artifact_selection_rule"
+    },
+    {
+      "id": "cross_source_pulse_agent_frame_in_frame_slot",
+      "class": "negative",
+      "path": "negative/cross_source_pulse_agent_frame_in_frame_slot.json",
+      "sha256": "sha256:6edc8a7f43087849cfbe2ffa87c6d877d5b3fa01814877757cb3c7545d35ff6b",
+      "expected": "refused",
+      "expected_code": "frame_binding_mismatch"
+    },
+    {
+      "id": "cross_source_frame_with_assessed_signal",
+      "class": "negative",
+      "path": "negative/cross_source_frame_with_assessed_signal.json",
+      "sha256": "sha256:1beb1992f632b033193903eec8ed870e26b94aff65777b4a33ec94d77e36f0d3",
+      "expected": "refused",
+      "expected_code": "frame_carries_signals"
+    },
+    {
+      "id": "cross_source_artifact_for_other_subject",
+      "class": "negative",
+      "path": "negative/cross_source_artifact_for_other_subject.json",
+      "sha256": "sha256:caa41a25592998ee307338c40a426cf2b2906f1e213a04498d22329f98b5bae4",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "cross_source_artifact_for_other_vantage",
+      "class": "negative",
+      "path": "negative/cross_source_artifact_for_other_vantage.json",
+      "sha256": "sha256:1b64f616079791a21c52c60fc9da806609530af21827525d7dd2a6c9903eeaae",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "cross_source_cannot_evaluate_for_other_instance",
+      "class": "negative",
+      "path": "negative/cross_source_cannot_evaluate_for_other_instance.json",
+      "sha256": "sha256:c802218628526bc88002612ddf14245498cda49065d11d195e0cb558d9eceb75",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "recomputation_bridge_state_offered_as_nq_state",
+      "class": "negative",
+      "path": "negative/recomputation_bridge_state_offered_as_nq_state.json",
+      "sha256": "sha256:73878fcf707b062483bf9b48b7ef99b172d1d855c58bd8ea153fbe2992c9321c",
+      "expected": "refused",
+      "expected_code": "artifact_shape"
+    },
+    {
+      "id": "policy_load_question_identity_in_artifact",
+      "class": "negative",
+      "path": "negative/policy_load_question_identity_in_artifact.json",
+      "sha256": "sha256:575393b6eda9ce7d5b16de3f2e0f7ca733d5ea9e487a889fa21484b9b2454b80",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "policy_load_claim_in_artifact",
+      "class": "negative",
+      "path": "negative/policy_load_claim_in_artifact.json",
+      "sha256": "sha256:602d16a4e60fd197b5e19736bbb4a5e87360963c7d04e8730adea2dd3d199663",
+      "expected": "refused",
+      "expected_code": "artifact_claim_mismatch"
+    },
+    {
+      "id": "cross_source_detector_refusal_names_load_profile",
+      "class": "negative",
+      "path": "negative/cross_source_detector_refusal_names_load_profile.json",
+      "sha256": "sha256:6868c360c502d7955126ccbd4b80957f6148eb7abf461a643d1af4fe49b6630e",
+      "expected": "refused",
+      "expected_code": "artifact_ladder"
+    },
+    {
+      "id": "policy_frame_validity_of_load_row",
+      "class": "negative",
+      "path": "negative/policy_frame_validity_of_load_row.json",
+      "sha256": "sha256:a12b8c7aaa8c6b626e108c06d4a53a62672719ddc8cb04c07b10bc1fe15f39b1",
+      "expected": "refused",
+      "expected_code": "frame_validity_mismatch"
+    },
+    {
+      "id": "lifetime_holding_delay_lawful_under_load_row_only",
+      "class": "negative",
+      "path": "negative/lifetime_holding_delay_lawful_under_load_row_only.json",
+      "sha256": "sha256:d563910408d7927ff750e91523c8a110a9ee1356f8c35fe864a0d30a509fdca8",
+      "expected": "refused",
+      "expected_code": "holding_delay_exceeds_validity"
+    },
+    {
+      "id": "policy_filesystem_question_identity_in_artifact",
+      "class": "negative",
+      "path": "negative/policy_filesystem_question_identity_in_artifact.json",
+      "sha256": "sha256:d4388a6d095cee1286e67c7402ae174412fe008155d42d409361da6cc014f136",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "policy_filesystem_claim_in_artifact",
+      "class": "negative",
+      "path": "negative/policy_filesystem_claim_in_artifact.json",
+      "sha256": "sha256:d2464ef33f9dd3e510f8caee74a45b8697efb4ddfc98b6230a6af8de8889cbea",
+      "expected": "refused",
+      "expected_code": "artifact_claim_mismatch"
+    },
+    {
+      "id": "cross_source_detector_refusal_names_filesystem_profile",
+      "class": "negative",
+      "path": "negative/cross_source_detector_refusal_names_filesystem_profile.json",
+      "sha256": "sha256:4a6bf4b838c91635de6a7b21707bad87c60dc050e37c6eba0c911751b1d5c847",
+      "expected": "refused",
+      "expected_code": "artifact_ladder"
+    },
+    {
+      "id": "policy_frame_validity_of_filesystem_row",
+      "class": "negative",
+      "path": "negative/policy_frame_validity_of_filesystem_row.json",
+      "sha256": "sha256:a12b8c7aaa8c6b626e108c06d4a53a62672719ddc8cb04c07b10bc1fe15f39b1",
+      "expected": "refused",
+      "expected_code": "frame_validity_mismatch"
+    },
+    {
+      "id": "lifetime_holding_delay_lawful_under_filesystem_row_only",
+      "class": "negative",
+      "path": "negative/lifetime_holding_delay_lawful_under_filesystem_row_only.json",
+      "sha256": "sha256:d563910408d7927ff750e91523c8a110a9ee1356f8c35fe864a0d30a509fdca8",
+      "expected": "refused",
+      "expected_code": "holding_delay_exceeds_validity"
+    },
+    {
+      "id": "policy_memory_question_identity_in_artifact",
+      "class": "negative",
+      "path": "negative/policy_memory_question_identity_in_artifact.json",
+      "sha256": "sha256:1412b0e6902fcc7d19508db9d8b7bfa5a67d77bc6a195ae7d7db58eb567bfda2",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "policy_memory_claim_in_artifact",
+      "class": "negative",
+      "path": "negative/policy_memory_claim_in_artifact.json",
+      "sha256": "sha256:b0fe0e7eab89607af5e729f49f721764c7166555a30ec1d3cd81725669dff86c",
+      "expected": "refused",
+      "expected_code": "artifact_claim_mismatch"
+    },
+    {
+      "id": "cross_source_detector_refusal_names_memory_profile",
+      "class": "negative",
+      "path": "negative/cross_source_detector_refusal_names_memory_profile.json",
+      "sha256": "sha256:af5f5b33f892c591e8cbe97b1f64afd30d9062ee199fc20950f3b876af453115",
+      "expected": "refused",
+      "expected_code": "artifact_ladder"
+    },
+    {
+      "id": "policy_frame_validity_of_memory_row",
+      "class": "negative",
+      "path": "negative/policy_frame_validity_of_memory_row.json",
+      "sha256": "sha256:01f0e88e482dc1dda2da74e32e7b8c855a459a3e656bb63e76f6fa26fa3716f0",
+      "expected": "refused",
+      "expected_code": "frame_validity_mismatch"
+    },
+    {
+      "id": "lifetime_holding_delay_lawful_under_memory_row_only",
+      "class": "negative",
+      "path": "negative/lifetime_holding_delay_lawful_under_memory_row_only.json",
+      "sha256": "sha256:53129d0f2ef0802e04d98a841bef05ca1a25da1bb67775010dd6b720296a9ad7",
+      "expected": "refused",
+      "expected_code": "holding_delay_exceeds_validity"
+    },
+    {
+      "id": "policy_changed_threshold_policy_digest",
+      "class": "negative",
+      "path": "negative/policy_changed_threshold_policy_digest.json",
+      "sha256": "sha256:3c2b6a5deacdd89ed8dacfe0ccf95997b14f80ccb075f5102a352663def7b97b",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "policy_changed_question_digest",
+      "class": "negative",
+      "path": "negative/policy_changed_question_digest.json",
+      "sha256": "sha256:210c9b5ca9172633566725d6d3e7fdec7983cf041831ce43610d18e5c9241527",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "policy_changed_profile_semantic_id",
+      "class": "negative",
+      "path": "negative/policy_changed_profile_semantic_id.json",
+      "sha256": "sha256:f4994b5f6d10545912c1d6133dbf3d6cb58978f42324b3a7b1041ee5341a7a72",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "policy_frame_validity_not_v",
+      "class": "negative",
+      "path": "negative/policy_frame_validity_not_v.json",
+      "sha256": "sha256:765c437eeed576a28b6d1924641da6ddb140af9a9b7668e79d443526a8a67373",
+      "expected": "refused",
+      "expected_code": "frame_validity_mismatch"
+    },
+    {
+      "id": "generation_changed_evaluator",
+      "class": "negative",
+      "path": "negative/generation_changed_evaluator.json",
+      "sha256": "sha256:06cf5278fe1b4858ceac32f1db6c1e75d5d1d76d0d3328921bcf7608cf77c283",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "generation_changed_build",
+      "class": "negative",
+      "path": "negative/generation_changed_build.json",
+      "sha256": "sha256:6e905b7a5d81782ebb6ad1198a3d3cbb921202212ede01aad2bca5d102a5f0fc",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "generation_changed_cohort",
+      "class": "negative",
+      "path": "negative/generation_changed_cohort.json",
+      "sha256": "sha256:908166f6e45b2de12408b79da9a8ddfb9f396a3a9df7783626b5c60484035a3a",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "generation_changed_node",
+      "class": "negative",
+      "path": "negative/generation_changed_node.json",
+      "sha256": "sha256:3be6283ffe274a38a1163cea05aed6d02b191ded543ed64173161dc241d1ed65",
+      "expected": "refused",
+      "expected_code": "artifact_pin_mismatch"
+    },
+    {
+      "id": "generation_changed_correspondence_profile",
+      "class": "negative",
+      "path": "negative/generation_changed_correspondence_profile.json",
+      "sha256": "sha256:8fbfd7decd18188996d6a6be7886e69ce22cdb6e4efdd871322f9d5e51578730",
+      "expected": "refused",
+      "expected_code": "profile_mismatch"
+    },
+    {
+      "id": "generation_changed_pulse_observation_profile",
+      "class": "negative",
+      "path": "negative/generation_changed_pulse_observation_profile.json",
+      "sha256": "sha256:a82c6b4b1b55faf795207e6316bc04d23ab0e370b6d249fe6d9abd85d2a43508",
+      "expected": "refused",
+      "expected_code": "frame_binding_mismatch"
+    },
+    {
+      "id": "evidence_empty_observed_coverage",
+      "class": "negative",
+      "path": "negative/evidence_empty_observed_coverage.json",
+      "sha256": "sha256:196c8f3539a122dbc77bd1ba3654cf3ab93a4d144f229d3f7a87cb88c5f7e958",
+      "expected": "refused",
+      "expected_code": "frame_coverage_mismatch"
+    },
+    {
+      "id": "evidence_claim_depends_on_other_input",
+      "class": "negative",
+      "path": "negative/evidence_claim_depends_on_other_input.json",
+      "sha256": "sha256:809940e160167027fc6f8b4f9edbacd0b7fd9ad8a36cf6293d16c525f975b21c",
+      "expected": "refused",
+      "expected_code": "artifact_ladder"
+    },
+    {
+      "id": "evidence_two_selected_inputs",
+      "class": "negative",
+      "path": "negative/evidence_two_selected_inputs.json",
+      "sha256": "sha256:2fc1f825767f47569909c7c804d27bb80f9c46dd2c18faf027ea20b170a1adc7",
+      "expected": "refused",
+      "expected_code": "artifact_single_acquisition"
+    },
+    {
+      "id": "evidence_provenance_raw_digest_mismatch",
+      "class": "negative",
+      "path": "negative/evidence_provenance_raw_digest_mismatch.json",
+      "sha256": "sha256:a5e2e9bfb21a999ad56de8ba0a70d66d675dc52ea074fad8c43b315f03844ae9",
+      "expected": "refused",
+      "expected_code": "provenance_mismatch"
+    },
+    {
+      "id": "evidence_provenance_other_intake",
+      "class": "negative",
+      "path": "negative/evidence_provenance_other_intake.json",
+      "sha256": "sha256:eea9c7dedc7566930a0d04cca6cb81e832541080271d743ebc3ebde10a09b3a7",
+      "expected": "refused",
+      "expected_code": "provenance_mismatch"
+    },
+    {
+      "id": "evidence_provenance_other_artifact_bytes_digest",
+      "class": "negative",
+      "path": "negative/evidence_provenance_other_artifact_bytes_digest.json",
+      "sha256": "sha256:dfd93ccab06749b3fe0ddd70b5755f6cc26341efeb85d56a67784a312a360341",
+      "expected": "refused",
+      "expected_code": "provenance_mismatch"
+    },
+    {
+      "id": "evidence_provenance_other_run",
+      "class": "negative",
+      "path": "negative/evidence_provenance_other_run.json",
+      "sha256": "sha256:a4b40e415b5c71995ffb7ac565b833faed37214147f07aa093776bbd5420c299",
+      "expected": "refused",
+      "expected_code": "provenance_mismatch"
+    },
+    {
+      "id": "evidence_provenance_without_judgment_for_evaluated_outcome",
+      "class": "negative",
+      "path": "negative/evidence_provenance_without_judgment_for_evaluated_outcome.json",
+      "sha256": "sha256:4cd73917db34e7b283d911260a5620b4930a8dd401f89b5592ebb89ec78e868d",
+      "expected": "refused",
+      "expected_code": "provenance_mismatch"
+    },
+    {
+      "id": "evidence_provenance_unsupported_schema_version",
+      "class": "negative",
+      "path": "negative/evidence_provenance_unsupported_schema_version.json",
+      "sha256": "sha256:36f036e18b125864f0c9616e90c83354aeaa8b5b1d36b4bc4301c788908dc6ea",
+      "expected": "refused",
+      "expected_code": "provenance_schema"
+    },
+    {
+      "id": "evidence_frame_time_tampered_evidence_ref_kept",
+      "class": "negative",
+      "path": "negative/evidence_frame_time_tampered_evidence_ref_kept.json",
+      "sha256": "sha256:00e6755ca80e9719dcb614a31227003d091d0acd66db5e311e2b261abceceef4",
+      "expected": "refused",
+      "expected_code": "evidence_ref_mismatch"
+    },
+    {
+      "id": "evidence_frame_time_tampered_evidence_ref_updated",
+      "class": "negative",
+      "path": "negative/evidence_frame_time_tampered_evidence_ref_updated.json",
+      "sha256": "sha256:7a14cb4d871f88dfdbe3340706359dfb7c040a01deaf61480c9b57cfaa56795e",
+      "expected": "refused",
+      "expected_code": "acquisition_id_mismatch"
+    },
+    {
+      "id": "coherent_pair_frame_k_plus_one_with_artifact_k",
+      "class": "negative",
+      "path": "negative/coherent_pair_frame_k_plus_one_with_artifact_k.json",
+      "sha256": "sha256:f93e401c73202bbe15237284c1502e8363c00a7f055b2219b66e956f386ae5e9",
+      "expected": "refused",
+      "expected_code": "acquisition_id_mismatch"
+    },
+    {
+      "id": "coherent_pair_stored_state_differs_from_artifact",
+      "class": "negative",
+      "path": "negative/coherent_pair_stored_state_differs_from_artifact.json",
+      "sha256": "sha256:6c412cf71e37226d58d3feec87cdbfe3733322f30c40a1ae69f0bbbed9d0e437",
+      "expected": "refused",
+      "expected_code": "state_mismatch"
+    },
+    {
+      "id": "coherent_pair_frame_incarnation_differs",
+      "class": "negative",
+      "path": "negative/coherent_pair_frame_incarnation_differs.json",
+      "sha256": "sha256:602f69edb16512dd6f08eadf51289ef3f0950c539ec6f04ecbd7c0f5fba4365b",
+      "expected": "refused",
+      "expected_code": "acquisition_id_mismatch"
+    },
+    {
+      "id": "coherent_pair_frame_subject_differs",
+      "class": "negative",
+      "path": "negative/coherent_pair_frame_subject_differs.json",
+      "sha256": "sha256:fb5c641cf18c93fb0323655017f9a8e854f1848719a93aee66c1c5d5f02a8bf1",
+      "expected": "refused",
+      "expected_code": "frame_binding_mismatch"
+    },
+    {
+      "id": "coherent_pair_frame_observer_differs",
+      "class": "negative",
+      "path": "negative/coherent_pair_frame_observer_differs.json",
+      "sha256": "sha256:cc1890dd0ae71c6ebd2b6a548ababed48c4f5acaece53e03c7ab302097434ac1",
+      "expected": "refused",
+      "expected_code": "frame_binding_mismatch"
+    },
+    {
+      "id": "lifetime_holding_delay_equals_validity",
+      "class": "negative",
+      "path": "negative/lifetime_holding_delay_equals_validity.json",
+      "sha256": "sha256:4da78dc88649d5ee787577d0680488cdb37e7ede12d7be042137bb0cc81a83e7",
+      "expected": "refused",
+      "expected_code": "holding_delay_exceeds_validity"
+    },
+    {
+      "id": "lifetime_ingress_fence_exceeded",
+      "class": "negative",
+      "path": "negative/lifetime_ingress_fence_exceeded.json",
+      "sha256": "sha256:07b4f23f55e9103acc31456659f3861b5cbcf8c801e42f1977e807798be943c1",
+      "expected": "refused",
+      "expected_code": "ingress_fence_exceeded"
+    },
+    {
+      "id": "lifetime_other_transport_path",
+      "class": "negative",
+      "path": "negative/lifetime_other_transport_path.json",
+      "sha256": "sha256:4301a160dc20dbc63446dbd9ad587acb9eb9e8792af37952e661e8b37fab05b6",
+      "expected": "refused",
+      "expected_code": "transport_path_mismatch"
+    }
+  ]
+}
