@@ -3,6 +3,7 @@ members = [
     "crates/constellation-status-nq-filesystem-capacity",
     "crates/constellation-status-nq-load-pressure",
     "crates/constellation-status-nq-memory-pressure",
+    "crates/constellation-status-nq-systemd-unit",
     "crates/constellation-status-projection",
     "crates/monitor-project-concerns",
     "crates/pulse-agent",
