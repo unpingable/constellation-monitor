@@ -52,6 +52,15 @@ pub const SYNTHETIC_SYSTEMD_UNIT_INSTANCE: &str = "unit-cron";
 pub const SYNTHETIC_SYSTEMD_UNIT_OBSERVER: &str =
     "observer:nq-systemd-unit-required-active-correspondence";
 pub const SYNTHETIC_SYSTEMD_UNIT_CONSUMER: &str = "consumer:status-projection-nq-systemd-unit";
+/// Filesystem-inode synthetic identities. The subject is the capacity row's
+/// subject byte for byte, on purpose: NQ asks both questions of one
+/// filesystem, and the seam keys on the question, never on the subject.
+pub const SYNTHETIC_FILESYSTEM_INODES_SUBJECT: &str = SYNTHETIC_FILESYSTEM_SUBJECT;
+pub const SYNTHETIC_FILESYSTEM_INODES_INSTANCE: &str = "fs-data-inodes";
+pub const SYNTHETIC_FILESYSTEM_INODES_OBSERVER: &str =
+    "observer:nq-filesystem-inodes-correspondence";
+pub const SYNTHETIC_FILESYSTEM_INODES_CONSUMER: &str =
+    "consumer:status-projection-nq-filesystem-inodes";
 pub const SYNTHETIC_SUBJECT_INCARNATION: &str = "linux-boot:00000000-0000-4000-8000-0000000000b0";
 pub const SYNTHETIC_OBSERVER_INCARNATION: &str = "observer-incarnation:synthetic:1";
 
@@ -106,6 +115,14 @@ pub fn synthetic_enrollment_for(question: QuestionV1) -> (NqEnrollmentV1, PulseE
             SYNTHETIC_SYSTEMD_UNIT_OBSERVER,
             SYNTHETIC_SYSTEMD_UNIT_CONSUMER,
             "nq-systemd-unit-required-active-correspondence",
+        ),
+        QuestionV1::HostFilesystemInodePressureV1 => (
+            SYNTHETIC_FILESYSTEM_INODES_INSTANCE,
+            SYNTHETIC_FILESYSTEM_INODES_SUBJECT,
+            "nq.scope.host_filesystem",
+            SYNTHETIC_FILESYSTEM_INODES_OBSERVER,
+            SYNTHETIC_FILESYSTEM_INODES_CONSUMER,
+            "nq-filesystem-inodes-correspondence",
         ),
     };
     let question_id = question.spec().question_id;
@@ -222,6 +239,7 @@ pub const fn synthetic_owner_failure_code(question: QuestionV1) -> Option<&'stat
         QuestionV1::HostFilesystemCapacityPressureV1 => Some("filesystem_identity_mismatch"),
         QuestionV1::HostMemoryPressureStallV1 => Some("machine_identity_mismatch"),
         QuestionV1::SystemdUnitRequiredActiveV1 => Some("unit_name_not_canonical"),
+        QuestionV1::HostFilesystemInodePressureV1 => Some("filesystem_identity_mismatch"),
     }
 }
 
@@ -403,6 +421,7 @@ pub fn synthetic_artifact_with_code(
                         QuestionV1::HostFilesystemCapacityPressureV1 => "One statfs snapshot establishes no storage health, integrity, performance, quota, or growth fact",
                         QuestionV1::HostMemoryPressureStallV1 => "The condition is kernel stall accounting, not memory sufficiency, OOM risk, swap health, or service impact",
                         QuestionV1::SystemdUnitRequiredActiveV1 => "An active unit state is not a service operational, reachability, dependency, or application health claim",
+                        QuestionV1::HostFilesystemInodePressureV1 => "One statfs snapshot establishes no storage health, integrity, performance, quota, or growth fact",
                     }],
                     "nonclaims": ["the causal source of the bounded condition is not established", "the host boot or deployment generation is not established"]
                 }]),

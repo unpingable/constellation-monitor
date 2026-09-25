@@ -295,3 +295,92 @@ fn systemd_unit_required_active_row_is_literal_and_names_the_second_profile_revi
         "sha256:62cd2c7581e1ffdea5facbdff3ec13d3f03c75edd6bc6a3fd52f387bdee87f20",
     );
 }
+
+#[test]
+fn filesystem_inode_pressure_row_is_literal_and_shares_the_capacity_subject_and_validity() {
+    let question = QuestionV1::HostFilesystemInodePressureV1;
+    let capacity = QuestionV1::HostFilesystemCapacityPressureV1;
+    let row = question.spec();
+    assert_eq!(row.question_id, "nq.host_filesystem_inodes.pressure");
+    assert_eq!(row.question_version, "1");
+    assert_eq!(
+        row.question_digest,
+        "sha256:2986b802935b67bbc9247ba0888b08c762f437ed71464265f676ab0ffd914d89"
+    );
+    assert_eq!(row.nq_profile_id, "nq.host_filesystem_inodes");
+    assert_eq!(row.nq_profile_version, "1");
+    assert_eq!(
+        row.nq_profile_digest,
+        "sha256:1a4f5e289b2f63e811e552141c7d624ca46880343b3126450522dc338bcdd664"
+    );
+    assert_eq!(row.refusal_profile_version, 1);
+    assert_eq!(row.claim_id, "claim:filesystem_inode_pressure");
+    assert_eq!(row.condition, "filesystem_inode_pressure");
+    // The capacity row's prefix and window, deliberately: NQ asks both
+    // questions of one filesystem, and only the question separates them.
+    assert_eq!(row.subject_prefix, "host-filesystem:");
+    assert_eq!(row.subject_prefix, capacity.spec().subject_prefix);
+    assert_eq!(row.reliance_window_ms, 300_000);
+    assert_eq!(question.frame_validity_ms(), 298_999);
+    assert_eq!(
+        question.frame_validity_ms(),
+        row.reliance_window_ms - INGRESS_FENCE_MS - 1
+    );
+    assert_eq!(question.frame_validity_ms(), capacity.frame_validity_ms());
+    assert_ne!(row.question_digest, capacity.spec().question_digest);
+    assert_ne!(row.nq_profile_id, capacity.spec().nq_profile_id);
+    assert_ne!(row.claim_id, capacity.spec().claim_id);
+    for other in [
+        QuestionV1::HostLoadPressureV1,
+        QuestionV1::HostMemoryPressureStallV1,
+        QuestionV1::SystemdUnitRequiredActiveV1,
+    ] {
+        assert!(!other.spec().subject_prefix.starts_with(row.subject_prefix));
+        assert!(!row.subject_prefix.starts_with(other.spec().subject_prefix));
+    }
+    assert_eq!(row.pulse_scope, "nq.host_filesystem_inodes.pressure/v1");
+    assert_eq!(
+        row.coverage_tag,
+        "nq_host_filesystem_inodes_pressure_v1_terminal_artifact"
+    );
+    assert_eq!(row.acquisition_id_prefix, "constellation-nq-fs-inodes:v1:");
+    assert_eq!(
+        row.transport_path,
+        "in-process:nq-filesystem-inodes-correspondence/v1"
+    );
+    assert_eq!(
+        row.failure_domain,
+        "domain:nq-filesystem-inodes-correspondence"
+    );
+    assert_eq!(
+        row.profile_schema,
+        "constellation.nq_host_filesystem_inodes_correspondence_profile.v1"
+    );
+    assert_eq!(
+        row.occurrence_schema,
+        "constellation.nq_host_filesystem_inodes_correspondence_occurrence.v1"
+    );
+    assert_eq!(
+        row.intent_schema,
+        "constellation.nq_host_filesystem_inodes_correspondence_intent.v1"
+    );
+    assert_eq!(
+        row.record_schema,
+        "constellation.nq_host_filesystem_inodes_correspondence.v1"
+    );
+    assert_eq!(
+        row.pulse_profile_name,
+        "constellation.nq_host_filesystem_inodes_correspondence"
+    );
+    assert_eq!(
+        row.pulse_profile_domain,
+        "constellation.nq_host_filesystem_inodes_correspondence.pulse_profile.v1"
+    );
+    pin_digests(
+        question,
+        "filesystem_inodes",
+        "sha256:897d33bbb6bfd2aadc627a759a7218a2f505423271fd56b478bcb17e61601261",
+        "sha256:a90af9895b06a43da53a0b31168a76cc2ce8e9292886babbb9106b11f725af7a",
+        "sha256:8ddc03e19e0a2d7ccc7bd238a4cf68e42f179fe20ff392b1308ac1770f71bbdb",
+    );
+}

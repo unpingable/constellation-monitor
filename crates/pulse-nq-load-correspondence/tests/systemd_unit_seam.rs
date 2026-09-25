@@ -20,10 +20,11 @@ use pulse_nq_load_correspondence::{
 use pulse_types::IncarnationId;
 
 const UNIT: QuestionV1 = QuestionV1::SystemdUnitRequiredActiveV1;
-const OTHERS: [QuestionV1; 3] = [
+const OTHERS: [QuestionV1; 4] = [
     QuestionV1::HostLoadPressureV1,
     QuestionV1::HostFilesystemCapacityPressureV1,
     QuestionV1::HostMemoryPressureStallV1,
+    QuestionV1::HostFilesystemInodePressureV1,
 ];
 
 fn incarnation() -> IncarnationId {

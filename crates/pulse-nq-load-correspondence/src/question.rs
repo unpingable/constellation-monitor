@@ -39,6 +39,13 @@ pub enum QuestionV1 {
     /// NQ profile is a second revision, so its detector refusals name
     /// profile version 2.
     SystemdUnitRequiredActiveV1,
+    /// `nq.host_filesystem_inodes.pressure/1` against
+    /// `nq.host_filesystem_inodes/1`; subject
+    /// `host-filesystem:<machine-id>/<filesystem-uuid>`, the exact subject
+    /// the capacity row enrolls; NQ reliance 300 s, the same validity as the
+    /// capacity row. The first row that shares both prefix and validity with
+    /// another, so only the question separates them.
+    HostFilesystemInodePressureV1,
 }
 
 /// The identity row of one question. Every field is a compiled literal.
@@ -173,6 +180,31 @@ const SYSTEMD_UNIT_REQUIRED_ACTIVE_V1: QuestionSpecV1 = QuestionSpecV1 {
     pulse_profile_domain: "constellation.nq_systemd_unit_required_active_correspondence.pulse_profile.v1",
 };
 
+const HOST_FILESYSTEM_INODE_PRESSURE_V1: QuestionSpecV1 = QuestionSpecV1 {
+    question_id: "nq.host_filesystem_inodes.pressure",
+    question_version: "1",
+    question_digest: "sha256:2986b802935b67bbc9247ba0888b08c762f437ed71464265f676ab0ffd914d89",
+    nq_profile_id: "nq.host_filesystem_inodes",
+    nq_profile_version: "1",
+    nq_profile_digest: "sha256:1a4f5e289b2f63e811e552141c7d624ca46880343b3126450522dc338bcdd664",
+    refusal_profile_version: 1,
+    claim_id: "claim:filesystem_inode_pressure",
+    condition: "filesystem_inode_pressure",
+    subject_prefix: "host-filesystem:",
+    reliance_window_ms: 300_000,
+    pulse_scope: "nq.host_filesystem_inodes.pressure/v1",
+    coverage_tag: "nq_host_filesystem_inodes_pressure_v1_terminal_artifact",
+    acquisition_id_prefix: "constellation-nq-fs-inodes:v1:",
+    transport_path: "in-process:nq-filesystem-inodes-correspondence/v1",
+    failure_domain: "domain:nq-filesystem-inodes-correspondence",
+    profile_schema: "constellation.nq_host_filesystem_inodes_correspondence_profile.v1",
+    occurrence_schema: "constellation.nq_host_filesystem_inodes_correspondence_occurrence.v1",
+    intent_schema: "constellation.nq_host_filesystem_inodes_correspondence_intent.v1",
+    record_schema: "constellation.nq_host_filesystem_inodes_correspondence.v1",
+    pulse_profile_name: "constellation.nq_host_filesystem_inodes_correspondence",
+    pulse_profile_domain: "constellation.nq_host_filesystem_inodes_correspondence.pulse_profile.v1",
+};
+
 /// Every row's reliance window must exceed the ingress fence by more than one
 /// millisecond, or the frame validity would underflow. Checked at compile
 /// time for every row.
@@ -181,15 +213,17 @@ const _: () = {
     assert!(HOST_FILESYSTEM_CAPACITY_PRESSURE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
     assert!(HOST_MEMORY_PRESSURE_STALL_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
     assert!(SYSTEMD_UNIT_REQUIRED_ACTIVE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
+    assert!(HOST_FILESYSTEM_INODE_PRESSURE_V1.reliance_window_ms > INGRESS_FENCE_MS + 1);
 };
 
 impl QuestionV1 {
     /// Every question in the closed table, in declaration order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::HostLoadPressureV1,
         Self::HostFilesystemCapacityPressureV1,
         Self::HostMemoryPressureStallV1,
         Self::SystemdUnitRequiredActiveV1,
+        Self::HostFilesystemInodePressureV1,
     ];
 
     #[must_use]
@@ -199,6 +233,7 @@ impl QuestionV1 {
             Self::HostFilesystemCapacityPressureV1 => &HOST_FILESYSTEM_CAPACITY_PRESSURE_V1,
             Self::HostMemoryPressureStallV1 => &HOST_MEMORY_PRESSURE_STALL_V1,
             Self::SystemdUnitRequiredActiveV1 => &SYSTEMD_UNIT_REQUIRED_ACTIVE_V1,
+            Self::HostFilesystemInodePressureV1 => &HOST_FILESYSTEM_INODE_PRESSURE_V1,
         }
     }
 
