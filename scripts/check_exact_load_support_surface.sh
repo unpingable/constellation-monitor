@@ -101,6 +101,22 @@ if rg -n 'avg10|avg60|avg300|centipercent|boot_age|MemAvailable|meminfo|SwapFree
 fi
 rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::HostMemoryPressureStallV1' "$mem_dir/lib.rs" || fail "memory-pressure adapter must pin its question"
 
+# --- constellation-status-nq-systemd-unit: fourth consequence adapter -------
+# Additive. The adapter never reads the bus or restates a systemd state
+# string, and maps exactly one question.
+unit_dir="$root/crates/constellation-status-nq-systemd-unit/src"
+[ -d "$unit_dir" ] || fail "systemd-unit consequence adapter source missing"
+if rg -n 'std::process|Command::new|/proc|/run/dbus|std::fs|nix::|libc::|derive_state|pulse_nq_load_support|LivePresentSupportResponseV1::new|HostLoadPressureV1|HostFilesystemCapacityPressureV1|HostMemoryPressureStallV1' "$unit_dir"; then
+  fail "systemd-unit consequence adapter acquires, recomputes, fabricates, or maps another question"
+fi
+if rg -n 'ActiveState|LoadState|SubState|ListUnitsByNames|org\.freedesktop|systemctl|"inactive"|"failed"|"activating"|"masked"|"not-found"' "$unit_dir"; then
+  fail "systemd-unit consequence adapter restates NQ's systemd vocabulary"
+fi
+rg -q 'REQUIRED_QUESTION: QuestionV1 = QuestionV1::SystemdUnitRequiredActiveV1' "$unit_dir/lib.rs" || fail "systemd-unit adapter must pin its question"
+if rg -n 'ActiveState|LoadState|SubState|ListUnitsByNames|org\.freedesktop|/run/dbus' "$corr_dir"; then
+  fail "correspondence crate names a systemd source or vocabulary"
+fi
+
 # The seam carries a state, never a PSI value: no PSI source or vocabulary in
 # the correspondence crate.
 if rg -n '/proc/pressure|avg60|centipercent|boot_age|MemAvailable' "$corr_dir"; then
@@ -118,6 +134,9 @@ fi
 non_load_tests=(
   "$root"/crates/constellation-status-nq-filesystem-capacity/tests
   "$root"/crates/constellation-status-nq-memory-pressure/tests
+  "$root"/crates/constellation-status-nq-systemd-unit/tests
+  "$root"/crates/pulse-nq-load-correspondence/tests/systemd_unit_required_active_vectors.rs
+  "$root"/crates/pulse-nq-load-correspondence/tests/systemd_unit_seam.rs
   "$root"/crates/pulse-nq-load-correspondence/tests/question_generalization.rs
   "$root"/crates/pulse-nq-load-correspondence/tests/question_row_pins.rs
   "$root"/crates/pulse-nq-load-correspondence/tests/memory_pressure_vectors.rs
