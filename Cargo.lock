@@ -57,6 +57,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "constellation-host-posture"
+version = "0.1.0"
+dependencies = [
+ "constellation-status-nq-filesystem-capacity",
+ "constellation-status-projection",
+ "ctrlc",
+ "pulse-nq-load-correspondence",
+ "pulse-runtime",
+ "pulse-types",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "constellation-status-nq-filesystem-capacity"
 version = "0.1.0"
 dependencies = [
