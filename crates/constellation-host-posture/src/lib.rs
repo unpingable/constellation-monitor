@@ -1095,6 +1095,7 @@ impl StateLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(path)
             .map_err(|error| map_error("state_lock", error))?;
@@ -1368,7 +1369,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
             sequence: u64,
             state: String,
             record_path: PathBuf,
-            value: VerifiedCorrespondenceV1,
+            value: Box<VerifiedCorrespondenceV1>,
         },
         AuditOnly {
             sequence: u64,
@@ -1425,7 +1426,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                                 sequence,
                                 state: result.nq_detector_state.as_str().to_owned(),
                                 record_path: result.record_path,
-                                value: *value,
+                                value,
                             },
                             OccurrenceOutcomeV1::AuditOnly { refusal } => {
                                 AcquisitionMessage::AuditOnly {
@@ -1474,7 +1475,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                         "occurrence={sequence} state={state} record={}",
                         record_path.display()
                     );
-                    latest = Some(value);
+                    latest = Some(*value);
                     next_projection = Instant::now();
                 }
                 Ok(AcquisitionMessage::AuditOnly { sequence, refusal }) => {
@@ -1549,9 +1550,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
     if let Some(error) = primary_error {
         return Err(error);
     }
-    if let Err(error) = blindness_result {
-        return Err(error);
-    }
+    blindness_result?;
     let (final_artifact, final_state) = final_result?;
     if final_state != ProjectedStateV1::Unknown {
         return Err(HostPostureError::new(
