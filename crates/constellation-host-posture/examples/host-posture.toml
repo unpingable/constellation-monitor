@@ -13,7 +13,7 @@ publication_root = "/var/lib/constellation-host-posture/status"
 receiver_id = "receiver:constellation-host-posture"
 mountpoint_label = "/data"
 acquisition_interval_ms = 60000
-projection_interval_ms = 5000
+projection_interval_ms = 4000
 withdrawal_publication_tolerance_ms = 5000
 maximum_trusted_lifetime_ms = 298999
 maximum_occurrences = 2048
@@ -42,7 +42,7 @@ maximum_file_bytes = 268435456
 [reactor]
 schema_version = 1
 maximum_pending_commands = 8
-command_response_timeout_ms = 5000
+command_response_timeout_ms = 1000
 deliberate_deadline_delay_ms = 0
 journal_durability = "file_synced"
 

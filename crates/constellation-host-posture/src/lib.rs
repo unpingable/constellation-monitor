@@ -26,8 +26,8 @@ use constellation_status_nq_filesystem_capacity::{
 use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
     FactRequirementV1, LiveSupportSelectorV1, OutputComponentV1, PROJECTION_POLICY_SCHEMA_V1,
-    ProjectionMomentV1, ProjectionPolicyV1, SourceFactClassV1, project_with_details,
-    read_current_artifact, stage_publication,
+    ProjectedStateV1, ProjectionMomentV1, ProjectionPolicyV1, SourceFactClassV1,
+    project_with_details, read_current_artifact, stage_publication,
 };
 use pulse_nq_load_correspondence::{
     Coproducer, CorrespondenceError, CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NqEnrollmentV1,
@@ -277,6 +277,37 @@ impl HostPostureConfig {
             return Err(HostPostureError::new(
                 "invalid_projection_cadence",
                 "projection cadence must meet the explicit withdrawal tolerance, which may not exceed 5000 ms for this installed profile",
+            ));
+        }
+        let withdrawal_delay = self
+            .projection_interval_ms
+            .checked_add(self.reactor.command_response_timeout_ms)
+            .ok_or_else(|| {
+                HostPostureError::new(
+                    "invalid_projection_cadence",
+                    "projection interval plus reactor command timeout overflows",
+                )
+            })?;
+        if self.reactor.command_response_timeout_ms == 0
+            || withdrawal_delay > self.withdrawal_publication_tolerance_ms
+        {
+            return Err(HostPostureError::new(
+                "invalid_projection_cadence",
+                "projection interval plus reactor command timeout must fit the explicit withdrawal-publication tolerance",
+            ));
+        }
+        if self.reactor.deliberate_deadline_delay_ms != 0
+            || self.reactor.journal_durability != pulse_runtime::JournalDurabilityModeV1::FileSynced
+        {
+            return Err(HostPostureError::new(
+                "invalid_reactor_config",
+                "installed runner requires zero deliberate deadline delay and file-synced journal durability",
+            ));
+        }
+        if self.publication_root != self.state_root.join("status") {
+            return Err(HostPostureError::new(
+                "invalid_publication_root",
+                "publication_root must be the status child of state_root so one writer lock covers both stores",
             ));
         }
         if self.acquisition_interval_ms
@@ -1207,7 +1238,7 @@ fn publish_projection(
     verified: Option<&VerifiedCorrespondenceV1>,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
-) -> Result<String> {
+) -> Result<(String, ProjectedStateV1)> {
     let objects = count_regular_store_entries(
         &config.publication_root.join("objects"),
         config.maximum_publications,
@@ -1256,12 +1287,13 @@ fn publish_projection(
     let moment = ProjectionMomentV1::now(generated_at);
     let artifact = project_with_details(policy, &facts, &support, &[], &details, moment)
         .map_err(|error| map_error("projection", error))?;
+    let aggregate_state = artifact.aggregate_state;
     let artifact_id = stage_publication(&config.publication_root, &artifact)
         .map_err(|error| map_error("publication", error))?
         .commit()
         .map_err(|error| map_error("publication", error))?;
     *last_published_unix_ms = generated_at;
-    Ok(artifact_id)
+    Ok((artifact_id, aggregate_state))
 }
 
 fn initial_publication_time(root: &Path) -> Result<u64> {
@@ -1311,7 +1343,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
 
     let mut last_published = initial_publication_time(&config.publication_root)?;
     let mut nonce_sequence = 1_u64;
-    let initial = publish_projection(
+    let (initial, initial_state) = publish_projection(
         config,
         &reactor,
         &policy,
@@ -1319,7 +1351,10 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         nonce_sequence,
         &mut last_published,
     )?;
-    println!("initial_state=unknown artifact={initial}");
+    println!(
+        "initial_state={} artifact={initial}",
+        initial_state.as_str()
+    );
     nonce_sequence = nonce_sequence.saturating_add(1);
 
     let acquisition_interval = Duration::from_millis(config.acquisition_interval_ms);
@@ -1393,7 +1428,10 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                                 value: *value,
                             },
                             OccurrenceOutcomeV1::AuditOnly { refusal } => {
-                                AcquisitionMessage::AuditOnly { sequence, refusal }
+                                AcquisitionMessage::AuditOnly {
+                                    sequence,
+                                    refusal: refusal.to_string(),
+                                }
                             }
                         }
                     }
@@ -1465,7 +1503,9 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     nonce_sequence,
                     &mut last_published,
                 ) {
-                    Ok(artifact) => println!("projection artifact={artifact}"),
+                    Ok((artifact, state)) => {
+                        println!("projection state={} artifact={artifact}", state.as_str())
+                    }
                     Err(error) => {
                         loop_error = Some(error);
                         stopping.store(true, Ordering::SeqCst);
@@ -1483,30 +1523,46 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         }
         Ok(())
     });
-    worker_result?;
-
-    let _ = reactor.declare_blindness("host-posture runner is stopping");
-    let final_artifact = publish_projection(
+    let primary_error = worker_result.err().or(terminal_error);
+    let blindness_result = reactor
+        .declare_blindness("host-posture runner is stopping")
+        .map_err(|error| map_error("reactor_blindness", error));
+    let final_result = publish_projection(
         config,
         &reactor,
         &policy,
-        latest.as_ref(),
+        None,
         nonce_sequence,
         &mut last_published,
-    )?;
-    println!("final_state=unknown artifact={final_artifact}");
-    let snapshot = reactor
-        .shutdown()
-        .map_err(|error| map_error("reactor_shutdown", error))?;
-    if !snapshot.clean_shutdown {
-        return Err(HostPostureError::new(
+    );
+    if let Ok((artifact, state)) = &final_result {
+        println!("final_state={} artifact={artifact}", state.as_str());
+    }
+    let shutdown_result = match reactor.shutdown() {
+        Ok(snapshot) if snapshot.clean_shutdown => Ok(()),
+        Ok(_) => Err(HostPostureError::new(
             "reactor_shutdown",
             "reactor did not record a clean shutdown",
-        ));
-    }
-    if let Some(error) = terminal_error {
+        )),
+        Err(error) => Err(map_error("reactor_shutdown", error)),
+    };
+    if let Some(error) = primary_error {
         return Err(error);
     }
+    if let Err(error) = blindness_result {
+        return Err(error);
+    }
+    let (final_artifact, final_state) = final_result?;
+    if final_state != ProjectedStateV1::Unknown {
+        return Err(HostPostureError::new(
+            "final_projection",
+            format!(
+                "terminal publication {final_artifact} projected {}, not unknown",
+                final_state.as_str()
+            ),
+        ));
+    }
+    shutdown_result?;
     Ok(())
 }
 
@@ -1519,12 +1575,51 @@ mod tests {
         let rendered = example_config();
         let parsed = toml::from_str::<HostPostureConfig>(&rendered)
             .expect("packaged example must decode as runner configuration");
+        parsed
+            .validate()
+            .expect("packaged example must pass service-local bounds");
         assert_eq!(parsed.maximum_occurrences, 2_048);
         assert_eq!(parsed.maximum_publications, 65_536);
         assert_eq!(parsed.withdrawal_publication_tolerance_ms, 5_000);
         assert_eq!(
             parsed.reactor.journal_durability,
             pulse_runtime::JournalDurabilityModeV1::FileSynced
+        );
+    }
+
+    #[test]
+    fn service_local_custody_and_withdrawal_bounds_fail_closed() {
+        let rendered = example_config();
+        let baseline = toml::from_str::<HostPostureConfig>(&rendered)
+            .expect("packaged example must decode as runner configuration");
+
+        let mut separate_publication = baseline.clone();
+        separate_publication.publication_root = PathBuf::from("/var/lib/other-status");
+        assert_eq!(
+            separate_publication.validate().unwrap_err().code,
+            "invalid_publication_root"
+        );
+
+        let mut weak_durability = baseline.clone();
+        weak_durability.reactor.journal_durability =
+            pulse_runtime::JournalDurabilityModeV1::Written;
+        assert_eq!(
+            weak_durability.validate().unwrap_err().code,
+            "invalid_reactor_config"
+        );
+
+        let mut delayed_deadline = baseline.clone();
+        delayed_deadline.reactor.deliberate_deadline_delay_ms = 1;
+        assert_eq!(
+            delayed_deadline.validate().unwrap_err().code,
+            "invalid_reactor_config"
+        );
+
+        let mut late_withdrawal = baseline;
+        late_withdrawal.reactor.command_response_timeout_ms = 1_001;
+        assert_eq!(
+            late_withdrawal.validate().unwrap_err().code,
+            "invalid_projection_cadence"
         );
     }
 

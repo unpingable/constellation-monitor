@@ -37,8 +37,11 @@ governance/install principal.
 
 Preflight and run take the same stable-file writer lock and require private,
 service-owned `intent` and `audit` directories. The configured projection
-cadence must meet an explicit withdrawal-publication tolerance no greater than
-five seconds for this installed profile.
+cadence plus the reactor command-response timeout must meet an explicit
+withdrawal-publication tolerance no greater than five seconds for this
+installed profile. The reactor admits no deliberate deadline delay and uses
+file-synced journal durability. Publication is exactly `state_root/status`, so
+the same stable writer lock covers journal, occurrence and publication state.
 
 The finite setup sequence is:
 
@@ -69,3 +72,8 @@ the persistent intent/audit and immutable publication stores have aggregate
 entry ceilings that survive restart and fail closed when exhausted. Retention
 or rotation is an explicit governed installation operation, not an automatic
 runner cleanup policy.
+
+The example's 2,048 occurrences at a 60-second cadence are a bounded
+qualification profile (about 34 hours), not a sustained-production retention
+claim. A production retention envelope requires an explicit owner-approved
+capacity and rotation/disposition procedure before deployment.
