@@ -242,7 +242,17 @@ fn every_synthetic_outcome_delivers_and_carries_nq_state_unchanged() {
             .expect("occurrence");
         assert_eq!(result.nq_detector_state, outcome.expected_state());
         let OccurrenceOutcomeV1::Verified(verified) = &result.outcome else {
-            panic!("expected verified outcome for {outcome:?}");
+            let OccurrenceOutcomeV1::AuditOnly { refusal } = &result.outcome else {
+                unreachable!()
+            };
+            let snapshot = harness.reactor.snapshot();
+            panic!(
+                "{outcome:?}: audit only: {refusal}; holding_delay_ms={}; ingress_fence_ms={}; reactor_condition={:?}; reactor_detail={}",
+                result.delivery.holding_delay_ms,
+                result.delivery.ingress_fence_ms,
+                snapshot.condition,
+                snapshot.condition_detail
+            )
         };
         assert_eq!(verified.nq_detector_state(), outcome.expected_state());
         let certificate = harness.certificate().expect("certificate");
@@ -425,12 +435,8 @@ fn pre_delivery_refusals_burn_the_sequence_and_deliver_nothing() {
             _ => {}
         }
         if tamper == Tamper::AcquireFails {
-            assert!(
-                error
-                    .detail
-                    .contains("original acquire disposition=nq_refused")
-            );
-            assert!(error.detail.len() < 256, "reconciliation error is bounded");
+            assert!(error.detail.contains("original_acquire=nq_refused"));
+            assert!(error.detail.len() <= 512, "reconciliation error is bounded");
         }
         expected_sequence += 1;
         assert_eq!(coproducer.lineage().next_sequence(), expected_sequence);
@@ -457,6 +463,75 @@ fn pre_delivery_refusals_burn_the_sequence_and_deliver_nothing() {
         .expect("occurrence");
     assert!(matches!(result.outcome, OccurrenceOutcomeV1::Verified(_)));
     assert_eq!(result.sequence, expected_sequence + 1);
+    harness.finish();
+}
+
+#[test]
+fn nq_command_errors_name_the_exact_post_intent_stage_and_acquisition() {
+    let harness = harness("stage-errors");
+    let nq = FakeNq::new(harness.profile.clone(), SyntheticOutcome::Present);
+    let witness = harness.witness();
+    let mut coproducer = Coproducer::begin(
+        &harness.profile,
+        &nq,
+        &witness,
+        &harness.intent_dir,
+        &harness.audit_dir,
+    )
+    .expect("coproducer");
+    let mut expected_sequence = 1;
+    for (tamper, stage, code) in [
+        (Tamper::AcquirePreLaunchFails, "acquire", "nq_spawn"),
+        (
+            Tamper::AcquireFails,
+            "reconciliation_replay",
+            "acquire_reconciliation_failed",
+        ),
+        (Tamper::ReplayDiffers, "mandatory_replay", "replay_mismatch"),
+        (Tamper::QualifyFails, "qualify", "nq_refused"),
+    ] {
+        nq.set_tamper(tamper);
+        let error = coproducer
+            .run_occurrence(&harness.reactor)
+            .expect_err("negative stage case must refuse");
+        assert_eq!(error.code, code, "{tamper:?}: {error}");
+        let matching_intents: Vec<serde_json::Value> = fs::read_dir(&harness.intent_dir)
+            .expect("intent directory")
+            .map(|entry| {
+                let path = entry.expect("intent entry").path();
+                serde_json::from_slice(&fs::read(path).expect("intent bytes")).expect("intent JSON")
+            })
+            .filter(|intent: &serde_json::Value| {
+                intent["sequence"].as_u64() == Some(expected_sequence)
+            })
+            .collect();
+        assert_eq!(matching_intents.len(), 1, "one exact intent sequence");
+        let acquisition_id = matching_intents[0]["acquisition_id"]
+            .as_str()
+            .expect("intent acquisition identity");
+        assert!(
+            error.detail.contains(&format!("stage={stage};")),
+            "{tamper:?}: {error}"
+        );
+        assert!(
+            error
+                .detail
+                .contains(&format!("acquisition_id={acquisition_id};")),
+            "{tamper:?}: {error}"
+        );
+        assert!(error.detail.len() <= 512, "stage detail is bounded");
+        if tamper == Tamper::AcquireFails {
+            assert!(error.detail.contains("original_acquire=nq_refused"));
+            assert!(error.detail.contains("replay=nq_refused"));
+            assert!(error.detail.contains("replacement_acquisition=false"));
+            assert!(
+                error
+                    .detail
+                    .contains("replay_detail=fixture: no such local successor")
+            );
+        }
+        expected_sequence += 1;
+    }
     harness.finish();
 }
 

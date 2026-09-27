@@ -16,6 +16,7 @@ use crate::{CorrespondenceError, NqEnrollmentV1, read_regular_bounded, sha256_pr
 pub const NQ_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const NQ_READ_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_NQ_OUTPUT_BYTES: usize = 2 * 1_024 * 1_024;
+pub(crate) const NQ_STAGE_QUALIFY: &str = "qualify";
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1_024 * 1_024;
 const MAX_CONFIG_BYTES: usize = 256 * 1_024;
 
@@ -144,9 +145,10 @@ impl PinnedNqExecutable {
                     thread::sleep(Duration::from_millis(5));
                 }
                 Ok(None) => {
+                    let elapsed = started.elapsed();
                     let kill_error = child.kill().err();
                     match child.wait() {
-                        Ok(_) => break ChildDisposition::TimedOut,
+                        Ok(_) => break ChildDisposition::TimedOut(elapsed),
                         Err(wait_error) => {
                             break ChildDisposition::WaitFailed(format!(
                                 "reaping NQ after timeout: {wait_error}; kill disposition: {kill_error:?}"
@@ -164,10 +166,13 @@ impl PinnedNqExecutable {
         let stdout = join_drain(stdout_thread, "stdout")?;
         let stderr = join_drain(stderr_thread, "stderr")?;
         match disposition {
-            ChildDisposition::TimedOut => {
+            ChildDisposition::TimedOut(elapsed) => {
                 return Err(CorrespondenceError::new(
                     "nq_timeout",
-                    "NQ exceeded its bounded runtime",
+                    format!(
+                        "NQ exceeded its bounded runtime; elapsed_ms={}",
+                        elapsed.as_millis()
+                    ),
                 ));
             }
             ChildDisposition::WaitFailed(detail) => {
@@ -313,7 +318,7 @@ fn stop_child(child: &mut Child) {
 
 enum ChildDisposition {
     Exited(ExitStatus),
-    TimedOut,
+    TimedOut(Duration),
     WaitFailed(String),
 }
 
@@ -333,15 +338,11 @@ mod tests {
         )
     }
 
-    fn port_that_writes(bytes: usize) -> (PinnedNqExecutable, tempfile::TempDir) {
+    fn port_with_script(script: String) -> (PinnedNqExecutable, tempfile::TempDir) {
         let root = tempfile::tempdir().expect("temporary command root");
         let executable_path = root.path().join("nq-output");
         let config_path = root.path().join("nq.toml");
-        fs::write(
-            &executable_path,
-            format!("#!/bin/sh\nexec /usr/bin/head -c {bytes} /dev/zero\n"),
-        )
-        .expect("write command");
+        fs::write(&executable_path, script).expect("write command");
         let mut permissions = fs::metadata(&executable_path)
             .expect("command metadata")
             .permissions();
@@ -376,6 +377,12 @@ mod tests {
         )
     }
 
+    fn port_that_writes(bytes: usize) -> (PinnedNqExecutable, tempfile::TempDir) {
+        port_with_script(format!(
+            "#!/bin/sh\nexec /usr/bin/head -c {bytes} /dev/zero\n"
+        ))
+    }
+
     #[test]
     fn drains_pipe_capacity_exceeding_bounded_stdout_while_the_child_runs() {
         let (port, _root) = port_that_writes(256 * 1_024);
@@ -397,5 +404,22 @@ mod tests {
             .run(&[], Duration::from_secs(5))
             .expect_err("over-bound output is refused");
         assert_eq!(error.code, "nq_output_bound");
+    }
+
+    #[test]
+    fn timeout_preserves_code_and_reports_the_pre_kill_elapsed_sample() {
+        let (port, _root) = port_with_script("#!/bin/sh\nexec /bin/sleep 5\n".to_owned());
+        let timeout = Duration::from_millis(20);
+        let error = port
+            .run(&[], timeout)
+            .expect_err("the sleeping command must cross the bounded runtime");
+        assert_eq!(error.code, "nq_timeout");
+        let elapsed_ms = error
+            .detail
+            .strip_prefix("NQ exceeded its bounded runtime; elapsed_ms=")
+            .expect("elapsed diagnostic")
+            .parse::<u128>()
+            .expect("integer milliseconds");
+        assert!(elapsed_ms >= timeout.as_millis());
     }
 }

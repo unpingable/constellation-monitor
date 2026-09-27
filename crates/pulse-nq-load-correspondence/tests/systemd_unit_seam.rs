@@ -205,8 +205,18 @@ fn unit_co_production_verifies_with_the_60_s_window_and_its_question() {
                 .starts_with(UNIT.spec().acquisition_id_prefix)
         );
         assert_eq!(result.nq_detector_state, state);
-        let OccurrenceOutcomeV1::Verified(verified) = result.outcome else {
-            panic!("audit only")
+        let OccurrenceOutcomeV1::Verified(verified) = &result.outcome else {
+            let OccurrenceOutcomeV1::AuditOnly { refusal } = &result.outcome else {
+                unreachable!()
+            };
+            let snapshot = reactor.snapshot();
+            panic!(
+                "{outcome:?}: audit only: {refusal}; holding_delay_ms={}; ingress_fence_ms={}; reactor_condition={:?}; reactor_detail={}",
+                result.delivery.holding_delay_ms,
+                result.delivery.ingress_fence_ms,
+                snapshot.condition,
+                snapshot.condition_detail
+            )
         };
         assert_eq!(verified.question(), UNIT);
         assert_eq!(verified.subject().as_str(), SYNTHETIC_SYSTEMD_UNIT_SUBJECT);

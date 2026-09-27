@@ -523,8 +523,18 @@ fn an_owner_failure_is_carried_in_process_for_a_typed_cannot_evaluate_only() {
             nq.set_outcome(outcome);
             let result = coproducer.run_occurrence(&reactor).expect("occurrence");
             assert_eq!(result.nq_detector_state, outcome.expected_state());
-            let OccurrenceOutcomeV1::Verified(verified) = result.outcome else {
-                panic!("audit only")
+            let OccurrenceOutcomeV1::Verified(verified) = &result.outcome else {
+                let OccurrenceOutcomeV1::AuditOnly { refusal } = &result.outcome else {
+                    unreachable!()
+                };
+                let snapshot = reactor.snapshot();
+                panic!(
+                    "{question:?} {outcome:?}: audit only: {refusal}; holding_delay_ms={}; ingress_fence_ms={}; reactor_condition={:?}; reactor_detail={}",
+                    result.delivery.holding_delay_ms,
+                    result.delivery.ingress_fence_ms,
+                    snapshot.condition,
+                    snapshot.condition_detail
+                )
             };
             assert_eq!(
                 verified

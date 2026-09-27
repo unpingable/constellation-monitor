@@ -17,7 +17,7 @@ use pulse_types::IncarnationId;
 use serde::Serialize;
 
 use crate::deliver::{consumer_certificate, deliver};
-use crate::nq_cli::acquire_error_may_follow_launch;
+use crate::nq_cli::{NQ_STAGE_QUALIFY, acquire_error_may_follow_launch};
 use crate::record::encode_hex;
 use crate::{
     CorrespondenceError, CorrespondenceProfileV1, CorrespondenceRecordV1, DeliveryMeasurementV1,
@@ -26,6 +26,23 @@ use crate::{
     check_ingress_fence, sha256_hex, verify_artifact, verify_certificate_binding,
     verify_provenance, write_create_new,
 };
+
+const MAX_NQ_STAGE_ERROR_DETAIL_BYTES: usize = 512;
+
+fn with_nq_stage(
+    stage: &'static str,
+    acquisition_id: &str,
+    error: CorrespondenceError,
+) -> CorrespondenceError {
+    let prefix = format!("stage={stage}; acquisition_id={acquisition_id}; ");
+    debug_assert!(prefix.len() <= MAX_NQ_STAGE_ERROR_DETAIL_BYTES);
+    let remaining = MAX_NQ_STAGE_ERROR_DETAIL_BYTES.saturating_sub(prefix.len());
+    let mut end = error.detail.len().min(remaining);
+    while !error.detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    CorrespondenceError::new(error.code, format!("{prefix}{}", &error.detail[..end]))
+}
 
 #[derive(Serialize)]
 struct IntentV1<'a> {
@@ -161,37 +178,55 @@ impl<'a> Coproducer<'a> {
         let occurrence = self.lineage.seal_next(self.profile, incarnation)?;
         self.write_intent(&occurrence, sequence)?;
 
-        let artifact_bytes = match self.port.acquire_next_local(&occurrence.acquisition_id) {
+        let acquisition_id = &occurrence.acquisition_id;
+        let artifact_bytes = match self.port.acquire_next_local(acquisition_id) {
             Ok(bytes) => bytes,
             Err(acquire_error) if acquire_error_may_follow_launch(&acquire_error) => self
                 .port
-                .replay_local_successor(&occurrence.acquisition_id)
+                .replay_local_successor(acquisition_id)
                 .map_err(|replay_error| {
-                    CorrespondenceError::new(
-                        "acquire_reconciliation_failed",
-                        format!(
-                            "original acquire disposition={}; replay disposition={}; no replacement acquisition was attempted",
-                            acquire_error.code, replay_error.code
+                    with_nq_stage(
+                        "reconciliation_replay",
+                        acquisition_id,
+                        CorrespondenceError::new(
+                            "acquire_reconciliation_failed",
+                            format!(
+                                "replay={}; original_acquire={}; replacement_acquisition=false; replay_detail={}; original_detail={}",
+                                replay_error.code,
+                                acquire_error.code,
+                                replay_error.detail,
+                                acquire_error.detail
+                            ),
                         ),
                     )
                 })?,
-            Err(error) => return Err(error),
+            Err(error) => return Err(with_nq_stage("acquire", acquisition_id, error)),
         };
-        let artifact = verify_artifact(&artifact_bytes, self.profile)?;
+        let artifact = verify_artifact(&artifact_bytes, self.profile)
+            .map_err(|error| with_nq_stage("acquire", acquisition_id, error))?;
         // This is intentionally still required after result-loss recovery: the
         // first replay recovers the lost result and this second replay proves
         // the ordinary exact-byte reopening invariant.
         let replay_bytes = self
             .port
-            .replay_local_successor(&occurrence.acquisition_id)?;
+            .replay_local_successor(acquisition_id)
+            .map_err(|error| with_nq_stage("mandatory_replay", acquisition_id, error))?;
         if replay_bytes != artifact_bytes {
-            return Err(CorrespondenceError::new(
-                "replay_mismatch",
-                "NQ replay bytes differ from the acquisition bytes",
+            return Err(with_nq_stage(
+                "mandatory_replay",
+                acquisition_id,
+                CorrespondenceError::new(
+                    "replay_mismatch",
+                    "NQ replay bytes differ from the acquisition bytes",
+                ),
             ));
         }
-        let provenance_bytes = self.port.qualify(&artifact.artifact_id)?;
-        let provenance = verify_provenance(&provenance_bytes, &artifact, self.profile)?;
+        let provenance_bytes = self
+            .port
+            .qualify(&artifact.artifact_id)
+            .map_err(|error| with_nq_stage(NQ_STAGE_QUALIFY, acquisition_id, error))?;
+        let provenance = verify_provenance(&provenance_bytes, &artifact, self.profile)
+            .map_err(|error| with_nq_stage(NQ_STAGE_QUALIFY, acquisition_id, error))?;
 
         let delivery = deliver(reactor, self.question, &occurrence)?;
 

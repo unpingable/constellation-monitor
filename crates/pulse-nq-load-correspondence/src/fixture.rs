@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use pulse_types::IncarnationId;
 use serde_json::{Value, json};
@@ -915,6 +916,43 @@ pub fn canonical_json(value: &Value) -> Result<Vec<u8>, CorrespondenceError> {
     canonical_bytes(value)
 }
 
+const SYNTHETIC_REACTOR_STARTUP_READINESS_ALLOWANCE: Duration = Duration::from_secs(10);
+const MAX_SYNTHETIC_REACTOR_SETUP_DETAIL_BYTES: usize = 512;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SyntheticReactorReadiness {
+    Pending,
+    Ready,
+    Refused,
+}
+
+fn synthetic_reactor_readiness(
+    condition: pulse_runtime::ReactorConditionV1,
+) -> SyntheticReactorReadiness {
+    use pulse_runtime::ReactorConditionV1;
+
+    match condition {
+        ReactorConditionV1::Starting => SyntheticReactorReadiness::Pending,
+        ReactorConditionV1::Operational => SyntheticReactorReadiness::Ready,
+        _ => SyntheticReactorReadiness::Refused,
+    }
+}
+
+fn bounded_reactor_setup_error(
+    context: &str,
+    condition: pulse_runtime::ReactorConditionV1,
+    condition_detail: &str,
+) -> CorrespondenceError {
+    let mut detail =
+        format!("{context}; terminal_condition={condition:?}; terminal_detail={condition_detail}");
+    let mut end = detail.len().min(MAX_SYNTHETIC_REACTOR_SETUP_DETAIL_BYTES);
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    detail.truncate(end);
+    CorrespondenceError::new("reactor_setup", detail)
+}
+
 /// A real local Pulse reactor registered for the profile's consumer, using
 /// the repository's existing local qualification fixture inputs. The journal
 /// is created at `journal_path`, which must not exist.
@@ -926,8 +964,8 @@ pub fn start_reactor(
 ) -> Result<pulse_runtime::LocalCrashReactor, CorrespondenceError> {
     use pulse_runtime::{
         HistoricalJournal, JournalBoundsV1, JournalConfigV1, LocalCrashReactor, MonotonicEpochV1,
-        ReactorConditionV1, ReactorConfigV1, ReceiverSchedulerRuntime, RuntimeBoundsV1,
-        RuntimeConfigV1, qualification_fixture_inputs,
+        ReactorConfigV1, ReceiverSchedulerRuntime, RuntimeBoundsV1, RuntimeConfigV1,
+        qualification_fixture_inputs,
     };
     use pulse_types::{ClockId, ReceiverId, SCHEMA_VERSION_V1};
 
@@ -978,10 +1016,79 @@ pub fn start_reactor(
     let reactor =
         LocalCrashReactor::start(runtime, journal, epoch, ReactorConfigV1::qualification())
             .map_err(|error| CorrespondenceError::new("reactor_setup", error.to_string()))?;
-    reactor
-        .wait_until(std::time::Duration::from_secs(2), |snapshot| {
-            snapshot.condition == ReactorConditionV1::Operational
-        })
-        .map_err(|error| CorrespondenceError::new("reactor_setup", error.to_string()))?;
+    let readiness = reactor.wait_until(SYNTHETIC_REACTOR_STARTUP_READINESS_ALLOWANCE, |snapshot| {
+        synthetic_reactor_readiness(snapshot.condition) != SyntheticReactorReadiness::Pending
+    });
+    let snapshot = match readiness {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let snapshot = reactor.snapshot();
+            return Err(bounded_reactor_setup_error(
+                &error.to_string(),
+                snapshot.condition,
+                &snapshot.condition_detail,
+            ));
+        }
+    };
+    if synthetic_reactor_readiness(snapshot.condition) != SyntheticReactorReadiness::Ready {
+        return Err(bounded_reactor_setup_error(
+            "reactor left Starting without becoming Operational",
+            snapshot.condition,
+            &snapshot.condition_detail,
+        ));
+    }
     Ok(reactor)
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use pulse_runtime::ReactorConditionV1;
+
+    use super::{
+        MAX_SYNTHETIC_REACTOR_SETUP_DETAIL_BYTES, SyntheticReactorReadiness,
+        bounded_reactor_setup_error, synthetic_reactor_readiness,
+    };
+
+    #[test]
+    fn synthetic_readiness_accepts_only_starting_to_operational() {
+        assert_eq!(
+            [
+                ReactorConditionV1::Starting,
+                ReactorConditionV1::Operational,
+            ]
+            .map(synthetic_reactor_readiness),
+            [
+                SyntheticReactorReadiness::Pending,
+                SyntheticReactorReadiness::Ready,
+            ]
+        );
+    }
+
+    #[test]
+    fn synthetic_readiness_refuses_a_terminal_state_without_waiting_for_operational() {
+        assert_eq!(
+            [
+                ReactorConditionV1::Starting,
+                ReactorConditionV1::JournalFailure,
+            ]
+            .map(synthetic_reactor_readiness),
+            [
+                SyntheticReactorReadiness::Pending,
+                SyntheticReactorReadiness::Refused,
+            ]
+        );
+    }
+
+    #[test]
+    fn synthetic_readiness_timeout_detail_is_utf8_and_byte_bounded() {
+        let error = bounded_reactor_setup_error(
+            "readiness allowance elapsed",
+            ReactorConditionV1::Starting,
+            &"é".repeat(MAX_SYNTHETIC_REACTOR_SETUP_DETAIL_BYTES),
+        );
+        assert_eq!(error.code, "reactor_setup");
+        assert!(error.detail.len() <= MAX_SYNTHETIC_REACTOR_SETUP_DETAIL_BYTES);
+        assert!(error.detail.contains("terminal_condition=Starting"));
+        assert!(std::str::from_utf8(error.detail.as_bytes()).is_ok());
+    }
 }
