@@ -790,8 +790,8 @@ pub fn qualification_manifest() -> CrashFaultQualificationArtifactV1 {
     .into_iter()
     .map(|(name, evidence)| QualificationCheckV1 {
         name: name.to_owned(),
-        result: "pass".to_owned(),
-        evidence: evidence.to_owned(),
+        result: "not_exercised".to_owned(),
+        evidence: format!("required_test:{evidence}"),
     })
     .collect();
     CrashFaultQualificationArtifactV1 {
@@ -815,6 +815,8 @@ pub fn qualification_manifest() -> CrashFaultQualificationArtifactV1 {
         mutation_authority_emitted: false,
         nonclaims: vec![
             "the manifest complements but does not replace executing the required gates".to_owned(),
+            "listed checks are requirements, not observed results; this manifest records them as not_exercised"
+                .to_owned(),
             "no hard-real-time, host-crash, or physical-media durability claim is made".to_owned(),
             "no production deployment viability or product-plane status is established".to_owned(),
         ],

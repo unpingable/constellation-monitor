@@ -29,6 +29,7 @@ struct Inputs {
     policy: ProjectionPolicyV1,
     fact: SourceFactV1,
     live: LiveSupportObservationV1,
+    moment: ProjectionMomentV1,
 }
 
 fn inputs(harness: &common::Harness, verified: &VerifiedCorrespondenceV1, public: bool) -> Inputs {
@@ -43,7 +44,12 @@ fn inputs(harness: &common::Harness, verified: &VerifiedCorrespondenceV1, public
         60_000,
     )
     .expect("live");
-    Inputs { policy, fact, live }
+    Inputs {
+        policy,
+        fact,
+        live,
+        moment: ProjectionMomentV1::now(NOW),
+    }
 }
 
 impl Inputs {
@@ -54,7 +60,7 @@ impl Inputs {
             std::slice::from_ref(&self.live),
             &[],
             details,
-            ProjectionMomentV1::now(NOW),
+            self.moment,
         )
         .map_err(|error| error.code.to_owned())
     }
@@ -156,7 +162,7 @@ fn an_operator_detail_decorates_unknown_without_changing_any_decision() {
         std::slice::from_ref(&operator.fact),
         std::slice::from_ref(&operator.live),
         &[],
-        ProjectionMomentV1::now(NOW),
+        operator.moment,
     )
     .expect("projection");
     assert_eq!(plain, without);
@@ -261,13 +267,14 @@ fn substitutions_suppress_the_detail_and_keep_the_state() {
         .disclosure
         .component_fields
         .retain(|field| *field != ComponentOutputFieldV1::Detail);
+    let moment = ProjectionMomentV1::now(NOW);
     let dropped = project_with_details(
         &undisclosed,
         std::slice::from_ref(&operator.fact),
         std::slice::from_ref(&operator.live),
         &[],
         std::slice::from_ref(&good),
-        ProjectionMomentV1::now(NOW),
+        moment,
     )
     .expect("projection");
     let plain = project(
@@ -275,7 +282,7 @@ fn substitutions_suppress_the_detail_and_keep_the_state() {
         std::slice::from_ref(&operator.fact),
         std::slice::from_ref(&operator.live),
         &[],
-        ProjectionMomentV1::now(NOW),
+        moment,
     )
     .expect("projection");
     assert_eq!(dropped, plain);

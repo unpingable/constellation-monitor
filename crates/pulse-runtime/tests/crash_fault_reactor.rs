@@ -633,7 +633,7 @@ fn required_journal_exhaustion_is_a_distinct_fail_closed_condition() {
             maximum_file_bytes: 16 * 1_024 * 1_024,
         },
     };
-    let journal = HistoricalJournal::create_new(&path, journal_config).expect("journal");
+    let journal = HistoricalJournal::create_new(&path, journal_config.clone()).expect("journal");
     let reactor = LocalCrashReactor::start(
         runtime,
         journal,
@@ -641,21 +641,40 @@ fn required_journal_exhaustion_is_a_distinct_fail_closed_condition() {
         ReactorConfigV1::qualification(),
     )
     .expect("reactor");
-    reactor
-        .wait_until(Duration::from_secs(2), |snapshot| {
-            snapshot.condition == ReactorConditionV1::Operational
-        })
-        .expect("initial history fits exactly");
     let failed = reactor
         .wait_until(Duration::from_secs(2), |snapshot| {
             snapshot.condition == ReactorConditionV1::JournalFailure
         })
         .expect("deadline history exceeds journal bound");
     assert_eq!(failed.reactor_metrics.journal_failure_count, 1);
+    assert_eq!(failed.reactor_metrics.deadline_wakeup_count, 1);
+    assert_eq!(failed.reactor_metrics.deadline_withdrawal_count, 1);
+    assert!(failed.condition_detail.contains("BoundExceeded"));
+    assert!(
+        failed
+            .condition_detail
+            .contains("journal record-count bound is exhausted")
+    );
     assert!(!failed.live_standing_available);
     assert!(failed.certificates.is_empty());
     assert_eq!(failed.active_deadline_count, 0);
     drop(reactor);
+    let report = HistoricalJournal::scan(&path, &journal_config).expect("scan bounded journal");
+    assert_eq!(
+        report.outcome,
+        pulse_runtime::JournalRecoveryOutcomeV1::Clean
+    );
+    assert!(report.history_complete);
+    assert_eq!(report.records.len(), baseline_records);
+    assert_eq!(
+        report
+            .project_history()
+            .expect("project bounded history")
+            .history
+            .sparse_events
+            .len(),
+        baseline_records
+    );
     fs::remove_file(path).expect("remove fixture");
 }
 

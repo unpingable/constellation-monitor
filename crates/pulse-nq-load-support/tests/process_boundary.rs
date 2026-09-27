@@ -8,8 +8,8 @@ use pulse_nq_load_support::{
     CONFIG_SCHEMA, ExpectedDiagnosticV1, LoadPressureStateV1, LoadSupportConfigV1, PROFILE_DIGEST,
     PROFILE_ID, PROFILE_SEMANTIC_ID, PROFILE_VERSION, PresentEvidenceQueryV1,
     QUALIFIED_SUPPORT_SCHEMA, QUESTION_DIGEST, QUESTION_ID, QUESTION_VERSION, QualifiedStandingV1,
-    QualifiedSupportV1, SUPPORT_FAMILY, SemanticIdentityV1, THRESHOLD_POLICY_DIGEST,
-    THRESHOLD_POLICY_ID, THRESHOLD_POLICY_VERSION,
+    QualifiedSupportV1, ReceivedLoadPressureSupportV1, SUPPORT_FAMILY, SemanticIdentityV1,
+    THRESHOLD_POLICY_DIGEST, THRESHOLD_POLICY_ID, THRESHOLD_POLICY_VERSION,
 };
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -183,8 +183,47 @@ fn real_roles_cross_the_process_boundary_without_resolver_generation() {
     let output = child.wait_with_output().expect("resolver output");
     assert!(output.status.success());
     let support: QualifiedSupportV1 = serde_json::from_slice(&output.stdout).expect("support");
+    let receipt_path = fs::read_dir(&config.receipt_directory)
+        .expect("receipts")
+        .next()
+        .expect("one receipt")
+        .expect("receipt entry")
+        .path();
+    let receipt_bytes = fs::read(receipt_path).expect("native receipt");
+    eprintln!(
+        "native receiver receipt: {}",
+        String::from_utf8_lossy(&receipt_bytes)
+    );
+    let receipt: ReceivedLoadPressureSupportV1 =
+        serde_json::from_slice(&receipt_bytes).expect("typed native receipt");
+    eprintln!(
+        "resolver support: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     assert_eq!(support.schema, QUALIFIED_SUPPORT_SCHEMA);
-    assert_eq!(support.standing, QualifiedStandingV1::Current);
+    // This is a real process/custody test, not a no-pressure host qualification.
+    // The configured diagnosis stays ExplicitlyAbsent. Native evidence can
+    // contradict it and must then produce a contradiction, never Current.
+    let evidence = &receipt.evidence.evidence;
+    match evidence.state {
+        LoadPressureStateV1::ExplicitlyAbsent => {
+            assert_eq!(support.standing, QualifiedStandingV1::Current);
+            assert_eq!(support.evidence_refs, vec![evidence.evidence_id.clone()]);
+            assert!(support.contradiction_refs.is_empty());
+            let expiry = support.expiry.as_ref().expect("current expiry");
+            assert_eq!(expiry.clock_id, receipt.received_at.clock_id);
+            assert_eq!(expiry.tick, receipt.expiry_tick_ms);
+        }
+        LoadPressureStateV1::Present => {
+            assert_eq!(support.standing, QualifiedStandingV1::Contradictory);
+            assert_eq!(
+                support.contradiction_refs,
+                vec![evidence.evidence_id.clone()]
+            );
+            assert!(support.evidence_refs.is_empty());
+            assert!(support.expiry.is_none());
+        }
+    }
     assert_eq!(support.query_id, query.query_id);
     assert_eq!(
         fs::read_dir(&config.receipt_directory)

@@ -230,6 +230,16 @@ reactor integration tests, and one Linux SIGKILL integration test.
 Machine-readable results are indexed in
 [`artifacts/crash-reactor-qualification.json`](../artifacts/crash-reactor-qualification.json).
 
+Retrospective qualification note (2026-09-26): the original JSON's `pass`
+labels were emitted from a declared check list rather than independently
+observed command results. Its exact bytes remain retrievable at path
+`artifacts/crash-reactor-qualification.json` in commit `bfe5b8c` as Git blob
+`18f9d820dbddc662d4fb76c90173a46bfbffe2aa`; they are historical provenance,
+not evidence that those checks ran. The active checked artifact and current
+`qualification` command instead emit the required test names as
+`not_exercised`. A new acceptance record must pair them with retained gate logs
+and observed test outcomes before reporting a pass.
+
 ## Demo traces
 
 Real monotonic reactor demo:
