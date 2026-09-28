@@ -9,7 +9,7 @@ fn consequence_adapter_has_no_acquisition_surface() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for entry in fs::read_dir(&src).expect("source directory") {
         let path = entry.expect("entry").path();
-        if !path.extension().is_some_and(|extension| extension == "rs") {
+        if path.extension().is_none_or(|extension| extension != "rs") {
             continue;
         }
         let text = fs::read_to_string(&path).expect("source text");
