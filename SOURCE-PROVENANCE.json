@@ -219,7 +219,7 @@
     "docs/architecture.md": "e74018d0f8b1a321f462a90d442b606028d3963b86ec6d3335060fe921f7c019",
     "docs/crash-fault-contract.md": "84b7771692a66b9aa93bb43222c7e9baa22c6fad59564b68b22f033419c03bf5",
     "docs/escalation-seam.md": "38c708aa6078f6069f69a765edc1adcb03721bd1539c6c134cf8d411c6708416",
-    "docs/generic-project-predicate-support-v1.md": "f383886f1f47987bb3769313f9a56ed58c6d37f1bb653c0b7a4491100631469b",
+    "docs/generic-project-predicate-support-v1.md": "70f2e2fd9739af0f1a79232663715417a9266bc6fbf17e06455b02333775d9d4",
     "docs/host-posture-runner.md": "8edf380524cf2ab11d82e8cfaf64824dfde24f0a528db6c1b62212088a4db9a9",
     "docs/hostile-scenarios.md": "e4b1ce7d6719b6e4380a656d22152a5a334cc75b398300a049583682df6a3664",
     "docs/invariants.md": "894bb9e2e4ae38f37dc5f5e317657f6b1f8e6ca1a9f57d0b7725c5444c6f696c",
@@ -228,7 +228,7 @@
     "docs/non-goals.md": "5928b94760352e54643a5fd4ec7aecffd9bcea695e14e67d1b50af702db9532f",
     "docs/nq-host-filesystem-capacity-correspondence-v1.md": "ee3a463b1fd235706198d308a88b9b736eef7173d6338050438a5b288c63ee30",
     "docs/nq-host-filesystem-inodes-correspondence-v1.md": "e931721f50c5e7fe3f84e7923d2563492dc3269911337df0148657cf9efbd400",
-    "docs/nq-host-load-pressure-correspondence-v1.md": "d8dac3dc53377d3da08bcadfd6a7a5efb67b7206cfdd21108f52dad75a83ff7b",
+    "docs/nq-host-load-pressure-correspondence-v1.md": "44397dbac93be814bda2a43f81258cccc487b429a25e60d7eebd22b9dcdbe065",
     "docs/nq-host-load-pressure-support-v1.md": "2ed967182d4ad294ebb30d9d37ba817c36e2697d79efa437cb0a7cbcfa3bfcef",
     "docs/nq-host-memory-pressure-stall-correspondence-v1.md": "154656f228cfb79e74e692f2ec18ad9c5cbcf38cc780b38344c4dd17b538f8cb",
     "docs/nq-systemd-unit-required-active-correspondence-v1.md": "4f5ca2c66b77d996308c0929fc2335db693c8ea35d69752c7d97c697b604e8c8",
@@ -236,7 +236,7 @@
     "docs/qualified-generation-contract.md": "c4493198c1a5dce392772b337358f77eadafebce2a9343850b682da8e2300473",
     "docs/receiver-boundary-contract.md": "eb4bded94138e5d448d64d29212131433bd635a56d201357d3759ca6167edb5c",
     "docs/runtime-contract.md": "c6b6d86e63e213983e093d19037974574f322437b2012b787ff7c71500a717c3",
-    "docs/status-projection-v1.md": "2f2f2b75b6f4a1ce54704c5b51ddd7d13551a3335576dfe94b6e126658fdbb4e",
+    "docs/status-projection-v1.md": "ba31e1187c86dc30151d168a772ec68ea8851fc038fe3874aea3040b4affcba1",
     "docs/threat-model.md": "53d888895b16d7d5e854e429283c517067a3d32bd79e4df1c84982a822227b68",
     "packaging/build-deb.sh": "dab60d4d7b365e8f0be05d6340ae677cfa7a253e675ac05dea2d40a5ad927f56",
     "packaging/debian/control.in": "413d94b517030bd0a7d916407471d176d00938cc7c187d2ca1f5c089539484f4",
@@ -252,5 +252,10 @@
     "schemas/pulse.project-predicate-support-evidence.v1.schema.json": "7d9338dd163f186cf765cac9b58940020f4ec551ef881ba0c61ebca716be72f8",
     "schemas/pulse.project-predicate-support-policy.v1.schema.json": "36e61ff02b16a3e7338a377c60a31f8812e5001504be44102baa9729ecac88d4",
     "artifacts/live-present-support-v1/conformance-vectors.json": "792d9f2ec3bba1dcf13649b2e6fc2f0ca6306b38590375f0a2977524c09c4307"
-  }
+  },
+  "public_adjustments": [
+    "Current no_std replay libraries; live acquisition remains std-dependent.",
+    "A captured host-specific profile and its replay-only test are excluded.",
+    "Excluded historical qualification documents are described as separately retained evidence."
+  ]
 }
