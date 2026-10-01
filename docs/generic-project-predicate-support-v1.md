@@ -8,7 +8,7 @@ This does not provide arbitrary catalog evaluation or a saved-check adapter.
 Retirement scope correction (2026-09-08): that historical qualification uses
 the classic project-predicate admission/replay contract, not NQ-ng. The binary
 interface below now selects NQ-ng's compiled `bounded-predicate` family and
-accepts only its native support-evaluation schema. See [the owned retirement gate](classic-retirement-20260908.md).
+accepts only its native support-evaluation schema. See the owned retirement gate (historical evidence retained outside this public source cut).
 Existing evidence
 remains attached to its original revisions; no qualification transfers by
 renaming the executable. No automatic classic fallback is authorized.

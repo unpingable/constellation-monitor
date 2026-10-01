@@ -141,7 +141,7 @@ absent maps to `available/none` and that condition component displays
 mismatch map to `unknown`. These are condition-specific operator projection
 consequences, not NQ claims about general host or service health. The adapter
 is qualified for the bounded disposable, same-process profile recorded in its
-[receipt](nq-host-load-pressure-correspondence-v1-qualification.md).
+receipt (historical evidence retained outside this public source cut).
 
 Its structural guard covers exactly the shape that was qualified: the
 component requires this one fact; no hard or soft dependency edge may name the

@@ -2,7 +2,7 @@
 
 Status: **Qualified** for the bounded disposable, same-process profile
 recorded in the
-[qualification receipt](nq-host-load-pressure-correspondence-v1-qualification.md).
+qualification receipt (historical evidence retained outside this public source cut).
 The local implementation and synthetic fixtures did not replace the real
 disposable NQ run or the independent review; both were completed and accepted
 as that receipt records. Standing was Candidate until that acceptance. The
