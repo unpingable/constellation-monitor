@@ -245,3 +245,7 @@ mutation authority.
 
 When documents disagree, `docs/invariants.md` governs the runtime claim and
 `docs/non-goals.md` limits its scope.
+
+## Beta work planning
+
+See the [current beta work plan](docs/BETA-WORK.md) for owned requirements, exclusions, dependencies and GitHub issues. Plan publication does not start implementation or transfer qualification.
