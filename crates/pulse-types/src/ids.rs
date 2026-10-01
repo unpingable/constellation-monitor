@@ -1,6 +1,8 @@
-use std::fmt;
+use core::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use crate::alloc_prelude::*;
 
 /// Longest identity token admitted by the initial schemas.
 pub const MAX_IDENTITY_BYTES: usize = 160;
@@ -65,6 +67,7 @@ identity_type!(DiagnosticReceiptId);
 identity_type!(BridgeId);
 identity_type!(ConsumerId);
 identity_type!(SparseEventId);
+identity_type!(LivePresentSupportNonce);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IdentityError {
@@ -78,6 +81,7 @@ impl fmt::Display for IdentityError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for IdentityError {}
 
 fn validate_identity(field: &'static str, value: &str) -> Result<(), IdentityError> {

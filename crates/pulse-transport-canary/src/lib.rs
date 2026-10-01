@@ -12,7 +12,6 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use pulse_evaluator::ReliancePolicyV1;
@@ -52,15 +51,8 @@ pub const CANARY_FAILURE_DOMAIN: &str = "configured-failure-domain:rack-a";
 pub const CANARY_VALIDITY_MS: u64 = 120;
 pub const CANARY_SESSION_DURATION_MS: u64 = 750;
 pub const CANARY_MAX_DATAGRAM: u16 = 1_232;
-const CRASH_CURRENT_VALIDITY_MS: u64 = 5_000;
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-// The local custody canary has deliberately short session bounds. Running many
-// harnesses concurrently in one qualification binary can consume that bound
-// in scheduler delay instead of exercising the named case. Serialize harness
-// instances within a process; this is test-fixture coordination, not transport
-// or authority state.
-static CANARY_HARNESS_SERIALIZER: Mutex<()> = Mutex::new(());
 
 fn temp_journal_path(role: &str) -> PathBuf {
     let sequence = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
@@ -163,14 +155,6 @@ pub fn canary_profile() -> ObservationProfileIdV1 {
 
 #[must_use]
 pub fn canary_registration(consumer: &str, minimum_observers: u32) -> ConsumerRegistrationV1 {
-    canary_registration_with_validity(consumer, minimum_observers, CANARY_VALIDITY_MS)
-}
-
-fn canary_registration_with_validity(
-    consumer: &str,
-    minimum_observers: u32,
-    maximum_validity_ms: u64,
-) -> ConsumerRegistrationV1 {
     let policy = ReliancePolicyV1 {
         schema_version: SCHEMA_VERSION_V1,
         subject: SubjectId::new(CANARY_SUBJECT),
@@ -183,7 +167,7 @@ fn canary_registration_with_validity(
         observation_profile: canary_profile(),
         required_coverage: vec!["load".to_owned()],
         minimum_observers,
-        maximum_validity_ms,
+        maximum_validity_ms: CANARY_VALIDITY_MS,
         require_verified_authentication: true,
         coherence_tolerances: BTreeMap::new(),
         observer_failure_domains: [(CANARY_OBSERVER.to_owned(), CANARY_FAILURE_DOMAIN.to_owned())]
@@ -215,10 +199,6 @@ fn canary_registration_with_validity(
 
 #[must_use]
 pub fn canary_pulse(sequence: u64) -> PulseFrameV1 {
-    canary_pulse_with_validity(sequence, CANARY_VALIDITY_MS)
-}
-
-fn canary_pulse_with_validity(sequence: u64, validity_ms: u64) -> PulseFrameV1 {
     PulseFrameV1 {
         schema_version: SCHEMA_VERSION_V1,
         subject: SubjectId::new(CANARY_SUBJECT),
@@ -227,7 +207,7 @@ fn canary_pulse_with_validity(sequence: u64, validity_ms: u64) -> PulseFrameV1 {
         observer_incarnation: IncarnationId::new(CANARY_OBSERVER_INCAR),
         sequence,
         observer_monotonic_ns: sequence.saturating_mul(1_000_000),
-        validity_ms,
+        validity_ms: CANARY_VALIDITY_MS,
         profile: canary_profile(),
         observation_policy_generation: ObservationPolicyGenerationId::new(
             "observation-policy:remote-canary-one",
@@ -279,7 +259,6 @@ fn receiver_policy(
     observation_time_freshness_required: bool,
     maximum_messages_per_session: u32,
     maximum_messages_per_second: u32,
-    maximum_session_duration_ms: u64,
 ) -> ReceiverAcceptancePolicyV1 {
     receiver_policy_with_digests(
         receiver_key,
@@ -289,11 +268,9 @@ fn receiver_policy(
         observation_time_freshness_required,
         maximum_messages_per_session,
         maximum_messages_per_second,
-        maximum_session_duration_ms,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn receiver_policy_with_digests(
     receiver_key: &PeerKeyIdentityV1,
     sender_key: &PeerKeyIdentityV1,
@@ -302,7 +279,6 @@ fn receiver_policy_with_digests(
     observation_time_freshness_required: bool,
     maximum_messages_per_session: u32,
     maximum_messages_per_second: u32,
-    maximum_session_duration_ms: u64,
 ) -> ReceiverAcceptancePolicyV1 {
     ReceiverAcceptancePolicyV1 {
         schema_version: SCHEMA_VERSION_V1,
@@ -318,7 +294,7 @@ fn receiver_policy_with_digests(
         permitted_subject_scopes: vec![canary_scope()],
         permitted_observation_kinds: vec![ObservationCustodyKindV1::PulseV1],
         maximum_datagram_bytes: CANARY_MAX_DATAGRAM,
-        maximum_session_duration_ms,
+        maximum_session_duration_ms: CANARY_SESSION_DURATION_MS,
         maximum_messages_per_session,
         maximum_messages_per_second,
         receiver_queue_bound: 8,
@@ -469,8 +445,6 @@ pub struct CanaryHarnessV1 {
     pub qualification_sender_key_copy: CanarySigningIdentityV1,
     receiver_restart_key_copy: Option<CanarySigningIdentityV1>,
     journal_paths: Vec<PathBuf>,
-    pulse_validity_ms: u64,
-    _serial_guard: MutexGuard<'static, ()>,
 }
 
 #[derive(Debug)]
@@ -505,51 +479,11 @@ impl CanaryHarnessV1 {
         )
     }
 
-    /// Construct the same deterministic canary with a longer session window
-    /// for loaded local qualification hosts. This changes only the fixture
-    /// policy bound; it does not change the canonical 750 ms artifact profile.
-    pub fn with_qualification_session(
-        observation_time_freshness_required: bool,
-        maximum_messages_per_session: u32,
-        maximum_messages_per_second: u32,
-        maximum_session_duration_ms: u64,
-    ) -> Result<Self, String> {
-        if maximum_session_duration_ms == 0 || maximum_session_duration_ms > 60_000 {
-            return Err("qualification session duration is outside its bounded range".to_owned());
-        }
-        Self::deterministic_with_options_and_validity(
-            observation_time_freshness_required,
-            maximum_messages_per_session,
-            maximum_messages_per_second,
-            CANARY_VALIDITY_MS,
-            maximum_session_duration_ms,
-        )
-    }
-
     fn deterministic_with_options(
         observation_time_freshness_required: bool,
         maximum_messages_per_session: u32,
         maximum_messages_per_second: u32,
     ) -> Result<Self, String> {
-        Self::deterministic_with_options_and_validity(
-            observation_time_freshness_required,
-            maximum_messages_per_session,
-            maximum_messages_per_second,
-            CANARY_VALIDITY_MS,
-            CANARY_SESSION_DURATION_MS,
-        )
-    }
-
-    fn deterministic_with_options_and_validity(
-        observation_time_freshness_required: bool,
-        maximum_messages_per_session: u32,
-        maximum_messages_per_second: u32,
-        pulse_validity_ms: u64,
-        maximum_session_duration_ms: u64,
-    ) -> Result<Self, String> {
-        let serial_guard = CANARY_HARNESS_SERIALIZER
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (sender_signing, qualification_sender_key_copy) =
             CanarySigningIdentityV1::generate_qualification_pair(
                 CustodyPeerRoleV1::Sender,
@@ -577,7 +511,6 @@ impl CanaryHarnessV1 {
             observation_time_freshness_required,
             maximum_messages_per_session,
             maximum_messages_per_second,
-            maximum_session_duration_ms,
         );
         let receiver_policy_anchor_digest = receiver_policy_template.anchor_digest();
         let sender_policy = sender_policy(
@@ -589,8 +522,7 @@ impl CanaryHarnessV1 {
             .validate()
             .map_err(|error| error.to_string())?;
         let sender_config = runtime_config("sender", sender_policy.binding());
-        let sender_registration =
-            canary_registration_with_validity(CANARY_CONSUMER_A, 1, pulse_validity_ms);
+        let sender_registration = canary_registration(CANARY_CONSUMER_A, 1);
         let sender_package = qualification_package(&sender_config, &sender_registration)?;
 
         let receiver_policy = receiver_policy(
@@ -600,7 +532,6 @@ impl CanaryHarnessV1 {
             observation_time_freshness_required,
             maximum_messages_per_session,
             maximum_messages_per_second,
-            maximum_session_duration_ms,
         );
         receiver_policy
             .validate()
@@ -611,10 +542,8 @@ impl CanaryHarnessV1 {
             );
         }
         let receiver_config = runtime_config("receiver", receiver_policy.binding());
-        let receiver_registration_a =
-            canary_registration_with_validity(CANARY_CONSUMER_A, 1, pulse_validity_ms);
-        let receiver_registration_b =
-            canary_registration_with_validity(CANARY_CONSUMER_B, 2, pulse_validity_ms);
+        let receiver_registration_a = canary_registration(CANARY_CONSUMER_A, 1);
+        let receiver_registration_b = canary_registration(CANARY_CONSUMER_B, 2);
         let receiver_package_a = qualification_package(&receiver_config, &receiver_registration_a)?;
         let receiver_package_b = qualification_package(&receiver_config, &receiver_registration_b)?;
 
@@ -661,8 +590,6 @@ impl CanaryHarnessV1 {
             qualification_sender_key_copy,
             receiver_restart_key_copy: Some(receiver_restart_key_copy),
             journal_paths: vec![sender_path, receiver_path],
-            pulse_validity_ms,
-            _serial_guard: serial_guard,
         })
     }
 
@@ -769,12 +696,7 @@ impl CanaryHarnessV1 {
         let receiver_reactor = self.receiver_reactor.as_ref().ok_or("receiver stopped")?;
         let datagram = self
             .sender
-            .emit_pulse(
-                sender_reactor,
-                &subject,
-                &consumer,
-                &canary_pulse_with_validity(sequence, self.pulse_validity_ms),
-            )
+            .emit_pulse(sender_reactor, &subject, &consumer, &canary_pulse(sequence))
             .map_err(|error| error.to_string())?;
         let queued = self
             .sender
@@ -859,27 +781,11 @@ pub struct CrashChildReadyV1 {
     pub sender_live_sessions_before_kill: usize,
     pub receiver_live_sessions_before_kill: usize,
     pub receiver_judgment_before_kill: JudgmentCategoryV1,
-    pub pulse_validity_ms: u64,
     pub private_key_material_serialized: bool,
 }
 
 pub fn run_crash_child(point: &str, ready_path: &std::path::Path) -> Result<(), String> {
-    // The receiver-current qualification kills the child after a separate
-    // process observes its create-only ready marker. Give that coordination
-    // window a distinct bound so host scheduling pressure cannot turn the
-    // intended CURRENT kill point into an expiry-write race. Other canary
-    // profiles retain the public 120 ms validity.
-    let mut harness = if point == "receiver_current" {
-        CanaryHarnessV1::deterministic_with_options_and_validity(
-            false,
-            16,
-            16,
-            CRASH_CURRENT_VALIDITY_MS,
-            CANARY_SESSION_DURATION_MS,
-        )?
-    } else {
-        CanaryHarnessV1::deterministic()?
-    };
+    let mut harness = CanaryHarnessV1::deterministic()?;
     match point {
         "sender_qualified" => {}
         "session_active" => {
@@ -916,7 +822,6 @@ pub fn run_crash_child(point: &str, ready_path: &std::path::Path) -> Result<(), 
         sender_live_sessions_before_kill: harness.sender.live_session_count(),
         receiver_live_sessions_before_kill: harness.receiver.live_session_count(),
         receiver_judgment_before_kill: harness.receiver_certificate(CANARY_CONSUMER_A).judgment,
-        pulse_validity_ms: harness.pulse_validity_ms,
         private_key_material_serialized: false,
     };
     let bytes = serde_json::to_vec_pretty(&ready).map_err(|error| error.to_string())?;

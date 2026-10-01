@@ -1,7 +1,8 @@
-use std::fmt;
+use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     BridgeId, ClockId, ConsumerId, DiagnosticReceiptId, DiagnosticRunId, DigestV1,
     EscalationRequestId, ObservationPolicyGenerationId, PolicyGenerationId, SCHEMA_VERSION_V1,
@@ -306,6 +307,7 @@ impl fmt::Display for EscalationError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for EscalationError {}
 
 #[cfg(test)]

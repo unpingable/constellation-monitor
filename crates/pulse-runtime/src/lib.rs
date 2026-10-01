@@ -26,6 +26,8 @@ pub use journal::{
     JournalRecordKindV1, JournalRecoveryOutcomeV1, JournalRecoveryReportV1, JournalWriteStageV1,
     MonotonicEpochV1,
 };
+#[cfg(unix)]
+pub use reactor::query_live_present_support_stream;
 pub use reactor::{
     LocalCrashReactor, ReactorCommandError, ReactorCommandErrorClassV1, ReactorConditionV1,
     ReactorConfigV1, ReactorMetricsV1, ReactorSnapshotV1,

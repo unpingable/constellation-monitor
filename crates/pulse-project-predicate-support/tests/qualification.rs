@@ -301,6 +301,35 @@ fn checked_in_schemas_are_parseable_and_version_exact() {
     }
 }
 
+// A modern executable is not compatible merely because it exits successfully.
+// These are protocol substitution fixtures, not an NQ-ng interoperability claim.
+#[test]
+fn incompatible_replacement_and_refusal_never_qualify_support() {
+    for body in [
+        "printf '%s\\n' '{\"schema\":\"replacement.diagnostic/v1\",\"status\":\"completed\"}'",
+        "printf '%s\\n' 'unsupported admission replay' >&2; exit 2",
+        "exit 0",
+    ] {
+        let mut fixture = Fixture::new(true);
+        fs::write(&fixture.verifier, format!("#!/bin/sh\n{body}\n")).unwrap();
+        // Admit the changed executable deliberately so this tests protocol
+        // compatibility rather than the earlier byte-identity refusal.
+        fixture.policy.nq_verifier_executable_digest =
+            verifier_executable_digest(&fixture.verifier).unwrap();
+        fixture.policy.seal().unwrap();
+        let evidence = fixture.evidence(12, "2026-08-25T12:00:10Z", "SUCCESS");
+        let result = qualify(
+            &fixture.policy,
+            &fixture.nq(),
+            Some(&evidence),
+            "2026-08-25T12:01:00Z",
+        )
+        .unwrap();
+        assert_eq!(result.disposition, SupportDispositionV1::NqReceiptInvalid);
+        assert!(!result.detail.is_empty());
+    }
+}
+
 #[test]
 #[ignore = "requires NQ_MONITOR_BIN pointing to the public native nq executable"]
 fn real_nq_sprocket_support_and_contradiction() {
@@ -421,6 +450,30 @@ fn real_nq_sprocket_support_and_contradiction() {
         .unwrap()
         .disposition,
         SupportDispositionV1::Contradictory
+    );
+    let mut unknown = make(12, "support:missing-fact");
+    unknown.evidence.facts = json!({"queue":{}});
+    unknown = sign_evidence(unknown.evidence, &key).unwrap();
+    assert_eq!(
+        qualify(&policy, &nq, Some(&unknown), "2026-08-25T12:01:00Z")
+            .unwrap()
+            .disposition,
+        SupportDispositionV1::NqReceiptInvalid
+    );
+    assert_eq!(
+        qualify(&policy, &nq, Some(&positive), "2026-08-25T12:05:00Z")
+            .unwrap()
+            .disposition,
+        SupportDispositionV1::PrimaryStale
+    );
+    let mut substituted: Value = read_json(&inventory).unwrap();
+    substituted["concerns"][0]["observation"]["facts"]["queue"]["depth"] = json!(13);
+    write_json(&inventory, &substituted).unwrap();
+    assert_eq!(
+        qualify(&policy, &nq, Some(&positive), "2026-08-25T12:01:00Z")
+            .unwrap()
+            .disposition,
+        SupportDispositionV1::NqReceiptInvalid
     );
 }
 

@@ -5,6 +5,32 @@ adapter targets the public NQ successor's compiled bounded-predicate boundary;
 its connected qualification is required before advertising an installed profile.
 This does not provide arbitrary catalog evaluation or a saved-check adapter.
 
+Retirement scope correction (2026-09-08): that historical qualification uses
+the classic project-predicate admission/replay contract, not NQ-ng. The binary
+interface below now selects NQ-ng's compiled `bounded-predicate` family and
+accepts only its native support-evaluation schema. See [the owned retirement gate](classic-retirement-20260908.md).
+Existing evidence
+remains attached to its original revisions; no qualification transfers by
+renaming the executable. No automatic classic fallback is authorized.
+
+The native family is deliberately closed: queue depth <=17 or >=18, durable
+state access (three required booleans), SQLite quick-check plus write transaction,
+14 GiB free-space floor, and 5,000,000-page freelist threshold. Exact schema and
+expression identity are checked against compiled forms; arbitrary catalog
+expressions are refused. Catalog/profile/input-schema hashes still bind all
+consumer policy identities. Admission is limited to a maximum 300-second,
+exclusive validity boundary, narrowed by any smaller supplied bound. This
+explicitly tightens the historical optional/inclusive admission bound; Pulse's
+own exclusive currentness rules remain unchanged.
+
+Run the real binary witness with `NQ_NG_BIN=/qualified/nq-ng/bin/nq cargo test
+-p pulse-project-predicate-support -- --include-ignored`. The ordinary tests
+retain labeled protocol fixtures. The real witness generates admission with
+the modern executable and exercises signed support, contradiction, unknown
+facts, stale currentness, replay and inventory substitution without any classic
+executable. Missing facts are a verifier refusal (`NQ_RECEIPT_INVALID`), never
+false evidence or positive support. This is not a deployed integration claim.
+
 ## Layer and exact claim
 
 The artifacts remain distinct:

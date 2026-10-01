@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stops the unit before upgrade or removal and leaves it stopped; fails closed
+# if the unit does not reach exactly "inactive".
+set -eu
+if [ -d /run/systemd/system ]; then
+    systemctl stop constellation-host-posture.service || exit 1
+    state=$(systemctl is-active constellation-host-posture.service || true)
+    [ "$state" = "inactive" ] || { echo "unit state is $state, expected inactive" >&2; exit 1; }
+    case "${1:-}" in remove) systemctl disable constellation-host-posture.service || true ;; esac
+fi
+exit 0

@@ -1,0 +1,100 @@
+# Render this packaged example into a root-owned file, replace the explicit
+# deployment values, then run `enroll`, `prepare-qualification`, `preflight`,
+# and `run` in that order. `enroll` derives every NQ semantic identity and the
+# executable/configuration digests from the retained initial native artifact
+# and installed files; do not hand-copy those hashes into this file.
+service_uid = 992
+profile_path = "/etc/constellation-host-posture/filesystem-capacity.profile.json"
+nq_executable = "/usr/bin/nq"
+nq_config = "/etc/nq/nq.toml"
+qualification_package_dir = "/usr/lib/constellation-host-posture/qualification/filesystem-capacity"
+state_root = "/var/lib/constellation-host-posture"
+publication_root = "/var/lib/constellation-host-posture/status"
+receiver_id = "receiver:constellation-host-posture"
+mountpoint_label = "/data"
+acquisition_interval_ms = 60000
+projection_interval_ms = 4000
+withdrawal_publication_tolerance_ms = 5000
+maximum_trusted_lifetime_ms = 298999
+maximum_occurrences = 2048
+maximum_publications = 65536
+
+[runtime_bounds]
+maximum_subjects = 1
+maximum_consumers_per_subject = 1
+maximum_observers_per_subject = 2
+maximum_receiver_streams = 4
+maximum_incarnations_per_observer = 8
+maximum_subject_incarnations_per_subject = 4
+maximum_pending_inputs = 8
+maximum_scheduled_deadlines = 2
+maximum_context_activations_per_consumer = 8
+maximum_active_escalations = 1
+maximum_supporting_evidence_refs = 2
+maximum_sparse_events = 16384
+maximum_diagnostic_receipts = 8
+
+[journal_bounds]
+maximum_records = 16384
+maximum_record_payload_bytes = 262144
+maximum_file_bytes = 268435456
+
+[reactor]
+schema_version = 1
+maximum_pending_commands = 8
+command_response_timeout_ms = 1000
+deliberate_deadline_delay_ms = 0
+journal_durability = "file_synced"
+
+[enrollment]
+instance_id = "fs-data-capacity"
+observer_id = "observer:nq-filesystem-capacity:installed-v1"
+consumer_id = "consumer:status-projection-nq-filesystem-capacity:installed-v1"
+policy_generation = "policy:nq-filesystem-capacity:installed-v1"
+observation_policy_generation = "observation-policy:nq-filesystem-capacity:installed-v1"
+
+# This section is read only by `prepare-qualification`. Values come from the
+# retained clean source/build occurrence and canonical command-result files;
+# the runner never executes commands or changes their observed result.
+[qualification]
+corpus_path = "/usr/lib/constellation-host-posture/qualification-input/hostile-corpus.json"
+results_path = "/usr/lib/constellation-host-posture/qualification-input/results.json"
+platform_assumptions = [
+  "linux-proc-self-exe-opened-handle/v1",
+  "ordinary-filesystem-metadata-change-detection/v1",
+  "owned-runtime-values-immutable-after-activation/v1",
+  "sha-256-collision-resistance-for-content-identity/v1",
+]
+declared_claims = [
+  "activation-receipt-names-one-process-local-exact-match/v1",
+  "current-requires-qualified-and-matched-binding/v1",
+  "every-load-bearing-owned-artifact-has-exact-content-identity/v1",
+  "restart-requires-new-local-activation/v1",
+  "supersession-and-revocation-withdraw-positive-standing/v1",
+]
+nonclaims = [
+  "no global certificate or revocation authority",
+  "no reproducible-build or source-to-binary correspondence claim",
+  "no signer authorization or signature claim",
+]
+supersedes_manifest_digests = []
+lifecycle_authority_id = "local-policy:constellation-host-posture"
+issuance_id = "REPLACE_FROM_RETAINED_QUALIFICATION_OCCURRENCE"
+issuer_id = "local-process:self-observed-qualification-run"
+
+[qualification.source]
+repository_identity = "REPLACE_SOURCE_REPOSITORY"
+commit = "REPLACE_WITH_CLEAN_40_HEX_COMMIT"
+source_tree_digest = "REPLACE_SOURCE_TREE_DIGEST"
+dirty = false
+
+[qualification.build]
+toolchain_identity = "REPLACE_TOOLCHAIN_IDENTITY"
+target_triple = "REPLACE_TARGET_TRIPLE"
+build_profile = "REPLACE_BUILD_PROFILE"
+enabled_features = REPLACE_ENABLED_FEATURES_JSON
+
+[[qualification.build.runtime_dependencies]]
+name = "workspace-cargo-lock"
+version = "Cargo.lock-v4"
+source_digest = "REPLACE_CARGO_LOCK_DIGEST"

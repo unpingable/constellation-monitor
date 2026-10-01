@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+use core::fmt;
 
+use crate::alloc_prelude::*;
 use pulse_types::{
     ArrivalDispositionV1, AuthenticationResultV1, ConfidenceDimensionsV1, ContradictionId,
     ContradictionRecordV1, ContradictionStatusV1, CoverageCountV1, CoverageDimensionV1,
@@ -1684,6 +1684,7 @@ impl fmt::Display for EvaluatorError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for EvaluatorError {}
 
 fn signals_are_incompatible(

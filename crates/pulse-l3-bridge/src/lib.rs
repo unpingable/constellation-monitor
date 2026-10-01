@@ -1,7 +1,10 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 //! Closed-profile, non-authorizing diagnostic bridge stub.
 
-use std::collections::BTreeMap;
+extern crate alloc;
+
+use alloc::{borrow::ToOwned, collections::BTreeMap, format, vec, vec::Vec};
 
 use pulse_types::{
     BridgeId, ClockId, DiagnosticBoundsV1, DiagnosticEscalationRequestV1, DiagnosticProfileIdV1,

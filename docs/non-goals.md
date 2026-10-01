@@ -41,8 +41,7 @@ The repository does not implement or claim:
 - arbitrary diagnostic command execution;
 - diagnostic success as indefinite health;
 - escalation as authorization, repair, or mutation;
-- replacement of Constellation NQ, a separate evidence producer, Nightshift,
-  Docket, or Phosphor behavior;
+- replacement of NQ-NG, Witness, Nightshift, Docket, or Synesthesia behavior;
 - Lean code, formalization, or claims of formal verification;
 - hard real-time scheduling or latency guarantees;
 - a production receiver, production transport, distributed scheduler,

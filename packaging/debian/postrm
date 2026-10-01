@@ -1,0 +1,6 @@
+#!/bin/sh
+# Purge retains /etc/constellation-host-posture and /var/lib/constellation-host-posture;
+# durable operational records are removed only by an explicit operator procedure.
+set -eu
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

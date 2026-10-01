@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     ActivationReceiptV1, ContradictionRecordV1, DiagnosticEscalationRequestV1,
     DiagnosticEvidenceReferenceV1, EscalationDispositionV1, ExperimentalMetricsV1,

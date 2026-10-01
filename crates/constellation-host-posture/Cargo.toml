@@ -1,0 +1,25 @@
+[package]
+name = "constellation-host-posture"
+version.workspace = true
+edition.workspace = true
+# `std::fs::File::try_lock` is the single-writer boundary for the installed
+# journal/publication owner. Keep the older workspace crates on their existing
+# MSRV; only this new Linux service requires the stabilized file-lock API.
+rust-version = "1.89"
+license.workspace = true
+
+[dependencies]
+constellation-status-nq-filesystem-capacity = { path = "../constellation-status-nq-filesystem-capacity" }
+constellation-status-projection = { path = "../constellation-status-projection" }
+ctrlc = { workspace = true, features = ["termination"] }
+pulse-nq-load-correspondence = { path = "../pulse-nq-load-correspondence" }
+pulse-runtime = { path = "../pulse-runtime" }
+pulse-types = { path = "../pulse-types" }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

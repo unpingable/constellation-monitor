@@ -1,0 +1,24 @@
+[package]
+name = "constellation-status-nq-filesystem-inodes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+constellation-status-projection = { path = "../constellation-status-projection" }
+pulse-nq-load-correspondence = { path = "../pulse-nq-load-correspondence" }
+pulse-runtime = { path = "../pulse-runtime" }
+pulse-types = { path = "../pulse-types" }
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+pulse-evaluator = { path = "../pulse-evaluator" }
+pulse-nq-load-correspondence = { path = "../pulse-nq-load-correspondence", features = ["synthetic-fixtures"] }
+tempfile = "3.23"
+
+[lints]
+workspace = true

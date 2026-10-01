@@ -176,15 +176,9 @@ fn sigkill_while_remote_current_recovers_history_but_no_session_evidence_or_stan
     );
 
     let mut registration_a = canary_registration(CANARY_CONSUMER_A, 1);
-    registration_a.policy.maximum_validity_ms = ready.pulse_validity_ms;
-    registration_a.context.reliance_policy_semantic_digest =
-        registration_a.policy.semantic_digest();
     registration_a.context.activation_id =
         ContextActivationId::new("activation:remote-canary:crash-restart-a");
     let mut registration_b = canary_registration(pulse_transport_canary::CANARY_CONSUMER_B, 2);
-    registration_b.policy.maximum_validity_ms = ready.pulse_validity_ms;
-    registration_b.context.reliance_policy_semantic_digest =
-        registration_b.policy.semantic_digest();
     registration_b.context.activation_id =
         ContextActivationId::new("activation:remote-canary:crash-restart-b");
     let (runtime, _) = ReceiverSchedulerRuntime::recover(

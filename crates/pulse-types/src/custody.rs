@@ -1,8 +1,9 @@
-use std::fmt;
+use core::fmt;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     AuthorityGrantV1, DigestV1, IncarnationId, MutationAuthorityV1, ObserverId, SCHEMA_VERSION_V1,
     SubjectScopeV1, artifact_content_digest, digest_parts,
@@ -1298,6 +1299,7 @@ impl fmt::Display for CustodyTypeError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for CustodyTypeError {}
 
 #[must_use]

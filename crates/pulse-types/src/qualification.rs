@@ -4,18 +4,23 @@
 //! evidence, and one process-local activation occurrence. None is an authority
 //! carrier and a serialized activation receipt cannot recreate the live token.
 
-use std::fmt;
+use core::fmt;
+#[cfg(feature = "std")]
 use std::fs::File;
+#[cfg(feature = "std")]
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(feature = "std")]
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "std")]
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 use std::os::unix::fs::MetadataExt;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     ClockId, ConsumerId, ConsumerProfileGenerationId, DigestV1, EvaluatorSemanticGenerationId,
     IncarnationId, MutationAuthorityV1, ObservationPolicyGenerationId, ObserverSetGenerationId,
@@ -32,7 +37,9 @@ pub const MAX_QUALIFICATION_DEPENDENCIES: usize = 128;
 pub const MAX_QUALIFICATION_STRING_BYTES: usize = 1_024;
 pub const MAX_EXECUTABLE_MEASUREMENT_BYTES: u64 = 128 * 1024 * 1024;
 
+#[cfg(feature = "std")]
 static NEXT_ACTIVATION_OCCURRENCE: AtomicU64 = AtomicU64::new(1);
+#[cfg(feature = "std")]
 static EXECUTABLE_CONTENT_CACHE: OnceLock<Mutex<Option<ExecutableContentCache>>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -1426,6 +1433,7 @@ pub struct ActivationReceiptV1 {
 }
 
 impl ActivationReceiptV1 {
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
     fn new(body: ActivationReceiptBodyV1) -> Result<Self, QualificationError> {
         body.validate()?;
         let receipt_digest = body_digest("qualified.activation-receipt.body.v1", &body)?;
@@ -1517,13 +1525,14 @@ impl QualifiedGenerationBindingV1 {
     }
 }
 
+#[cfg(feature = "std")]
 struct ExecutableMeasurementGuard {
     file: File,
     expected: ArtifactMeasurementV1,
     metadata: ExecutableMetadataSnapshot,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ExecutableMetadataSnapshot {
     device: u64,
@@ -1535,13 +1544,14 @@ struct ExecutableMetadataSnapshot {
     changed_nanoseconds: i64,
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 struct ExecutableContentCache {
     metadata: ExecutableMetadataSnapshot,
     content_digest: DigestV1,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 impl ExecutableMetadataSnapshot {
     fn observe(file: &File) -> Result<Self, QualificationError> {
         let metadata = file.metadata().map_err(|error| {
@@ -1562,11 +1572,11 @@ impl ExecutableMetadataSnapshot {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "std", not(target_os = "linux")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ExecutableMetadataSnapshot;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "std", not(target_os = "linux")))]
 impl ExecutableMetadataSnapshot {
     fn observe(_file: &File) -> Result<Self, QualificationError> {
         Err(QualificationError::new(
@@ -1578,6 +1588,7 @@ impl ExecutableMetadataSnapshot {
 
 /// A live accepted activation. Private fields, no `Clone`, and no serde are
 /// deliberate: historical bytes cannot reconstruct the activation premise.
+#[cfg(feature = "std")]
 pub struct VerifiedActivationV1 {
     binding: QualifiedGenerationBindingV1,
     receipt: ActivationReceiptV1,
@@ -1585,6 +1596,7 @@ pub struct VerifiedActivationV1 {
     executable: ExecutableMeasurementGuard,
 }
 
+#[cfg(feature = "std")]
 impl fmt::Debug for VerifiedActivationV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1597,6 +1609,7 @@ impl fmt::Debug for VerifiedActivationV1 {
     }
 }
 
+#[cfg(feature = "std")]
 impl VerifiedActivationV1 {
     #[must_use]
     pub const fn binding(&self) -> &QualifiedGenerationBindingV1 {
@@ -1632,6 +1645,7 @@ impl VerifiedActivationV1 {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Clone, Debug)]
 pub struct LocalActivationContextV1 {
     pub expected_generation_set: QualifiedGenerationSetV1,
@@ -1643,6 +1657,7 @@ pub struct LocalActivationContextV1 {
     pub semantic_measurements: Vec<ArtifactMeasurementV1>,
 }
 
+#[cfg(feature = "std")]
 #[derive(Debug)]
 pub struct LocalActivationAttemptV1 {
     pub receipt: ActivationReceiptV1,
@@ -1650,6 +1665,7 @@ pub struct LocalActivationAttemptV1 {
 }
 
 #[allow(clippy::too_many_lines)]
+#[cfg(feature = "std")]
 pub fn verify_local_activation(
     manifest_bytes: Option<&[u8]>,
     certificate_bytes: Option<&[u8]>,
@@ -1954,12 +1970,13 @@ pub fn verify_local_activation(
 
 /// Measure the exact bytes exposed by one newly opened `/proc/self/exe`
 /// handle. This is content identity, not proof of loader or kernel integrity.
+#[cfg(feature = "std")]
 pub fn observe_running_executable() -> Result<ArtifactMeasurementV1, QualificationError> {
     let (_, measurement) = open_and_measure_executable()?;
     Ok(measurement)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 fn open_and_measure_executable() -> Result<(File, ArtifactMeasurementV1), QualificationError> {
     let mut file = File::open("/proc/self/exe").map_err(|error| {
         QualificationError::new(
@@ -2007,7 +2024,7 @@ fn open_and_measure_executable() -> Result<(File, ArtifactMeasurementV1), Qualif
     Ok((file, measurement))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 fn executable_measurement_from_identity(
     content_digest: DigestV1,
     metadata: ExecutableMetadataSnapshot,
@@ -2029,7 +2046,7 @@ fn executable_measurement_from_identity(
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "std", not(target_os = "linux")))]
 fn open_and_measure_executable() -> Result<(File, ArtifactMeasurementV1), QualificationError> {
     Err(QualificationError::new(
         "measurement_unavailable",
@@ -2037,7 +2054,7 @@ fn open_and_measure_executable() -> Result<(File, ArtifactMeasurementV1), Qualif
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 fn measure_open_executable(file: &mut File) -> Result<ArtifactMeasurementV1, QualificationError> {
     let before = file.metadata().map_err(|error| {
         QualificationError::new(
@@ -2118,7 +2135,7 @@ fn measure_open_executable(file: &mut File) -> Result<ArtifactMeasurementV1, Qua
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "std", not(target_os = "linux")))]
 fn measure_open_executable(_file: &mut File) -> Result<ArtifactMeasurementV1, QualificationError> {
     Err(QualificationError::new(
         "measurement_unavailable",
@@ -2126,7 +2143,7 @@ fn measure_open_executable(_file: &mut File) -> Result<ArtifactMeasurementV1, Qu
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(feature = "std", target_os = "linux"))]
 fn observe_local_process_identity() -> Result<LocalProcessIdentityV1, QualificationError> {
     let boot_id = std::fs::read("/proc/sys/kernel/random/boot_id").map_err(|error| {
         QualificationError::new(
@@ -2192,7 +2209,7 @@ fn observe_local_process_identity() -> Result<LocalProcessIdentityV1, Qualificat
     Ok(identity)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(feature = "std", not(target_os = "linux")))]
 fn observe_local_process_identity() -> Result<LocalProcessIdentityV1, QualificationError> {
     Err(QualificationError::new(
         "measurement_unavailable",
@@ -2200,6 +2217,7 @@ fn observe_local_process_identity() -> Result<LocalProcessIdentityV1, Qualificat
     ))
 }
 
+#[cfg(feature = "std")]
 fn activation_occurrence_id(
     process: Option<&LocalProcessIdentityV1>,
     sequence: u64,
@@ -2374,6 +2392,7 @@ fn is_subset<T: Ord>(subset: &[T], superset: &[T]) -> bool {
         .all(|item| superset.binary_search(item).is_ok())
 }
 
+#[cfg_attr(not(feature = "std"), allow(dead_code))]
 fn mismatch(
     code: &str,
     role: Option<ArtifactRoleV1>,
@@ -2409,6 +2428,7 @@ impl fmt::Display for QualificationError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for QualificationError {}
 
 #[cfg(test)]

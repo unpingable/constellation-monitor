@@ -5,9 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["std"]
+std = ["pulse-types/std", "serde/std"]
+
 [dependencies]
-pulse-types = { path = "../pulse-types" }
-serde.workspace = true
+pulse-types = { path = "../pulse-types", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
 
 [lints]
 workspace = true

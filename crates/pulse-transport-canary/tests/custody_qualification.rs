@@ -12,28 +12,6 @@ use pulse_types::{
     SCHEMA_VERSION_V1, TransportCustodyFindingV1, digest_parts,
 };
 
-const LOADED_HOST_SESSION_MS: u64 = 5_000;
-
-fn qualification_harness() -> Result<CanaryHarnessV1, String> {
-    CanaryHarnessV1::with_qualification_session(false, 16, 16, LOADED_HOST_SESSION_MS)
-}
-
-fn strict_qualification_harness() -> Result<CanaryHarnessV1, String> {
-    CanaryHarnessV1::with_qualification_session(true, 16, 16, LOADED_HOST_SESSION_MS)
-}
-
-fn bounded_qualification_harness(
-    maximum_messages_per_session: u32,
-    maximum_messages_per_second: u32,
-) -> Result<CanaryHarnessV1, String> {
-    CanaryHarnessV1::with_qualification_session(
-        false,
-        maximum_messages_per_session,
-        maximum_messages_per_second,
-        LOADED_HOST_SESSION_MS,
-    )
-}
-
 #[test]
 fn restart_recovers_acceptance_history_but_no_session_evidence_deadline_or_current() {
     let artifact = run_restart_custody_demo().expect("restart custody demo");
@@ -86,7 +64,7 @@ fn matched_custody_admits_exact_evidence_but_consumers_decide_independently() {
 
 #[test]
 fn silence_expires_remote_current_without_a_new_envelope() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     harness.emit_and_admit(1).expect("admission");
     let deadline = harness
@@ -136,7 +114,7 @@ fn silence_expires_remote_current_without_a_new_envelope() {
 
 #[test]
 fn first_seen_prearrival_delay_cannot_be_promoted_to_observation_time_freshness() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let datagram = emit_without_delivery(&mut harness, 1);
     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -165,7 +143,8 @@ fn first_seen_prearrival_delay_cannot_be_promoted_to_observation_time_freshness(
     );
     harness.shutdown().expect("shutdown");
 
-    let mut strict = strict_qualification_harness().expect("strict harness");
+    let mut strict =
+        CanaryHarnessV1::observation_time_freshness_required().expect("strict harness");
     strict.establish_session().expect("strict session");
     let strict_datagram = emit_without_delivery(&mut strict, 1);
     let refusal = strict
@@ -190,7 +169,7 @@ fn first_seen_prearrival_delay_cannot_be_promoted_to_observation_time_freshness(
 
 #[test]
 fn wrong_key_signature_is_an_authenticated_refusal_not_evidence() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let accepted = emit_without_delivery(&mut harness, 1);
     let accepted_envelope =
@@ -221,7 +200,7 @@ fn wrong_key_signature_is_an_authenticated_refusal_not_evidence() {
 
 #[test]
 fn accepted_key_with_substituted_manifest_is_refused_before_evidence() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let datagram = emit_without_delivery(&mut harness, 1);
     let envelope =
@@ -253,7 +232,7 @@ fn accepted_key_with_substituted_manifest_is_refused_before_evidence() {
 
 #[test]
 fn same_label_receiver_policy_substitution_is_refused_by_exact_anchor() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     let subject = pulse_types::SubjectId::new(CANARY_SUBJECT);
     let consumer = pulse_types::ConsumerId::new(CANARY_CONSUMER_A);
     let sender_reactor = harness.sender_reactor.as_ref().unwrap();
@@ -299,7 +278,7 @@ fn same_label_receiver_policy_substitution_is_refused_by_exact_anchor() {
 
 #[test]
 fn every_load_bearing_envelope_identity_is_checked_before_evidence_admission() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let datagram = emit_without_delivery(&mut harness, 1);
     let base = pulse_runtime::decode_observation_envelope_datagram(&datagram, &harness.sender_key)
@@ -367,7 +346,7 @@ fn every_load_bearing_envelope_identity_is_checked_before_evidence_admission() {
 
 #[test]
 fn duplicate_replay_does_not_renew_receiver_freshness() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let (_, _, _, datagram) = harness.emit_and_admit(1).expect("first admission");
     let prior = harness.receiver_certificate(CANARY_CONSUMER_A);
@@ -390,7 +369,7 @@ fn duplicate_replay_does_not_renew_receiver_freshness() {
 
 #[test]
 fn duplicate_observation_in_new_envelopes_and_repeated_duplicates_never_renew() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let (_, _, _, admitted_datagram) = harness.emit_and_admit(1).expect("first admission");
     let original = harness.receiver_certificate(CANARY_CONSUMER_A);
@@ -428,7 +407,7 @@ fn duplicate_observation_in_new_envelopes_and_repeated_duplicates_never_renew() 
 
 #[test]
 fn session_message_and_receiver_rate_bounds_refuse_without_eviction() {
-    let mut message_bound = bounded_qualification_harness(2, 16).expect("bounded harness");
+    let mut message_bound = CanaryHarnessV1::with_transport_limits(2, 16).expect("bounded harness");
     message_bound.establish_session().expect("session");
     for sequence in 1..=2 {
         let _ = emit_without_delivery(&mut message_bound, sequence);
@@ -449,7 +428,7 @@ fn session_message_and_receiver_rate_bounds_refuse_without_eviction() {
     assert_eq!(message_bound.sender.live_session_count(), 0);
     message_bound.shutdown().expect("shutdown");
 
-    let mut rate_bound = bounded_qualification_harness(16, 1).expect("rate harness");
+    let mut rate_bound = CanaryHarnessV1::with_transport_limits(16, 1).expect("rate harness");
     rate_bound.establish_session().expect("session");
     rate_bound
         .emit_and_admit(1)
@@ -486,7 +465,7 @@ fn session_message_and_receiver_rate_bounds_refuse_without_eviction() {
 
 #[test]
 fn replay_window_gap_bound_is_explicit_before_payload_admission() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let datagram = emit_without_delivery(&mut harness, 1);
     let envelope =
@@ -523,7 +502,7 @@ fn replay_window_gap_bound_is_explicit_before_payload_admission() {
 
 #[test]
 fn reordered_envelope_is_refused_without_replacing_newer_admitted_evidence() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let older = emit_without_delivery(&mut harness, 1);
     let newer = emit_without_delivery(&mut harness, 2);
@@ -567,7 +546,6 @@ fn reordered_envelope_is_refused_without_replacing_newer_admitted_evidence() {
 
 #[test]
 fn receiver_session_expiry_is_inclusive_and_delayed_first_delivery_is_refused() {
-    // This case intentionally exercises the canonical 750 ms session profile.
     let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let delayed = emit_without_delivery(&mut harness, 1);
@@ -591,7 +569,7 @@ fn receiver_session_expiry_is_inclusive_and_delayed_first_delivery_is_refused() 
 
 #[test]
 fn transport_partition_is_recorded_separately_and_never_invents_contradiction() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     harness.emit_and_admit(1).expect("current evidence");
     assert_eq!(
@@ -620,7 +598,7 @@ fn transport_partition_is_recorded_separately_and_never_invents_contradiction() 
 
 #[test]
 fn skipped_session_sequence_is_admitted_only_with_explicit_missingness() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let _dropped = emit_without_delivery(&mut harness, 1);
     let received = emit_without_delivery(&mut harness, 2);
@@ -652,7 +630,7 @@ fn skipped_session_sequence_is_admitted_only_with_explicit_missingness() {
 
 #[test]
 fn receiver_queue_saturation_invalidates_session_and_withdraws_positive_surface() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let datagram = emit_without_delivery(&mut harness, 1);
     let reactor = harness.receiver_reactor.as_ref().unwrap();
@@ -678,7 +656,7 @@ fn receiver_queue_saturation_invalidates_session_and_withdraws_positive_surface(
 
 #[test]
 fn sender_queue_saturation_stops_emission_and_latches_local_blindness() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     for sequence in 1..=8 {
         harness
@@ -719,7 +697,7 @@ fn sender_queue_saturation_stops_emission_and_latches_local_blindness() {
 
 #[test]
 fn competing_authenticated_sender_occurrence_never_wins_by_last_arrival() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     let first_offer = harness.establish_session().expect("first session").offer;
     let receiver_reactor = harness.receiver_reactor.as_ref().unwrap();
     let mut body = first_offer.body;
@@ -749,7 +727,7 @@ fn competing_authenticated_sender_occurrence_never_wins_by_last_arrival() {
 
 #[test]
 fn prior_receiver_challenge_cannot_recreate_sender_session_after_live_state_loss() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     let prior_session = harness.establish_session().expect("first session");
     let old_challenge = prior_session.challenge;
     let old_challenge_wire = prior_session.challenge_wire;
@@ -790,7 +768,7 @@ fn prior_receiver_challenge_cannot_recreate_sender_session_after_live_state_loss
 
 #[test]
 fn exact_local_revocation_fact_withdraws_session_but_grants_no_revocation_authority() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     harness.emit_and_admit(1).expect("current evidence");
     let fact = GenerationLifecycleFactV1::new(GenerationLifecycleFactBodyV1 {
@@ -823,7 +801,7 @@ fn exact_local_revocation_fact_withdraws_session_but_grants_no_revocation_author
 
 #[test]
 fn exact_local_supersession_fact_withdraws_session_without_inheriting_successor_custody() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     harness.emit_and_admit(1).expect("current evidence");
     let fact = GenerationLifecycleFactV1::new(GenerationLifecycleFactBodyV1 {
@@ -866,7 +844,7 @@ fn exact_local_supersession_fact_withdraws_session_without_inheriting_successor_
 
 #[test]
 fn arbitrary_revocation_authority_string_is_refused_without_session_change() {
-    let mut harness = qualification_harness().expect("harness");
+    let mut harness = CanaryHarnessV1::deterministic().expect("harness");
     harness.establish_session().expect("session");
     let fact = GenerationLifecycleFactV1::new(GenerationLifecycleFactBodyV1 {
         schema_version: SCHEMA_VERSION_V1,

@@ -1,5 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
-
+use crate::alloc_prelude::*;
 use pulse_types::{
     ConsumerId, DiagnosticBoundsV1, DiagnosticProfileIdV1, DigestV1, EscalationTriggerClassV1,
     ObservationPolicyGenerationId, ObservationProfileIdV1, PolicyGenerationId, SCHEMA_VERSION_V1,
@@ -174,10 +173,11 @@ impl ReliancePolicyV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PolicyError(pub &'static str);
 
-impl std::fmt::Display for PolicyError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for PolicyError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str(self.0)
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for PolicyError {}

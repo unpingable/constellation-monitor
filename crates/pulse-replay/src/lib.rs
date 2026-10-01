@@ -1,8 +1,18 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 //! Deterministic JSONL replay for hostile present-confidence traces.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
+extern crate alloc;
+
+use alloc::{
+    borrow::ToOwned,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
+use core::fmt;
 
 use pulse_evaluator::{
     ContradictionResolutionV1, EscalationPolicyV1, EvaluationOutput, Evaluator,
@@ -813,6 +823,7 @@ impl fmt::Display for ReplayError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for ReplayError {}
 
 #[cfg(test)]

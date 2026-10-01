@@ -2,9 +2,7 @@
 
 Status: normative for the qualified vertical slice, bounded receiver/scheduler,
 local crash-fault custody, qualified generation, and bounded receiver-boundary
-campaigns. Public product identity is `constellation-monitor`; Pulse is hosted
-inside this repository. Existing internal crate and protocol names remain
-stable compatibility identities.
+campaigns. The repository and component names are provisional.
 
 ## Product boundary
 

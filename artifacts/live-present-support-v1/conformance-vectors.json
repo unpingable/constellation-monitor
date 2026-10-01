@@ -1,0 +1,83 @@
+{
+  "schema": "pulse.live_present_support_conformance.v1",
+  "duration_vectors": [
+    {
+      "id": "positive_nonzero_remainder",
+      "judgment": "CURRENT",
+      "expiry_ms": 110,
+      "measured_at_ms": 100,
+      "expected_disposition": "supported_current",
+      "expected_remaining_ms": 9
+    },
+    {
+      "id": "one_millisecond_rounding_margin_is_not_positive",
+      "judgment": "CURRENT",
+      "expiry_ms": 101,
+      "measured_at_ms": 100,
+      "expected_disposition": "expired",
+      "expected_remaining_ms": null
+    },
+    {
+      "id": "exact_boundary_is_expired",
+      "judgment": "CURRENT",
+      "expiry_ms": 100,
+      "measured_at_ms": 100,
+      "expected_disposition": "expired",
+      "expected_remaining_ms": null
+    },
+    {
+      "id": "noncurrent_has_no_positive_duration",
+      "judgment": "UNKNOWN",
+      "expiry_ms": null,
+      "measured_at_ms": 100,
+      "expected_disposition": "unsupported",
+      "expected_remaining_ms": null
+    }
+  ],
+  "caller_decay_vectors": [
+    {
+      "id": "support_survives_bounded_transit",
+      "response_remaining_ms": 9,
+      "elapsed_since_send_ms": 8,
+      "expected_usable_remaining_ms": 1
+    },
+    {
+      "id": "support_expires_during_transit",
+      "response_remaining_ms": 9,
+      "elapsed_since_send_ms": 9,
+      "expected_usable_remaining_ms": null
+    },
+    {
+      "id": "historical_replay_does_not_refresh",
+      "response_remaining_ms": 9,
+      "elapsed_since_send_ms": 100,
+      "expected_usable_remaining_ms": null
+    }
+  ],
+  "request_binding_vectors": [
+    { "id": "exact", "mutation": "none", "accepted": true },
+    { "id": "wrong_request_nonce", "mutation": "request_nonce", "accepted": false },
+    { "id": "wrong_consumer", "mutation": "consumer", "accepted": false },
+    { "id": "wrong_policy_generation", "mutation": "policy_generation", "accepted": false },
+    { "id": "wrong_support_identity", "mutation": "support_identity", "accepted": false },
+    { "id": "wrong_qualified_generation", "mutation": "qualified_generation", "accepted": false },
+    { "id": "evidence_mismatch", "mutation": "evidence_window", "accepted": false },
+    { "id": "wrong_receiver_epoch", "mutation": "receiver_epoch", "accepted": false }
+  ],
+  "qualification_cases": [
+    "positive live support with nonzero remainder",
+    "support expiring during request/response transit",
+    "already-expired support",
+    "replay of formerly-positive response after its lifetime",
+    "wrong request nonce",
+    "wrong consumer",
+    "wrong policy generation",
+    "wrong support identity",
+    "evidence mismatch",
+    "indeterminate reactor currentness",
+    "exact-boundary expiry",
+    "zero remaining lifetime",
+    "duplicate request is a fresh measurement and never cached response replay",
+    "serialization round-trip without semantic refresh"
+  ]
+}

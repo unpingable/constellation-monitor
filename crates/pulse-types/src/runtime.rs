@@ -1,7 +1,8 @@
-use std::fmt;
+use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     ConsumerId, ConsumerProfileGenerationId, ContextActivationId, ContradictionId,
     ContradictionRecordV1, CoverageSummaryV1, DigestV1, EscalationStateV1,
@@ -510,6 +511,7 @@ impl fmt::Display for RuntimeTypeError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for RuntimeTypeError {}
 
 fn strictly_sorted<T: Ord>(items: &[T]) -> bool {

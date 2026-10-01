@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     ConsumerId, ContradictionId, DiagnosticReceiptId, DigestV1, EvidenceWindowId,
     PolicyGenerationId, SCHEMA_VERSION_V1, SubjectScopeV1, TransitionId,
@@ -37,8 +38,8 @@ impl JudgmentCategoryV1 {
     }
 }
 
-impl std::fmt::Display for JudgmentCategoryV1 {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for JudgmentCategoryV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str(self.as_str())
     }
 }

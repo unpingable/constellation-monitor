@@ -1,9 +1,32 @@
 use pulse_runtime::{
     CrashFaultQualificationArtifactV1, CrashHarnessArtifactV1, JournalCorruptionCorpusV1,
     JournalDamageClassV1, JournalRecoveryOutcomeV1, JournalScenarioV1, LiveLinuxArtifactV1,
-    ReactorDemoArtifactV1, RestartDemoArtifactV1, run_journal_corruption_corpus, run_reactor_demo,
+    ReactorDemoArtifactV1, RestartDemoArtifactV1, qualification_manifest,
+    run_journal_corruption_corpus, run_reactor_demo,
 };
 use pulse_types::MutationAuthorityV1;
+
+#[test]
+fn qualification_manifest_does_not_claim_unobserved_results() {
+    let manifest = qualification_manifest();
+    assert!(!manifest.checks.is_empty());
+    assert!(manifest.checks.iter().all(|check| {
+        check.result == "not_exercised" && check.evidence.starts_with("required_test:")
+    }));
+    assert!(
+        manifest
+            .nonclaims
+            .iter()
+            .any(|claim| claim.contains("not observed results"))
+    );
+
+    let checked: CrashFaultQualificationArtifactV1 = serde_json::from_str(include_str!(
+        "../../../artifacts/crash-reactor-qualification.json"
+    ))
+    .expect("checked qualification artifact");
+    assert_eq!(checked.checks, manifest.checks);
+    assert!(checked.checks.iter().all(|check| check.result != "pass"));
+}
 
 #[test]
 fn reactor_demo_is_autonomous_and_journals_its_withdrawal() {

@@ -5,9 +5,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["std"]
+std = ["pulse-types/std", "serde_json/std"]
+
 [dependencies]
-pulse-types = { path = "../pulse-types" }
-serde_json.workspace = true
+pulse-types = { path = "../pulse-types", default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[[bin]]
+name = "pulse-l3-bridge"
+path = "src/main.rs"
+required-features = ["std"]
 
 [lints]
 workspace = true

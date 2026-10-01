@@ -1,8 +1,8 @@
-use std::collections::BTreeSet;
-use std::fmt;
+use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::alloc_prelude::*;
 use crate::{
     ClockId, DigestV1, IncarnationId, ObservationPolicyGenerationId, ObserverId, ReceiverId,
     SCHEMA_VERSION_V1, SubjectId, digest_parts,
@@ -558,6 +558,7 @@ impl fmt::Display for PulseError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for PulseError {}
 
 fn validate_field(field: &'static str, value: &str) -> Result<(), PulseError> {
@@ -680,7 +681,7 @@ impl<'a> WireReader<'a> {
         if length > MAX_FIELD_BYTES {
             return Err(PulseError::bound(field));
         }
-        let value = std::str::from_utf8(self.take(length)?)
+        let value = core::str::from_utf8(self.take(length)?)
             .map_err(|_| PulseError::invalid(field, "string is not UTF-8"))?;
         Ok(value.to_owned())
     }

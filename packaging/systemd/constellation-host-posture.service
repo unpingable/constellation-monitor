@@ -1,0 +1,58 @@
+[Unit]
+Description=Constellation filesystem-capacity observation profile
+After=local-fs.target
+RequiresMountsFor=/var/lib/nq /var/lib/constellation-host-posture
+
+[Service]
+Type=simple
+User=nq
+Group=nq
+UMask=0077
+WorkingDirectory=/usr
+RuntimeDirectory=nq
+RuntimeDirectoryMode=0751
+RuntimeDirectoryPreserve=yes
+ExecStartPre=/bin/sh -ec 'if /usr/bin/systemctl is-active --quiet nqd.service; then echo "nqd is active; resolve acquisition ownership before activation" >&2; exit 1; fi'
+ExecStartPre=/usr/bin/install -d -m 0711 /run/nq/helpers
+ExecStartPre=/usr/bin/constellation-host-posture preflight /etc/constellation-host-posture/host-posture.toml
+ExecStart=/usr/bin/constellation-host-posture run /etc/constellation-host-posture/host-posture.toml
+Restart=no
+TimeoutStopSec=90
+KillMode=control-group
+OOMPolicy=stop
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+# Same NQ cross-account helper ceiling as the installed nqd service.
+# The NQ child launcher clears these capabilities before executing nq-helper.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_KILL
+AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_KILL
+ReadOnlyPaths=/etc/nq /etc/constellation-host-posture /usr/lib/constellation-host-posture
+ReadWritePaths=/var/lib/nq /run/nq /var/lib/constellation-host-posture
+LimitNOFILE=4096
+LimitFSIZE=512M
+LimitCORE=0
+TasksMax=128
+MemoryMax=1G
+MemorySwapMax=0
+CPUQuota=100%
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

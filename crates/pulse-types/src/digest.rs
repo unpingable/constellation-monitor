@@ -1,7 +1,9 @@
-use std::fmt;
+use core::fmt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+
+use crate::alloc_prelude::*;
 
 /// SHA-256 digest with an explicit textual algorithm prefix.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -56,6 +58,7 @@ impl fmt::Display for DigestError {
     }
 }
 
+#[cfg(feature = "std")]
 impl std::error::Error for DigestError {}
 
 /// Hash a versioned, length-delimited transcript.

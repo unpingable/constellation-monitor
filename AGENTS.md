@@ -6,8 +6,8 @@ mechanics. Do not collapse these into NQ diagnostic judgment, Nightshift
 consequence handling, Docket mutation, or action authorization.
 
 Preserve existing crate names, binary names, wire schemas, and protocol
-identities. Prefer the smallest relevant command from `HOWTO.md`; inspect
-source-defined usage before documenting flags.
+identities. This repository remains private. Prefer the smallest relevant
+command from `HOWTO.md`; inspect source-defined usage before documenting flags.
 Do not add a generic execution or provider framework to connect components.
 
 Discovery output is not acquired evidence. Signed evidence is not receiver
@@ -32,8 +32,3 @@ cargo test --workspace --all-targets --all-features
 
 Documentation-only work may use lightweight source and diff checks without a
 build. Never claim an unrun check passed.
-
-Public changes must not include credentials, private endpoints, operational
-inventories, private campaign records, or consumer-specific private material.
-Pulse remains a hosted subsystem of this repository; do not split it into a
-separate product repository.

@@ -1,0 +1,43 @@
+{
+  "schema": "constellation.status_projection_policy.v1",
+  "projection_id": "synthetic-operator-reduction",
+  "generation": "synthetic-1",
+  "root_component": "synthetic.service",
+  "maximum_age_ms": 60000,
+  "admitted_clock_uncertainty_ms": 250,
+  "timestamp_granularity_ms": 1000,
+  "components": [
+    {
+      "key": "synthetic.dependency",
+      "output": {"id": "subordinate", "display_name": "Synthetic dependency"},
+      "required_facts": [{"fact_id": "fact.synthetic.dependency", "owner": "synthetic-fixture", "native_schema": "synthetic.status_fact.v1", "class": "derived_admitted", "live_support": {"consumer": "consumer:status-projector", "subject": "subject:synthetic-service", "subject_incarnation": "subject-incarnation:synthetic-1", "scope": "status-projection", "reliance_context_digest": "sha256:e6bed61b52051e0b6440c21ebae77481a46cea1cc33ebadabc8b0310543bec81", "qualified_generation_digest": "sha256:bde75a9e8793829d645a0e60509371419da9e342a4d881eb64749834a581c203", "receiver": "receiver:status-projection", "receiver_incarnation": "receiver-incarnation:status-projection", "receiver_epoch_id": "receiver-epoch:status-projection", "receiver_clock_id": "clock:status-projection"}}]
+    },
+    {
+      "key": "synthetic.service",
+      "output": {"id": "service", "display_name": "Synthetic service"},
+      "required_facts": [{"fact_id": "fact.synthetic.service", "owner": "synthetic-fixture", "native_schema": "synthetic.status_fact.v1", "class": "derived_admitted", "live_support": {"consumer": "consumer:status-projector", "subject": "subject:synthetic-service", "subject_incarnation": "subject-incarnation:synthetic-1", "scope": "status-projection", "reliance_context_digest": "sha256:e6bed61b52051e0b6440c21ebae77481a46cea1cc33ebadabc8b0310543bec81", "qualified_generation_digest": "sha256:bde75a9e8793829d645a0e60509371419da9e342a4d881eb64749834a581c203", "receiver": "receiver:status-projection", "receiver_incarnation": "receiver-incarnation:status-projection", "receiver_epoch_id": "receiver-epoch:status-projection", "receiver_clock_id": "clock:status-projection"}}],
+      "maintenance_assertion_ids": ["maintenance.synthetic.service"]
+    }
+  ],
+  "dependencies": [
+    {
+      "parent": "synthetic.service",
+      "dependency": "synthetic.dependency",
+      "kind": "hard",
+      "behavior": {"on_unavailable": "major_outage", "on_degraded": "degrade", "on_partial": "partial_outage", "on_unknown": "unknown"}
+    }
+  ],
+  "disclosure": {
+    "audience": "operator",
+    "component_fields": ["display_name", "state", "mode", "reason"],
+    "safe_reasons": [
+      {"state": "healthy", "text": "All required observations are current."},
+      {"state": "degraded", "text": "Service is impaired."},
+      {"state": "partial_outage", "text": "Some service is unavailable."},
+      {"state": "major_outage", "text": "Service is unavailable."},
+      {"state": "unknown", "text": "Current status is unavailable."}
+    ],
+    "include_basis_digest": true,
+    "include_observation_window": false
+  }
+}

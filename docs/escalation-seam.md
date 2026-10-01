@@ -1,10 +1,9 @@
 # Diagnostic escalation seam
 
-Status: normative for the local stub; exploratory for a future
-Constellation NQ adapter.
+Status: normative for the local stub; exploratory for a future NQ-NG adapter.
 
 The seam asks for deeper observation after a named reliance bound ceases to
-hold. It does not authorize the diagnostic in Constellation NQ, authorize any mutation,
+hold. It does not authorize the diagnostic in NQ-NG, authorize any mutation,
 or transport an arbitrary command.
 
 ## Lifecycle
@@ -126,7 +125,7 @@ An accepted stub run emits a versioned receipt containing:
 - fixed nonclaims.
 
 The mock receipt is not labeled as an NQ artifact. A future adapter must return
-or reference Constellation NQ's own validated execution artifact and preserve any exact
+or reference NQ-NG's own validated execution artifact and preserve any exact
 typed refusal. Schema resemblance is not compatibility.
 
 ## Receipt effect on evaluation

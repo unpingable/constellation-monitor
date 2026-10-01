@@ -180,7 +180,20 @@ execute arbitrary discovered repositories. NQ's separate, closed
 inventory; that does not widen Monitor's role or turn an opaque producer state
 into a universal health verdict.
 
-The checked-in schemas are the public contract used by this implementation.
-A consumer must pin their exact bytes or a repository revision and qualify its
-own producer binding. A change to accepted v1 meaning requires an explicit
-contract version; a producer repair to satisfy established v1 does not.
+## Contract custody handover
+
+The retained compatibility lock currently names the external `atproto-ops`
+release candidate `v1.0.0-rc.2` at
+`a2e68b3499d538fd7ed2e23c14343d242621f473` for three producer-facing schemas.
+`schemas/atproto.ops.contract.lock.json` pins the exact vendored bytes. Monitor
+remains the original implementation and owns acquisition/inventory semantics.
+A change to accepted v1 meaning requires an explicit contract version; a
+producer repair to satisfy established v1 does not.
+
+**Current architecture note:** this application-repository vendor lock is a
+retained compatibility binding, not the desired dependency direction.
+Constellation's project-observation contract is application/protocol agnostic;
+an external consumer may adapt to that generic contract, but does not become
+its architectural owner. Moving canonical custody of these generic schemas to
+a Constellation-owned source is future compatibility work and is not performed
+by this documentation change.

@@ -5,15 +5,30 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = ["std"]
+std = [
+    "pulse-evaluator/std",
+    "pulse-l3-bridge/std",
+    "pulse-types/std",
+    "serde/std",
+    "serde_json/std",
+]
+
 [dependencies]
-pulse-evaluator = { path = "../pulse-evaluator" }
-pulse-l3-bridge = { path = "../pulse-l3-bridge" }
-pulse-types = { path = "../pulse-types" }
-serde.workspace = true
-serde_json.workspace = true
+pulse-evaluator = { path = "../pulse-evaluator", default-features = false }
+pulse-l3-bridge = { path = "../pulse-l3-bridge", default-features = false }
+pulse-types = { path = "../pulse-types", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 proptest.workspace = true
+
+[[bin]]
+name = "pulse-replay"
+path = "src/main.rs"
+required-features = ["std"]
 
 [lints]
 workspace = true
