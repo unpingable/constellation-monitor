@@ -2470,3 +2470,39 @@ fn lasting_fault_does_not_mask_unreported() {
         );
     }
 }
+
+/// Write an executable shell script into the harness directory.
+fn script(harness: &Harness, name: &str, body: &str) -> PathBuf {
+    let path = harness.path(name);
+    fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Production (nq#20): a slow `status export` answered after the pass
+/// started. Its `generated_at` is later than the pass start, which is not a
+/// snapshot from the future: skew is measured when the command answered.
+#[test]
+fn slow_export_is_not_read_as_a_future_snapshot() {
+    let mut harness = Harness::new();
+    let file = harness.path("slow-status.json");
+    let command = script(
+        &harness,
+        "slow-nq",
+        &format!("sleep 3\ncat {}", file.display()),
+    );
+    harness.raw(&format!(
+        "[inputs.nq_status]\nlabel = \"nqd\"\ncommand = [\"{}\"]\n",
+        command.display()
+    ));
+    let t = at("2026-10-02T21:32:17Z");
+    // Generated 62 s after the pass start: beyond the 60 s skew allowance
+    // from the start, within it from the answer (3 s later).
+    write_status(&file, &retimed("healthy.json", t + 62, |_| {}));
+    let report = harness.evaluate(t);
+    assert_eq!(
+        report["inputs"][0]["status"], "ok",
+        "{}",
+        report["inputs"][0]
+    );
+}

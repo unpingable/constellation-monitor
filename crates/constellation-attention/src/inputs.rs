@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use constellation_status_projection::{ModeV1, ProjectedStateV1, read_current_artifact};
 use rusqlite::{Connection, OpenFlags};
@@ -378,6 +378,17 @@ fn load_json(
     Ok((source, value))
 }
 
+/// The pass-clock time a source answered: the pass's `now` plus the time
+/// the read took, rounded up to whole seconds.
+fn answered_at(context: &Context<'_>, started: Instant) -> i64 {
+    let elapsed = started.elapsed();
+    let seconds = i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX);
+    context
+        .now
+        .saturating_add(seconds)
+        .saturating_add(i64::from(elapsed.subsec_nanos() > 0))
+}
+
 struct Lineage {
     evaluated_at: i64,
     state: String,
@@ -401,12 +412,15 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         error: None,
         identity: Value::Null,
     };
-    let snapshot = match load_json(
+    let started = Instant::now();
+    let loaded = load_json(
         context,
         input.command.as_ref(),
         input.path.as_ref(),
         STATUS_EXPORT_LIMIT,
-    ) {
+    );
+    let completed = answered_at(context, started);
+    let snapshot = match loaded {
         Ok((_, value)) => value,
         Err(error) => {
             report.error = Some(error);
@@ -437,7 +451,10 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         read.reports.push(report);
         return;
     };
-    let snapshot_age = context.now - generated;
+    // Age and future skew are measured when the source answered, not when
+    // the pass started: a slow export (bounded by the command timeout) is
+    // not a snapshot from the future.
+    let snapshot_age = completed - generated;
     let current = snapshot_age <= input.max_age_seconds && snapshot_age >= -60;
     report.status = if current {
         InputStatus::Ok
@@ -582,7 +599,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         report.fault(
             "stale",
             InputStatus::NotCurrent,
-            &format!("status export generated {snapshot_age} s ago"),
+            &format!("status export generated {snapshot_age} s before it was read"),
         );
     }
     if !stale.is_empty() {
