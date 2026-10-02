@@ -605,7 +605,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 .and_then(|bytes| {
                     serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())
                 }) {
-                    Ok(prior) => prior,
+                    Ok(prior) => Some(prior),
+                    // A PagerDuty resubmit needs only NQ's record id; NQ
+                    // re-derives the intent from its own retained copy.
+                    Err(error) if operation == Operation::Resubmit => {
+                        eprintln!(
+                            "follow-up condition={id} route={} intent file unreadable ({error}); resubmitting from {}",
+                            last.route,
+                            last.notification_id.as_deref().unwrap_or_default()
+                        );
+                        None
+                    }
                     Err(error) => {
                         // Only this follow-up fails; the pass goes on.
                         eprintln!(
@@ -635,14 +645,16 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     }
                 };
                 let stable_event_id = intent::event_id(&snapshot.key, action, now);
-                let file = format!("{stable_event_id}.{role}.json");
-                write_atomic(
-                    &intents_dir.join(&file),
-                    &intent::canonical(&intent::with_event_id(&prior, &stable_event_id))?,
-                )?;
                 retry_of = last.notification_id.clone();
+                if let Some(prior) = prior {
+                    let file = format!("{stable_event_id}.{role}.json");
+                    write_atomic(
+                        &intents_dir.join(&file),
+                        &intent::canonical(&intent::with_event_id(&prior, &stable_event_id))?,
+                    )?;
+                    last.intent_file = file;
+                }
                 last.stable_event_id = stable_event_id;
-                last.intent_file = file;
                 last.notification_id = None;
             } else if options.dry_run {
                 // The dry run reads the real intent file but writes nothing beside it.

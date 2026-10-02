@@ -249,7 +249,9 @@ mod tests {
     #[test]
     fn longest_local_inbox_message_fits() {
         let route = "\"".repeat(LOCAL_ROUTE_MAX);
-        let url = format!("https://docs.example.org/{}", "\"".repeat(870));
+        // The longest admissible URL: 900 bytes, all but the prefix escaped.
+        let url = format!("https://docs.example.org/{}", "\"".repeat(875));
+        assert_eq!(url.len(), 900);
         let text = format!(
             "schema = \"constellation.attention_config.v1\"\n\
              site = \"{site}\"\n\
@@ -294,6 +296,9 @@ mod tests {
                 assert!(bytes <= LOCAL_INBOX_MESSAGE_MAX, "{} {bytes}", rule.rule.id);
             }
         }
+        let mut too_long = config.clone();
+        too_long.runbooks.monitor_url = Some(format!("{url}x"));
+        assert!(too_long.validate().is_err(), "900 bytes is the maximum");
         let mut longer = config;
         longer.routes.notice_route.push('x');
         assert!(longer.validate().is_err());

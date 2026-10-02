@@ -1363,7 +1363,9 @@ fn never_retained_trigger_is_reported_as_dropped() {
     );
 }
 
-/// Review A5: a missing retained intent file fails that follow-up only.
+/// Review A5: a missing retained intent file fails only its follow-up. A
+/// PagerDuty resubmit needs only NQ's record id and still goes out (second
+/// review N-b); a Slack resend needs the bytes and is reported unreadable.
 #[test]
 fn missing_intent_file_fails_only_its_follow_up() {
     let mut harness = Harness::new();
@@ -1375,11 +1377,13 @@ fn missing_intent_file_fails_only_its_follow_up() {
         set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
         harness.evaluate(T0 + offset);
     }
-    let file = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["intent_file"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    fs::remove_file(harness.path("state/intents").join(file)).unwrap();
+    for role in ["page", "notice"] {
+        let file = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"][role]["intent_file"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        fs::remove_file(harness.path("state/intents").join(file)).unwrap();
+    }
     harness.fake("next_state", "accepted");
     let mut last = None;
     for offset in (720..=2400).step_by(60) {
@@ -1397,6 +1401,12 @@ fn missing_intent_file_fails_only_its_follow_up() {
         calls.iter().filter(|call| call.contains(data)).count(),
         2,
         "the second condition is still notified: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.starts_with("resubmit n2 ") && call.ends_with(" accepted")),
+        "{calls:?}"
     );
     let report = harness.report();
     assert!(
