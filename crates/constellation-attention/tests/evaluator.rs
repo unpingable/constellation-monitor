@@ -2343,3 +2343,130 @@ fn transient_config_drop_resolves_then_repages() {
             .ends_with("no longer evaluated; recovery not observed.")
     );
 }
+
+// Third review regressions.
+
+fn nq_notices(harness: &Harness) -> Vec<String> {
+    harness
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("evaluator-input-unavailable-nqd."))
+        .collect()
+}
+
+/// Third review N2: an export alternating every pass between unreadable
+/// and stale still raises an input notice after its bound. The class it is
+/// not showing is unknown, not clear, while the input has any fault.
+#[test]
+fn alternating_fault_classes_still_notify() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    for step in 0..20 {
+        let offset = step * 60;
+        if step % 2 == 0 {
+            fs::write(&status, b"not json").unwrap();
+        } else {
+            let value = retimed("healthy.json", t + offset, |value| {
+                for component in value["components"].as_array_mut().unwrap() {
+                    if component["kind"] == "instance" {
+                        component["observed_at"] = json!(rfc3339(t + offset - 400));
+                    }
+                }
+            });
+            write_status(&status, &value);
+        }
+        let output = harness.evaluate_at(t + offset + 3, &[]);
+        assert_eq!(output.status.code(), Some(3));
+    }
+    let notices = nq_notices(&harness);
+    assert!(
+        notices.iter().any(|call| call.contains("-trigger-")),
+        "{:?}",
+        harness.calls()
+    );
+}
+
+/// Third review N2c: a wedged nqd times out one pass in three and is stale
+/// on the rest while cron.service is down. Service-down stays unknown, and
+/// the operator is told the input is blind.
+#[test]
+fn wedged_nqd_raises_an_input_notice() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    for step in 0..30 {
+        let offset = step * 60;
+        if step % 3 == 0 {
+            fs::write(&status, b"").unwrap();
+        } else {
+            let value = retimed("cron-down.json", t + offset, |value| {
+                for component in value["components"].as_array_mut().unwrap() {
+                    if component["kind"] == "instance" {
+                        component["observed_at"] = json!(rfc3339(t + offset - 400));
+                    }
+                }
+            });
+            write_status(&status, &value);
+        }
+        harness.evaluate(t + offset + 3);
+    }
+    assert!(cron_calls(&harness).is_empty(), "{:?}", harness.calls());
+    assert!(
+        nq_notices(&harness)
+            .iter()
+            .any(|call| call.contains("-trigger-")),
+        "{:?}",
+        harness.calls()
+    );
+}
+
+/// Third review N5: a lasting fault (a watched templated unit) does not
+/// hide that an open condition is no longer reported.
+#[test]
+fn lasting_fault_does_not_mask_unreported() {
+    let (harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    for offset in (60..=900).step_by(60) {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            value["components"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|component| {
+                    component["id"] != "unit-cron"
+                        && component["detail"]["result"]["context"]["instance_id"] != "unit-cron"
+                });
+            for component in value["components"].as_array_mut().unwrap() {
+                if component["kind"] == "evaluation"
+                    && component["detail"]["result"]["context"]["instance_id"] == "unit-ssh"
+                {
+                    component["detail"]["result"]["context"]["subject"] =
+                        json!("systemd-unit:1853ff04ff7a42679bf212ec9a569c4f/getty@tty1.service");
+                }
+            }
+        });
+        write_status(&status, &value);
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    let report = harness.report();
+    let causes = report["inputs"][0]["causes"].as_array().unwrap();
+    assert!(
+        causes.contains(&json!("untargetable")) && causes.contains(&json!("unreported")),
+        "{}",
+        report["inputs"][0]
+    );
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains(CRON)
+    );
+    let notices = nq_notices(&harness);
+    for class in ["untargetable", "unreported"] {
+        assert!(
+            notices
+                .iter()
+                .any(|call| call.contains(&format!("nqd.{class}-trigger-"))),
+            "{notices:?}"
+        );
+    }
+}

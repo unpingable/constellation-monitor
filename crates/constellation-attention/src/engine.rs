@@ -283,10 +283,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // An open condition that a current input no longer reports has not been
     // observed to recover. Hold it, and report the input as not current so
     // `evaluator-input-unavailable` tells the operator.
+    // Inputs that were read at all: a lasting fault of another class must
+    // not hide an open condition the input stopped reporting.
     let current_labels: BTreeSet<String> = read
         .reports
         .iter()
-        .filter(|report| report.status == InputStatus::Ok)
+        .filter(|report| report.status != InputStatus::Unavailable)
         .map(|report| report.label.clone())
         .collect();
     for (id, condition) in &state.conditions {
@@ -334,10 +336,16 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     key,
                     rule: INPUT_UNAVAILABLE,
                     input_label: report.label.clone(),
+                    // A class the input is not showing now is clear only
+                    // when the input is `ok`: while it has any fault, the
+                    // others are unknown, so a fault that changes class
+                    // from pass to pass still reaches the bound.
                     observation: if report.causes.contains(cause) {
                         Observation::Present
-                    } else {
+                    } else if report.status == InputStatus::Ok {
                         Observation::Clear
+                    } else {
+                        Observation::Unknown
                     },
                     reference: json!({
                         "input": report.label,
