@@ -1652,3 +1652,56 @@ fn local_file_notices_use_deliver_local() {
         ]
     );
 }
+
+/// Review S7: the reader takes exactly one raw `nq --json saved-check
+/// evaluate` document per reference (`/var/lib/nq-ops-results/<reference>.json`
+/// on the Linode). The run summary document is not that shape and is held as
+/// not current, never read as a pass or a failure.
+#[test]
+fn saved_check_reads_the_per_reference_evaluate_document() {
+    let mut harness = Harness::new();
+    let result = harness.path("atproto-freelist.json");
+    harness.raw(&format!(
+        "[[inputs.saved_checks]]\nreference = \"atproto-freelist\"\npath = \"{}\"\n",
+        result.display()
+    ));
+    let evaluate = |outcome: &str, at: i64| {
+        json!({
+            "reference": "atproto-freelist",
+            "evaluation_id": format!("sc-{at}"),
+            "outcome": outcome,
+            "detail": {
+                "binding": {
+                    "definition_digest": format!("sha256:{}", "8".repeat(64)),
+                    "source_observed_at": rfc3339(at - 1),
+                    "target": "/var/lib/nightshift/atproto-saved-check/store.sqlite",
+                },
+                "read_attempted_at": rfc3339(at),
+                "refusal_reason": null,
+            },
+            "retained": false,
+            "indeterminate": false,
+        })
+    };
+    fs::write(&result, evaluate("failed", T0).to_string()).unwrap();
+    let report = harness.evaluate(T0 + 5);
+    assert_eq!(report["inputs"][0]["status"], "ok");
+    assert_eq!(report["inputs"][0]["identity"]["outcome"], "failed");
+    assert_eq!(
+        report["inputs"][0]["identity"]["evaluation_id"],
+        format!("sc-{T0}")
+    );
+    fs::write(&result, evaluate("passed", T0 + 60).to_string()).unwrap();
+    let report = harness.evaluate(T0 + 65);
+    assert_eq!(report["inputs"][0]["status"], "ok");
+    // The run summary the nq-ops timer writes as latest.json.
+    let run = json!({
+        "schema": "nq-ops.saved-check-run.v1",
+        "generated_at": rfc3339(T0 + 120),
+        "results": [evaluate("failed", T0 + 120)],
+    });
+    fs::write(&result, run.to_string()).unwrap();
+    let report = harness.evaluate(T0 + 125);
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    assert_eq!(report["inputs"][0]["identity"]["outcome"], "missing");
+}
