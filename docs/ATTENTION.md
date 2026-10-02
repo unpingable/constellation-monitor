@@ -15,7 +15,8 @@ notification intents. Nothing else.
   owners publish them. It never admits, signs, repairs or re-derives evidence.
 - It is **not observation authority.** It does not probe hosts, units, files or
   endpoints. When an input cannot be read it says so
-  (`evaluator-input-unavailable`) and holds every condition fed by that input.
+  (`evaluator-input-unavailable`) and holds every condition whose evidence
+  that input no longer carries.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
@@ -47,7 +48,7 @@ anchors marked (M) are below in this document.
 | `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status export: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
 | `nightshift-recurrence-missing` | page | yes | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | no | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
-| `evaluator-input-unavailable` | notice | no | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | input label | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
+| `evaluator-input-unavailable` | notice | no | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | yes | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
 | `ag-executor-unavailable` | page | yes | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
 
@@ -91,8 +92,8 @@ applies NQ's own heuristic and refuses such labels in configuration. A unit
 whose name maps to no bounded target class (a templated `@` unit, uppercase,
 `\x2d` escapes, more than 48 bytes, or a date or long digit run in the name)
 makes the NQ status input `not_current` with the unit named in its error, so
-`evaluator-input-unavailable` tells the operator; it is never skipped
-silently.
+`evaluator-input-unavailable` tells the operator (fault class
+`untargetable`); it is never skipped silently.
 
 Each pass turns every input into one of three observations per condition:
 **present**, **clear**, or **unknown** (input unreadable, not current,
@@ -111,22 +112,31 @@ intent per route role.
 - Unknown: nothing changes. Legitimate unknown or refusal never notifies on its
   own; it reaches the operator through `host-posture-unknown` (for the
   projection) or `evaluator-input-unavailable` (for an input).
-- Unknown gaps: `first_seen` (and, while active, `clear_since`) holds across
-  unknown observations, but a run of unknown observations longer than 90 s
-  (one 60 s pass interval plus timer jitter) restarts the interval at the
-  next definite observation. One unknown pass inside a persistence or
-  confirmation interval is tolerated; two or more are not, so a bound is
-  never met by two observations either side of an outage.
-  `constellation-attention rules` prints the gap as `unknown_gap_seconds`.
+- Unknown runs: time spent unknown never counts toward an interval, and
+  never erases the observed part of it. At the next definite observation
+  after a run of unknown observations longer than 90 s (one 60 s pass
+  interval plus timer jitter), the interval's start (`first_seen`, or
+  `clear_since` while active) moves forward by the run's length. A bound is
+  therefore met only by present (or clear) observations, and a condition
+  that is present whenever it can be observed still reaches it: cron.service
+  down for two hours with NQ answering `cannot_evaluate` on 2 of every 6
+  passes pages after about 240 s of observed presence. One unknown pass is
+  absorbed without a shift. `constellation-attention rules` prints the
+  threshold as `unknown_gap_seconds`; report rows show `unknown_since`.
 - A condition the state remembers but no input reports is unknown, whether
   or not the input was current: absence is not recovery. If the condition is
   active and its input is otherwise current, the input is reported
   `not_current` ("open condition ... is no longer reported; recovery not
   observed") so `evaluator-input-unavailable` fires.
+- A condition follows the label of the input that reports it, so an input
+  can be relabelled without effect.
 - Only an explicit configuration change ends a condition without observed
-  recovery: the rule disabled, its input kind no longer configured, or its
-  input label removed. An active condition then resolves at once, and the
-  resolve says so.
+  recovery: the rule disabled, its input kind no longer configured, or, for
+  rules keyed on the input label (host posture, Nightshift, saved checks,
+  input notices), that label removed. NQ status conditions are keyed on the
+  unit, so a missing NQ status label while the input kind is configured is
+  an unobserved relabel, held as unknown. An active condition removed by
+  configuration resolves at once, and the resolve says so.
 
 Every resolve summary names its reason: `RESOLVE <id> [<class>]: underlying
 state clear for at least 120 s.` after observed recovery, or `RESOLVE <id>
@@ -189,18 +199,25 @@ with each new intent recorded as `unknown` without a notification id. Then:
   pass**. NQ retained nothing, or answers an exact repeat idempotently.
 - A submission NQ retained and answered with `failed`, `unknown`, `pending`
   or a refusal is recorded; `first_seen` and `active` never depend on it.
-  After 900 s, if the record is still the newest for its condition and route,
-  the pass retries: PagerDuty with `nq notification resubmit
-  --notification-id OLD --stable-event-id NEW`; Slack, Discord and local
-  inboxes with a new event id, only after a definite `failed` or refusal,
-  never over an uncertain (`unknown`/`pending`) attempt, as NQ's notification
-  guide requires. Accepted records are never resent.
+  If the record is still the newest for its condition and route, the pass
+  retries: PagerDuty after 120 s with `nq notification resubmit
+  --notification-id OLD --stable-event-id NEW` (NQ's runbook: retryable,
+  resubmit after a pause; the dedup key makes it idempotent at PagerDuty;
+  this needs only the record id, so it proceeds even if the local intent
+  file is gone); Slack, Discord and local inboxes after 900 s with a new
+  event id, only after a definite `failed` or refusal, never over an
+  uncertain (`unknown`/`pending`) attempt, as NQ's notification guide
+  requires. Accepted records are never resent.
 - A resolve never replaces a trigger NQ never retained. When a resolve is
   decided while a route's trigger has no notification id, that trigger is
   kept as `pending_trigger` and submitted again (same bytes) before the
   resolve in the same pass. If NQ still does not retain it, the trigger is
   reported in `dropped_triggers` and on stderr (`dropped_trigger ...`), the
   pass exits 3, and the trigger is never sent after its resolve.
+- A resolve that replaces a trigger NQ retained but never accepted (for
+  example a PagerDuty trigger still `failed` after its resubmits) is also
+  reported in `dropped_triggers` with exit 3: the destination may never
+  have opened the incident that resolve closes.
 - A retained intent file that is missing or unreadable fails only its own
   follow-up (`intent_unreadable` in the report and on stderr, exit 3); the
   rest of the pass, including new conditions, goes on.
@@ -218,16 +235,40 @@ dropped, so the systemd unit shows failed and the condition stays visible in
 Event identities carry the decision time. A pass whose clock is earlier than
 the last completed pass (`state.updated_at`) is refused with exit 1 ("the
 clock moved backwards"), so a regressed clock can never replay an identity NQ
-already holds for an earlier incident. `--now` chooses the evaluation time
-for what-if dry runs only: release builds refuse `--now` without
-`--dry-run`, and the packaged unit never passes it. (Debug builds accept it
-so the test suite can drive the clock.)
+already holds for an earlier incident. Only backwards time is refused: a
+forward step lets its own pass proceed. The unit runs after
+`time-sync.target`, so a boot with a bad RTC does not set `updated_at` from
+it.
+
+Recovery from a forward step that has since been corrected (passes exit 1
+with the hint below until wall time would otherwise catch up):
+
+1. Confirm the system clock is right (`timedatectl`).
+2. `sudo -u nq constellation-attention reset-clock --config /etc/constellation-attention/attention.toml`.
+   It takes the state lock, clamps every timestamp in the state later than
+   now (`updated_at`, condition times, intent attempt times) to now, prints
+   how many it clamped, and deletes nothing. Open conditions stay open and
+   retained intents stay retained; with no future timestamp it changes
+   nothing.
+3. The next timer pass proceeds.
+
+Events decided during the false time keep their identities; a later
+decision for the same condition and action could reuse one only at that
+exact second. A forward step also counts the jump toward any open
+persistence interval, so a condition below its bound can trigger at the
+stepped pass.
+
+`--now` chooses the evaluation time for what-if dry runs only: release
+builds refuse `--now` without `--dry-run`, and the packaged unit never
+passes it. (Debug builds accept it, also on `reset-clock`, so the test suite
+can drive the clock.)
 
 ## Report
 
 Every pass writes `report.json` beside the state file (atomically): rules
 with their effective class and thresholds, each input with its status
-(`ok`, `not_current`, `unavailable`), identity and error, each condition with
+(`ok`, `not_current`, `unavailable`), fault classes (`causes`), identity
+and error, each condition with
 its observation (`present`, `clear`, `unknown`, or `removed` for a
 configuration removal) and persistence, each intent with operation and NQ
 outcome, unresolved deliveries and dropped triggers. `--dry-run` writes
@@ -271,38 +312,69 @@ document) is the supported input. Results expose only `passed`, `failed` or
 
 ### evaluator-input-unavailable
 
-A configured input could not be read (missing path, permission, command
-failure, malformed JSON, a host-posture `CURRENT` of another projection) or
-is not current (an NQ evaluation with an unrecognised profile id or version
-or that cannot be parsed, a systemd unit with no bounded target class, an
-open condition the input no longer reports, status export older than
-`max_age_seconds`, a watcher whose last collection is older than
-`stale_after_seconds` at the export's `generated_at` (default 180 s, three
-60 s intervals; a stopped nqd still answers `status export` from its store,
-so this is the only daemon-down signal), a stale or indeterminate
-saved-check result, no closed Nightshift cycle yet). Read the
-input's `error` in `report.json`. Rules fed by the input hold their state
-until it is readable again. A stale host-posture `CURRENT` is reported as
-`host-posture-unknown`, not here.
+A configured input is not `ok`. Each fault class is its own condition,
+`{label}.{class}`, so a lasting fault of one class (a watched templated
+unit) never masks a later fault of another (nqd stops collecting). Input
+labels are therefore at most 34 bytes. The report lists an input's current
+classes in `causes` and the detail in `error`:
+
+| Class | Meaning |
+|---|---|
+| `unreadable` | missing path, permission, command failure, malformed JSON, wrong schema, a host-posture `CURRENT` of another projection, a saved-check result naming another reference |
+| `stale` | status export older than `max_age_seconds`; a watcher whose last collection is older than `stale_after_seconds` at the export's `generated_at` (default 180 s; a stopped nqd still answers `status export` from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds` |
+| `unrecognised` | an NQ evaluation with an unrecognised profile id or version, or that cannot be parsed; a saved-check result without a valid `read_attempted_at` |
+| `untargetable` | a systemd unit with no bounded target class |
+| `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed` |
+| `unreported` | an open condition the input no longer reports |
+| `empty` | no closed Nightshift cycle yet |
+
+Each class notifies after it has persisted 300 s and resolves when it has
+been gone 120 s. Rules fed by the input hold their state while their own
+evidence is missing. A stale host-posture `CURRENT` is reported as
+`host-posture-unknown`, not here. An input notice open under the earlier
+key format (`{label}` alone) is resolved once as "no longer evaluated".
 
 ## Known limits
 
-- **Nothing watches the evaluator** (operator acceptance item). A pass that
-  cannot run (a malformed `state.json`, which is never replaced; the lock;
-  a clock regression) exits 1 with no report and no notification, every
-  minute, indefinitely; exit 3 is likewise only a failed oneshot unit. An NQ
+These are operator acceptance items.
+
+- **Nothing watches the evaluator.** A pass that cannot run (a malformed
+  `state.json`, which is never replaced; the lock; a clock that moved
+  backwards) exits 1 with no report and no notification, every minute,
+  indefinitely; exit 3 is likewise only a failed oneshot unit. An NQ
   `nq.systemd_unit` watcher cannot see it, because the unit is inactive
   between passes. The liveness signal is the age of `report.json`
-  (`evaluated_at`, rewritten by every completed pass): checking that it is
-  younger than a few minutes is the responsibility of the status site or
-  renderer that reads it. The unit carries a commented `OnFailure=` for an
-  optional local handler.
+  (`evaluated_at`, rewritten by every completed pass): the status site or
+  renderer that reads it is responsible for flagging a report older than a
+  few minutes, and the operator must name who watches that. The unit
+  carries a commented `OnFailure=` for an optional local handler.
+- Configuration removal (rule disabled, input kind removed, a label-keyed
+  input removed) resolves open conditions at once without observed
+  recovery. Restoring the configuration re-pages as a new incident after the
+  bound.
+- A removed or renamed NQ watcher holds its page open (unknown), keeps the
+  NQ input `not_current` (`unreported`) and every pass exits 3 until the
+  watcher returns. Disabling `service-down` clears it but resolves every
+  service-down page. Below-bound conditions of a removed watcher stay in the
+  state (unknown, harmless) until the watcher returns.
+- Watching a unit with no bounded target class (templated, escaped or long
+  names) keeps the NQ input `not_current` (`untargetable`) permanently. It
+  no longer masks other faults of that input.
+- Clock: a backwards step stops passes until wall time passes `updated_at`;
+  recover with `reset-clock` (see [Clock](#clock)).
 - Passes that do not run at all (timer stopped, host suspended) are not
   unknown observations: a persistence interval spanning such a gap still
-  counts. The unknown-gap rule covers passes that ran and could not observe.
-- Removing an NQ watcher while its condition is active leaves the condition
-  held (unknown) and the NQ input `not_current` until the watcher returns or
-  the rule is disabled; absence is never treated as recovery.
+  counts.
+- Notice routes (Slack, Discord, local inbox) are never resent over
+  `unknown`, and a failed notice is retried only after 900 s.
+- Saved checks need the per-reference `<reference>.json` writer deployed on
+  the Linode; without it `sqlite-health` never fires and the input notice is
+  permanent.
+- A pass submits in order, triggers first. If a route hangs, each attempt
+  costs up to `command_timeout_seconds`; with more submissions than
+  `TimeoutStartSec` allows (see the unit's budget formula), the pass is
+  stopped and the next one starts again from the first, so later items can
+  be starved while the route hangs.
 - `service-down` keys on the unit name only. The machine id in
   `systemd-unit:<machine>/<unit>` is dropped and the newest `evaluated_at`
   wins, so with two machines in one export a healthy unit on one hides the
@@ -319,9 +391,7 @@ until it is readable again. A stale host-posture `CURRENT` is reported as
   silent. Cartography's owner should confirm that is wanted for
   `service-down`.
 - `run_bounded` kills only the direct child on timeout; reader threads then
-  wait for any grandchild that still holds the pipes. A pass longer than
-  `TimeoutStartSec` is stopped by systemd; state is saved before and after
-  every submission, so the next pass resumes and only the report is lost.
+  wait for any grandchild that still holds the pipes.
 - Nightshift: the newest closed cycle is taken across the whole store, so
   one healthy recurrence family hides a missing one, and a future
   `updated_at` (clock skew) gives a negative age that reads as clear.
@@ -334,5 +404,4 @@ until it is readable again. A stale host-posture `CURRENT` is reported as
 - `service-down` reads NQ's evaluation result, not a component's coarse
   `state`: NQ reports `healthy` for both instance and evaluation components
   while a unit is down. It cannot tell failed from inactive or not-found.
-- Only one `nq.host_memory` lineage (one host) is expected per export.
 - Docket and AG inputs are not deployed; their rules stay disabled.

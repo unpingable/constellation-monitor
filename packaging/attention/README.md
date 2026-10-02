@@ -99,7 +99,15 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
    `constellation-attention state --config ...`. A unit in `failed` state
    (exit 3) means an input is not current, a delivery was not accepted or a
    trigger was dropped; exit 1 means the pass could not run (state lock,
-   malformed state, clock moved backwards).
+   malformed state, clock moved backwards). After a corrected forward clock
+   step, confirm the clock and run `sudo -u nq constellation-attention
+   reset-clock --config /etc/constellation-attention/attention.toml`
+   (ATTENTION.md, Clock); never delete the state.
+
+`TimeoutStartSec` follows `(I + S) x command_timeout_seconds + 60`, with I
+command inputs (nq_status command plus saved-check commands) and S
+submissions in one pass; the unit assumes I <= 2 and S <= 6 (780 s). Raise
+it with a drop-in for more command inputs.
 
 Operator acceptance: nothing in the estate watches this unit. A pass that
 cannot run fails every minute with no report and no notification, and an
@@ -108,6 +116,9 @@ is the age of `/var/lib/constellation-attention/report.json`; the status site
 or renderer that reads it is responsible for flagging a report older than a
 few minutes. The unit has a commented `OnFailure=` for an optional local
 handler.
+
+Input labels are at most 34 bytes (they form `{label}.{fault class}` input
+notice keys).
 
 Remove: `systemctl disable --now constellation-attention.timer`. The state
 directory holds only condition state, the last report and intent files.

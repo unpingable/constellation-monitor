@@ -5,6 +5,7 @@ Bounded operator-attention evaluator. One invocation is one pass:
 ```text
 constellation-attention evaluate --config FILE [--dry-run] [--now RFC3339]
 constellation-attention state --config FILE
+constellation-attention reset-clock --config FILE
 constellation-attention rules
 constellation-attention check-config --config FILE
 ```
@@ -16,6 +17,8 @@ Slack/Discord/local inbox), submits them with `nq notification submit` (or
 `resubmit` for a PagerDuty retry, or `deliver-local` for a `local_file`
 route), records the outcomes in the state file and writes `report.json`.
 `--now` is for dry runs; release builds refuse it without `--dry-run`.
+`reset-clock` recovers from a corrected forward clock step (it clamps future
+timestamps in the state to now and deletes nothing).
 Exit codes: 0 clean; 1 runtime error (including another pass holding the
 state lock, an unreadable state file, which is never replaced, or a clock
 earlier than the last pass); 2 usage or configuration error; 3 the pass
