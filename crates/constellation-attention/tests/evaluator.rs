@@ -2039,3 +2039,307 @@ fn forward_clock_step_recovers_with_reset_clock() {
     }
     assert_eq!(harness.calls().len(), 4, "{:?}", harness.calls());
 }
+
+// Second review attack tests, kept as regression tests.
+
+/// Second review A2: a removed watcher holds its page for hours, every pass
+/// exits 3, and other units on the same input still page.
+#[test]
+fn removed_watcher_holds_for_hours_and_other_units_still_page() {
+    let (harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let mut codes = Vec::new();
+    for offset in (60..=3 * 3600).step_by(600) {
+        let ssh_down = offset >= 2 * 3600;
+        let value = retimed("cron-down.json", t + offset, |value| {
+            value["components"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|component| {
+                    component["id"] != "unit-cron"
+                        && component["detail"]["result"]["context"]["instance_id"] != "unit-cron"
+                });
+            if ssh_down {
+                for component in value["components"].as_array_mut().unwrap() {
+                    if component["kind"] == "evaluation"
+                        && component["detail"]["result"]["context"]["instance_id"] == "unit-ssh"
+                    {
+                        component["detail"]["result"]["result"]["state"] = json!("present");
+                    }
+                }
+            }
+        });
+        write_status(&status, &value);
+        codes.push(harness.evaluate_at(t + offset + 3, &[]).status.code());
+    }
+    assert!(
+        cron_calls(&harness)
+            .iter()
+            .all(|call| !call.contains("-resolve-"))
+    );
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    assert!(codes.iter().all(|code| *code == Some(3)), "{codes:?}");
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .any(|call| call.contains("service-down-ssh.service-trigger")),
+        "{:?}",
+        harness.calls()
+    );
+}
+
+/// Second review A6: a corrupt state file stops every pass (exit 1) and is
+/// never replaced.
+#[test]
+fn corrupt_state_stops_every_pass() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    fs::write(harness.path("state/state.json"), b"{\"schema\":").unwrap();
+    for offset in [660, 3600] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        assert_eq!(harness.evaluate_at(T0 + offset, &[]).status.code(), Some(1));
+    }
+    assert!(harness.calls().is_empty());
+    assert_eq!(
+        fs::read(harness.path("state/state.json")).unwrap(),
+        b"{\"schema\":"
+    );
+}
+
+/// Second review A8: a pass, real or dry, never overlaps another.
+#[test]
+fn overlapping_pass_is_refused() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(harness.path("state/state.json.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    for extra in [&[][..], &["--dry-run"][..]] {
+        let output = harness.evaluate_at(T0 + 60, extra);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("holds the state lock"));
+    }
+}
+
+/// Second review A10, a documented limit (N1): service-down keys on the
+/// unit name, so a healthy unit of the same name on another machine in the
+/// same export hides it. One nqd watches one host.
+#[test]
+fn same_unit_on_two_machines_is_a_documented_limit() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181, 240] {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            let mut other = cron_eval(value).clone();
+            other["id"] = json!("9f9f9f9f-0000-4000-8000-000000000000");
+            other["detail"]["result"]["context"]["instance_id"] = json!("unit-cron-b");
+            other["detail"]["result"]["context"]["subject"] =
+                json!("systemd-unit:2222222222222222222222222222222a/cron.service");
+            other["detail"]["result"]["result"]["state"] = json!("explicitly_absent");
+            other["detail"]["result"]["evaluated_at"] = json!(rfc3339(t + offset - 2));
+            let mut instance = value["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|component| component["id"] == "unit-cron")
+                .unwrap()
+                .clone();
+            instance["id"] = json!("unit-cron-b");
+            value["components"].as_array_mut().unwrap().push(other);
+            value["components"].as_array_mut().unwrap().push(instance);
+        });
+        write_status(&status, &value);
+        harness.evaluate(t + offset + 3);
+    }
+    assert!(harness.calls().is_empty(), "{:?}", harness.calls());
+}
+
+/// Drive a trigger that NQ refuses before custody, then a clear, so the
+/// resolve is decided while the trigger was never retained.
+fn pending_setup(harness: &mut Harness) {
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    for offset in [0, 660] {
+        set(harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [720, 780] {
+        set(harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert!(harness.calls().is_empty());
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+}
+
+/// Second review P1: a crash before NQ retains the pending trigger leaves it
+/// in state; the next pass sends trigger then resolve, once each.
+#[test]
+fn crash_before_pending_trigger_is_retained() {
+    let mut harness = Harness::new();
+    pending_setup(&mut harness);
+    harness.fake("crash", "");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
+    let _ = harness.evaluate_at(T0 + 840, &[]);
+    let state = harness.state();
+    assert_eq!(
+        state["conditions"][UNKNOWN_ROOT]["pending_trigger"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    for offset in [900, 960, 1800] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[0].contains("-trigger-") && calls[1].contains("-trigger-"));
+    assert!(calls[2].contains("-resolve-") && calls[3].contains("-resolve-"));
+}
+
+/// Second review P2: a crash after NQ retains the pending trigger converges
+/// on the retained record; no double trigger.
+#[test]
+fn crash_after_pending_trigger_is_retained() {
+    let mut harness = Harness::new();
+    pending_setup(&mut harness);
+    harness.fake("crash_after", "");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
+    let _ = harness.evaluate_at(T0 + 840, &[]);
+    for offset in [900, 960, 1800] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    let new_triggers = calls
+        .iter()
+        .filter(|call| call.contains("-trigger-") && call.ends_with(" new"))
+        .count();
+    assert_eq!(new_triggers, 2, "one retained trigger per route: {calls:?}");
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.contains("-resolve-"))
+            .count(),
+        2
+    );
+}
+
+/// Second review P3: the condition recurs while a trigger is pending. The
+/// old incident's trigger and resolve go out, then one new trigger per route
+/// after the bound.
+#[test]
+fn recurrence_while_a_trigger_is_pending() {
+    let mut harness = Harness::new();
+    pending_setup(&mut harness);
+    harness.fake("crash", "");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
+    let _ = harness.evaluate_at(T0 + 840, &[]);
+    for offset in (900..=1800).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.contains("-trigger-1790943060"))
+            .count(),
+        2,
+        "{calls:?}"
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.contains("-resolve-"))
+            .count(),
+        2
+    );
+    let later = calls
+        .iter()
+        .filter(|call| call.contains("-trigger-") && !call.contains("1790943060"))
+        .count();
+    assert_eq!(later, 2, "{calls:?}");
+}
+
+/// Second review P5: nqd stopped for ten minutes during an active page:
+/// held, no re-trigger when it returns, and observed recovery resolves.
+#[test]
+fn nqd_stop_during_an_active_page_holds_it() {
+    let (harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    for offset in (60..=600).step_by(60) {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            for component in value["components"].as_array_mut().unwrap() {
+                if component["kind"] == "instance" {
+                    component["observed_at"] = json!(rfc3339(t - 3));
+                }
+            }
+        });
+        write_status(&status, &value);
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(cron_calls(&harness).len(), 2, "held: {:?}", harness.calls());
+    for offset in [660, 720] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(cron_calls(&harness).len(), 2, "no re-trigger");
+    for offset in [780, 840, 900] {
+        write_status(
+            &status,
+            &retimed(
+                "cron-down.json",
+                t + offset,
+                cron_state("explicitly_absent"),
+            ),
+        );
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(
+        cron_calls(&harness)
+            .iter()
+            .filter(|call| call.contains("-resolve-"))
+            .count(),
+        2
+    );
+}
+
+/// Second review P7, deliberate: dropping the NQ status input from the
+/// configuration for one pass resolves the open page as no longer
+/// evaluated; restoring it re-pages as a new incident after the bound.
+#[test]
+fn transient_config_drop_resolves_then_repages() {
+    let (mut harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let saved = harness.extra_config.clone();
+    harness.extra_config.clear();
+    write_status(&status, &retimed("cron-down.json", t + 60, |_| {}));
+    let report = harness.evaluate(t + 63);
+    assert_eq!(intents(&report).len(), 2);
+    harness.extra_config = saved;
+    for offset in (120..=600).step_by(60) {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = cron_calls(&harness);
+    assert_eq!(calls.len(), 6, "{calls:?}");
+    assert!(calls[2].contains("-resolve-") && calls[3].contains("-resolve-"));
+    assert!(calls[4].contains("-trigger-") && calls[5].contains("-trigger-"));
+    let id = calls[3].split(' ').nth(3).unwrap();
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+    assert!(
+        intent["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("no longer evaluated; recovery not observed.")
+    );
+}
