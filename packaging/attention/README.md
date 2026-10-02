@@ -77,10 +77,23 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
 4. Qualify delivery against a local inbox, so no test notice reaches a
    production channel. In the NQ configuration add a `local_file` route
    (for example `reference = "attention-test"`, `transport = "local_file"`,
-   `local_inbox_directory = "/var/lib/nq-ops/attention-inbox"`). NQ validates
-   that directory as daemon-owned (`nq:nq`) with exact mode `0711` and writes
-   each message there as a `0600` file; a directory outside the unit's
-   `ReadWritePaths=` needs a drop-in. Set `notice_route = "attention-test"`,
+   `local_inbox_directory = "/var/lib/nq-ops-attention-test-inbox"`). NQ
+   validates that directory as daemon-owned (`nq:nq`) with exact mode `0711`
+   and writes each message there as a `0600` file. The unit's
+   `ProtectSystem=strict` sandbox makes it read-only, so `deliver-local`
+   fails and the notice is retained as `failed` (seen on labelwatch-host)
+   until the inbox is listed in `ReadWritePaths=` with a drop-in:
+
+   ```sh
+   sudo install -d -m 0755 /etc/systemd/system/constellation-attention.service.d
+   printf '[Service]\nReadWritePaths=/var/lib/nq-ops-attention-test-inbox\n' |
+     sudo tee /etc/systemd/system/constellation-attention.service.d/qualification-inbox.conf
+   sudo systemctl daemon-reload
+   ```
+
+   This drop-in belongs to the qualification profile only. Remove it (and
+   `daemon-reload`) before moving to production routes; it must not be
+   present in production. Set `notice_route = "attention-test"`,
    `notice_transport = "local_file"` and omit `page_route`, then
    `sudo systemctl start constellation-attention.service` for real passes.
    Notices go through `nq notification deliver-local` (destination
@@ -89,6 +102,11 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
    `deliver-local` through such a route has been accepted on the Linode
    (route `attention-test`); this step qualifies the evaluator's own passes
    through it.
+
+   If `[inputs.nq_status]` uses `path =` (a file written by a timer) rather
+   than `command =`, the file must be readable by `nq` and must lie outside
+   the unit's `ProtectHome=` paths: `/root` and `/home` are invisible to the
+   unit, so a file there reads as `unreadable`.
 5. With the production routes and `network_enabled = false`, one real pass
    retains intents as NQ refusals (`network_dispatch_not_explicitly_enabled`)
    and sends nothing.

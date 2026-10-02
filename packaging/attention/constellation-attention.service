@@ -66,8 +66,16 @@ ReadOnlyPaths=-/etc/constellation-attention -/etc/nq
 # namespace setup (226/NAMESPACE), which is the intended loud failure; a
 # store outside these paths is read-only and every submission fails as
 # command_error. SQLite needs -shm write access to read a WAL-mode
-# Nightshift store even when opened read-only. A local_file qualification
-# route's inbox directory must be added here too.
+# Nightshift store even when opened read-only.
+# Qualification only: a local_file notice route's inbox lies outside these
+# paths, so ProtectSystem=strict blocks nq deliver-local (the notice is
+# retained as `failed`). Add it with a drop-in, and remove that drop-in
+# before production; it must never be present there:
+#   /etc/systemd/system/constellation-attention.service.d/qualification-inbox.conf
+#   [Service]
+#   ReadWritePaths=/var/lib/nq-ops-attention-test-inbox
+# An [inputs.nq_status] path= file must be readable by nq and outside
+# ProtectHome paths: /root and /home are invisible to this unit.
 ReadWritePaths=/var/lib/constellation-attention /var/lib/nq-ops
 ReadWritePaths=-/var/lib/nq
 ReadWritePaths=-/var/lib/constellation-nightshift-observation
