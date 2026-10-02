@@ -262,7 +262,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         // incident.
         return Err(format!(
             "refusing the pass: now ({}) is earlier than the last completed pass ({}); \
-             the clock moved backwards",
+             the clock moved backwards. If an earlier forward step has been corrected, \
+             check the clock and run `constellation-attention reset-clock --config FILE`",
             format_seconds(now),
             format_seconds(state.updated_at)
         ));
@@ -919,6 +920,24 @@ pub fn rules_report(rules: &[EffectiveRule], config: &Config) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+/// `reset-clock`: after a forward clock step has been corrected, clamp every
+/// future timestamp in the state to `now` so passes proceed again. Refuses
+/// nothing and deletes nothing; with no future timestamp it changes nothing.
+pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
+    let _lock = lock(config, false)?;
+    let mut state = State::load(&config.state_path, &config.site)?;
+    let previous = state.updated_at;
+    let clamped = state.reset_clock(now);
+    if clamped > 0 {
+        state.save(&config.state_path)?;
+    }
+    Ok(json!({
+        "now": format_seconds(now),
+        "previous_updated_at": format_seconds(previous),
+        "clamped_timestamps": clamped,
+    }))
 }
 
 /// The state file path, for the `state` subcommand.

@@ -105,6 +105,43 @@ impl State {
         Ok(state)
     }
 
+    /// Recover from a forward clock step that has since been corrected:
+    /// every timestamp later than `now` becomes `now`. Returns how many were
+    /// clamped. Nothing is deleted; open conditions and retained intents
+    /// stay as they are.
+    pub fn reset_clock(&mut self, now: i64) -> usize {
+        let mut clamped = 0;
+        let mut clamp = |value: &mut i64| {
+            if *value > now {
+                *value = now;
+                clamped += 1;
+            }
+        };
+        clamp(&mut self.updated_at);
+        for condition in self.conditions.values_mut() {
+            for value in [
+                &mut condition.first_seen,
+                &mut condition.last_seen,
+                &mut condition.clear_since,
+                &mut condition.unknown_since,
+                &mut condition.transition_at,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                clamp(value);
+            }
+            for last in condition
+                .last_intent
+                .values_mut()
+                .chain(condition.pending_trigger.values_mut())
+            {
+                clamp(&mut last.at);
+            }
+        }
+        clamped
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let mut bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
         bytes.push(b'\n');

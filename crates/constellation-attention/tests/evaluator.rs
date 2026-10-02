@@ -1979,3 +1979,53 @@ fn resolve_superseding_an_unaccepted_trigger_is_reported() {
         "{report}"
     );
 }
+
+/// Second review A7/R4: a forward clock step lets its own pass proceed;
+/// once the clock is corrected, passes refuse until the operator checks the
+/// clock and runs `reset-clock`, which deletes nothing. Then passes proceed
+/// and the open page is held, not replayed.
+#[test]
+fn forward_clock_step_recovers_with_reset_clock() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(harness.calls().len(), 2);
+    // A one-off forward step of a day: that pass proceeds.
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 86_400);
+    let output = harness.evaluate_at(T0 + 86_400, &[]);
+    assert_eq!(output.status.code(), Some(0));
+    // The clock is corrected: passes refuse with the recovery hint.
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let output = harness.evaluate_at(T0 + 720, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reset-clock"));
+    let config = harness.config_path();
+    let now = rfc3339(T0 + 780);
+    let output = harness.command(&[
+        "reset-clock",
+        "--config",
+        config.to_str().unwrap(),
+        "--now",
+        &now,
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(answer["clamped_timestamps"].as_u64().unwrap() >= 1);
+    let state = harness.state();
+    assert_eq!(state["updated_at"], T0 + 780);
+    assert_eq!(state["conditions"][UNKNOWN_ROOT]["active"], true);
+    for offset in [840, 900, 3600] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0));
+    }
+    assert_eq!(harness.calls().len(), 2, "no re-trigger after recovery");
+    for offset in [3660, 3720, 3780] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(harness.calls().len(), 4, "{:?}", harness.calls());
+}

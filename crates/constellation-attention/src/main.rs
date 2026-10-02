@@ -18,6 +18,7 @@ use serde_json::json;
 const USAGE: &str = "usage:
   constellation-attention evaluate --config FILE [--dry-run] [--now RFC3339]
   constellation-attention state --config FILE
+  constellation-attention reset-clock --config FILE
   constellation-attention rules
   constellation-attention check-config --config FILE";
 
@@ -41,7 +42,7 @@ fn parse(mut raw: impl Iterator<Item = String>) -> Result<Arguments, String> {
             "--config" => {
                 arguments.config = Some(PathBuf::from(raw.next().ok_or("--config needs a path")?));
             }
-            "--now" if arguments.command == "evaluate" => {
+            "--now" if matches!(arguments.command.as_str(), "evaluate" | "reset-clock") => {
                 arguments.now = Some(raw.next().ok_or("--now needs an RFC3339 time")?);
             }
             "--dry-run" if arguments.command == "evaluate" => arguments.dry_run = true,
@@ -66,6 +67,22 @@ fn print(value: &serde_json::Value) {
     );
 }
 
+/// Unix seconds and milliseconds of `--now`, or of the system clock.
+fn clock(now: Option<&str>) -> Result<(i64, i64), (u8, String)> {
+    if let Some(value) = now {
+        let time = parse_rfc3339(value).map_err(|error| (2, error))?;
+        let ms = i64::try_from(time.unix_timestamp_nanos() / 1_000_000)
+            .map_err(|_| (2, "--now out of range".to_owned()))?;
+        return Ok((time.unix_timestamp(), ms));
+    }
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| (1, "system clock before 1970".to_owned()))?;
+    let ms =
+        i64::try_from(elapsed.as_millis()).map_err(|_| (1, "clock out of range".to_owned()))?;
+    Ok((ms / 1000, ms))
+}
+
 fn run() -> Result<u8, (u8, String)> {
     let arguments = parse(std::env::args().skip(1)).map_err(|error| (2, error))?;
     match arguments.command.as_str() {
@@ -81,6 +98,16 @@ fn run() -> Result<u8, (u8, String)> {
                 "unknown_gap_seconds": UNKNOWN_GAP_SECONDS,
                 "rules": RULES,
             }));
+            Ok(0)
+        }
+        "reset-clock" => {
+            // Only debug builds (the test suite) may choose the time.
+            if arguments.now.is_some() && !cfg!(debug_assertions) {
+                return Err((2, "reset-clock uses the system clock".to_owned()));
+            }
+            let config = load(&arguments).map_err(|error| (2, error))?;
+            let (now, _) = clock(arguments.now.as_deref())?;
+            print(&engine::reset_clock(&config, now).map_err(|error| (1, error))?);
             Ok(0)
         }
         "check-config" => {
@@ -110,22 +137,7 @@ fn run() -> Result<u8, (u8, String)> {
                 return Err((2, "--now is accepted only with --dry-run".to_owned()));
             }
             let config = load(&arguments).map_err(|error| (2, error))?;
-            let (now, now_ms) = match &arguments.now {
-                Some(value) => {
-                    let time = parse_rfc3339(value).map_err(|error| (2, error))?;
-                    let ms = i64::try_from(time.unix_timestamp_nanos() / 1_000_000)
-                        .map_err(|_| (2, "--now out of range".to_owned()))?;
-                    (time.unix_timestamp(), ms)
-                }
-                None => {
-                    let elapsed = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_err(|_| (1, "system clock before 1970".to_owned()))?;
-                    let ms = i64::try_from(elapsed.as_millis())
-                        .map_err(|_| (1, "clock out of range".to_owned()))?;
-                    (ms / 1000, ms)
-                }
-            };
+            let (now, now_ms) = clock(arguments.now.as_deref())?;
             let result = engine::evaluate(
                 &config,
                 &PassOptions {

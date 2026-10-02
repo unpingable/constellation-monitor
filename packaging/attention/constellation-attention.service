@@ -1,7 +1,10 @@
 [Unit]
 Description=Constellation operator-attention evaluator (one pass)
 Documentation=file:/usr/share/doc/constellation-attention/ATTENTION.md
-After=local-fs.target network-online.target
+# Event identities and the backwards-clock refusal depend on wall time: never
+# run a pass before the clock is synchronized (a bad RTC at boot would set
+# updated_at in the future).
+After=local-fs.target network-online.target time-sync.target
 Wants=network-online.target
 ConditionPathExists=/etc/constellation-attention/attention.toml
 # Nothing in the estate watches this unit (ATTENTION.md, Known limits). A
