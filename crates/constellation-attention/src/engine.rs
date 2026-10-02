@@ -15,8 +15,8 @@ use crate::inputs::{self, Context, INPUT_CAUSES, InputReport, InputStatus, Obser
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{
-    Class, InputKind, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS,
-    UNKNOWN_GAP_SECONDS,
+    Class, InputKind, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS,
+    RESOLVE_CONFIRM_SECONDS, UNKNOWN_GAP_SECONDS,
 };
 use crate::state::{ConditionState, LastIntent, State};
 use crate::util::{format_seconds, read_bounded, write_atomic};
@@ -458,6 +458,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     let intents_dir = output_dir.join("intents");
     ensure_dir(&intents_dir)?;
     let mut plan: Vec<Planned> = Vec::new();
+    let mut superseded: Vec<Value> = Vec::new();
     let notice_route = config.routes.notice_route.clone();
     for (id, action, reason) in &transitions {
         let condition = state
@@ -544,13 +545,30 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             });
         }
         for (role, last) in written {
-            if let Some(previous) = condition.last_intent.insert(role.clone(), last)
-                && previous.action == Action::Trigger.as_str()
-                && previous.notification_id.is_none()
-            {
+            let Some(previous) = condition.last_intent.insert(role.clone(), last) else {
+                continue;
+            };
+            if previous.action != Action::Trigger.as_str() {
+                continue;
+            }
+            if previous.notification_id.is_none() {
                 // A resolve never replaces a trigger NQ did not retain: the
                 // trigger goes first in this pass.
                 condition.pending_trigger.insert(role, previous);
+            } else if previous.outcome != "accepted"
+                && (previous.outcome != "refused" || previous.network)
+            {
+                // Retained but never accepted: the destination may never
+                // have opened the incident this resolve closes.
+                superseded.push(json!({
+                    "condition_id": id,
+                    "route_role": role,
+                    "route": previous.route,
+                    "stable_event_id": previous.stable_event_id,
+                    "notification_id": previous.notification_id,
+                    "outcome": previous.outcome,
+                    "error": "superseded by a resolve before it was accepted",
+                }));
             }
         }
     }
@@ -565,7 +583,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             let Some((operation, waits)) = follow_up(last, &snapshot, config) else {
                 continue;
             };
-            if waits && now - last.at < RESEND_INTERVAL_SECONDS {
+            let interval = if operation == Operation::Resubmit {
+                PAGE_RESEND_SECONDS
+            } else {
+                RESEND_INTERVAL_SECONDS
+            };
+            if waits && now - last.at < interval {
                 continue;
             }
             let Some(action) = Action::parse(&last.action) else {
@@ -681,9 +704,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         state.save(&config.state_path)?;
     }
 
-    let mut delivery_problem = !unreadable.is_empty();
+    for dropped in &superseded {
+        eprintln!(
+            "dropped_trigger condition={} route={} stable_event_id={} outcome={}",
+            dropped["condition_id"].as_str().unwrap_or_default(),
+            dropped["route"].as_str().unwrap_or_default(),
+            dropped["stable_event_id"].as_str().unwrap_or_default(),
+            dropped["outcome"].as_str().unwrap_or_default(),
+        );
+    }
+    let mut delivery_problem = !unreadable.is_empty() || !superseded.is_empty();
     let mut intent_reports = unreadable;
-    let mut dropped_triggers = Vec::new();
+    let mut dropped_triggers = superseded;
     for item in &plan {
         let condition = state
             .conditions

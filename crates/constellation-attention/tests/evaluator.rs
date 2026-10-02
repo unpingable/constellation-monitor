@@ -443,31 +443,37 @@ fn sink_failure_keeps_semantic_state_and_resends_newest_later() {
     assert_eq!(condition["active"], true);
     assert_eq!(condition["first_seen"], T0);
     assert_eq!(condition["last_intent"]["page"]["outcome"], "failed");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
     let output = harness.evaluate_at(T0 + 720, &[]);
     assert_eq!(
         output.status.code(),
         Some(3),
         "a failed delivery stays visible"
     );
-    // Not yet: the resend interval is 900 s after the attempt at +660.
-    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1500);
-    harness.evaluate(T0 + 1500);
-    assert_eq!(harness.calls().len(), 2);
-    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1600);
+    assert_eq!(harness.calls().len(), 2, "not yet: 60 s after the attempt");
+    // PagerDuty is resubmitted 120 s after the failed attempt.
     harness.fake("next_state", "accepted");
-    let report = harness.evaluate(T0 + 1600);
-    assert_eq!(harness.calls().len(), 2 + 2);
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
     let calls = harness.calls();
+    assert_eq!(calls.len(), 3, "{calls:?}");
     assert_eq!(
         calls[2],
-        "submit operations labelwatch-host-posture-unknown-root-trigger-1790944000 n3 accepted new"
+        "resubmit n2 labelwatch-host-posture-unknown-root-trigger-1790943180 n3 accepted"
     );
+    assert_eq!(report["intents"][0]["operation"], "resubmit");
+    assert_eq!(report["intents"][0]["retry_of"], "n2");
+    // The Slack notice waits the full 900 s after its failed attempt.
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1500);
+    harness.evaluate(T0 + 1500);
+    assert_eq!(harness.calls().len(), 3);
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1560);
+    harness.evaluate(T0 + 1560);
+    let calls = harness.calls();
     assert_eq!(
         calls[3],
-        "resubmit n2 labelwatch-host-posture-unknown-root-trigger-1790944000 n4 accepted"
+        "submit operations labelwatch-host-posture-unknown-root-trigger-1790943960 n4 accepted new"
     );
-    assert_eq!(report["intents"][1]["operation"], "resubmit");
-    assert_eq!(report["intents"][1]["retry_of"], "n2");
     let state = harness.state();
     let condition = &state["conditions"][UNKNOWN_ROOT];
     assert_eq!(
@@ -1915,5 +1921,61 @@ fn input_notice_in_the_old_key_format_is_closed() {
         intents(&report).contains(&(old.into(), "notice".into(), "resolve".into())),
         "{:?}",
         intents(&report)
+    );
+}
+
+/// Second review P8: a PagerDuty trigger NQ retained but could not deliver
+/// is resubmitted after 120 s, not 900 s.
+#[test]
+fn failed_pagerduty_trigger_is_resubmitted_after_a_pause() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in (0..=600).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.fake("next_state", "failed");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+    harness.evaluate(T0 + 660);
+    harness.fake("next_state", "accepted");
+    for offset in (720..=1260).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    assert!(
+        calls.contains(
+            &"resubmit n2 labelwatch-host-posture-unknown-root-trigger-1790943180 n3 accepted"
+                .to_owned()
+        ),
+        "{calls:?}"
+    );
+}
+
+/// Second review P8/R3: a resolve that supersedes a retained trigger that
+/// was never accepted reports it as dropped and exits 3.
+#[test]
+fn resolve_superseding_an_unaccepted_trigger_is_reported() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("next_state", "failed");
+    for offset in (0..=780).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let mut codes = Vec::new();
+    for offset in [840, 900, 960] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        codes.push(harness.evaluate_at(T0 + offset, &[]).status.code());
+    }
+    assert_eq!(codes[2], Some(3));
+    let report = harness.report();
+    assert_eq!(intents(&report).len(), 2, "the resolve went out");
+    let dropped = report["dropped_triggers"].as_array().unwrap();
+    assert!(
+        dropped
+            .iter()
+            .any(|entry| entry["route_role"] == "page" && entry["outcome"] == "failed"),
+        "{report}"
     );
 }

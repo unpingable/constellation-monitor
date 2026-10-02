@@ -12,6 +12,10 @@ pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
 
 /// Minimum spacing between delivery retries for one condition and route.
 pub const RESEND_INTERVAL_SECONDS: i64 = 900;
+/// Spacing of `PagerDuty` resubmissions of a retained record that was not
+/// accepted. NQ's runbook: retryable, resubmit after a pause. `PagerDuty`'s
+/// dedup key makes the repeat idempotent at the destination.
+pub const PAGE_RESEND_SECONDS: i64 = 120;
 /// The longest run of unknown observations an interval absorbs: one 60 s
 /// pass interval plus timer jitter. A longer run moves the start of the
 /// persistence or confirmation interval forward by its length.
