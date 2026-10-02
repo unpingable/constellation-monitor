@@ -417,6 +417,9 @@ impl Config {
         match kind {
             InputKind::HostPosture => !self.inputs.host_posture.is_empty(),
             InputKind::NqStatus => self.inputs.nq_status.is_some(),
+            InputKind::HostPostureOrNqStatus => {
+                !self.inputs.host_posture.is_empty() || self.inputs.nq_status.is_some()
+            }
             InputKind::Nightshift => self.inputs.nightshift.is_some(),
             InputKind::SavedCheck => !self.inputs.saved_checks.is_empty(),
             InputKind::Evaluator => true,

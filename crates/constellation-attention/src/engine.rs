@@ -15,8 +15,8 @@ use crate::inputs::{self, Context, INPUT_CAUSES, InputReport, InputStatus, Obser
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{
-    Class, InputKind, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS,
-    RESOLVE_CONFIRM_SECONDS, UNKNOWN_GAP_SECONDS,
+    Class, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS,
+    UNKNOWN_GAP_SECONDS,
 };
 use crate::state::{ConditionState, LastIntent, State};
 use crate::util::{format_seconds, read_bounded, write_atomic};
@@ -420,11 +420,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                         Some(_) => (Observation::Unknown, "input not current".into()),
                         // The label names the condition (its target class):
                         // removing it is an explicit configuration removal.
-                        None if rule.rule.input != InputKind::NqStatus => {
+                        None if condition.key.target_class.as_deref()
+                            == Some(condition.input_label.as_str()) =>
+                        {
                             (Observation::Removed, "input no longer configured".into())
                         }
-                        // NQ status conditions are keyed on units, not on
-                        // the input label; the input kind is still
+                        // Conditions keyed on a unit, filesystem or nothing
+                        // do not name the label; the input kind is still
                         // configured, so a relabel is not a removal.
                         None => (
                             Observation::Unknown,

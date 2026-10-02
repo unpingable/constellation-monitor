@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v1";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v2";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -44,6 +44,8 @@ impl Class {
 pub enum InputKind {
     HostPosture,
     NqStatus,
+    /// Either a host-posture input or the NQ status input (`host-disk`).
+    HostPostureOrNqStatus,
     Nightshift,
     SavedCheck,
     /// The evaluator's own view of whether its configured inputs are readable.
@@ -115,19 +117,19 @@ pub const RULES: [Rule; 10] = [
     },
     Rule {
         id: "host-disk",
-        version: 1,
+        version: 2,
         default_class: Class::Notice,
         page_allowed: true,
         severity: "warning",
         component: Some("host_posture"),
-        input: InputKind::HostPosture,
+        input: InputKind::HostPostureOrNqStatus,
         threshold_meaning: ThresholdMeaning::Persistence,
         default_threshold_seconds: 900,
         fixed_persistence_seconds: 0,
         runbook_anchor: "host-disk",
         runbook_document: CARTOGRAPHY,
         operator_response: "Ordinary host operations: check the NQ store, host-posture state root, Nightshift stores and Classic backups first.",
-        condition: "Current projection reports capacity pressure (degraded or worse) for this publication root.",
+        condition: "Capacity pressure: the current host-posture projection is degraded or worse for this publication root, or an NQ filesystem capacity watcher reports filesystem_capacity_pressure present.",
         disabled: None,
     },
     Rule {

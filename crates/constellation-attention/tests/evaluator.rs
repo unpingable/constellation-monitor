@@ -2754,3 +2754,88 @@ fn evaluation_history_configuration_is_bounded() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("50..=5000"));
 }
+
+/// Production: NQ's `fs-zonestorage` filesystem capacity watcher feeds
+/// `host-disk:fs-zonestorage` with the same bound (900 s) and class as the
+/// host-posture source.
+#[test]
+fn nq_filesystem_capacity_feeds_host_disk() {
+    let mut harness = history_harness(300);
+    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
+    let t = at("2026-10-02T21:32:17Z");
+    let zonestorage = |envelope: &mut Value| {
+        if envelope["context"]["instance_id"] == "fs-root-capacity" {
+            envelope["context"]["instance_id"] = json!("fs-zonestorage");
+            envelope["result"]["state"] = json!("present");
+        }
+        set_state(envelope, "unit-cron", "explicitly_absent");
+        true
+    };
+    let disk = "constellation:labelwatch:host_posture:host-disk:fs-zonestorage";
+    let mut report = Value::Null;
+    for offset in (0..=900).step_by(60) {
+        append_round(&harness, t + offset, zonestorage);
+        report = harness.evaluate(t + offset + 3);
+        assert!(intents(&report).is_empty(), "+{offset}");
+    }
+    let condition = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|condition| condition["id"] == disk)
+        .unwrap()
+        .clone();
+    assert_eq!(condition["observation"], "present");
+    assert_eq!(condition["persistence_bound_seconds"], 900);
+    append_round(&harness, t + 960, zonestorage);
+    let report = harness.evaluate(t + 963);
+    assert_eq!(
+        intents(&report),
+        vec![
+            (disk.into(), "notice".into(), "trigger".into()),
+            (disk.into(), "page".into(), "trigger".into()),
+        ]
+    );
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n2")).unwrap();
+    assert_eq!(
+        intent["condition"],
+        json!({"component":"host_posture","rule":"host-disk","site":"labelwatch","target_class":"fs-zonestorage"})
+    );
+    assert_eq!(intent["details"]["rule_version"], 2);
+    assert_eq!(
+        intent["details"]["registry"],
+        "constellation.attention_registry.v2"
+    );
+}
+
+/// The status-export source maps the same profile; an unrecognised version
+/// of it is not current rather than ignored.
+#[test]
+fn filesystem_capacity_version_is_checked() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let value = retimed("healthy.json", t, |value| {
+        for component in value["components"].as_array_mut().unwrap() {
+            if component["kind"] == "evaluation"
+                && component["detail"]["result"]["context"]["instance_id"] == "fs-root-capacity"
+            {
+                component["detail"]["result"]["profile"]["profile"]["version"] = json!(2);
+            }
+        }
+    });
+    write_status(&status, &value);
+    let report = harness.evaluate(t + 3);
+    assert_eq!(report["inputs"][0]["causes"], json!(["unrecognised"]));
+    write_status(&status, &retimed("healthy.json", t + 60, |_| {}));
+    let report = harness.evaluate(t + 63);
+    let condition = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|condition| {
+            condition["id"] == "constellation:labelwatch:host_posture:host-disk:fs-root-capacity"
+        })
+        .unwrap()
+        .clone();
+    assert_eq!(condition["observation"], "clear");
+}
