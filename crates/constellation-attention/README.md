@@ -12,12 +12,15 @@ constellation-attention check-config --config FILE
 `evaluate` reads the configured inputs, turns them into present / clear /
 unknown observations per condition, applies the closed rule registry's
 persistence bounds, writes NQ notification intents (v2 for PagerDuty, v1 for
-Slack/Discord), submits them with `nq notification submit` (or `resubmit` for a
-PagerDuty retry), records the outcomes in the state file and writes
-`report.json`. Exit codes: 0 clean; 1 runtime error (including another pass
-holding the state lock, or an unreadable state file, which is never
-replaced); 2 usage or configuration error; 3 the pass completed but an input
-was not current or a delivery is not accepted.
+Slack/Discord/local inbox), submits them with `nq notification submit` (or
+`resubmit` for a PagerDuty retry, or `deliver-local` for a `local_file`
+route), records the outcomes in the state file and writes `report.json`.
+`--now` is for dry runs; release builds refuse it without `--dry-run`.
+Exit codes: 0 clean; 1 runtime error (including another pass holding the
+state lock, an unreadable state file, which is never replaced, or a clock
+earlier than the last pass); 2 usage or configuration error; 3 the pass
+completed but an input was not current, a delivery is not accepted or a
+trigger was dropped.
 
 It consumes qualified current product state and produces notification
 intents. It is not evidence, observation or execution authority, not a policy

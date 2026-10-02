@@ -24,9 +24,9 @@ notification intents. Nothing else.
   choose `page` or `notice` where the registry allows it. There are no
   user-defined rules, expressions or plugins.
 - **Delivery is NQ's job.** The evaluator writes a canonical intent file and
-  runs `nq notification submit` (or `resubmit`), then records NQ's answer. It
-  never talks to Slack, Discord or PagerDuty, never reads route secrets, and
-  stores none.
+  runs `nq notification submit` (or `resubmit`, or `deliver-local` for a
+  `local_file` route), then records NQ's answer. It never talks to Slack,
+  Discord or PagerDuty, never reads route secrets, and stores none.
 - It never reads Classic NQ (`/opt/notquery`).
 
 ## Registry
@@ -40,13 +40,13 @@ anchors marked (M) are below in this document.
 
 | Rule | Class (default) | May page | Bound | Component | Target class | Input | Runbook | Operator response |
 |---|---|---|---|---|---|---|---|---|
-| `host-posture-unknown` | page | yes | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch. |
+| `host-posture-unknown` | page | yes | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT` of projection `operator-filesystem-capacity`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch. |
 | `host-disk` | notice | yes | persists 900 s | `host_posture` | publication-root label | host-posture `CURRENT`: current and `aggregate_state` degraded or worse | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
 | `nq-no-fresh-acquisition` | page | yes | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
-| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status export: newest `nq.systemd_unit` v2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
-| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status export: newest `nq.host_memory` evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
+| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status export: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
+| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status export: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
 | `nightshift-recurrence-missing` | page | yes | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
-| `sqlite-health` | notice | no | persists 600 s | `nq` | saved-check reference | NQ saved-check result: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
+| `sqlite-health` | notice | no | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `evaluator-input-unavailable` | notice | no | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | input label | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | yes | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
 | `ag-executor-unavailable` | page | yes | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
@@ -59,6 +59,28 @@ PagerDuty route; they are notices until the registry and NQ add them.
 
 `constellation-attention rules` prints the registry with versions.
 
+## Inputs the evaluator can interpret
+
+An input is `ok` only when everything it carries for these rules is
+recognised. Otherwise it is `not_current` or `unavailable`, and a condition
+whose evidence is missing or unrecognised is unknown (it holds) rather than
+reading the gap as recovery. Lineages of the same input that are recognised
+and current are still evaluated.
+
+- Host posture: `CURRENT` must name projection `operator-filesystem-capacity`
+  at a known generation (`filesystem-capacity-v1`). Memory, load, unit and
+  inode producers write the same `status_artifact.v1` schema; any other
+  projection or generation is `unavailable` with the reason.
+- NQ status export: every evaluation of profile `nq.systemd_unit` or
+  `nq.host_memory`, or of condition `systemd_unit_not_active` or
+  `memory_pressure_stall`, must be exactly `nq.systemd_unit` version 2 /
+  `systemd_unit_not_active` or `nq.host_memory` version 1 /
+  `memory_pressure_stall`, with an evaluation envelope and a valid
+  `evaluated_at`. An unrecognised profile id or version, or an evaluation
+  that cannot be parsed, makes the input `not_current`. Evaluations of other
+  profiles (for example filesystem capacity) feed no rule and are ignored.
+- Saved checks: see [`sqlite-health`](#sqlite-health).
+
 ## Conditions and lifecycle
 
 A condition's identity is NQ's derived dedup key:
@@ -66,18 +88,22 @@ A condition's identity is NQ's derived dedup key:
 `target_class` are bounded tokens (`[a-z0-9._-]`, 64 and 48 bytes) that must
 not look like a digest, UUID, date, timestamp or bare number; the evaluator
 applies NQ's own heuristic and refuses such labels in configuration. A unit
-whose name falls outside the charset (for example a templated `@` unit) is
-skipped and named in the report.
+whose name maps to no bounded target class (a templated `@` unit, uppercase,
+`\x2d` escapes, more than 48 bytes, or a date or long digit run in the name)
+makes the NQ status input `not_current` with the unit named in its error, so
+`evaluator-input-unavailable` tells the operator; it is never skipped
+silently.
 
 Each pass turns every input into one of three observations per condition:
 **present**, **clear**, or **unknown** (input unreadable, not current,
-indeterminate, refused, or a detector that cannot evaluate). The state file
-keeps, per condition, `first_seen`, `last_seen`, `clear_since`, `active`,
-`transition_at`, and the newest intent per route role.
+indeterminate, refused, unrecognised, or a detector that cannot evaluate).
+The state file keeps, per condition, `first_seen`, `last_seen`,
+`clear_since`, `unknown_since`, `active`, `transition_at`, and the newest
+intent per route role.
 
 - Present: `first_seen` is set once. The condition becomes actionable only
-  when it has persisted continuously for longer than its bound; then exactly
-  one trigger is decided and `active` is set.
+  when it has persisted for longer than its bound, covered by present
+  observations; then exactly one trigger is decided and `active` is set.
 - Clear while not active: `first_seen` is reset. Presence below the bound is
   never notified, however often it recurs.
 - Clear while active: the condition resolves exactly once after it has stayed
@@ -85,10 +111,27 @@ keeps, per condition, `first_seen`, `last_seen`, `clear_since`, `active`,
 - Unknown: nothing changes. Legitimate unknown or refusal never notifies on its
   own; it reaches the operator through `host-posture-unknown` (for the
   projection) or `evaluator-input-unavailable` (for an input).
-- A condition the state remembers but no current input reports is clear when
-  its input was read and is current, unknown when the input was not, and
-  clear when its rule or input has been removed from configuration (so an
-  open alert is resolved rather than orphaned).
+- Unknown gaps: `first_seen` (and, while active, `clear_since`) holds across
+  unknown observations, but a run of unknown observations longer than 90 s
+  (one 60 s pass interval plus timer jitter) restarts the interval at the
+  next definite observation. One unknown pass inside a persistence or
+  confirmation interval is tolerated; two or more are not, so a bound is
+  never met by two observations either side of an outage.
+  `constellation-attention rules` prints the gap as `unknown_gap_seconds`.
+- A condition the state remembers but no input reports is unknown, whether
+  or not the input was current: absence is not recovery. If the condition is
+  active and its input is otherwise current, the input is reported
+  `not_current` ("open condition ... is no longer reported; recovery not
+  observed") so `evaluator-input-unavailable` fires.
+- Only an explicit configuration change ends a condition without observed
+  recovery: the rule disabled, its input kind no longer configured, or its
+  input label removed. An active condition then resolves at once, and the
+  resolve says so.
+
+Every resolve summary names its reason: `RESOLVE <id> [<class>]: underlying
+state clear for at least 120 s.` after observed recovery, or `RESOLVE <id>
+[<class>]: no longer evaluated; recovery not observed.` after a
+configuration removal.
 
 Per pass there is at most one intent per condition and route, all triggers
 are submitted before any resolve, and a trigger and a resolve for the same
@@ -105,6 +148,19 @@ fixed across retries.
 |---|---|
 | page | `page_route` as `nq.notification_delivery_intent.v2` (PagerDuty), **and** `notice_route` as `nq.notification_delivery_intent.v1` |
 | notice | `notice_route` as v1 only |
+
+`notice_transport` names the NQ transport of `notice_route`: `slack`,
+`discord` or `local_file`. The destination identity is `slack:<route>`,
+`discord:<route>` or, for `local_file`, `local-inbox:<route>` exactly as NQ
+requires. A `local_file` route is for qualification runs, so test notices
+never reach a production channel: the evaluator delivers through `nq
+notification deliver-local --intent FILE --route R` (NQ refuses `submit` on
+such a route), which takes no `--enable-network` and is not affected by
+`network_enabled`. NQ refuses a rendered local message larger than 4 KiB;
+the configuration bounds a `local_file` route to 128 bytes, which with the
+summary, inspection and event id bounds keeps every message under it. A
+`local_file` route has no resubmit path: like Slack and Discord, a definite
+`failed` gets a new event after 900 s and an `unknown` is never resent.
 
 NQ accepts v2 only on PagerDuty routes and v1 only elsewhere. A v1 intent has
 no condition fields, so its summary carries the action and condition id, for
@@ -127,34 +183,60 @@ with each new intent recorded as `unknown` without a notification id. Then:
   submitting the **same file** again. NQ returns the existing record if it
   retained that exact event, so the same event is never submitted twice under
   two identities and a condition is never double-triggered.
-- A submission NQ answers with `failed`, `unknown`, `pending` or a refusal is
-  recorded; `first_seen` and `active` never depend on it. After 900 s, if the
-  record is still the newest for its condition and route, the pass retries:
-  PagerDuty with `nq notification resubmit --notification-id OLD
-  --stable-event-id NEW`; Slack/Discord with a new event id, only after a
-  definite `failed` or refusal, never over an uncertain (`unknown`/`pending`)
-  attempt, as NQ's notification guide requires. Accepted records are never
-  resent.
-- With `network_enabled = false`, NQ retains each intent as the refusal
-  `network_dispatch_not_explicitly_enabled` and sends nothing; those are not
-  retried and are not counted as failures.
-- An NQ command error (for example a refused intent) is recorded as
-  `command_error` and retried with the same bytes after 900 s.
+- An NQ command error before custody (`command_error`: nq missing, store
+  busy or read-only, intent refused) and an unanswered submission (`unknown`
+  without a notification id) are retried with the same bytes on the **next
+  pass**. NQ retained nothing, or answers an exact repeat idempotently.
+- A submission NQ retained and answered with `failed`, `unknown`, `pending`
+  or a refusal is recorded; `first_seen` and `active` never depend on it.
+  After 900 s, if the record is still the newest for its condition and route,
+  the pass retries: PagerDuty with `nq notification resubmit
+  --notification-id OLD --stable-event-id NEW`; Slack, Discord and local
+  inboxes with a new event id, only after a definite `failed` or refusal,
+  never over an uncertain (`unknown`/`pending`) attempt, as NQ's notification
+  guide requires. Accepted records are never resent.
+- A resolve never replaces a trigger NQ never retained. When a resolve is
+  decided while a route's trigger has no notification id, that trigger is
+  kept as `pending_trigger` and submitted again (same bytes) before the
+  resolve in the same pass. If NQ still does not retain it, the trigger is
+  reported in `dropped_triggers` and on stderr (`dropped_trigger ...`), the
+  pass exits 3, and the trigger is never sent after its resolve.
+- A retained intent file that is missing or unreadable fails only its own
+  follow-up (`intent_unreadable` in the report and on stderr, exit 3); the
+  rest of the pass, including new conditions, goes on.
+- With `network_enabled = false`, NQ retains each network intent as the
+  refusal `network_dispatch_not_explicitly_enabled` and sends nothing; those
+  are not retried and are not counted as failures.
 
-A pass exits 3 when any input was not readable or current, or any retained
-delivery is not accepted (other than deliberate refusals), so the systemd
-unit shows failed and the condition stays visible in `systemctl --failed`
-without a recursive notification.
+A pass exits 3 when any input was not readable or current, any retained
+delivery is not accepted (other than deliberate refusals), or a trigger was
+dropped, so the systemd unit shows failed and the condition stays visible in
+`systemctl --failed` without a recursive notification.
+
+## Clock
+
+Event identities carry the decision time. A pass whose clock is earlier than
+the last completed pass (`state.updated_at`) is refused with exit 1 ("the
+clock moved backwards"), so a regressed clock can never replay an identity NQ
+already holds for an earlier incident. `--now` chooses the evaluation time
+for what-if dry runs only: release builds refuse `--now` without
+`--dry-run`, and the packaged unit never passes it. (Debug builds accept it
+so the test suite can drive the clock.)
 
 ## Report
 
 Every pass writes `report.json` beside the state file (atomically): rules
 with their effective class and thresholds, each input with its status
 (`ok`, `not_current`, `unavailable`), identity and error, each condition with
-its observation and persistence, each intent with operation and NQ outcome,
-and unresolved deliveries. `--dry-run` writes `dry-run/report.json` and the
-intents it would submit under `dry-run/intents/`, changes no state, and runs
-no `nq` command.
+its observation (`present`, `clear`, `unknown`, or `removed` for a
+configuration removal) and persistence, each intent with operation and NQ
+outcome, unresolved deliveries and dropped triggers. `--dry-run` writes
+`dry-run/report.json` and the intents it would submit under
+`dry-run/intents/`, changes no state, and runs no `nq notification` command
+(an `nq_status.command` input still runs `nq status export`). A dry run
+continues from the saved state; on a fresh install there is none, so it
+shows no intents until a condition has persisted past its bound across real
+passes.
 
 ## Runbook anchors owned here
 
@@ -166,23 +248,34 @@ resident processes and recent deploys. Do not tune the detector to silence it.
 
 ### sqlite-health
 
-The newest retained NQ saved-check result for the reference failed (its
-bounded query returned the failing shape). Read it with
-`nq --json saved-check result --evaluation-id ID` and inspect the named file
-(freelist, WAL size) as the owning account. Never edit the store to clear it.
-NQ 0.2.1's `saved-check result` takes only `--evaluation-id` (caller-chosen,
-for example `sc-<unix>`), and there is no command that lists results by
-reference. The simplest supported input is therefore the file the check's
-own timer writes: it runs `nq --json saved-check evaluate REF
---evaluation-id sc-$(date +%s) ...` and writes that output atomically to the
-configured `path` (or a `command` prints the newest result). A result that
-names a different `reference` is refused as unavailable. Results expose only
-`passed`, `failed` or `refused`, never the measured value.
+The newest NQ saved-check result for the reference failed (its bounded
+query returned the failing shape). Read it with `nq --json saved-check
+result --evaluation-id ID` and inspect the named file (freelist, WAL size)
+as the owning account. Never edit the store to clear it.
+
+**Input requirement: one file per reference.** Each `[[inputs.saved_checks]]`
+entry reads exactly one raw `nq --json saved-check evaluate REF
+--evaluation-id ...` document, written atomically by the check's own timer.
+On the Linode that is `/var/lib/nq-ops-results/<reference>.json`. The
+reader uses the top-level `reference` (if present it must equal the
+configured reference, otherwise the input is unavailable), `outcome`,
+`evaluation_id` and `detail.read_attempted_at` (age against
+`max_age_seconds`); `detail.binding.definition_digest` and the rest are
+carried by NQ, not interpreted. The `nq-ops.saved-check-run.v1` run summary
+(`latest.json`, `results[]` per check) is not that document: pointed at it,
+the input reads `outcome = missing` and holds as not current. NQ 0.2.1's
+`saved-check result` takes only `--evaluation-id`, and no command lists
+results by reference, so the file (or a `command` printing the newest
+document) is the supported input. Results expose only `passed`, `failed` or
+`refused`, never the measured value.
 
 ### evaluator-input-unavailable
 
 A configured input could not be read (missing path, permission, command
-failure, malformed JSON) or is not current (status export older than
+failure, malformed JSON, a host-posture `CURRENT` of another projection) or
+is not current (an NQ evaluation with an unrecognised profile id or version
+or that cannot be parsed, a systemd unit with no bounded target class, an
+open condition the input no longer reports, status export older than
 `max_age_seconds`, a watcher whose last collection is older than
 `stale_after_seconds` at the export's `generated_at` (default 180 s, three
 60 s intervals; a stopped nqd still answers `status export` from its store,
@@ -194,6 +287,44 @@ until it is readable again. A stale host-posture `CURRENT` is reported as
 
 ## Known limits
 
+- **Nothing watches the evaluator** (operator acceptance item). A pass that
+  cannot run (a malformed `state.json`, which is never replaced; the lock;
+  a clock regression) exits 1 with no report and no notification, every
+  minute, indefinitely; exit 3 is likewise only a failed oneshot unit. An NQ
+  `nq.systemd_unit` watcher cannot see it, because the unit is inactive
+  between passes. The liveness signal is the age of `report.json`
+  (`evaluated_at`, rewritten by every completed pass): checking that it is
+  younger than a few minutes is the responsibility of the status site or
+  renderer that reads it. The unit carries a commented `OnFailure=` for an
+  optional local handler.
+- Passes that do not run at all (timer stopped, host suspended) are not
+  unknown observations: a persistence interval spanning such a gap still
+  counts. The unknown-gap rule covers passes that ran and could not observe.
+- Removing an NQ watcher while its condition is active leaves the condition
+  held (unknown) and the NQ input `not_current` until the watcher returns or
+  the rule is disabled; absence is never treated as recovery.
+- `service-down` keys on the unit name only. The machine id in
+  `systemd-unit:<machine>/<unit>` is dropped and the newest `evaluated_at`
+  wins, so with two machines in one export a healthy unit on one hides the
+  same unit down on the other. One nqd watches one host today; one host per
+  export is required, as for `nq.host_memory`.
+- A stopped host-posture runner raises two pages under two dedup keys:
+  `host-posture-unknown` (about `fresh_until` + 600 s) and
+  `nq-no-fresh-acquisition` (600 s + 300 s). That follows the registry as
+  written, two Cartography anchors with separate runbooks (refusal code
+  versus stopped runner); Cartography's owner should confirm both pages are
+  wanted.
+- Presence below the bound is never notified, however often it recurs: a
+  unit that dies every two minutes and is restarted between scrapes stays
+  silent. Cartography's owner should confirm that is wanted for
+  `service-down`.
+- `run_bounded` kills only the direct child on timeout; reader threads then
+  wait for any grandchild that still holds the pipes. A pass longer than
+  `TimeoutStartSec` is stopped by systemd; state is saved before and after
+  every submission, so the next pass resumes and only the report is lost.
+- Nightshift: the newest closed cycle is taken across the whole store, so
+  one healthy recurrence family hides a missing one, and a future
+  `updated_at` (clock skew) gives a negative age that reads as clear.
 - `nq-no-fresh-acquisition` uses the newest host-posture status object's
   `generated_at`, as specified. The runner republishes about every 4 s even
   when acquisitions refuse, so this detects a stopped runner, not refused

@@ -18,10 +18,13 @@ program = "/usr/bin/nq"
 config = "/etc/nq/nqd-ops.toml"
 
 [routes]
-notice_route = "operations"        # an NQ slack or discord route
-notice_transport = "slack"         # slack | discord (names the destination label)
+notice_route = "operations"        # an NQ slack, discord or local_file route
+# slack | discord | local_file. local_file is for qualification: notices go
+# through `nq notification deliver-local` to an NQ inbox directory and never
+# reach a production channel (route reference at most 128 bytes).
+notice_transport = "slack"
 page_route = "pagerduty-ops"       # an NQ pagerduty route; omit to send notices only
-network_enabled = false            # true passes --enable-network to nq
+network_enabled = false            # true passes --enable-network to nq (not used by local_file)
 
 [[inputs.host_posture]]
 label = "root"                     # target_class
@@ -38,11 +41,13 @@ stale_after_seconds = 180          # a watcher with no collection for longer is 
 label = "observation"
 store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
 
-# The check's own timer runs `nq --json saved-check evaluate REF --evaluation-id sc-<unix> ...`
-# and writes that output to `path` atomically; NQ cannot list results by reference.
+# One file per reference: the check's own timer runs
+# `nq --json saved-check evaluate REF --evaluation-id sc-<unix> ...` and writes
+# that raw output to `path` atomically. NQ cannot list results by reference,
+# and the run summary (latest.json, nq-ops.saved-check-run.v1) is not accepted.
 # [[inputs.saved_checks]]
 # reference = "atproto-freelist"   # target_class; must match the result's reference
-# path = "/var/lib/nightshift/atproto-saved-check/latest-result.json"
+# path = "/var/lib/nq-ops-results/atproto-freelist.json"
 # max_age_seconds = 3600
 
 # Overrides are limited to enabled, threshold_seconds and class (page|notice
