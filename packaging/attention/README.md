@@ -62,7 +62,13 @@ history (nq#20): on labelwatch-host it took 60-90 s under contention, and
 every pass read the input as not current or timed out, so every NQ
 condition was unknown. Evaluation-history pages answer in about 0.2 s. NQ
 filesystem capacity watchers (for example `fs-zonestorage`) raise
-`host-disk:<instance id>`.
+`host-disk:<instance id>`. In that mode every NQ watcher ever seen is
+remembered in the state and stays stale once it stops evaluating; when a
+watcher is removed from NQ on purpose, add its instance id to
+`retired_instances`. Keep `window_records` above `stale_after_seconds` worth
+of every watcher's evaluations (production uses 600) and re-check it when
+watchers are added. Do not give a host-posture input the label of an NQ
+filesystem watcher id.
 
 Saved checks: each configured reference reads one raw `nq --json
 saved-check evaluate REF ...` document. On the Linode the check timer writes

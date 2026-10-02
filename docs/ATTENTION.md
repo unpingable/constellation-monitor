@@ -112,6 +112,28 @@ the same lineages, checks and fault classes.
   lineage, and if its condition is open the input reports `unreported`.
   Use this mode for operated stores.
 
+  **Watcher roster.** The window alone cannot show a watcher that stopped
+  evaluating: once its records scroll out it would simply vanish. So every
+  watcher instance ever seen in the window is remembered in `state.json`
+  (`nq_watchers`, with its newest `evaluated_at`; it survives a relabel of
+  the input). A remembered watcher missing from the window is `stale`
+  measured from that remembered time, and stays stale until the operator
+  lists it in `[inputs.nq_status] retired_instances = ["unit-old"]`, which
+  also drops it from the roster. Retire a watcher only after removing it
+  from NQ; a retired id that evaluates again is read normally but never
+  stale. `status_export` mode needs no roster: NQ's instance components
+  keep `observed_at` for every configured watcher.
+
+  **Ordering.** Per lineage the evaluation with the newest `evaluated_at`
+  (full sub-second precision) wins. On an exact tie the later history
+  record (higher sequence) wins. A later sequence with an earlier
+  `evaluated_at` loses: the evaluator trusts NQ's evaluation time, not the
+  append order.
+
+  **Window sizing.** `window_records` must hold more than
+  `stale_after_seconds` of every watcher's evaluations, or a live but quiet
+  watcher reads as stale. Re-check it whenever watchers are added.
+
 In both modes the snapshot's age and future skew are measured when the
 source answered, not when the pass started, so a slow command (bounded by
 `command_timeout_seconds`) is not read as a snapshot from the future. The
@@ -458,6 +480,13 @@ These are operator acceptance items.
   projection or directly from an NQ filesystem watcher; Cartography's rule
   says 85 %. The same filesystem can raise two `host-disk` conditions (the
   publication-root label and the watcher id) if both sources watch it.
+- A host-posture label equal to an NQ filesystem watcher id would feed one
+  `host-disk` condition from two inputs. `check-config` cannot see NQ's
+  instance ids, so this is caught at runtime: the condition is unknown (no
+  source wins) and both inputs report `unrecognised` naming it, until one
+  is renamed. An NQ filesystem watcher whose instance id equals the NQ input
+  label would be read as label-keyed and resolved as removed on a relabel;
+  avoid that naming.
 - `service-down` reads NQ's evaluation result, not a component's coarse
   `state`: NQ reports `healthy` for both instance and evaluation components
   while a unit is down. It cannot tell failed from inactive or not-found.

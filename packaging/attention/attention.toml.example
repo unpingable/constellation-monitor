@@ -36,7 +36,11 @@ label = "nqd"
 # walks the whole history (nq#20) and takes 60-90 s on the ops store.
 source = "evaluation_history"
 command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json"]
-window_records = 300               # newest evaluations read (50..=5000)
+window_records = 300               # newest evaluations read (50..=5000); must hold
+                                   # more than stale_after_seconds of every watcher
+# Watchers removed from NQ; every other watcher ever seen stays stale once it
+# stops evaluating (remembered in state.json).
+# retired_instances = ["unit-old"]
 # Small stores only:
 # source = "status_export"
 # command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json", "status", "export"]
