@@ -14,7 +14,9 @@ use crate::config::{Config, EffectiveRule, NoticeTransport};
 use crate::inputs::{self, Context, InputReport, InputStatus, Observation, Observed};
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
-use crate::registry::{Class, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS};
+use crate::registry::{
+    Class, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, UNKNOWN_GAP_SECONDS,
+};
 use crate::state::{ConditionState, LastIntent, State};
 use crate::util::{format_seconds, read_bounded, write_atomic};
 
@@ -88,8 +90,19 @@ pub fn step(
     persistence_seconds: i64,
     now: i64,
 ) -> Option<Action> {
+    // An unknown gap longer than one pass interval breaks the interval it
+    // falls in: the bound must be covered by definite observations.
+    let gap = condition
+        .unknown_since
+        .is_some_and(|since| now - since > UNKNOWN_GAP_SECONDS);
+    if observation != Observation::Unknown {
+        condition.unknown_since = None;
+    }
     match observation {
         Observation::Present => {
+            if gap && !condition.active {
+                condition.first_seen = None;
+            }
             let first_seen = *condition.first_seen.get_or_insert(now);
             condition.last_seen = Some(now);
             condition.clear_since = None;
@@ -101,6 +114,9 @@ pub fn step(
         }
         Observation::Clear => {
             if condition.active {
+                if gap {
+                    condition.clear_since = None;
+                }
                 let since = *condition.clear_since.get_or_insert(now);
                 if now - since >= RESOLVE_CONFIRM_SECONDS {
                     condition.active = false;
@@ -115,8 +131,20 @@ pub fn step(
                 condition.clear_since = None;
             }
         }
-        Observation::Unknown => {}
+        Observation::Unknown => {
+            // Hold everything; remember when the unknown run began if an
+            // interval is open.
+            let open = if condition.active {
+                condition.clear_since.is_some()
+            } else {
+                condition.first_seen.is_some()
+            };
+            if open {
+                condition.unknown_since.get_or_insert(now);
+            }
+        }
         Observation::Removed => {
+            condition.unknown_since = None;
             condition.first_seen = None;
             condition.clear_since = None;
             if condition.active {
@@ -338,6 +366,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 first_seen: None,
                 last_seen: None,
                 clear_since: None,
+                unknown_since: None,
                 active: false,
                 transition_at: None,
                 last_intent: BTreeMap::new(),

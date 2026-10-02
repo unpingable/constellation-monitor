@@ -1483,3 +1483,103 @@ fn unrecognised_host_memory_version_is_not_current() {
             .contains("unrecognised profile \"nq.host_memory\" version 2")
     );
 }
+
+/// Review A9: an unknown gap longer than one pass interval does not count
+/// toward persistence; the bound restarts at the next present observation.
+#[test]
+fn long_unknown_gap_restarts_persistence() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
+    set(&harness, "root", ProjectedStateV1::Degraded, T0);
+    harness.evaluate(T0);
+    let current = harness.root("root").join("CURRENT");
+    fs::remove_file(&current).unwrap();
+    for offset in (60..=900).step_by(60) {
+        harness.evaluate(T0 + offset);
+    }
+    let disk = |calls: &[String]| {
+        calls
+            .iter()
+            .filter(|call| call.contains("labelwatch-host-disk-root-trigger-"))
+            .count()
+    };
+    set(&harness, "root", ProjectedStateV1::Degraded, T0 + 960);
+    harness.evaluate(T0 + 960);
+    assert_eq!(disk(&harness.calls()), 0, "{:?}", harness.calls());
+    let state = harness.state();
+    assert_eq!(
+        state["conditions"]["constellation:labelwatch:host_posture:host-disk:root"]["first_seen"],
+        T0 + 960
+    );
+    for offset in (1020..=1860).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Degraded, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(disk(&harness.calls()), 0);
+    set(&harness, "root", ProjectedStateV1::Degraded, T0 + 1920);
+    harness.evaluate(T0 + 1920);
+    assert_eq!(disk(&harness.calls()), 2, "{:?}", harness.calls());
+}
+
+/// One unknown pass inside an interval is tolerated: persistence and the
+/// resolve confirmation keep their start.
+#[test]
+fn single_unknown_pass_keeps_the_interval() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    let current = harness.root("root").join("CURRENT");
+    for offset in (0..=660).step_by(60) {
+        if offset == 300 {
+            fs::remove_file(&current).unwrap();
+        } else {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        }
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(harness.state()["conditions"][UNKNOWN_ROOT]["active"], true);
+    assert_eq!(
+        harness.state()["conditions"][UNKNOWN_ROOT]["first_seen"],
+        T0
+    );
+    // Clear at +720, unknown at +780, clear at +840: resolved.
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 720);
+    harness.evaluate(T0 + 720);
+    fs::remove_file(&current).unwrap();
+    harness.evaluate(T0 + 780);
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
+    let report = harness.evaluate(T0 + 840);
+    assert_eq!(intents(&report).len(), 2);
+    assert!(
+        intents(&report)
+            .iter()
+            .all(|(_, _, action)| action == "resolve")
+    );
+}
+
+/// A long unknown gap inside the resolve confirmation restarts it.
+#[test]
+fn long_unknown_gap_restarts_resolve_confirmation() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 720);
+    harness.evaluate(T0 + 720);
+    let current = harness.root("root").join("CURRENT");
+    fs::remove_file(&current).unwrap();
+    for offset in [780, 840, 900] {
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [960, 1020] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        assert!(
+            intents(&harness.evaluate(T0 + offset)).is_empty(),
+            "+{offset}"
+        );
+    }
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1080);
+    assert_eq!(intents(&harness.evaluate(T0 + 1080)).len(), 2);
+}

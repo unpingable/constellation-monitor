@@ -33,6 +33,10 @@ pub struct ConditionState {
     pub last_seen: Option<i64>,
     /// Start of the current clear interval while active.
     pub clear_since: Option<i64>,
+    /// First unknown observation since the last definite one, while a
+    /// persistence or confirmation interval is open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unknown_since: Option<i64>,
     /// A trigger has been decided and no resolve since.
     pub active: bool,
     /// Unix seconds of the latest trigger/resolve decision (the transition epoch).

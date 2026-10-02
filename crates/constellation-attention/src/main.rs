@@ -8,7 +8,7 @@ use constellation_attention::config::Config;
 use constellation_attention::engine::{self, PassOptions};
 use constellation_attention::intent::policy_digest;
 use constellation_attention::registry::{
-    REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, RULES,
+    REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, RULES, UNKNOWN_GAP_SECONDS,
 };
 use constellation_attention::state::State;
 use constellation_attention::util::parse_rfc3339;
@@ -76,6 +76,7 @@ fn run() -> Result<u8, (u8, String)> {
                 "registry": REGISTRY_VERSION,
                 "resolve_confirm_seconds": RESOLVE_CONFIRM_SECONDS,
                 "resend_interval_seconds": RESEND_INTERVAL_SECONDS,
+                "unknown_gap_seconds": UNKNOWN_GAP_SECONDS,
                 "rules": RULES,
             }));
             Ok(0)
