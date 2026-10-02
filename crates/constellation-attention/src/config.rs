@@ -136,10 +136,30 @@ pub struct HostPostureInput {
     pub publication_root: PathBuf,
 }
 
+/// Where the NQ status input reads evaluations from.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NqStatusSource {
+    /// `nq --json status export` (`command` is the full argv, or `path`).
+    /// It walks the whole evaluation history (nq#20): for small stores only.
+    #[default]
+    StatusExport,
+    /// `nq --json evaluations export` pages: `command` is the base argv up to
+    /// and including `--json`; the evaluator appends the subcommand.
+    EvaluationHistory,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NqStatusInput {
     pub label: String,
+    #[serde(default)]
+    pub source: NqStatusSource,
+    /// Evaluation-history mode: how many of the newest evaluations to read
+    /// (50..=5000). It must cover at least `stale_after_seconds` of every
+    /// watcher's evaluations.
+    #[serde(default = "default_window_records")]
+    pub window_records: u32,
     /// argv printing `nq.status_snapshot.v3` JSON, e.g.
     /// `["/usr/bin/nq","--config","/etc/nq/nqd-ops.toml","--json","status","export"]`.
     pub command: Option<Vec<String>>,
@@ -153,6 +173,10 @@ pub struct NqStatusInput {
     /// staleness flag; default 3 x the 60 s watcher interval.
     #[serde(default = "default_instance_stale")]
     pub stale_after_seconds: i64,
+}
+
+const fn default_window_records() -> u32 {
+    300
 }
 
 const fn default_status_age() -> i64 {
@@ -313,6 +337,17 @@ impl Config {
             source("nq_status", input.command.as_ref(), input.path.as_ref())?;
             age("nq_status.max_age_seconds", input.max_age_seconds)?;
             age("nq_status.stale_after_seconds", input.stale_after_seconds)?;
+            if input.source == NqStatusSource::EvaluationHistory {
+                if input.command.is_none() {
+                    return Err(
+                        "nq_status source evaluation_history needs a command (the nq argv up to --json)"
+                            .into(),
+                    );
+                }
+                if !(50..=5000).contains(&input.window_records) {
+                    return Err("nq_status.window_records must be 50..=5000".into());
+                }
+            }
         }
         if let Some(input) = &self.inputs.nightshift {
             label(&input.label)?;

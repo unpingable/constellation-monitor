@@ -10,6 +10,44 @@
 # `local_route` names a route that `submit` must refuse as local_file.
 set -eu
 dir="$FAKE_NQ_DIR"
+if [ "${4:-}" = evaluations ]; then
+  # `evaluations export --limit N [--after A --through T]` answers like NQ's
+  # nq.evaluation_history.v1 from $FAKE_NQ_DIR/history/<sequence>.json
+  # (one envelope per file). `history_generated_at` is the page time;
+  # `history_incomplete` and `history_moved` simulate a bad page.
+  shift 5
+  limit=1; after=""; through=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit) limit="$2"; shift 2;;
+      --after) after="$2"; shift 2;;
+      --through) through="$2"; shift 2;;
+      *) echo "unexpected flag $1" >&2; exit 64;;
+    esac
+  done
+  hist="$dir/history"
+  current=$(ls "$hist" 2>/dev/null | sed 's/\.json$//' | sort -n | tail -1)
+  current=${current:-0}
+  given="$through"
+  through=${through:-$current}
+  echo "evaluations ${limit} ${after:-none} ${given:-none}" >> "$dir/history_calls.log"
+  start=${after:-0}
+  end=$((start + limit)); [ "$end" -gt "$through" ] && end=$through
+  records=""
+  if [ "$end" -gt "$start" ]; then
+    records=$(seq $((start + 1)) "$end" | awk -v hist="$hist" '{
+      file = hist "/" $1 ".json"; getline body < file; close(file)
+      printf "%s{\"sequence\":%s,\"result\":%s}", (NR > 1 ? "," : ""), $1, body
+    }')
+  fi
+  if [ "$end" -ge "$through" ]; then complete=true; next=null; else complete=false; next=$end; fi
+  [ -e "$dir/history_incomplete" ] && { complete=false; next=null; }
+  reported=$through
+  [ -e "$dir/history_moved" ] && [ -n "$given" ] && reported=$((through + 1))
+  printf '{"schema":"nq.evaluation_history.v1","generated_at":"%s","limit":%s,"after_sequence":%s,"through_sequence":%s,"records":[%s],"next_after_sequence":%s,"complete":%s}\n' \
+    "$(cat "$dir/history_generated_at")" "$limit" "${after:-null}" "$reported" "$records" "$next" "$complete"
+  exit 0
+fi
 [ "$1" = --config ] && [ "$3" = --json ] && [ "$4" = notification ] || { echo "unexpected argv: $*" >&2; exit 64; }
 sub="$5"; shift 5
 net=false; intent=""; route=""; from=""; event=""

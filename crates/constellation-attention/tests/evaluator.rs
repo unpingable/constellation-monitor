@@ -2506,3 +2506,251 @@ fn slow_export_is_not_read_as_a_future_snapshot() {
         report["inputs"][0]
     );
 }
+
+// Evaluation-history source (nq#20).
+
+/// The newest evaluation envelope per instance of a real export sample.
+fn fixture_envelopes(name: &str) -> Vec<Value> {
+    let value: Value = serde_json::from_slice(
+        &fs::read(Path::new(FIXTURES).join("nq-status").join(name)).unwrap(),
+    )
+    .unwrap();
+    let mut newest: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for component in value["components"].as_array().unwrap() {
+        if component["kind"] == "evaluation" {
+            let envelope = component["detail"]["result"].clone();
+            let instance = envelope["context"]["instance_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            newest.insert(instance, envelope);
+        }
+    }
+    newest.into_values().collect()
+}
+
+fn history_harness(window: u32) -> Harness {
+    let mut harness = Harness::new();
+    fs::create_dir_all(harness.path("fake/history")).unwrap();
+    // Input commands run with a cleared environment: bind the fake's
+    // directory in a wrapper.
+    let wrapper = script(
+        &harness,
+        "nq-wrapper",
+        &format!(
+            "FAKE_NQ_DIR={} exec {} \"$@\"",
+            harness.path("fake").display(),
+            Path::new(FIXTURES).join("fake-nq.sh").display()
+        ),
+    );
+    harness.raw(&format!(
+        "[inputs.nq_status]\nlabel = \"nqd\"\nsource = \"evaluation_history\"\n\
+         window_records = {window}\n\
+         command = [\"{}\", \"--config\", \"/etc/nq/nqd-ops.toml\", \"--json\"]\n",
+        wrapper.display()
+    ));
+    harness
+}
+
+fn history_len(harness: &Harness) -> usize {
+    fs::read_dir(harness.path("fake/history")).unwrap().count()
+}
+
+/// Append one evaluation per instance at `at - 3` (skipping instances the
+/// edit drops by returning false) and set the page time to `at`.
+fn append_round(harness: &Harness, at: i64, edit: impl Fn(&mut Value) -> bool) {
+    let mut sequence = history_len(harness);
+    for mut envelope in fixture_envelopes("cron-down.json") {
+        envelope["evaluated_at"] = json!(rfc3339(at - 3));
+        if !edit(&mut envelope) {
+            continue;
+        }
+        sequence += 1;
+        fs::write(
+            harness.path(&format!("fake/history/{sequence}.json")),
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+        .unwrap();
+    }
+    harness.fake("history_generated_at", &rfc3339(at));
+}
+
+fn set_state(envelope: &mut Value, instance: &str, state: &str) {
+    if envelope["context"]["instance_id"] == instance {
+        envelope["result"]["state"] = json!(state);
+    }
+}
+
+fn history_calls(harness: &Harness) -> Vec<String> {
+    fs::read_to_string(harness.path("fake/history_calls.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Service-down from evaluation-history pages: the newest 300 evaluations,
+/// frozen at the store-wide sequence the probe reports.
+#[test]
+fn service_down_from_evaluation_history() {
+    let harness = history_harness(300);
+    let t = at("2026-10-02T21:32:17Z");
+    // 100 earlier healthy rounds (400 records), beyond the window.
+    for round in (1..=100).rev() {
+        append_round(&harness, t - 60 * round, |envelope| {
+            set_state(envelope, "unit-cron", "explicitly_absent");
+            true
+        });
+    }
+    let mut report = Value::Null;
+    for offset in [0, 60, 120, 181] {
+        append_round(&harness, t + offset, |_| true);
+        report = harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(
+        report["inputs"][0]["status"], "ok",
+        "{}",
+        report["inputs"][0]
+    );
+    assert_eq!(
+        report["inputs"][0]["identity"]["schema"],
+        "nq.evaluation_history.v1"
+    );
+    assert_eq!(report["inputs"][0]["identity"]["through_sequence"], 416);
+    assert_eq!(
+        intents(&report),
+        vec![
+            (CRON.into(), "notice".into(), "trigger".into()),
+            (CRON.into(), "page".into(), "trigger".into()),
+        ]
+    );
+    let calls = history_calls(&harness);
+    assert_eq!(
+        calls[calls.len() - 2..],
+        ["evaluations 1 none none", "evaluations 300 116 416"]
+    );
+    // Recovery from the same source resolves.
+    for offset in [240, 300, 360] {
+        append_round(&harness, t + offset, |envelope| {
+            set_state(envelope, "unit-cron", "explicitly_absent");
+            true
+        });
+        report = harness.evaluate(t + offset + 3);
+    }
+    assert!(
+        intents(&report)
+            .iter()
+            .all(|(_, _, action)| action == "resolve")
+    );
+    assert_eq!(cron_calls(&harness).len(), 4);
+}
+
+/// A window larger than NQ's 1000-row page is read in pages under one
+/// frozen upper bound.
+#[test]
+fn evaluation_history_window_spans_pages() {
+    let harness = history_harness(2500);
+    let t = at("2026-10-02T21:32:17Z");
+    for round in (0..660).rev() {
+        append_round(&harness, t - 60 * round, |_| true);
+    }
+    let report = harness.evaluate(t + 3);
+    assert_eq!(
+        report["inputs"][0]["status"], "ok",
+        "{}",
+        report["inputs"][0]
+    );
+    assert_eq!(
+        history_calls(&harness),
+        [
+            "evaluations 1 none none",
+            "evaluations 1000 140 2640",
+            "evaluations 1000 1140 2640",
+            "evaluations 500 2140 2640",
+        ]
+    );
+}
+
+/// A page that is not complete, or whose upper bound moved, is not current:
+/// every NQ condition holds.
+#[test]
+fn incomplete_or_moved_history_is_not_current() {
+    for (control, message) in [
+        ("history_incomplete", "is not complete"),
+        ("history_moved", "moved from through_sequence"),
+    ] {
+        let harness = history_harness(100);
+        let t = at("2026-10-02T21:32:17Z");
+        for round in (0..30).rev() {
+            append_round(&harness, t - 60 * round, |_| true);
+        }
+        harness.fake(control, "");
+        let report = harness.evaluate(t + 3);
+        assert_eq!(report["inputs"][0]["status"], "not_current");
+        assert_eq!(report["inputs"][0]["causes"], json!(["stale"]));
+        assert!(
+            report["inputs"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{}",
+            report["inputs"][0]
+        );
+    }
+}
+
+/// A watcher whose evaluations leave the window while its page is open is
+/// `unreported`, and its newest evaluations going old is `stale`.
+#[test]
+fn evaluation_history_unreported_and_stale() {
+    let harness = history_harness(50);
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181] {
+        append_round(&harness, t + offset, |_| true);
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    // 20 rounds without unit-cron push it out of the 50-record window.
+    let mut report = Value::Null;
+    for step in 1..=20 {
+        let at_ = t + 181 + 60 * step;
+        append_round(&harness, at_, |envelope| {
+            envelope["context"]["instance_id"] != "unit-cron"
+        });
+        report = harness.evaluate(at_ + 3);
+    }
+    assert_eq!(report["inputs"][0]["causes"], json!(["unreported"]));
+    assert!(
+        cron_calls(&harness)
+            .iter()
+            .all(|call| !call.contains("-resolve-"))
+    );
+    // No new evaluations: the page is generated later, the newest are old.
+    let later = t + 181 + 60 * 20 + 300;
+    harness.fake("history_generated_at", &rfc3339(later));
+    let report = harness.evaluate(later + 3);
+    let causes = report["inputs"][0]["causes"].as_array().unwrap();
+    assert!(causes.contains(&json!("stale")), "{}", report["inputs"][0]);
+}
+
+#[test]
+fn evaluation_history_configuration_is_bounded() {
+    let mut harness = Harness::new();
+    harness.raw(
+        "[inputs.nq_status]\nlabel = \"nqd\"\nsource = \"evaluation_history\"\n\
+         path = \"/var/lib/nq-status.json\"\n",
+    );
+    let config = harness.config_path();
+    let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("needs a command"));
+    let mut harness = Harness::new();
+    harness.raw(
+        "[inputs.nq_status]\nlabel = \"nqd\"\nsource = \"evaluation_history\"\n\
+         window_records = 6000\ncommand = [\"/usr/bin/nq\", \"--json\"]\n",
+    );
+    let config = harness.config_path();
+    let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("50..=5000"));
+}

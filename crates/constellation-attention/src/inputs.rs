@@ -13,7 +13,8 @@ use serde_json::{Value, json};
 
 use crate::condition::{ConditionKey, validate_token};
 use crate::config::{
-    Config, EffectiveRule, HostPostureInput, NightshiftInput, NqStatusInput, SavedCheckInput,
+    Config, EffectiveRule, HostPostureInput, NightshiftInput, NqStatusInput, NqStatusSource,
+    SavedCheckInput,
 };
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, read_bounded, rfc3339_seconds, run_bounded, truncate,
@@ -24,6 +25,9 @@ const SAVED_CHECK_LIMIT: usize = 1024 * 1024;
 /// The host-posture projection these rules read, and its known generations.
 pub const HOST_POSTURE_PROJECTION: &str = "operator-filesystem-capacity";
 pub const HOST_POSTURE_GENERATIONS: &[&str] = &["filesystem-capacity-v1"];
+pub const EVALUATION_HISTORY_SCHEMA: &str = "nq.evaluation_history.v1";
+/// NQ's largest public page (`MAX_PUBLIC_QUERY_ROWS`).
+const HISTORY_PAGE_MAX: u64 = 1000;
 pub const NQ_STATUS_SCHEMA: &str = "nq.status_snapshot.v3";
 pub const SYSTEMD_UNIT_PROFILE: &str = "nq.systemd_unit";
 pub const SYSTEMD_UNIT_VERSION: u64 = 2;
@@ -396,6 +400,203 @@ struct Lineage {
     instance_id: String,
 }
 
+/// What either NQ source yields for these rules.
+struct NqSnapshot {
+    generated: i64,
+    identity: Value,
+    /// (component or record id, evaluation envelope if it has one), oldest
+    /// first where the source orders them.
+    evaluations: Vec<(String, Option<Value>)>,
+    /// Newest collection (or evaluation) time per watcher instance: the
+    /// liveness signal.
+    collected: BTreeMap<String, i64>,
+    /// Why the snapshot as a whole cannot be relied on (an incomplete page).
+    incomplete: Option<String>,
+}
+
+/// `nq --json status export`: one `nq.status_snapshot.v3` document.
+fn status_export(context: &Context<'_>, input: &NqStatusInput) -> Result<NqSnapshot, String> {
+    let (_, snapshot) = load_json(
+        context,
+        input.command.as_ref(),
+        input.path.as_ref(),
+        STATUS_EXPORT_LIMIT,
+    )?;
+    if snapshot.get("schema").and_then(Value::as_str) != Some(NQ_STATUS_SCHEMA) {
+        return Err(format!("status export schema is not {NQ_STATUS_SCHEMA}"));
+    }
+    let generated = snapshot
+        .get("generated_at")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "status export has no generated_at".to_owned())
+        .and_then(rfc3339_seconds)?;
+    let components = snapshot
+        .get("components")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "status export has no components".to_owned())?;
+    // Last collection commit per watcher instance: the only liveness signal.
+    let collected = components
+        .iter()
+        .filter(|component| component.get("kind").and_then(Value::as_str) == Some("instance"))
+        .filter_map(|component| {
+            let id = component.get("id")?.as_str()?.to_owned();
+            let at = rfc3339_seconds(component.get("observed_at")?.as_str()?).ok()?;
+            Some((id, at))
+        })
+        .collect();
+    let evaluations = components
+        .iter()
+        .filter(|component| component.get("kind").and_then(Value::as_str) == Some("evaluation"))
+        .map(|component| {
+            let id = component
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let envelope = component
+                .get("detail")
+                .filter(|detail| {
+                    detail.get("detail_kind").and_then(Value::as_str) == Some("evaluation")
+                })
+                .and_then(|detail| detail.get("result"))
+                .cloned();
+            (id, envelope)
+        })
+        .collect();
+    Ok(NqSnapshot {
+        generated,
+        identity: json!({
+            "schema": NQ_STATUS_SCHEMA,
+            "generated_at": format_seconds(generated),
+            "evaluation_through_sequence": snapshot.get("evaluation_through_sequence"),
+        }),
+        evaluations,
+        collected,
+        incomplete: None,
+    })
+}
+
+/// One `nq --json evaluations export` page.
+fn history_page(
+    context: &Context<'_>,
+    base: &[String],
+    limit: u64,
+    window: Option<(u64, u64)>,
+) -> Result<Value, String> {
+    let mut argv = base.to_vec();
+    argv.extend(["evaluations".into(), "export".into(), "--limit".into()]);
+    argv.push(limit.to_string());
+    if let Some((after, through)) = window {
+        argv.extend(["--after".into(), after.to_string()]);
+        argv.extend(["--through".into(), through.to_string()]);
+    }
+    let (_, page) = load_json(context, Some(&argv), None, STATUS_EXPORT_LIMIT)?;
+    if page.get("schema").and_then(Value::as_str) != Some(EVALUATION_HISTORY_SCHEMA) {
+        return Err(format!(
+            "evaluations export schema is not {EVALUATION_HISTORY_SCHEMA}"
+        ));
+    }
+    Ok(page)
+}
+
+/// `nq --json evaluations export`: the newest `window_records` evaluations,
+/// frozen at the store-wide sequence the first call reports (nq#20: status
+/// export walks the whole history; a page answers in well under a second).
+fn evaluation_history(context: &Context<'_>, input: &NqStatusInput) -> Result<NqSnapshot, String> {
+    let base = input
+        .command
+        .as_ref()
+        .ok_or_else(|| "evaluation_history needs a command".to_owned())?;
+    let probe = history_page(context, base, 1, None)?;
+    let through = probe
+        .get("through_sequence")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "evaluations export has no through_sequence".to_owned())?;
+    let window = u64::from(input.window_records);
+    let mut after = through.saturating_sub(window);
+    let mut evaluations = Vec::new();
+    let mut collected: BTreeMap<String, i64> = BTreeMap::new();
+    let mut generated = None;
+    let mut incomplete = None;
+    let mut complete = after >= through;
+    // At most NQ's 1000 rows per page; the window bounds the page count.
+    for _ in 0..window.div_ceil(HISTORY_PAGE_MAX) + 1 {
+        if complete {
+            break;
+        }
+        let limit = (through - after).min(HISTORY_PAGE_MAX);
+        let page = history_page(context, base, limit, Some((after, through)))?;
+        generated = Some(
+            page.get("generated_at")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "evaluations export has no generated_at".to_owned())
+                .and_then(rfc3339_seconds)?,
+        );
+        if page.get("through_sequence").and_then(Value::as_u64) != Some(through) {
+            incomplete = Some(format!(
+                "evaluation history moved from through_sequence {through} to {:?}",
+                page.get("through_sequence")
+            ));
+            break;
+        }
+        let records = page
+            .get("records")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "evaluations export has no records".to_owned())?;
+        for record in records {
+            let sequence = record.get("sequence").and_then(Value::as_u64);
+            let envelope = record.get("result").cloned();
+            if let Some(envelope) = &envelope
+                && let (Some(instance), Some(Ok(at))) = (
+                    envelope
+                        .pointer("/context/instance_id")
+                        .and_then(Value::as_str),
+                    envelope
+                        .pointer("/evaluated_at")
+                        .and_then(Value::as_str)
+                        .map(rfc3339_seconds),
+                )
+            {
+                let newest = collected.entry(instance.to_owned()).or_insert(at);
+                *newest = (*newest).max(at);
+            }
+            evaluations.push((
+                sequence.map_or_else(|| "record".to_owned(), |sequence| format!("seq-{sequence}")),
+                envelope,
+            ));
+        }
+        complete = page.get("complete").and_then(Value::as_bool) == Some(true);
+        match page.get("next_after_sequence").and_then(Value::as_u64) {
+            Some(next) if !complete && next > after => after = next,
+            _ => break,
+        }
+    }
+    if !complete && incomplete.is_none() {
+        incomplete = Some(format!(
+            "evaluation history page through {through} is not complete"
+        ));
+    }
+    let generated = generated
+        .or_else(|| {
+            probe
+                .get("generated_at")
+                .and_then(Value::as_str)
+                .and_then(|value| rfc3339_seconds(value).ok())
+        })
+        .ok_or_else(|| "evaluations export has no generated_at".to_owned())?;
+    Ok(NqSnapshot {
+        generated,
+        identity: json!({
+            "schema": EVALUATION_HISTORY_SCHEMA,
+            "generated_at": format_seconds(generated),
+            "through_sequence": through,
+        }),
+        evaluations,
+        collected,
+        incomplete,
+    })
+}
+
 fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
@@ -413,69 +614,34 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         identity: Value::Null,
     };
     let started = Instant::now();
-    let loaded = load_json(
-        context,
-        input.command.as_ref(),
-        input.path.as_ref(),
-        STATUS_EXPORT_LIMIT,
-    );
+    let fetched = match input.source {
+        NqStatusSource::StatusExport => status_export(context, input),
+        NqStatusSource::EvaluationHistory => evaluation_history(context, input),
+    };
     let completed = answered_at(context, started);
-    let snapshot = match loaded {
-        Ok((_, value)) => value,
+    let snapshot = match fetched {
+        Ok(snapshot) => snapshot,
         Err(error) => {
             report.error = Some(error);
             read.reports.push(report);
             return;
         }
     };
-    if snapshot.get("schema").and_then(Value::as_str) != Some(NQ_STATUS_SCHEMA) {
-        report.error = Some(format!("status export schema is not {NQ_STATUS_SCHEMA}"));
-        read.reports.push(report);
-        return;
-    }
-    let generated = snapshot
-        .get("generated_at")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "status export has no generated_at".to_owned())
-        .and_then(rfc3339_seconds);
-    let generated = match generated {
-        Ok(value) => value,
-        Err(error) => {
-            report.error = Some(error);
-            read.reports.push(report);
-            return;
-        }
-    };
-    let Some(components) = snapshot.get("components").and_then(Value::as_array) else {
-        report.error = Some("status export has no components".into());
-        read.reports.push(report);
-        return;
-    };
+    let generated = snapshot.generated;
+    let collected = &snapshot.collected;
     // Age and future skew are measured when the source answered, not when
     // the pass started: a slow export (bounded by the command timeout) is
     // not a snapshot from the future.
     let snapshot_age = completed - generated;
-    let current = snapshot_age <= input.max_age_seconds && snapshot_age >= -60;
+    let current = snapshot.incomplete.is_none()
+        && snapshot_age <= input.max_age_seconds
+        && snapshot_age >= -60;
     report.status = if current {
         InputStatus::Ok
     } else {
         InputStatus::NotCurrent
     };
-    report.identity = json!({
-        "schema": NQ_STATUS_SCHEMA,
-        "generated_at": format_seconds(generated),
-        "evaluation_through_sequence": snapshot.get("evaluation_through_sequence"),
-    });
-    // Last collection commit per watcher instance: the only liveness signal.
-    let collected: BTreeMap<String, i64> = components
-        .iter()
-        .filter(|component| component.get("kind").and_then(Value::as_str) == Some("instance"))
-        .filter_map(|component| {
-            let id = component.get("id")?.as_str()?.to_owned();
-            let at = rfc3339_seconds(component.get("observed_at")?.as_str()?).ok()?;
-            Some((id, at))
-        })
-        .collect();
+    report.identity = snapshot.identity.clone();
     let mut units: BTreeMap<String, Lineage> = BTreeMap::new();
     let mut memory: Option<Lineage> = None;
     // Evaluations this input consumes but cannot interpret. Any of them makes
@@ -483,21 +649,8 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     // missing lineage as recovery.
     let mut unrecognised: Vec<String> = Vec::new();
     let mut untargetable: Vec<String> = Vec::new();
-    for component in components {
-        if component.get("kind").and_then(Value::as_str) != Some("evaluation") {
-            continue;
-        }
-        let id = component
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let Some(envelope) = component
-            .get("detail")
-            .filter(|detail| {
-                detail.get("detail_kind").and_then(Value::as_str) == Some("evaluation")
-            })
-            .and_then(|detail| detail.get("result"))
-        else {
+    for (id, envelope) in &snapshot.evaluations {
+        let Some(envelope) = envelope else {
             unrecognised.push(format!("evaluation {id:?} has no evaluation envelope"));
             continue;
         };
@@ -595,11 +748,13 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         })
         .map(|(name, lineage)| format!("{name} ({})", lineage.state))
         .collect();
-    if !current {
+    if let Some(problem) = &snapshot.incomplete {
+        report.fault("stale", InputStatus::NotCurrent, problem);
+    } else if !current {
         report.fault(
             "stale",
             InputStatus::NotCurrent,
-            &format!("status export generated {snapshot_age} s before it was read"),
+            &format!("NQ snapshot generated {snapshot_age} s before it was read"),
         );
     }
     if !stale.is_empty() {
