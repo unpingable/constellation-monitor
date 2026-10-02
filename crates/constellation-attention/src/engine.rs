@@ -15,7 +15,8 @@ use crate::inputs::{self, Context, InputReport, InputStatus, Observation, Observ
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{
-    Class, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, UNKNOWN_GAP_SECONDS,
+    Class, InputKind, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS,
+    UNKNOWN_GAP_SECONDS,
 };
 use crate::state::{ConditionState, LastIntent, State};
 use crate::util::{format_seconds, read_bounded, write_atomic};
@@ -373,6 +374,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 pending_trigger: BTreeMap::new(),
             }
         });
+        if let Some(item) = item {
+            // The input that reports a condition can be relabelled; follow it.
+            condition.input_label.clone_from(&item.input_label);
+        }
         let rule = rule_for(&rules, &condition.key.rule);
         let (observation, note) = if let Some(item) = item {
             (item.observation, item.note.clone())
@@ -386,7 +391,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                             "not reported by a current input; recovery not observed".into(),
                         ),
                         Some(_) => (Observation::Unknown, "input not current".into()),
-                        None => (Observation::Removed, "input no longer configured".into()),
+                        // The label names the condition (its target class):
+                        // removing it is an explicit configuration removal.
+                        None if rule.rule.input != InputKind::NqStatus => {
+                            (Observation::Removed, "input no longer configured".into())
+                        }
+                        // NQ status conditions are keyed on units, not on
+                        // the input label; the input kind is still
+                        // configured, so a relabel is not a removal.
+                        None => (
+                            Observation::Unknown,
+                            "input label changed; not yet observed under the new label".into(),
+                        ),
                     }
                 }
                 _ => (

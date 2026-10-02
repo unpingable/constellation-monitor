@@ -1768,3 +1768,57 @@ fn intermittent_indeterminate_detector_still_pages() {
     // 240 s of observed presence exceeds the 180 s bound at step 6.
     assert_eq!(trigger_step, Some(6));
 }
+
+/// Second review P6: relabelling the NQ status input and then losing it is
+/// an outage, not a configuration removal. The page holds.
+#[test]
+fn relabelled_input_outage_holds_an_open_page() {
+    let (mut harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    harness.extra_config = harness
+        .extra_config
+        .replace("label = \"nqd\"", "label = \"ops\"");
+    for offset in [60, 120] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(cron_calls(&harness).len(), 2, "rename alone holds");
+    assert_eq!(harness.state()["conditions"][CRON]["input_label"], "ops");
+    fs::remove_file(&status).unwrap();
+    for offset in (180..=900).step_by(60) {
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = cron_calls(&harness);
+    assert!(
+        calls.iter().all(|call| !call.contains("-resolve-")),
+        "{calls:?}"
+    );
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .any(|call| call.contains("evaluator-input-unavailable-ops"))
+    );
+}
+
+/// A relabel before the condition is observed under the new label holds it
+/// too: the NQ status input kind is still configured.
+#[test]
+fn relabel_without_observation_is_not_a_removal() {
+    let (mut harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    harness.extra_config = harness
+        .extra_config
+        .replace("label = \"nqd\"", "label = \"ops\"");
+    fs::remove_file(&status).unwrap();
+    for offset in (60..=600).step_by(60) {
+        harness.evaluate(t + offset + 3);
+    }
+    assert!(
+        cron_calls(&harness)
+            .iter()
+            .all(|call| !call.contains("-resolve-"))
+    );
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+}
