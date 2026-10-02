@@ -328,8 +328,13 @@ classes in `causes` and the detail in `error`:
 | `unreported` | an open condition the input no longer reports |
 | `empty` | no closed Nightshift cycle yet |
 
-Each class notifies after it has persisted 300 s and resolves when it has
-been gone 120 s. Rules fed by the input hold their state while their own
+Each class notifies after it has persisted 300 s. While the input has any
+fault, a class it is not showing now is unknown, not clear, so a fault that
+changes class from pass to pass still reaches the bound (the unknown passes
+are shifted out as for any condition). All classes are clear only when the
+input is `ok`, and a class resolves after 120 s of that. `unreported` is
+raised whenever the input was read at all, so a lasting fault of another
+class does not hide an open condition the input stopped reporting. Rules fed by the input hold their state while their own
 evidence is missing. A stale host-posture `CURRENT` is reported as
 `host-posture-unknown`, not here. An input notice open under the earlier
 key format (`{label}` alone) is resolved once as "no longer evaluated".
@@ -367,6 +372,18 @@ These are operator acceptance items.
   counts.
 - Notice routes (Slack, Discord, local inbox) are never resent over
   `unknown`, and a failed notice is retried only after 900 s.
+- PagerDuty records that are not accepted are resubmitted every 120 s while
+  the condition stays active, including an `unknown` answer that carries a
+  record id (`success_not_confirmed`). PagerDuty folds them into the one
+  incident by dedup key, but NQ retains a new record each time: about 30
+  records an hour per route while it lasts. There is no back-off.
+- Input notices are per fault class, so a class change gives one resolve
+  and one trigger, at most one per 300 s.
+- After `reset-clock`, records decided during a forward clock step keep
+  their future event ids (for example `...-trigger-1791029460`). If a later
+  transition of the same condition and action falls on that exact second,
+  NQ answers with the old record instead of creating a new one. The odds
+  are negligible; it is listed for completeness.
 - Saved checks need the per-reference `<reference>.json` writer deployed on
   the Linode; without it `sqlite-health` never fires and the input notice is
   permanent.
