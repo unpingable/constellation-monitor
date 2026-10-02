@@ -16,15 +16,17 @@ use crate::config::{
     Config, EffectiveRule, HostPostureInput, NightshiftInput, NqStatusInput, SavedCheckInput,
 };
 use crate::util::{
-    ChildEnvironment, excerpt, format_seconds, read_bounded, rfc3339_seconds, run_bounded,
+    ChildEnvironment, excerpt, format_seconds, read_bounded, rfc3339_seconds, run_bounded, truncate,
 };
 
 const STATUS_EXPORT_LIMIT: usize = 16 * 1024 * 1024;
 const SAVED_CHECK_LIMIT: usize = 1024 * 1024;
 pub const NQ_STATUS_SCHEMA: &str = "nq.status_snapshot.v3";
 pub const SYSTEMD_UNIT_PROFILE: &str = "nq.systemd_unit";
+pub const SYSTEMD_UNIT_VERSION: u64 = 2;
 pub const SYSTEMD_UNIT_CONDITION: &str = "systemd_unit_not_active";
 pub const HOST_MEMORY_PROFILE: &str = "nq.host_memory";
+pub const HOST_MEMORY_VERSION: u64 = 1;
 pub const HOST_MEMORY_CONDITION: &str = "memory_pressure_stall";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -36,6 +38,11 @@ pub enum Observation {
     Clear,
     /// No current qualified state; nothing changes.
     Unknown,
+    /// The rule, its input kind or the input label was removed from the
+    /// configuration. Never produced by an input: an explicit operator
+    /// decision that the condition is no longer evaluated. It closes an open
+    /// condition without claiming recovery.
+    Removed,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -379,11 +386,19 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         .collect();
     let mut units: BTreeMap<String, Lineage> = BTreeMap::new();
     let mut memory: Option<Lineage> = None;
-    let mut untargetable = Vec::new();
+    // Evaluations this input consumes but cannot interpret. Any of them makes
+    // the input not current: a rule fed by it must hold, never read the
+    // missing lineage as recovery.
+    let mut unrecognised: Vec<String> = Vec::new();
+    let mut untargetable: Vec<String> = Vec::new();
     for component in components {
         if component.get("kind").and_then(Value::as_str) != Some("evaluation") {
             continue;
         }
+        let id = component
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let Some(envelope) = component
             .get("detail")
             .filter(|detail| {
@@ -391,6 +406,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             })
             .and_then(|detail| detail.get("result"))
         else {
+            unrecognised.push(format!("evaluation {id:?} has no evaluation envelope"));
             continue;
         };
         let text = |pointer: &str| {
@@ -405,19 +421,39 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             .pointer("/profile/profile/version")
             .and_then(Value::as_u64);
         let condition = text("/result/condition");
+        let instance_id = text("/context/instance_id");
+        let consumed = [SYSTEMD_UNIT_PROFILE, HOST_MEMORY_PROFILE].contains(&profile.as_str())
+            || [SYSTEMD_UNIT_CONDITION, HOST_MEMORY_CONDITION].contains(&condition.as_str());
+        if !consumed {
+            // Other profiles (for example filesystem capacity) feed no rule here.
+            continue;
+        }
+        let systemd = profile == SYSTEMD_UNIT_PROFILE
+            && version == Some(SYSTEMD_UNIT_VERSION)
+            && condition == SYSTEMD_UNIT_CONDITION;
+        let host_memory = profile == HOST_MEMORY_PROFILE
+            && version == Some(HOST_MEMORY_VERSION)
+            && condition == HOST_MEMORY_CONDITION;
+        if !systemd && !host_memory {
+            unrecognised.push(format!(
+                "unrecognised profile {profile:?} version {} condition {condition:?} (instance {instance_id:?})",
+                version.map_or_else(|| "none".to_owned(), |version| version.to_string())
+            ));
+            continue;
+        }
         let Ok(evaluated_at) = rfc3339_seconds(&text("/evaluated_at")) else {
+            unrecognised.push(format!(
+                "evaluation {id:?} (instance {instance_id:?}) has no valid evaluated_at"
+            ));
             continue;
         };
         let lineage = Lineage {
             evaluated_at,
             state: text("/result/state"),
             evaluation_id: text("/evaluation_id"),
-            instance_id: text("/context/instance_id"),
+            instance_id,
         };
-        if profile == SYSTEMD_UNIT_PROFILE
-            && version == Some(2)
-            && condition == SYSTEMD_UNIT_CONDITION
-        {
+        if systemd {
             let subject = text("/context/subject");
             let unit = subject
                 .strip_prefix("systemd-unit:")
@@ -425,7 +461,11 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
                 .map(|(_, unit)| unit.to_owned())
                 .unwrap_or_default();
             if validate_token("target_class", &unit, 48).is_err() {
-                untargetable.push(lineage.instance_id.clone());
+                untargetable.push(format!(
+                    "{:?} (instance {:?})",
+                    truncate(&unit, 96),
+                    lineage.instance_id
+                ));
                 continue;
             }
             if units
@@ -434,11 +474,9 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             {
                 units.insert(unit, lineage);
             }
-        } else if profile == HOST_MEMORY_PROFILE
-            && condition == HOST_MEMORY_CONDITION
-            && memory
-                .as_ref()
-                .is_none_or(|existing| existing.evaluated_at < evaluated_at)
+        } else if memory
+            .as_ref()
+            .is_none_or(|existing| existing.evaluated_at < evaluated_at)
         {
             memory = Some(lineage);
         }
@@ -466,10 +504,18 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             stale.join(",")
         ));
     }
-    if !untargetable.is_empty() {
+    if !unrecognised.is_empty() {
+        report.status = InputStatus::NotCurrent;
         problems.push(format!(
-            "systemd unit watchers with names outside the target_class charset were skipped: {}",
-            untargetable.join(",")
+            "evaluations this input cannot interpret: {}",
+            unrecognised.join("; ")
+        ));
+    }
+    if !untargetable.is_empty() {
+        report.status = InputStatus::NotCurrent;
+        problems.push(format!(
+            "systemd units that map to no bounded target class: {}",
+            untargetable.join(", ")
         ));
     }
     if !problems.is_empty() {

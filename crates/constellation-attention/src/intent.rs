@@ -69,11 +69,22 @@ pub fn event_id(key: &ConditionKey, action: Action, at: i64) -> String {
     format!("{}-{}-{at}", key.event_prefix(), action.as_str())
 }
 
+/// Why a resolve was decided. Every resolve summary names its reason.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResolveReason {
+    /// Current qualified state was clear for the confirmation window.
+    Recovered,
+    /// The rule, its input or the input label was removed from the
+    /// configuration; recovery was not observed.
+    NoLongerEvaluated,
+}
+
 pub struct IntentInput<'a> {
     pub config: &'a Config,
     pub rule: &'a EffectiveRule,
     pub key: &'a ConditionKey,
     pub action: Action,
+    pub resolve_reason: ResolveReason,
     pub stable_event_id: &'a str,
     pub transition_id: &'a str,
     pub policy_digest: &'a str,
@@ -92,11 +103,17 @@ fn summary(input: &IntentInput<'_>) -> String {
             input.persisted_seconds,
             input.rule.persistence_seconds(),
         ),
-        Action::Resolve => format!(
-            "RESOLVE {id} [{}]: underlying state clear for at least {} s.",
-            input.rule.class.as_str(),
-            crate::registry::RESOLVE_CONFIRM_SECONDS,
-        ),
+        Action::Resolve => match input.resolve_reason {
+            ResolveReason::Recovered => format!(
+                "RESOLVE {id} [{}]: underlying state clear for at least {} s.",
+                input.rule.class.as_str(),
+                crate::registry::RESOLVE_CONFIRM_SECONDS,
+            ),
+            ResolveReason::NoLongerEvaluated => format!(
+                "RESOLVE {id} [{}]: no longer evaluated; recovery not observed.",
+                input.rule.class.as_str(),
+            ),
+        },
     }
 }
 

@@ -996,3 +996,233 @@ fn packaged_example_configuration_is_valid() {
     assert_eq!(config.site, "labelwatch");
     assert!(!config.routes.network_enabled);
 }
+
+/// A real export re-timed so that it is generated at `t`, with every
+/// collection and evaluation at `t - 3`, then edited.
+fn retimed(name: &str, t: i64, edit: impl Fn(&mut Value)) -> Value {
+    let mut value: Value = serde_json::from_slice(
+        &fs::read(Path::new(FIXTURES).join("nq-status").join(name)).unwrap(),
+    )
+    .unwrap();
+    value["generated_at"] = json!(rfc3339(t));
+    for component in value["components"].as_array_mut().unwrap() {
+        if component["kind"] == "instance" {
+            component["observed_at"] = json!(rfc3339(t - 3));
+        }
+        if component["kind"] == "evaluation" {
+            component["detail"]["result"]["evaluated_at"] = json!(rfc3339(t - 3));
+        }
+    }
+    edit(&mut value);
+    value
+}
+
+fn write_status(path: &Path, value: &Value) {
+    fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+}
+
+/// The newest `cron.service` evaluation component of an export.
+fn cron_eval(value: &mut Value) -> &mut Value {
+    value["components"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .rev()
+        .find(|component| {
+            component["kind"] == "evaluation"
+                && component["detail"]["result"]["context"]["instance_id"] == "unit-cron"
+        })
+        .unwrap()
+}
+
+const CRON: &str = "constellation:labelwatch:service:service-down:cron.service";
+
+/// Drive `cron.service` down until the page triggers; returns the export time
+/// of the triggering pass.
+fn trigger_cron(harness: &Harness, status: &Path) -> i64 {
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181] {
+        write_status(status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    assert_eq!(harness.calls().len(), 2);
+    t + 181
+}
+
+fn cron_state(state: &'static str) -> impl Fn(&mut Value) {
+    move |value: &mut Value| {
+        cron_eval(value)["detail"]["result"]["result"]["state"] = json!(state);
+    }
+}
+
+/// Review A1: the same unit exported under an unrecognised profile version
+/// is evidence the evaluator cannot read. The open page holds, the input is
+/// not current, and only verified recovery resolves.
+#[test]
+fn unrecognised_profile_version_holds_an_open_page() {
+    let (harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let mut report = Value::Null;
+    for offset in (60..=480).step_by(60) {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            cron_eval(value)["detail"]["result"]["profile"]["profile"]["version"] = json!(3);
+        });
+        write_status(&status, &value);
+        report = harness.evaluate(t + offset + 3);
+    }
+    let calls = harness.calls();
+    assert!(
+        calls.iter().all(|call| !call.contains("-resolve-")),
+        "{calls:?}"
+    );
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    let error = report["inputs"][0]["error"].as_str().unwrap();
+    assert!(
+        error.contains("unrecognised profile \"nq.systemd_unit\" version 3"),
+        "{error}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("labelwatch-evaluator-input-unavailable-nqd-trigger-")),
+        "{calls:?}"
+    );
+    // Verified recovery under the recognised profile resolves with the
+    // recovery summary.
+    let before = harness.calls().len();
+    for offset in [540, 600, 660] {
+        write_status(
+            &status,
+            &retimed(
+                "cron-down.json",
+                t + offset,
+                cron_state("explicitly_absent"),
+            ),
+        );
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = harness.calls();
+    let resolves: Vec<&String> = calls[before..]
+        .iter()
+        .filter(|call| call.contains("service-down-cron.service-resolve-"))
+        .collect();
+    assert_eq!(resolves.len(), 2, "{calls:?}");
+    let id = resolves[1].split(' ').nth(3).unwrap();
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+    assert!(
+        intent["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("underlying state clear for at least 120 s."),
+        "{intent}"
+    );
+}
+
+/// Review A2: a watcher that vanishes from a current export is not a
+/// recovery. The page holds and the input reports the missing condition.
+#[test]
+fn vanished_watcher_holds_an_open_page() {
+    let (harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let mut report = Value::Null;
+    for offset in (60..=480).step_by(60) {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            value["components"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|component| {
+                    component["id"] != "unit-cron"
+                        && component["detail"]["result"]["context"]["instance_id"] != "unit-cron"
+                });
+        });
+        write_status(&status, &value);
+        report = harness.evaluate(t + offset + 3);
+    }
+    let calls = harness.calls();
+    assert!(
+        calls.iter().all(|call| !call.contains("-resolve-")),
+        "{calls:?}"
+    );
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("open condition constellation:labelwatch:service:service-down:cron.service is no longer reported"),
+        "{}",
+        report["inputs"][0]
+    );
+    let condition = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|condition| condition["id"] == CRON)
+        .unwrap();
+    assert_eq!(condition["observation"], "unknown");
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("labelwatch-evaluator-input-unavailable-nqd-trigger-")),
+        "{calls:?}"
+    );
+}
+
+/// Removing a rule from configuration is explicit: the open page resolves at
+/// once, and the resolve says recovery was not observed.
+#[test]
+fn removed_rule_resolves_without_claiming_recovery() {
+    let (mut harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    harness.raw("[rules.service-down]\nenabled = false\n");
+    write_status(&status, &retimed("cron-down.json", t + 60, |_| {}));
+    let report = harness.evaluate(t + 63);
+    assert_eq!(
+        intents(&report),
+        vec![
+            (CRON.into(), "notice".into(), "resolve".into()),
+            (CRON.into(), "page".into(), "resolve".into()),
+        ]
+    );
+    for id in ["n3", "n4"] {
+        let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+        assert!(
+            intent["summary"]
+                .as_str()
+                .unwrap()
+                .ends_with(": no longer evaluated; recovery not observed."),
+            "{intent}"
+        );
+    }
+}
+
+/// Review A3: a unit whose name maps to no bounded target class makes the
+/// input not current (so the operator is told), never a silent skip.
+#[test]
+fn untargetable_unit_makes_the_input_not_current() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let mut codes = Vec::new();
+    for offset in (0..=420).step_by(60) {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            cron_eval(value)["detail"]["result"]["context"]["subject"] =
+                json!("systemd-unit:1853ff04ff7a42679bf212ec9a569c4f/getty@tty1.service");
+        });
+        write_status(&status, &value);
+        codes.push(harness.evaluate_at(t + offset + 3, &[]).status.code());
+    }
+    assert!(codes.iter().all(|code| *code == Some(3)), "{codes:?}");
+    let report = harness.report();
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("\"getty@tty1.service\" (instance \"unit-cron\")")
+    );
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-nqd-trigger-"));
+}

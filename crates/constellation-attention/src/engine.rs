@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::condition::ConditionKey;
 use crate::config::{Config, EffectiveRule, NoticeTransport};
 use crate::inputs::{self, Context, InputReport, InputStatus, Observation, Observed};
-use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput};
+use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{Class, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS};
 use crate::state::{ConditionState, LastIntent, State};
@@ -113,6 +113,15 @@ pub fn step(
             }
         }
         Observation::Unknown => {}
+        Observation::Removed => {
+            condition.first_seen = None;
+            condition.clear_since = None;
+            if condition.active {
+                condition.active = false;
+                condition.transition_at = Some(now);
+                return Some(Action::Resolve);
+            }
+        }
     }
     None
 }
@@ -221,10 +230,47 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         now,
         now_ms: options.now_ms,
     };
-    let read = inputs::read_all(&context);
+    let mut read = inputs::read_all(&context);
     let mut observed: BTreeMap<String, Observed> = BTreeMap::new();
     for item in read.observed {
         observed.entry(item.key.id()).or_insert(item);
+    }
+    // An open condition that a current input no longer reports has not been
+    // observed to recover. Hold it, and report the input as not current so
+    // `evaluator-input-unavailable` tells the operator.
+    let current_labels: BTreeSet<String> = read
+        .reports
+        .iter()
+        .filter(|report| report.status == InputStatus::Ok)
+        .map(|report| report.label.clone())
+        .collect();
+    for (id, condition) in &state.conditions {
+        if !condition.active
+            || observed.contains_key(id)
+            || condition.key.rule == INPUT_UNAVAILABLE
+            || !current_labels.contains(&condition.input_label)
+        {
+            continue;
+        }
+        let Some(rule) = rule_for(&rules, &condition.key.rule) else {
+            continue;
+        };
+        if !rule.enabled || !config.has_input(rule.rule.input) {
+            continue;
+        }
+        if let Some(report) = read
+            .reports
+            .iter_mut()
+            .find(|report| report.label == condition.input_label)
+        {
+            report.status = InputStatus::NotCurrent;
+            let problem =
+                format!("open condition {id} is no longer reported; recovery not observed");
+            report.error = Some(match report.error.take() {
+                Some(error) => format!("{error}; {problem}"),
+                None => problem,
+            });
+        }
     }
     if rule_for(&rules, INPUT_UNAVAILABLE).is_some_and(|rule| rule.enabled) {
         for report in &read.reports {
@@ -252,6 +298,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             });
         }
     }
+
     let input_status: BTreeMap<&str, InputStatus> = read
         .reports
         .iter()
@@ -263,7 +310,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .cloned()
         .chain(state.conditions.keys().cloned())
         .collect();
-    let mut transitions: Vec<(String, Action)> = Vec::new();
+    let mut transitions: Vec<(String, Action, ResolveReason)> = Vec::new();
     let mut condition_reports = Vec::new();
     for id in &ids {
         let item = observed.get(id);
@@ -288,20 +335,30 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             match rule {
                 Some(rule) if rule.enabled && config.has_input(rule.rule.input) => {
                     match input_status.get(condition.input_label.as_str()) {
-                        Some(InputStatus::Ok) => {
-                            (Observation::Clear, "not reported by a current input".into())
-                        }
+                        // Absence is not recovery.
+                        Some(InputStatus::Ok) => (
+                            Observation::Unknown,
+                            "not reported by a current input; recovery not observed".into(),
+                        ),
                         Some(_) => (Observation::Unknown, "input not current".into()),
-                        None => (Observation::Clear, "input no longer configured".into()),
+                        None => (Observation::Removed, "input no longer configured".into()),
                     }
                 }
-                _ => (Observation::Clear, "rule disabled or not configured".into()),
+                _ => (
+                    Observation::Removed,
+                    "rule disabled or its input kind not configured".into(),
+                ),
             }
         };
         let persistence = rule.map_or(0, EffectiveRule::persistence_seconds);
         let transition = step(condition, observation, persistence, now);
         if let Some(action) = transition {
-            transitions.push((id.clone(), action));
+            let reason = if observation == Observation::Removed {
+                ResolveReason::NoLongerEvaluated
+            } else {
+                ResolveReason::Recovered
+            };
+            transitions.push((id.clone(), action, reason));
         }
         condition_reports.push(json!({
             "id": id,
@@ -322,7 +379,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     ensure_dir(&intents_dir)?;
     let mut plan: Vec<Planned> = Vec::new();
     let notice_route = config.routes.notice_route.clone();
-    for (id, action) in &transitions {
+    for (id, action, reason) in &transitions {
         let condition = state
             .conditions
             .get_mut(id)
@@ -359,6 +416,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             rule,
             key: &condition.key,
             action: *action,
+            resolve_reason: *reason,
             stable_event_id: &stable_event_id,
             transition_id: &stable_event_id,
             policy_digest: &digest,
@@ -402,7 +460,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             condition.last_intent.insert(role, last);
         }
     }
-    let transitioned: BTreeSet<&String> = transitions.iter().map(|(id, _)| id).collect();
+    let transitioned: BTreeSet<&String> = transitions.iter().map(|(id, _, _)| id).collect();
     for (id, condition) in &mut state.conditions {
         if transitioned.contains(id) {
             continue;
