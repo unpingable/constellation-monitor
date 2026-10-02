@@ -56,6 +56,14 @@ optional `-/var/lib/nq`. A host whose store lives elsewhere needs a drop-in
 (`systemctl edit constellation-attention.service`); otherwise every
 submission fails as `command_error`.
 
+NQ status: on an operated store use `source = "evaluation_history"` (the
+example configuration does). `nq status export` walks the whole evaluation
+history (nq#20): on labelwatch-host it took 60-90 s under contention, and
+every pass read the input as not current or timed out, so every NQ
+condition was unknown. Evaluation-history pages answer in about 0.2 s. NQ
+filesystem capacity watchers (for example `fs-zonestorage`) raise
+`host-disk:<instance id>`.
+
 Saved checks: each configured reference reads one raw `nq --json
 saved-check evaluate REF ...` document. On the Linode the check timer writes
 one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
@@ -69,8 +77,9 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
    validates the configuration and prints the effective rules and policy digest.
 3. `sudo -u nq constellation-attention evaluate --config /etc/constellation-attention/attention.toml --dry-run`
    reads every input, writes `/var/lib/constellation-attention/dry-run/report.json`
-   and runs no `nq notification` command (an `nq_status.command` input still
-   runs `nq status export`). Every input should be `ok`; fix any
+   and runs no `nq notification` command (an `nq_status.command` input
+   still runs `nq evaluations export`, or `nq status export` in
+   `status_export` mode). Every input should be `ok`; fix any
    `unavailable` or `not_current` first. A dry run continues from saved
    state, so on a fresh install it shows no intents: nothing has persisted
    past a bound yet.

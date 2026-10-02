@@ -20,7 +20,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v1`).
+  compiled in and versioned (`constellation.attention_registry.v2`).
   Configuration may enable or disable a rule, change its one threshold, and
   choose `page` or `notice` where the registry allows it. There are no
   user-defined rules, expressions or plugins.
@@ -42,10 +42,10 @@ anchors marked (M) are below in this document.
 | Rule | Class (default) | May page | Bound | Component | Target class | Input | Runbook | Operator response |
 |---|---|---|---|---|---|---|---|---|
 | `host-posture-unknown` | page | yes | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT` of projection `operator-filesystem-capacity`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch. |
-| `host-disk` | notice | yes | persists 900 s | `host_posture` | publication-root label | host-posture `CURRENT`: current and `aggregate_state` degraded or worse | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
+| `host-disk` (v2) | notice | yes | persists 900 s | `host_posture` | publication-root label, or the NQ filesystem watcher's instance id (e.g. `fs-zonestorage`) | host-posture `CURRENT`: current and `aggregate_state` degraded or worse; or NQ: newest `nq.host_filesystem_capacity` version 1 evaluation of a non-stale watcher reports `filesystem_capacity_pressure` present | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
 | `nq-no-fresh-acquisition` | page | yes | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
-| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status export: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
-| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status export: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
+| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
+| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
 | `nightshift-recurrence-missing` | page | yes | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | no | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `evaluator-input-unavailable` | notice | no | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
@@ -72,14 +72,51 @@ and current are still evaluated.
   at a known generation (`filesystem-capacity-v1`). Memory, load, unit and
   inode producers write the same `status_artifact.v1` schema; any other
   projection or generation is `unavailable` with the reason.
-- NQ status export: every evaluation of profile `nq.systemd_unit` or
-  `nq.host_memory`, or of condition `systemd_unit_not_active` or
-  `memory_pressure_stall`, must be exactly `nq.systemd_unit` version 2 /
-  `systemd_unit_not_active` or `nq.host_memory` version 1 /
-  `memory_pressure_stall`, with an evaluation envelope and a valid
+- NQ status input: every evaluation of profile `nq.systemd_unit`,
+  `nq.host_memory` or `nq.host_filesystem_capacity`, or of condition
+  `systemd_unit_not_active`, `memory_pressure_stall` or
+  `filesystem_capacity_pressure`, must be exactly `nq.systemd_unit` version
+  2, `nq.host_memory` version 1 or `nq.host_filesystem_capacity` version 1
+  with its condition, with an evaluation envelope and a valid
   `evaluated_at`. An unrecognised profile id or version, or an evaluation
   that cannot be parsed, makes the input `not_current`. Evaluations of other
-  profiles (for example filesystem capacity) feed no rule and are ignored.
+  profiles feed no rule and are ignored. A filesystem watcher's instance id
+  is the `host-disk` target class; its threshold is NQ's compiled detector
+  (available space at or below 10 % of non-reserved capacity, i.e. about
+  90 % used), not the evaluator's.
+
+### NQ status sources
+
+`[inputs.nq_status] source` chooses how the evaluations are read. Both give
+the same lineages, checks and fault classes.
+
+- `status_export` (default): `command` is the full argv of `nq --json status
+  export` (or `path` names a file a timer writes). Liveness is each watcher
+  instance's last collection (`observed_at`). `status export` walks the
+  whole evaluation history (nq#20): on the Linode ops store it takes 26 s
+  alone and 60–90 s under contention, so use it only for small stores.
+- `evaluation_history`: `command` is the nq argv up to and including
+  `--json` (for example `["/usr/bin/nq", "--config",
+  "/etc/nq/nqd-ops.toml", "--json"]`); the evaluator appends `evaluations
+  export`. It first asks for `--limit 1` to learn the store-wide
+  `through_sequence`, then reads the newest `window_records` evaluations
+  (default 300, 50..=5000) with `--after max(0, through - window) --through
+  through`, paged at NQ's 1000-row limit (about 0.2 s a page). Liveness is
+  each instance's newest `evaluated_at` in the window. A page that is not
+  `complete`, or whose `through_sequence` moved, makes the input
+  `not_current` (`stale`). The identity is the page `schema`,
+  `generated_at` and `through_sequence`. Size the window so it holds more
+  than `stale_after_seconds` of every watcher's evaluations (the nqd spike
+  recorded two to four evaluations per watcher a minute: with 4 watchers,
+  300 records cover roughly 20 to 35 minutes); a watcher with no evaluation in the window has no
+  lineage, and if its condition is open the input reports `unreported`.
+  Use this mode for operated stores.
+
+In both modes the snapshot's age and future skew are measured when the
+source answered, not when the pass started, so a slow command (bounded by
+`command_timeout_seconds`) is not read as a snapshot from the future. The
+snapshot is current when it was generated at most `max_age_seconds` before,
+and at most 60 s after, that moment.
 - Saved checks: see [`sqlite-health`](#sqlite-health).
 
 ## Conditions and lifecycle
@@ -274,7 +311,8 @@ configuration removal) and persistence, each intent with operation and NQ
 outcome, unresolved deliveries and dropped triggers. `--dry-run` writes
 `dry-run/report.json` and the intents it would submit under
 `dry-run/intents/`, changes no state, and runs no `nq notification` command
-(an `nq_status.command` input still runs `nq status export`). A dry run
+(an `nq_status.command` input still runs `nq evaluations export`, or
+`nq status export` in `status_export` mode). A dry run
 continues from the saved state; on a fresh install there is none, so it
 shows no intents until a condition has persisted past its bound across real
 passes.
@@ -321,7 +359,7 @@ classes in `causes` and the detail in `error`:
 | Class | Meaning |
 |---|---|
 | `unreadable` | missing path, permission, command failure, malformed JSON, wrong schema, a host-posture `CURRENT` of another projection, a saved-check result naming another reference |
-| `stale` | status export older than `max_age_seconds`; a watcher whose last collection is older than `stale_after_seconds` at the export's `generated_at` (default 180 s; a stopped nqd still answers `status export` from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds` |
+| `stale` | NQ snapshot older than `max_age_seconds`, or an evaluation-history page that is not complete or whose upper bound moved; a watcher whose last collection (status export) or newest evaluation (evaluation history) is older than `stale_after_seconds` at the snapshot's `generated_at` (default 180 s; a stopped nqd still answers from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds` |
 | `unrecognised` | an NQ evaluation with an unrecognised profile id or version, or that cannot be parsed; a saved-check result without a valid `read_attempted_at` |
 | `untargetable` | a systemd unit with no bounded target class |
 | `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed` |
@@ -416,8 +454,10 @@ These are operator acceptance items.
   `generated_at`, as specified. The runner republishes about every 4 s even
   when acquisitions refuse, so this detects a stopped runner, not refused
   acquisitions; those surface as `host-posture-unknown`.
-- `host-disk` inherits NQ's compiled 90 % capacity threshold through the
-  projection; Cartography's rule says 85 %.
+- `host-disk` inherits NQ's compiled 90 % capacity threshold, through the
+  projection or directly from an NQ filesystem watcher; Cartography's rule
+  says 85 %. The same filesystem can raise two `host-disk` conditions (the
+  publication-root label and the watcher id) if both sources watch it.
 - `service-down` reads NQ's evaluation result, not a component's coarse
   `state`: NQ reports `healthy` for both instance and evaluation components
   while a unit is down. It cannot tell failed from inactive or not-found.
