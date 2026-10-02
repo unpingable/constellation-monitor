@@ -100,6 +100,12 @@ fn run() -> Result<u8, (u8, String)> {
             Ok(0)
         }
         "evaluate" => {
+            // A chosen time is for what-if dry runs. Release builds refuse it
+            // for a real pass; debug builds accept it so the test suite can
+            // drive the clock.
+            if arguments.now.is_some() && !arguments.dry_run && !cfg!(debug_assertions) {
+                return Err((2, "--now is accepted only with --dry-run".to_owned()));
+            }
             let config = load(&arguments).map_err(|error| (2, error))?;
             let (now, now_ms) = match &arguments.now {
                 Some(value) => {

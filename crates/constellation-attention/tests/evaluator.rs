@@ -1401,3 +1401,31 @@ fn missing_intent_file_fails_only_its_follow_up() {
             .any(|intent| intent["outcome"] == "intent_unreadable")
     );
 }
+
+/// Review A7: a pass whose clock is earlier than the last completed pass is
+/// refused, so an event identity is never replayed for a new incident.
+#[test]
+fn clock_regression_is_refused() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [720, 840] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(harness.calls().len(), 4);
+    let state = fs::read(harness.path("state/state.json")).unwrap();
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        for extra in [&[][..], &["--dry-run"][..]] {
+            let output = harness.evaluate_at(T0 + offset, extra);
+            assert_eq!(output.status.code(), Some(1));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("the clock moved backwards"));
+        }
+    }
+    assert_eq!(harness.calls().len(), 4);
+    assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), state);
+}

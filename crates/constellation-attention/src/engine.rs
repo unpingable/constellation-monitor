@@ -227,6 +227,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     let _lock = lock(config, options.dry_run)?;
     let mut state = State::load(&config.state_path, &config.site)?;
     let now = options.now;
+    if now < state.updated_at {
+        // Event identities carry the decision time; a pass earlier than the
+        // last one could replay an identity NQ already holds for another
+        // incident.
+        return Err(format!(
+            "refusing the pass: now ({}) is earlier than the last completed pass ({}); \
+             the clock moved backwards",
+            format_seconds(now),
+            format_seconds(state.updated_at)
+        ));
+    }
 
     let context = Context {
         config,
