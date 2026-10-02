@@ -1,0 +1,29 @@
+[package]
+name = "constellation-attention"
+version.workspace = true
+edition.workspace = true
+# `std::fs::File::try_lock` keeps one evaluator pass per state file, as in
+# constellation-host-posture. Older workspace crates keep the workspace MSRV.
+rust-version = "1.89"
+license.workspace = true
+description = "Bounded operator-attention evaluator: qualified product state in, NQ notification intents out."
+
+[[bin]]
+name = "constellation-attention"
+path = "src/main.rs"
+
+[dependencies]
+constellation-status-projection = { path = "../constellation-status-projection" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde.workspace = true
+serde_jcs.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+time = { workspace = true, features = ["formatting", "parsing"] }
+toml.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true

@@ -1,0 +1,677 @@
+//! Read the configured inputs and turn qualified current state into
+//! three-valued observations. Nothing here decides attention; it only says
+//! whether each rule's underlying state is present, clear or not knowable now.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+use std::time::Duration;
+
+use constellation_status_projection::{ModeV1, ProjectedStateV1, read_current_artifact};
+use rusqlite::{Connection, OpenFlags};
+use serde::Serialize;
+use serde_json::{Value, json};
+
+use crate::condition::{ConditionKey, validate_token};
+use crate::config::{
+    Config, EffectiveRule, HostPostureInput, NightshiftInput, NqStatusInput, SavedCheckInput,
+};
+use crate::util::{
+    ChildEnvironment, excerpt, format_seconds, read_bounded, rfc3339_seconds, run_bounded,
+};
+
+const STATUS_EXPORT_LIMIT: usize = 16 * 1024 * 1024;
+const SAVED_CHECK_LIMIT: usize = 1024 * 1024;
+pub const NQ_STATUS_SCHEMA: &str = "nq.status_snapshot.v3";
+pub const SYSTEMD_UNIT_PROFILE: &str = "nq.systemd_unit";
+pub const SYSTEMD_UNIT_CONDITION: &str = "systemd_unit_not_active";
+pub const HOST_MEMORY_PROFILE: &str = "nq.host_memory";
+pub const HOST_MEMORY_CONDITION: &str = "memory_pressure_stall";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Observation {
+    /// The rule's underlying state holds now.
+    Present,
+    /// Current qualified state says it does not hold.
+    Clear,
+    /// No current qualified state; nothing changes.
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Observed {
+    pub key: ConditionKey,
+    pub rule: &'static str,
+    pub input_label: String,
+    pub observation: Observation,
+    /// Input identities (artifact id, cycle id, check reference). Never payloads.
+    pub reference: Value,
+    pub note: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputStatus {
+    /// Read and current.
+    Ok,
+    /// Read, but the content is stale or indeterminate.
+    NotCurrent,
+    /// Could not be read or parsed.
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InputReport {
+    pub label: String,
+    pub kind: &'static str,
+    /// The v2 component this input's own availability is reported under.
+    pub component: &'static str,
+    pub source: String,
+    pub status: InputStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub identity: Value,
+}
+
+pub struct InputsRead {
+    pub reports: Vec<InputReport>,
+    pub observed: Vec<Observed>,
+}
+
+pub struct Context<'a> {
+    pub config: &'a Config,
+    pub rules: &'a [EffectiveRule],
+    pub now: i64,
+    pub now_ms: i64,
+}
+
+impl Context<'_> {
+    fn enabled(&self, id: &str) -> Option<&EffectiveRule> {
+        self.rules
+            .iter()
+            .find(|rule| rule.rule.id == id && rule.enabled)
+    }
+
+    fn key(&self, component: &str, rule: &str, target_class: Option<&str>) -> Option<ConditionKey> {
+        ConditionKey::new(&self.config.site, component, rule, target_class).ok()
+    }
+
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(self.config.command_timeout_seconds)
+    }
+}
+
+pub fn read_all(context: &Context<'_>) -> InputsRead {
+    let mut read = InputsRead {
+        reports: Vec::new(),
+        observed: Vec::new(),
+    };
+    for input in &context.config.inputs.host_posture {
+        host_posture(context, input, &mut read);
+    }
+    if let Some(input) = &context.config.inputs.nq_status {
+        nq_status(context, input, &mut read);
+    }
+    if let Some(input) = &context.config.inputs.nightshift {
+        nightshift(context, input, &mut read);
+    }
+    for input in &context.config.inputs.saved_checks {
+        saved_check(context, input, &mut read);
+    }
+    read
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "One flat constructor for every rule's observation keeps the call sites explicit."
+)]
+fn push(
+    context: &Context<'_>,
+    read: &mut InputsRead,
+    rule: &'static str,
+    component: &str,
+    target_class: Option<&str>,
+    input_label: &str,
+    observation: Observation,
+    reference: &Value,
+    note: String,
+) {
+    if context.enabled(rule).is_none() {
+        return;
+    }
+    let Some(key) = context.key(component, rule, target_class) else {
+        return;
+    };
+    read.observed.push(Observed {
+        key,
+        rule,
+        input_label: input_label.to_owned(),
+        observation,
+        reference: reference.clone(),
+        note,
+    });
+}
+
+fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut InputsRead) {
+    let source = input.publication_root.display().to_string();
+    let artifact = match read_current_artifact(&input.publication_root) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            read.reports.push(InputReport {
+                label: input.label.clone(),
+                kind: "host_posture",
+                component: "host_posture",
+                source,
+                status: InputStatus::Unavailable,
+                error: Some(error.to_string()),
+                identity: Value::Null,
+            });
+            return;
+        }
+    };
+    let uncertainty = i64::try_from(artifact.admitted_clock_uncertainty_ms).unwrap_or(i64::MAX);
+    let generated = i64::try_from(artifact.generated_at_unix_ms).unwrap_or(i64::MAX);
+    let fresh_until = i64::try_from(artifact.fresh_until_unix_ms).unwrap_or(i64::MAX);
+    // The renderer's rule: current iff generated <= earliest-now and latest-now < fresh_until.
+    let current = context.now_ms.saturating_sub(uncertainty) >= generated
+        && context.now_ms.saturating_add(uncertainty) < fresh_until;
+    let identity = json!({
+        "artifact_id": artifact.artifact_id,
+        "projection_id": artifact.projection_id,
+        "projection_generation": artifact.projection_generation,
+        "aggregate_state": artifact.aggregate_state.as_str(),
+        "generated_at": format_seconds(generated / 1000),
+        "fresh_until": format_seconds(fresh_until / 1000),
+        "current": current,
+    });
+    let all_maintenance = artifact
+        .components
+        .iter()
+        .all(|component| component.mode == ModeV1::Maintenance);
+    read.reports.push(InputReport {
+        label: input.label.clone(),
+        kind: "host_posture",
+        component: "host_posture",
+        source,
+        status: if current {
+            InputStatus::Ok
+        } else {
+            InputStatus::NotCurrent
+        },
+        error: None,
+        identity: identity.clone(),
+    });
+    let label = input.label.as_str();
+    let state = artifact.aggregate_state;
+
+    let unknown = !current || state == ProjectedStateV1::Unknown;
+    push(
+        context,
+        read,
+        "host-posture-unknown",
+        "host_posture",
+        Some(label),
+        label,
+        if unknown {
+            Observation::Present
+        } else {
+            Observation::Clear
+        },
+        &identity,
+        if current {
+            format!("aggregate_state {}", state.as_str())
+        } else {
+            "CURRENT is stale (fresh_until passed)".to_owned()
+        },
+    );
+
+    let disk = if unknown || all_maintenance {
+        Observation::Unknown
+    } else if state == ProjectedStateV1::Healthy {
+        Observation::Clear
+    } else {
+        Observation::Present
+    };
+    push(
+        context,
+        read,
+        "host-disk",
+        "host_posture",
+        Some(label),
+        label,
+        disk,
+        &identity,
+        format!("aggregate_state {}", state.as_str()),
+    );
+
+    if let Some(rule) = context.enabled("nq-no-fresh-acquisition") {
+        let age_ms = context.now_ms.saturating_sub(generated);
+        push(
+            context,
+            read,
+            "nq-no-fresh-acquisition",
+            "nq",
+            Some(label),
+            label,
+            if age_ms > rule.threshold_seconds.saturating_mul(1000) {
+                Observation::Present
+            } else {
+                Observation::Clear
+            },
+            &identity,
+            format!("newest status generated {} s ago", age_ms / 1000),
+        );
+    }
+}
+
+fn load_json(
+    context: &Context<'_>,
+    command: Option<&Vec<String>>,
+    path: Option<&std::path::PathBuf>,
+    limit: usize,
+) -> Result<(String, Value), String> {
+    let (source, bytes) = if let Some(argv) = command {
+        let output = run_bounded(argv, context.timeout(), limit, ChildEnvironment::Minimal)?;
+        if output.timed_out {
+            return Err(format!("{} timed out", argv[0]));
+        }
+        if output.status != Some(0) {
+            return Err(format!(
+                "{} exited with {:?}: {}",
+                argv[0],
+                output.status,
+                excerpt(&output.stderr)
+            ));
+        }
+        (argv[0].clone(), output.stdout)
+    } else if let Some(path) = path {
+        (
+            path.display().to_string(),
+            read_bounded(path, limit as u64)?,
+        )
+    } else {
+        return Err("input has no source".into());
+    };
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{source} did not produce JSON: {error}"))?;
+    Ok((source, value))
+}
+
+struct Lineage {
+    evaluated_at: i64,
+    state: String,
+    evaluation_id: String,
+    instance_id: String,
+}
+
+fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead) {
+    let mut report = InputReport {
+        label: input.label.clone(),
+        kind: "nq_status",
+        component: "nq",
+        source: input
+            .command
+            .as_ref()
+            .and_then(|argv| argv.first().cloned())
+            .or_else(|| input.path.as_ref().map(|path| path.display().to_string()))
+            .unwrap_or_default(),
+        status: InputStatus::Unavailable,
+        error: None,
+        identity: Value::Null,
+    };
+    let snapshot = match load_json(
+        context,
+        input.command.as_ref(),
+        input.path.as_ref(),
+        STATUS_EXPORT_LIMIT,
+    ) {
+        Ok((_, value)) => value,
+        Err(error) => {
+            report.error = Some(error);
+            read.reports.push(report);
+            return;
+        }
+    };
+    if snapshot.get("schema").and_then(Value::as_str) != Some(NQ_STATUS_SCHEMA) {
+        report.error = Some(format!("status export schema is not {NQ_STATUS_SCHEMA}"));
+        read.reports.push(report);
+        return;
+    }
+    let generated = snapshot
+        .get("generated_at")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "status export has no generated_at".to_owned())
+        .and_then(rfc3339_seconds);
+    let generated = match generated {
+        Ok(value) => value,
+        Err(error) => {
+            report.error = Some(error);
+            read.reports.push(report);
+            return;
+        }
+    };
+    let Some(components) = snapshot.get("components").and_then(Value::as_array) else {
+        report.error = Some("status export has no components".into());
+        read.reports.push(report);
+        return;
+    };
+    let snapshot_age = context.now - generated;
+    let current = snapshot_age <= input.max_age_seconds && snapshot_age >= -60;
+    report.status = if current {
+        InputStatus::Ok
+    } else {
+        InputStatus::NotCurrent
+    };
+    report.identity = json!({
+        "schema": NQ_STATUS_SCHEMA,
+        "generated_at": format_seconds(generated),
+        "evaluation_through_sequence": snapshot.get("evaluation_through_sequence"),
+    });
+    let mut units: BTreeMap<String, Lineage> = BTreeMap::new();
+    let mut memory: Option<Lineage> = None;
+    let mut untargetable = Vec::new();
+    for component in components {
+        if component.get("kind").and_then(Value::as_str) != Some("evaluation") {
+            continue;
+        }
+        let Some(envelope) = component
+            .get("detail")
+            .filter(|detail| {
+                detail.get("detail_kind").and_then(Value::as_str) == Some("evaluation")
+            })
+            .and_then(|detail| detail.get("result"))
+        else {
+            continue;
+        };
+        let text = |pointer: &str| {
+            envelope
+                .pointer(pointer)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let profile = text("/profile/profile/id");
+        let version = envelope
+            .pointer("/profile/profile/version")
+            .and_then(Value::as_u64);
+        let condition = text("/result/condition");
+        let Ok(evaluated_at) = rfc3339_seconds(&text("/evaluated_at")) else {
+            continue;
+        };
+        let lineage = Lineage {
+            evaluated_at,
+            state: text("/result/state"),
+            evaluation_id: text("/evaluation_id"),
+            instance_id: text("/context/instance_id"),
+        };
+        if profile == SYSTEMD_UNIT_PROFILE
+            && version == Some(2)
+            && condition == SYSTEMD_UNIT_CONDITION
+        {
+            let subject = text("/context/subject");
+            let unit = subject
+                .strip_prefix("systemd-unit:")
+                .and_then(|rest| rest.rsplit_once('/'))
+                .map(|(_, unit)| unit.to_owned())
+                .unwrap_or_default();
+            if validate_token("target_class", &unit, 48).is_err() {
+                untargetable.push(lineage.instance_id.clone());
+                continue;
+            }
+            if units
+                .get(&unit)
+                .is_none_or(|existing| existing.evaluated_at < evaluated_at)
+            {
+                units.insert(unit, lineage);
+            }
+        } else if profile == HOST_MEMORY_PROFILE
+            && condition == HOST_MEMORY_CONDITION
+            && memory
+                .as_ref()
+                .is_none_or(|existing| existing.evaluated_at < evaluated_at)
+        {
+            memory = Some(lineage);
+        }
+    }
+    if !untargetable.is_empty() {
+        report.error = Some(format!(
+            "systemd unit watchers with names outside the target_class charset were skipped: {}",
+            untargetable.join(",")
+        ));
+    }
+    read.reports.push(report);
+    let observe = |lineage: &Lineage| -> (Observation, String) {
+        let age = context.now - lineage.evaluated_at;
+        if !current || age > input.max_age_seconds {
+            return (
+                Observation::Unknown,
+                format!("evaluation is {age} s old; not current"),
+            );
+        }
+        match lineage.state.as_str() {
+            "present" => (Observation::Present, "condition present".into()),
+            "explicitly_absent" => (Observation::Clear, "condition explicitly absent".into()),
+            other => (Observation::Unknown, format!("detector state {other}")),
+        }
+    };
+    let reference = |lineage: &Lineage| {
+        json!({
+            "instance_id": lineage.instance_id,
+            "evaluation_id": lineage.evaluation_id,
+            "evaluated_at": format_seconds(lineage.evaluated_at),
+            "status_generated_at": format_seconds(generated),
+        })
+    };
+    for (unit, lineage) in &units {
+        let (observation, note) = observe(lineage);
+        push(
+            context,
+            read,
+            "service-down",
+            "service",
+            Some(unit),
+            &input.label,
+            observation,
+            &reference(lineage),
+            note,
+        );
+    }
+    if let Some(lineage) = &memory {
+        let (observation, note) = observe(lineage);
+        push(
+            context,
+            read,
+            "memory-pressure",
+            "host_posture",
+            None,
+            &input.label,
+            observation,
+            &reference(lineage),
+            note,
+        );
+    }
+}
+
+fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsRead) {
+    let mut report = InputReport {
+        label: input.label.clone(),
+        kind: "nightshift",
+        component: "nightshift",
+        source: input.store_path.display().to_string(),
+        status: InputStatus::Unavailable,
+        error: None,
+        identity: Value::Null,
+    };
+    let newest = match newest_closed_cycle(&input.store_path) {
+        Ok(newest) => newest,
+        Err(error) => {
+            report.error = Some(error);
+            read.reports.push(report);
+            return;
+        }
+    };
+    let Some((cycle_id, closed_at)) = newest else {
+        report.status = InputStatus::NotCurrent;
+        report.error = Some("no closed observation cycle".into());
+        read.reports.push(report);
+        push(
+            context,
+            read,
+            "nightshift-recurrence-missing",
+            "nightshift",
+            Some(&input.label),
+            &input.label,
+            Observation::Unknown,
+            &Value::Null,
+            "no closed observation cycle yet".into(),
+        );
+        return;
+    };
+    let identity = json!({"cycle_id": cycle_id, "closed_at": format_seconds(closed_at)});
+    report.status = InputStatus::Ok;
+    report.identity = identity.clone();
+    read.reports.push(report);
+    if let Some(rule) = context.enabled("nightshift-recurrence-missing") {
+        let age = context.now - closed_at;
+        push(
+            context,
+            read,
+            "nightshift-recurrence-missing",
+            "nightshift",
+            Some(&input.label),
+            &input.label,
+            if age > rule.threshold_seconds {
+                Observation::Present
+            } else {
+                Observation::Clear
+            },
+            &identity,
+            format!("last closed cycle {age} s ago"),
+        );
+    }
+}
+
+/// The newest closed cycle (id, `updated_at` seconds), read-only.
+pub fn newest_closed_cycle(path: &Path) -> Result<Option<(String, i64)>, String> {
+    if !path.is_file() {
+        return Err(format!("{} is not a readable file", path.display()));
+    }
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| format!("cannot open {} read-only: {error}", path.display()))?;
+    connection
+        .busy_timeout(Duration::from_secs(2))
+        .map_err(|error| error.to_string())?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare(
+            "SELECT cycle_id, updated_at FROM canonical_observation_cycles \
+             WHERE status = 'closed' ORDER BY updated_at DESC LIMIT 16",
+        )
+        .map_err(|error| format!("cannot query canonical_observation_cycles: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("cannot query canonical_observation_cycles: {error}"))?;
+    let mut newest: Option<(String, i64)> = None;
+    for row in rows {
+        let (cycle_id, updated_at) = row.map_err(|error| error.to_string())?;
+        let seconds = rfc3339_seconds(&updated_at)?;
+        if newest.as_ref().is_none_or(|(_, best)| *best < seconds) {
+            newest = Some((cycle_id, seconds));
+        }
+    }
+    Ok(newest)
+}
+
+fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut InputsRead) {
+    let label = input.reference.as_str();
+    let mut report = InputReport {
+        label: label.to_owned(),
+        kind: "saved_check",
+        component: "nq",
+        source: input
+            .command
+            .as_ref()
+            .and_then(|argv| argv.first().cloned())
+            .or_else(|| input.path.as_ref().map(|path| path.display().to_string()))
+            .unwrap_or_default(),
+        status: InputStatus::Unavailable,
+        error: None,
+        identity: Value::Null,
+    };
+    let result = match load_json(
+        context,
+        input.command.as_ref(),
+        input.path.as_ref(),
+        SAVED_CHECK_LIMIT,
+    ) {
+        Ok((_, value)) => value,
+        Err(error) => {
+            report.error = Some(error);
+            read.reports.push(report);
+            return;
+        }
+    };
+    let outcome = result
+        .get("outcome")
+        .and_then(Value::as_str)
+        .unwrap_or("missing")
+        .to_owned();
+    let evaluation_id = result
+        .get("evaluation_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let read_at = result
+        .pointer("/detail/read_attempted_at")
+        .and_then(Value::as_str)
+        .map(rfc3339_seconds);
+    let identity = json!({
+        "reference": label,
+        "evaluation_id": evaluation_id,
+        "outcome": outcome,
+        "read_attempted_at": read_at.as_ref().and_then(|value| value.as_ref().ok()).map(|value| format_seconds(*value)),
+    });
+    report.identity = identity.clone();
+    let (observation, status, note) = match (outcome.as_str(), read_at) {
+        ("passed" | "failed", Some(Ok(at))) if context.now - at > input.max_age_seconds => (
+            Observation::Unknown,
+            InputStatus::NotCurrent,
+            format!("result read {} s ago; not current", context.now - at),
+        ),
+        ("failed", Some(Ok(_))) => (Observation::Present, InputStatus::Ok, "failed".into()),
+        ("passed", Some(Ok(_))) => (Observation::Clear, InputStatus::Ok, "passed".into()),
+        ("passed" | "failed", _) => (
+            Observation::Unknown,
+            InputStatus::NotCurrent,
+            "result has no valid read_attempted_at".into(),
+        ),
+        (other, _) => (
+            Observation::Unknown,
+            InputStatus::NotCurrent,
+            format!("result is {other}; indeterminate"),
+        ),
+    };
+    report.status = status;
+    if status != InputStatus::Ok {
+        report.error = Some(note.clone());
+    }
+    read.reports.push(report);
+    push(
+        context,
+        read,
+        "sqlite-health",
+        "nq",
+        Some(label),
+        label,
+        observation,
+        &identity,
+        note,
+    );
+}
