@@ -181,9 +181,19 @@ pub fn v2(input: &IntentInput<'_>, route: &str) -> Value {
     intent
 }
 
-/// A v1 intent for a Slack/Discord route.
+/// NQ refuses a rendered local inbox message larger than this.
+pub const LOCAL_INBOX_MESSAGE_MAX: usize = 4096;
+pub const LOCAL_INBOX_LABEL: &str = "local-inbox";
+/// Longest `local_file` notice route the configuration admits. With the
+/// summary (512 bytes), inspection reference (1024) and event id bounds,
+/// this keeps every rendered local message under
+/// [`LOCAL_INBOX_MESSAGE_MAX`].
+pub const LOCAL_ROUTE_MAX: usize = 128;
+
+/// A v1 intent for a Slack, Discord or local inbox route. `label` is the
+/// destination label (`slack`, `discord`, `local-inbox`).
 #[must_use]
-pub fn v1(input: &IntentInput<'_>, route: &str, transport: &str) -> Value {
+pub fn v1(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
     json!({
         "schema": INTENT_V1,
         "attention_kind": "operator_assertion",
@@ -192,10 +202,28 @@ pub fn v1(input: &IntentInput<'_>, route: &str, transport: &str) -> Value {
         "attention_policy_digest": input.policy_digest,
         "transition_id": input.transition_id,
         "route_reference": route,
-        "destination_identity": format!("{transport}:{route}"),
+        "destination_identity": format!("{label}:{route}"),
         "summary": truncate(&summary(input), V1_SUMMARY_MAX),
         "inspection_reference": truncate(&inspection_reference(input), 1024),
     })
+}
+
+/// Size of the message NQ renders for a v1 intent on a `local_file` route
+/// (`nq.local-inbox-message/v1`, canonical JSON), with a placeholder of the
+/// exact length of the directory binding digest.
+#[must_use]
+pub fn local_inbox_message_bytes(intent: &Value) -> usize {
+    let message = json!({
+        "schema": "nq.local-inbox-message/v1",
+        "stable_event_id": intent["stable_event_id"],
+        "summary": intent["summary"],
+        "inspection_reference": intent["inspection_reference"],
+        "route_reference": intent["route_reference"],
+        "destination_identity": intent["destination_identity"],
+        "destination_binding_digest": format!("sha256:{}", "0".repeat(64)),
+        "delivery_statement": "local file retained; human receipt is not established",
+    });
+    serde_jcs::to_vec(&message).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 /// Canonical bytes (JCS, no trailing newline).
@@ -208,4 +236,66 @@ pub fn with_event_id(intent: &Value, stable_event_id: &str) -> Value {
     let mut intent = intent.clone();
     intent["stable_event_id"] = json!(stable_event_id);
     intent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::condition::ConditionKey;
+    use crate::config::Config;
+
+    /// The longest values the configuration admits still render a local
+    /// inbox message under NQ's 4 KiB limit, with JSON escaping.
+    #[test]
+    fn longest_local_inbox_message_fits() {
+        let route = "\"".repeat(LOCAL_ROUTE_MAX);
+        let url = format!("https://docs.example.org/{}", "\"".repeat(870));
+        let text = format!(
+            "schema = \"constellation.attention_config.v1\"\n\
+             site = \"{site}\"\n\
+             state_path = \"/var/lib/constellation-attention/state.json\"\n\
+             [runbooks]\n\
+             cartography_url = {url:?}\n\
+             monitor_url = {url:?}\n\
+             [nq]\n\
+             program = \"/usr/bin/nq\"\n\
+             config = \"/etc/nq/nqd-ops.toml\"\n\
+             [routes]\n\
+             notice_route = {route:?}\n\
+             notice_transport = \"local_file\"\n\
+             network_enabled = false\n",
+            site = "s".repeat(64),
+        );
+        let config: Config = toml::from_str(&text).unwrap();
+        config.validate().unwrap();
+        let rules = config.effective_rules();
+        let key = |rule: &str| {
+            ConditionKey::new(&config.site, "host_posture", rule, Some(&"t".repeat(48))).unwrap()
+        };
+        for rule in &rules {
+            for action in [Action::Trigger, Action::Resolve] {
+                let key = key(rule.rule.id);
+                let event = event_id(&key, action, 1_790_942_400);
+                let input = IntentInput {
+                    config: &config,
+                    rule,
+                    key: &key,
+                    action,
+                    resolve_reason: ResolveReason::NoLongerEvaluated,
+                    stable_event_id: &event,
+                    transition_id: &event,
+                    policy_digest: &policy_digest(&rules),
+                    first_seen: Some(1_790_942_400),
+                    persisted_seconds: 660,
+                    reference: &Value::Null,
+                };
+                let intent = v1(&input, &config.routes.notice_route, LOCAL_INBOX_LABEL);
+                let bytes = local_inbox_message_bytes(&intent);
+                assert!(bytes <= LOCAL_INBOX_MESSAGE_MAX, "{} {bytes}", rule.rule.id);
+            }
+        }
+        let mut longer = config;
+        longer.routes.notice_route.push('x');
+        assert!(longer.validate().is_err());
+    }
 }

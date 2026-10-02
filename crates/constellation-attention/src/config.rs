@@ -65,21 +65,55 @@ pub struct NqProgram {
 pub enum NoticeTransport {
     Slack,
     Discord,
+    /// An NQ `local_file` inbox, for qualification runs: notices are written
+    /// by `nq notification deliver-local` and never reach a production
+    /// channel.
+    LocalFile,
+}
+
+impl NoticeTransport {
+    /// The destination label NQ requires in `destination_identity`
+    /// (`{label}:{route}`).
+    #[must_use]
+    pub const fn destination_label(self) -> &'static str {
+        match self {
+            Self::Slack => "slack",
+            Self::Discord => "discord",
+            Self::LocalFile => "local-inbox",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Routes {
-    /// NQ route reference of a slack/discord route (v1 intents).
+    /// NQ route reference of a slack, discord or `local_file` route (v1 intents).
     pub notice_route: String,
-    /// Transport of `notice_route`; it names the destination identity label.
+    /// Transport of `notice_route`; it names the destination identity label
+    /// and, for `local_file`, selects `nq notification deliver-local`.
     pub notice_transport: NoticeTransport,
     /// NQ route reference of a pagerduty route (v2 intents). Without it, page
     /// rules reach the operator through `notice_route` only.
     pub page_route: Option<String>,
     /// Pass `--enable-network` to `nq notification submit`. When false NQ
-    /// retains a refusal and sends nothing.
+    /// retains a refusal and sends nothing. A `local_file` notice route
+    /// needs no network and ignores it.
     pub network_enabled: bool,
+}
+
+impl Routes {
+    /// Whether intents of `schema` go to the local inbox (`deliver-local`).
+    #[must_use]
+    pub fn local(&self, schema: &str) -> bool {
+        self.notice_transport == NoticeTransport::LocalFile && schema == crate::intent::INTENT_V1
+    }
+
+    /// Whether a submission of `schema` can deliver: a local inbox always
+    /// can; a network route only with `network_enabled`.
+    #[must_use]
+    pub fn delivers(&self, schema: &str) -> bool {
+        self.network_enabled || self.local(schema)
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -246,6 +280,14 @@ impl Config {
         absolute("nq.program", &self.nq.program)?;
         absolute("nq.config", &self.nq.config)?;
         route_reference("routes.notice_route", &self.routes.notice_route)?;
+        if self.routes.notice_transport == NoticeTransport::LocalFile
+            && self.routes.notice_route.len() > crate::intent::LOCAL_ROUTE_MAX
+        {
+            return Err(format!(
+                "a local_file notice_route must be at most {} bytes so its rendered message fits NQ's 4 KiB limit",
+                crate::intent::LOCAL_ROUTE_MAX
+            ));
+        }
         if let Some(page) = &self.routes.page_route {
             route_reference("routes.page_route", page)?;
             if page == &self.routes.notice_route {

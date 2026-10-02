@@ -5,7 +5,9 @@
 # Controls in $FAKE_NQ_DIR: `next_state` (accepted|failed|unknown),
 # `crash` (kill the caller before NQ retains anything, once), `crash_after`
 # (retain, then kill the caller before it hears the answer, once),
-# `command_error` (exit 1 before custody).
+# `command_error` (exit 1 before custody). `deliver-local` answers like
+# `submit` for a local_file route and is logged under route `local:<route>`;
+# `local_route` names a route that `submit` must refuse as local_file.
 set -eu
 dir="$FAKE_NQ_DIR"
 [ "$1" = --config ] && [ "$3" = --json ] && [ "$4" = notification ] || { echo "unexpected argv: $*" >&2; exit 64; }
@@ -26,9 +28,21 @@ crash_after=false
 if [ -e "$dir/crash_after" ]; then rm -f "$dir/crash_after"; crash_after=true; fi
 if [ -e "$dir/command_error" ]; then echo "notification condition target_class is refused" >&2; exit 1; fi
 state=$(cat "$dir/next_state" 2>/dev/null || echo accepted)
-$net || state=refused
 mkdir -p "$dir/records" "$dir/intents"
 n=$(($(ls "$dir/intents" | wc -l) + 1))
+if [ "$sub" = deliver-local ]; then
+  # NQ 0.2.1: a local_file route takes no --enable-network, requires
+  # destination_identity local-inbox:<route>, and refuses submit.
+  $net && { echo "unexpected flag --enable-network" >&2; exit 64; }
+  grep -q "\"destination_identity\":\"local-inbox:$route\"" "$intent" || {
+    echo "local inbox intent destination identity does not match its configured route" >&2; exit 1; }
+  sub=submit
+  route="local:$route"
+elif [ -e "$dir/local_route" ] && [ "$route" = "$(cat "$dir/local_route")" ]; then
+  echo "local_file routes require notification deliver-local" >&2; exit 1
+else
+  $net || state=refused
+fi
 case "$sub" in
   submit)
     event=$(sed -n 's/.*"stable_event_id":"\([^"]*\)".*/\1/p' "$intent")

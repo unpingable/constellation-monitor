@@ -1,4 +1,4 @@
-//! The only delivery path: `nq notification submit|resubmit`. The evaluator
+//! The only delivery path: `nq notification submit|resubmit|deliver-local`. The evaluator
 //! never contacts a destination itself and never reads route secrets; the
 //! child inherits the service environment that holds NQ's route locators.
 
@@ -20,7 +20,7 @@ pub struct SubmitOutcome {
     pub error: Option<String>,
 }
 
-fn run(config: &Config, tail: Vec<String>) -> SubmitOutcome {
+fn run(config: &Config, tail: Vec<String>, network: bool) -> SubmitOutcome {
     let mut argv = vec![
         config.nq.program.display().to_string(),
         "--config".to_owned(),
@@ -29,7 +29,7 @@ fn run(config: &Config, tail: Vec<String>) -> SubmitOutcome {
         "notification".to_owned(),
     ];
     argv.extend(tail);
-    if config.routes.network_enabled {
+    if network && config.routes.network_enabled {
         argv.push("--enable-network".to_owned());
     }
     let output = match run_bounded(
@@ -100,6 +100,23 @@ pub fn submit(config: &Config, intent: &Path, route: &str) -> SubmitOutcome {
             "--route".into(),
             route.into(),
         ],
+        true,
+    )
+}
+
+/// `nq notification deliver-local --intent FILE --route R`, for a
+/// `local_file` route. It needs no network and takes no `--enable-network`.
+pub fn deliver_local(config: &Config, intent: &Path, route: &str) -> SubmitOutcome {
+    run(
+        config,
+        vec![
+            "deliver-local".into(),
+            "--intent".into(),
+            intent.display().to_string(),
+            "--route".into(),
+            route.into(),
+        ],
+        false,
     )
 }
 
@@ -114,5 +131,6 @@ pub fn resubmit(config: &Config, notification_id: &str, stable_event_id: &str) -
             "--stable-event-id".into(),
             stable_event_id.into(),
         ],
+        true,
     )
 }

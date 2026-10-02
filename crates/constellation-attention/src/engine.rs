@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::condition::ConditionKey;
-use crate::config::{Config, EffectiveRule, NoticeTransport};
+use crate::config::{Config, EffectiveRule};
 use crate::inputs::{self, Context, InputReport, InputStatus, Observation, Observed};
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
@@ -178,11 +178,12 @@ fn follow_up(
         // again on the next pass. NQ answers an exact repeat idempotently.
         ("unknown" | "command_error", None) => Some((Operation::SubmitAgain, false)),
         ("accepted", _) => None,
-        (_, Some(_)) if !config.routes.network_enabled => None,
+        // A deliberate refusal (no network) is final until network is enabled.
+        (_, Some(_)) if !config.routes.delivers(&last.schema) => None,
         // PagerDuty: NQ allows resubmitting the newest failed/unknown/refused/pending record.
         (_, Some(_)) if last.schema == INTENT_V2 => Some((Operation::Resubmit, true)),
-        // Slack/Discord: a new event only after a definite non-delivery, never
-        // over an uncertain attempt.
+        // Slack/Discord/local inbox: a new event only after a definite
+        // non-delivery, never over an uncertain attempt.
         ("failed" | "refused", Some(_)) => Some((Operation::Submit, true)),
         _ => None,
     }
@@ -230,13 +231,6 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
         .mode(0o700)
         .create(path)
         .map_err(|error| format!("cannot create {}: {error}", path.display()))
-}
-
-fn transport(config: &Config) -> &'static str {
-    match config.routes.notice_transport {
-        NoticeTransport::Slack => "slack",
-        NoticeTransport::Discord => "discord",
-    }
 }
 
 #[allow(
@@ -474,7 +468,14 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             let (value, schema) = if role == "page" {
                 (intent::v2(&input, &route), INTENT_V2)
             } else {
-                (intent::v1(&input, &route, transport(config)), INTENT_V1)
+                (
+                    intent::v1(
+                        &input,
+                        &route,
+                        config.routes.notice_transport.destination_label(),
+                    ),
+                    INTENT_V1,
+                )
             };
             let file = format!("{stable_event_id}.{role}.json");
             write_atomic(&intents_dir.join(&file), &intent::canonical(&value)?)?;
@@ -488,7 +489,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     schema: schema.into(),
                     notification_id: None,
                     outcome: "unknown".into(),
-                    network: config.routes.network_enabled,
+                    network: config.routes.delivers(schema),
                     at: now,
                     intent_file: file,
                 },
@@ -586,7 +587,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 }
             }
             last.outcome = "unknown".into();
-            last.network = config.routes.network_enabled;
+            last.network = config.routes.delivers(&last.schema);
             last.at = now;
             plan.push(Planned {
                 condition_id: id.clone(),
@@ -660,6 +661,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             let result = match (item.operation, &item.retry_of) {
                 (Operation::Resubmit, Some(from)) => {
                     nq::resubmit(config, from, &last.stable_event_id)
+                }
+                _ if config.routes.local(&last.schema) => {
+                    nq::deliver_local(config, &intents_dir.join(&last.intent_file), &last.route)
                 }
                 _ => nq::submit(config, &intents_dir.join(&last.intent_file), &last.route),
             };

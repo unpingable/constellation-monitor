@@ -76,6 +76,7 @@ struct Harness {
     extra_config: String,
     page_route: bool,
     network: bool,
+    notice_transport: &'static str,
 }
 
 impl Harness {
@@ -88,6 +89,7 @@ impl Harness {
             extra_config: String::new(),
             page_route: true,
             network: true,
+            notice_transport: "slack",
         }
     }
 
@@ -132,13 +134,14 @@ impl Harness {
              config = \"/etc/nq/nqd-ops.toml\"\n\
              [routes]\n\
              notice_route = \"operations\"\n\
-             notice_transport = \"slack\"\n\
+             notice_transport = \"{transport}\"\n\
              {page}\
              network_enabled = {network}\n\
              {extra}\n",
             state = self.path("state/state.json").display(),
             nq = Path::new(FIXTURES).join("fake-nq.sh").display(),
             network = self.network,
+            transport = self.notice_transport,
             extra = self.extra_config,
         );
         let path = self.path("attention.toml");
@@ -1582,4 +1585,70 @@ fn long_unknown_gap_restarts_resolve_confirmation() {
     }
     set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1080);
     assert_eq!(intents(&harness.evaluate(T0 + 1080)).len(), 2);
+}
+
+/// A `local_file` notice route keeps qualification notices out of
+/// production channels: `deliver-local`, no `--enable-network`, destination
+/// `local-inbox:<route>`, and a rendered message under NQ's 4 KiB limit.
+#[test]
+fn local_file_notices_use_deliver_local() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.network = false;
+    harness.notice_transport = "local_file";
+    harness.host_posture("root");
+    harness.fake("local_route", "operations");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let calls = harness.calls();
+    assert_eq!(
+        calls,
+        vec![
+            "submit local:operations labelwatch-host-posture-unknown-root-trigger-1790943060 n1 accepted new"
+        ]
+    );
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n1")).unwrap();
+    assert_eq!(intent["destination_identity"], "local-inbox:operations");
+    assert_eq!(intent["schema"], "nq.notification_delivery_intent.v1");
+    assert!(
+        constellation_attention::intent::local_inbox_message_bytes(&intent)
+            < constellation_attention::intent::LOCAL_INBOX_MESSAGE_MAX
+    );
+    assert_eq!(
+        harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["notice"]["outcome"],
+        "accepted"
+    );
+    // A definite failure is retried with a new event after the interval;
+    // the resolve goes to the same inbox.
+    harness.fake("next_state", "failed");
+    for offset in [720, 780] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
+    let output = harness.evaluate_at(T0 + 840, &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "a failed local delivery counts"
+    );
+    harness.fake("next_state", "accepted");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1740);
+    harness.evaluate(T0 + 1740);
+    let calls = harness.calls();
+    assert_eq!(
+        calls[1..],
+        [
+            "submit local:operations labelwatch-host-posture-unknown-root-resolve-1790943240 n2 failed new",
+            "submit local:operations labelwatch-host-posture-unknown-root-resolve-1790944140 n3 accepted new",
+        ]
+    );
 }

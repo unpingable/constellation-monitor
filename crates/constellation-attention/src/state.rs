@@ -64,7 +64,8 @@ pub struct LastIntent {
     /// `unknown` until NQ answers; then NQ's `delivery_state`, or
     /// `command_error` when NQ refused the command before custody.
     pub outcome: String,
-    /// Whether the submission carried `--enable-network`.
+    /// Whether the submission could deliver: it carried `--enable-network`,
+    /// or went to a local inbox. A refusal without it is deliberate.
     pub network: bool,
     /// Unix seconds of the latest submission attempt.
     pub at: i64,
