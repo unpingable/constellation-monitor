@@ -13,6 +13,7 @@ members = [
     "crates/pulse-l3-bridge",
     "crates/pulse-nq-load-correspondence",
     "crates/pulse-nq-load-support",
+    "crates/pulse-m2-support",
     "crates/pulse-project-predicate-support",
     "crates/pulse-qualification",
     "crates/pulse-replay",

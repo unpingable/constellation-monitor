@@ -519,6 +519,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulse-m2-support"
+version = "0.1.0"
+dependencies = [
+ "pulse-nq-load-support",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "pulse-nq-load-correspondence"
 version = "0.1.0"
 dependencies = [
