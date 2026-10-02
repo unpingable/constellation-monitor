@@ -39,6 +39,11 @@ pub struct ConditionState {
     pub transition_at: Option<i64>,
     /// Newest intent per route role (`page`, `notice`).
     pub last_intent: BTreeMap<String, LastIntent>,
+    /// Triggers NQ never retained when a resolve replaced them. Each is
+    /// submitted once more before that resolve, then forgotten: retained, or
+    /// reported as a dropped trigger.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pending_trigger: BTreeMap<String, LastIntent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

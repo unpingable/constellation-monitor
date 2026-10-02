@@ -1226,3 +1226,178 @@ fn untargetable_unit_makes_the_input_not_current() {
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-nqd-trigger-"));
 }
+
+/// Review A4: a trigger the nq command refused before custody is retried on
+/// the next pass, not after the 900 s resend interval.
+#[test]
+fn command_error_trigger_is_retried_on_the_next_pass() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert!(harness.calls().is_empty());
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(report["intents"][0]["operation"], "submit_again");
+    let calls = harness.calls();
+    assert_eq!(
+        calls,
+        vec![
+            "submit operations labelwatch-host-posture-unknown-root-trigger-1790943060 n1 accepted new",
+            "submit pagerduty-ops labelwatch-host-posture-unknown-root-trigger-1790943060 n2 accepted new",
+        ]
+    );
+    for offset in [1260, 1320, 1380] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert!(calls[2].contains("-resolve-") && calls[3].contains("-resolve-"));
+}
+
+/// Review A4: when the resolve is decided while the trigger was never
+/// retained, the trigger goes first in that pass.
+#[test]
+fn resolve_sends_a_never_retained_trigger_first() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    for offset in (0..=1200).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [1260, 1320] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert!(harness.calls().is_empty());
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1380);
+    let report = harness.evaluate(T0 + 1380);
+    let operations: Vec<(&str, &str)> = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|intent| {
+            (
+                intent["action"].as_str().unwrap(),
+                intent["operation"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        operations,
+        vec![
+            ("trigger", "submit_before_resolve"),
+            ("trigger", "submit_before_resolve"),
+            ("resolve", "submit"),
+            ("resolve", "submit"),
+        ]
+    );
+    let calls = harness.calls();
+    assert_eq!(
+        calls,
+        vec![
+            "submit operations labelwatch-host-posture-unknown-root-trigger-1790943060 n1 accepted new",
+            "submit pagerduty-ops labelwatch-host-posture-unknown-root-trigger-1790943060 n2 accepted new",
+            "submit operations labelwatch-host-posture-unknown-root-resolve-1790943780 n3 accepted new",
+            "submit pagerduty-ops labelwatch-host-posture-unknown-root-resolve-1790943780 n4 accepted new",
+        ]
+    );
+    assert_eq!(report["dropped_triggers"], json!([]));
+    assert!(
+        harness.state()["conditions"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// Review A4: a trigger NQ still refuses when its resolve goes out is
+/// reported as dropped and the pass exits non-zero; it is never sent after
+/// the resolve.
+#[test]
+fn never_retained_trigger_is_reported_as_dropped() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [720, 840] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(3));
+    }
+    let report = harness.report();
+    let dropped = report["dropped_triggers"].as_array().unwrap();
+    assert_eq!(dropped.len(), 2, "{report}");
+    assert_eq!(
+        dropped[0]["stable_event_id"],
+        "labelwatch-host-posture-unknown-root-trigger-1790943060"
+    );
+    assert_eq!(dropped[0]["outcome"], "command_error");
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    for offset in [900, 960, 1800] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.contains("-resolve-1790943240"))
+    );
+}
+
+/// Review A5: a missing retained intent file fails that follow-up only.
+#[test]
+fn missing_intent_file_fails_only_its_follow_up() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.host_posture("data");
+    harness.fake("next_state", "failed");
+    set(&harness, "data", ProjectedStateV1::Healthy, T0);
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let file = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["intent_file"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::remove_file(harness.path("state/intents").join(file)).unwrap();
+    harness.fake("next_state", "accepted");
+    let mut last = None;
+    for offset in (720..=2400).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        set(&harness, "data", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(3), "+{offset}");
+        last = Some(output);
+    }
+    let stderr = String::from_utf8_lossy(&last.unwrap().stderr).into_owned();
+    assert!(stderr.contains("outcome=intent_unreadable"), "{stderr}");
+    let data = "labelwatch-host-posture-unknown-data-trigger-";
+    let calls = harness.calls();
+    assert_eq!(
+        calls.iter().filter(|call| call.contains(data)).count(),
+        2,
+        "the second condition is still notified: {calls:?}"
+    );
+    let report = harness.report();
+    assert!(
+        report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|intent| intent["outcome"] == "intent_unreadable")
+    );
+}

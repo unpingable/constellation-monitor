@@ -44,6 +44,9 @@ enum Operation {
     SubmitAgain,
     /// `nq notification resubmit` of the newest retained v2 record.
     Resubmit,
+    /// The same bytes of a trigger NQ never retained, submitted before the
+    /// resolve that replaced it.
+    SubmitBeforeResolve,
 }
 
 struct Planned {
@@ -142,9 +145,10 @@ fn follow_up(
         return None;
     }
     match (last.outcome.as_str(), &last.notification_id) {
-        // Written, maybe submitted, never answered: the same bytes again are idempotent.
-        ("unknown", None) => Some((Operation::SubmitAgain, false)),
-        ("command_error", _) => Some((Operation::SubmitAgain, true)),
+        // Written, maybe submitted, never answered, or refused by the nq
+        // command before custody: NQ retains nothing, so the same bytes go
+        // again on the next pass. NQ answers an exact repeat idempotently.
+        ("unknown" | "command_error", None) => Some((Operation::SubmitAgain, false)),
         ("accepted", _) => None,
         (_, Some(_)) if !config.routes.network_enabled => None,
         // PagerDuty: NQ allows resubmitting the newest failed/unknown/refused/pending record.
@@ -326,6 +330,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 active: false,
                 transition_at: None,
                 last_intent: BTreeMap::new(),
+                pending_trigger: BTreeMap::new(),
             }
         });
         let rule = rule_for(&rules, &condition.key.rule);
@@ -457,10 +462,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             });
         }
         for (role, last) in written {
-            condition.last_intent.insert(role, last);
+            if let Some(previous) = condition.last_intent.insert(role.clone(), last)
+                && previous.action == Action::Trigger.as_str()
+                && previous.notification_id.is_none()
+            {
+                // A resolve never replaces a trigger NQ did not retain: the
+                // trigger goes first in this pass.
+                condition.pending_trigger.insert(role, previous);
+            }
         }
     }
     let transitioned: BTreeSet<&String> = transitions.iter().map(|(id, _, _)| id).collect();
+    let mut unreadable: Vec<IntentReport> = Vec::new();
     for (id, condition) in &mut state.conditions {
         if transitioned.contains(id) {
             continue;
@@ -479,13 +492,42 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             let mut retry_of = None;
             if operation != Operation::SubmitAgain {
                 // A new record for the same condition: same bytes, new event id.
-                let prior = read_bounded(
+                let prior = match read_bounded(
                     &state_dir.join("intents").join(&last.intent_file),
                     64 * 1024,
                 )
                 .and_then(|bytes| {
                     serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())
-                })?;
+                }) {
+                    Ok(prior) => prior,
+                    Err(error) => {
+                        // Only this follow-up fails; the pass goes on.
+                        eprintln!(
+                            "follow-up condition={id} route={} outcome=intent_unreadable error={error}",
+                            last.route
+                        );
+                        unreadable.push(IntentReport {
+                            condition_id: id.clone(),
+                            route_role: role.clone(),
+                            route: last.route.clone(),
+                            schema: last.schema.clone(),
+                            action: last.action.clone(),
+                            operation,
+                            stable_event_id: last.stable_event_id.clone(),
+                            transition_id: last.transition_id.clone(),
+                            retry_of: last.notification_id.clone(),
+                            intent_file: state_dir
+                                .join("intents")
+                                .join(&last.intent_file)
+                                .display()
+                                .to_string(),
+                            outcome: "intent_unreadable".into(),
+                            notification_id: None,
+                            error: Some(error),
+                        });
+                        continue;
+                    }
+                };
                 let stable_event_id = intent::event_id(&snapshot.key, action, now);
                 let file = format!("{stable_event_id}.{role}.json");
                 write_atomic(
@@ -519,6 +561,23 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             });
         }
     }
+    for (id, condition) in &state.conditions {
+        for (role, pending) in &condition.pending_trigger {
+            if options.dry_run {
+                let source = state_dir.join("intents").join(&pending.intent_file);
+                if let Ok(bytes) = read_bounded(&source, 64 * 1024) {
+                    write_atomic(&intents_dir.join(&pending.intent_file), &bytes)?;
+                }
+            }
+            plan.push(Planned {
+                condition_id: id.clone(),
+                role: role.clone(),
+                action: Action::Trigger,
+                operation: Operation::SubmitBeforeResolve,
+                retry_of: None,
+            });
+        }
+    }
     // Triggers before resolves; within each, condition order.
     plan.sort_by(|left, right| {
         (
@@ -540,17 +599,21 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         state.save(&config.state_path)?;
     }
 
-    let mut intent_reports = Vec::new();
-    let mut delivery_problem = false;
+    let mut delivery_problem = !unreadable.is_empty();
+    let mut intent_reports = unreadable;
+    let mut dropped_triggers = Vec::new();
     for item in &plan {
         let condition = state
             .conditions
             .get_mut(&item.condition_id)
             .expect("planned condition");
-        let last = condition
-            .last_intent
-            .get_mut(&item.role)
-            .expect("planned intent");
+        let before_resolve = item.operation == Operation::SubmitBeforeResolve;
+        let slot = if before_resolve {
+            &mut condition.pending_trigger
+        } else {
+            &mut condition.last_intent
+        };
+        let last = slot.get_mut(&item.role).expect("planned intent");
         let (outcome, notification_id, error) = if options.dry_run {
             ("not_submitted".to_owned(), None, None)
         } else {
@@ -561,13 +624,35 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 _ => nq::submit(config, &intents_dir.join(&last.intent_file), &last.route),
             };
             last.outcome.clone_from(&result.outcome);
+            last.at = now;
             if result.notification_id.is_some() {
                 last.notification_id.clone_from(&result.notification_id);
             }
-            state.save(&config.state_path)?;
             (result.outcome, result.notification_id, result.error)
         };
-        let last = &state.conditions[&item.condition_id].last_intent[&item.role];
+        let last = last.clone();
+        if before_resolve && !options.dry_run {
+            // Retained or not, the pending trigger is settled by this attempt.
+            condition.pending_trigger.remove(&item.role);
+            if notification_id.is_none() {
+                eprintln!(
+                    "dropped_trigger condition={} route={} stable_event_id={} outcome={outcome}",
+                    item.condition_id, last.route, last.stable_event_id
+                );
+                dropped_triggers.push(json!({
+                    "condition_id": item.condition_id,
+                    "route_role": item.role,
+                    "route": last.route,
+                    "stable_event_id": last.stable_event_id,
+                    "outcome": outcome,
+                    "error": error,
+                }));
+                delivery_problem = true;
+            }
+        }
+        if !options.dry_run {
+            state.save(&config.state_path)?;
+        }
         // A refusal of a submission made without --enable-network is the
         // configured qualification mode, not a delivery failure.
         let deliberate_refusal = outcome == "refused" && !last.network;
@@ -606,6 +691,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     .last_intent
                     .values()
                     .any(|last| follow_up(last, condition, config).is_some())
+                || !condition.pending_trigger.is_empty()
         });
         state.updated_at = now;
         state.save(&config.state_path)?;
@@ -658,6 +744,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "conditions": condition_reports,
         "intents": intent_reports,
         "unresolved_deliveries": unresolved,
+        "dropped_triggers": dropped_triggers,
     });
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
@@ -677,7 +764,12 @@ fn prune_intents(dir: &Path, state: &State) {
     let keep: BTreeSet<&str> = state
         .conditions
         .values()
-        .flat_map(|condition| condition.last_intent.values())
+        .flat_map(|condition| {
+            condition
+                .last_intent
+                .values()
+                .chain(condition.pending_trigger.values())
+        })
         .map(|last| last.intent_file.as_str())
         .collect();
     let Ok(entries) = fs::read_dir(dir) else {
