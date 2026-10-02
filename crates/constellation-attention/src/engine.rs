@@ -269,16 +269,65 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         ));
     }
 
-    let context = Context {
+    let mut read = inputs::read_all(&Context {
         config,
         rules: &rules,
         now,
         now_ms: options.now_ms,
-    };
-    let mut read = inputs::read_all(&context);
+        nq_watchers: config
+            .inputs
+            .nq_status
+            .as_ref()
+            // One NQ status input: its roster survives a relabel.
+            .and_then(|input| {
+                state
+                    .nq_watchers
+                    .get(&input.label)
+                    .or_else(|| state.nq_watchers.values().next())
+            }),
+    });
+    if let Some((label, roster)) = read.nq_watchers.take() {
+        state.nq_watchers = BTreeMap::from([(label, roster)]);
+    }
     let mut observed: BTreeMap<String, Observed> = BTreeMap::new();
+    // One condition fed by two inputs (a host-posture label equal to an NQ
+    // filesystem watcher id): neither source may silently win.
+    let mut collisions: Vec<(String, String, String)> = Vec::new();
     for item in read.observed {
-        observed.entry(item.key.id()).or_insert(item);
+        match observed.entry(item.key.id()) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(item);
+            }
+            std::collections::btree_map::Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut();
+                if existing.input_label != item.input_label {
+                    collisions.push((
+                        entry.key().clone(),
+                        entry.get().input_label.clone(),
+                        item.input_label.clone(),
+                    ));
+                    let existing = entry.get_mut();
+                    existing.observation = Observation::Unknown;
+                    existing.note = format!(
+                        "fed by two inputs ({}, {}); not evaluated",
+                        existing.input_label, item.input_label
+                    );
+                }
+            }
+        }
+    }
+    for (id, first, second) in &collisions {
+        for report in read
+            .reports
+            .iter_mut()
+            .filter(|report| report.label == *first || report.label == *second)
+        {
+            report.fault(
+                "unrecognised",
+                InputStatus::NotCurrent,
+                &format!("condition {id} is fed by inputs {first} and {second}; rename one"),
+            );
+        }
     }
     // An open condition that a current input no longer reports has not been
     // observed to recover. Hold it, and report the input as not current so

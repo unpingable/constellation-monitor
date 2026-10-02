@@ -2719,7 +2719,11 @@ fn evaluation_history_unreported_and_stale() {
         });
         report = harness.evaluate(at_ + 3);
     }
-    assert_eq!(report["inputs"][0]["causes"], json!(["unreported"]));
+    // The remembered watcher stopped evaluating: stale as well (round 5).
+    assert_eq!(
+        report["inputs"][0]["causes"],
+        json!(["stale", "unreported"])
+    );
     assert!(
         cron_calls(&harness)
             .iter()
@@ -2838,4 +2842,227 @@ fn filesystem_capacity_version_is_checked() {
         .unwrap()
         .clone();
     assert_eq!(condition["observation"], "clear");
+}
+
+// Fifth review regressions (evaluation-history mode).
+
+/// Fifth review H1: a watcher that stops evaluating stays stale after its
+/// records leave the window; it never "recovers" by scrolling out. When it
+/// returns, its unit is observed again and a later outage pages.
+#[test]
+fn dead_watcher_stays_stale_after_leaving_the_window() {
+    let mut harness = history_harness(50);
+    let t = at("2026-10-02T21:32:17Z");
+    let healthy = |envelope: &mut Value| {
+        set_state(envelope, "unit-cron", "explicitly_absent");
+        true
+    };
+    for offset in [0, 60, 120] {
+        append_round(&harness, t + offset, healthy);
+        harness.evaluate(t + offset + 3);
+    }
+    let mut last = Value::Null;
+    for step in 1..=40 {
+        let at_ = t + 120 + 60 * step;
+        append_round(&harness, at_, |envelope| {
+            envelope["context"]["instance_id"] != "unit-cron"
+        });
+        last = harness.evaluate(at_ + 3);
+        if step >= 4 {
+            let causes = last["inputs"][0]["causes"].as_array().unwrap();
+            assert!(
+                causes.contains(&json!("stale")),
+                "step {step}: {}",
+                last["inputs"][0]
+            );
+        }
+    }
+    assert!(
+        last["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unit-cron")
+    );
+    let stale = |harness: &Harness, action: &str| {
+        harness
+            .calls()
+            .iter()
+            .filter(|call| call.contains(&format!("nqd.stale-{action}-")))
+            .count()
+    };
+    assert_eq!(stale(&harness, "trigger"), 1);
+    assert_eq!(stale(&harness, "resolve"), 0, "{:?}", harness.calls());
+    assert!(
+        harness.state()["nq_watchers"]["nqd"]
+            .as_object()
+            .unwrap()
+            .contains_key("unit-cron")
+    );
+    // The watcher returns with cron down: stale resolves, cron pages.
+    let back = t + 120 + 60 * 40;
+    for step in 1..=6 {
+        append_round(&harness, back + 60 * step, |_| true);
+        harness.evaluate(back + 60 * step + 3);
+    }
+    assert_eq!(cron_calls(&harness).len(), 2, "{:?}", harness.calls());
+    // Retiring a watcher the operator removed clears it from the roster.
+    harness.extra_config = harness.extra_config.replace(
+        "window_records = 50",
+        "window_records = 50\nretired_instances = [\"unit-ssh\"]",
+    );
+    let at_ = back + 60 * 7;
+    append_round(&harness, at_, |envelope| {
+        envelope["context"]["instance_id"] != "unit-ssh"
+    });
+    harness.evaluate(at_ + 3);
+    assert!(
+        !harness.state()["nq_watchers"]["nqd"]
+            .as_object()
+            .unwrap()
+            .contains_key("unit-ssh")
+    );
+}
+
+/// Fifth review H2a: two evaluations of one watcher in the same second; the
+/// later sequence wins. H2b: a later sequence with an earlier evaluated_at
+/// loses.
+#[test]
+fn history_ties_go_to_the_later_sequence() {
+    let harness = history_harness(300);
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181, 240] {
+        append_round(&harness, t + offset, |envelope| {
+            set_state(envelope, "unit-cron", "present");
+            true
+        });
+        append_round(&harness, t + offset, |envelope| {
+            set_state(envelope, "unit-cron", "explicitly_absent");
+            envelope["context"]["instance_id"] == "unit-cron"
+        });
+        harness.evaluate(t + offset + 3);
+    }
+    assert!(cron_calls(&harness).is_empty(), "{:?}", harness.calls());
+    let harness = history_harness(300);
+    for offset in [0, 60, 120, 181] {
+        append_round(&harness, t + offset, |envelope| {
+            set_state(envelope, "unit-cron", "present");
+            true
+        });
+        append_round(&harness, t + offset, |envelope| {
+            set_state(envelope, "unit-cron", "explicitly_absent");
+            envelope["evaluated_at"] = json!(rfc3339(t + offset - 50));
+            envelope["context"]["instance_id"] == "unit-cron"
+        });
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(cron_calls(&harness).len(), 2, "{:?}", harness.calls());
+}
+
+/// Fifth review H4: a host-posture label equal to an NQ filesystem watcher
+/// id feeds one host-disk condition from two inputs. Neither wins: the
+/// condition is unknown and both inputs report `unrecognised`.
+#[test]
+fn host_disk_fed_by_two_inputs_is_unrecognised() {
+    let mut harness = history_harness(300);
+    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
+    harness.host_posture("fs-root-capacity");
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in (0..=1200).step_by(60) {
+        set(
+            &harness,
+            "fs-root-capacity",
+            ProjectedStateV1::Healthy,
+            t + offset,
+        );
+        append_round(&harness, t + offset, |envelope| {
+            set_state(envelope, "fs-root-capacity", "present");
+            set_state(envelope, "unit-cron", "explicitly_absent");
+            true
+        });
+        harness.evaluate(t + offset + 3);
+    }
+    let report = harness.report();
+    let condition = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|condition| {
+            condition["id"] == "constellation:labelwatch:host_posture:host-disk:fs-root-capacity"
+        })
+        .unwrap()
+        .clone();
+    assert_eq!(condition["observation"], "unknown");
+    for input in report["inputs"].as_array().unwrap() {
+        assert!(
+            input["causes"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("unrecognised")),
+            "{input}"
+        );
+    }
+    let calls = harness.calls();
+    assert!(
+        calls.iter().all(|call| !call.contains("host-disk")),
+        "{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("evaluator-input-unavailable-nqd.unrecognised-trigger-")),
+        "{calls:?}"
+    );
+}
+
+/// Fifth review H5: an open NQ host-disk page holds through a relabel of
+/// the NQ input and the removal of its filesystem watcher.
+#[test]
+fn nq_host_disk_holds_through_relabel_and_watcher_removal() {
+    let mut harness = history_harness(300);
+    let t = at("2026-10-02T21:32:17Z");
+    let present = |envelope: &mut Value| {
+        set_state(envelope, "fs-root-capacity", "present");
+        set_state(envelope, "unit-cron", "explicitly_absent");
+        true
+    };
+    for offset in (0..=960).step_by(60) {
+        append_round(&harness, t + offset, present);
+        harness.evaluate(t + offset + 3);
+    }
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .any(|call| call.contains("host-disk-fs-root-capacity-trigger"))
+    );
+    harness.extra_config = harness
+        .extra_config
+        .replace("label = \"nqd\"", "label = \"ops\"");
+    for offset in (1020..=1200).step_by(60) {
+        append_round(&harness, t + offset, present);
+        harness.evaluate(t + offset + 3);
+    }
+    for step in 1..=80 {
+        let at_ = t + 1200 + 60 * step;
+        append_round(&harness, at_, |envelope| {
+            set_state(envelope, "unit-cron", "explicitly_absent");
+            envelope["context"]["instance_id"] != "fs-root-capacity"
+        });
+        harness.evaluate(at_ + 3);
+    }
+    assert!(
+        !harness
+            .calls()
+            .iter()
+            .any(|call| call.contains("host-disk") && call.contains("-resolve-"))
+    );
+    let report = harness.report();
+    let causes = report["inputs"][0]["causes"].as_array().unwrap();
+    assert!(causes.contains(&json!("stale")), "{}", report["inputs"][0]);
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("fs-root-capacity")
+    );
 }

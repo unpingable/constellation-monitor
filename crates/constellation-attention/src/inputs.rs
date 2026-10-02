@@ -17,7 +17,8 @@ use crate::config::{
     SavedCheckInput,
 };
 use crate::util::{
-    ChildEnvironment, excerpt, format_seconds, read_bounded, rfc3339_seconds, run_bounded, truncate,
+    ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
+    run_bounded, truncate,
 };
 
 const STATUS_EXPORT_LIMIT: usize = 16 * 1024 * 1024;
@@ -129,6 +130,9 @@ impl InputReport {
 pub struct InputsRead {
     pub reports: Vec<InputReport>,
     pub observed: Vec<Observed>,
+    /// Evaluation-history mode: the NQ status input's label and its updated
+    /// watcher roster, to be remembered in the state.
+    pub nq_watchers: Option<(String, BTreeMap<String, i64>)>,
 }
 
 pub struct Context<'a> {
@@ -136,6 +140,8 @@ pub struct Context<'a> {
     pub rules: &'a [EffectiveRule],
     pub now: i64,
     pub now_ms: i64,
+    /// The remembered NQ watcher roster of the NQ status input's label.
+    pub nq_watchers: Option<&'a BTreeMap<String, i64>>,
 }
 
 impl Context<'_> {
@@ -158,6 +164,7 @@ pub fn read_all(context: &Context<'_>) -> InputsRead {
     let mut read = InputsRead {
         reports: Vec::new(),
         observed: Vec::new(),
+        nq_watchers: None,
     };
     for input in &context.config.inputs.host_posture {
         host_posture(context, input, &mut read);
@@ -400,6 +407,9 @@ fn answered_at(context: &Context<'_>, started: Instant) -> i64 {
 }
 
 struct Lineage {
+    /// (`evaluated_at` in nanoseconds, history position) for choosing the
+    /// newest evaluation per lineage.
+    order: (i128, usize),
     evaluated_at: i64,
     state: String,
     evaluation_id: String,
@@ -634,7 +644,26 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         }
     };
     let generated = snapshot.generated;
-    let collected = &snapshot.collected;
+    let history = input.source == NqStatusSource::EvaluationHistory;
+    // History mode: liveness is the remembered roster merged with the
+    // window, so a watcher that stops evaluating stays stale after its
+    // records scroll out, until the operator retires it.
+    let mut liveness = snapshot.collected.clone();
+    if history && let Some(remembered) = context.nq_watchers {
+        for (instance, at) in remembered {
+            let newest = liveness.entry(instance.clone()).or_insert(*at);
+            *newest = (*newest).max(*at);
+        }
+    }
+    let roster: BTreeMap<String, i64> = liveness
+        .iter()
+        .filter(|(instance, _)| !input.retired_instances.contains(instance))
+        .map(|(instance, at)| (instance.clone(), *at))
+        .collect();
+    if history {
+        read.nq_watchers = Some((input.label.clone(), roster.clone()));
+    }
+    let collected = &liveness;
     // Age and future skew are measured when the source answered, not when
     // the pass started: a slow export (bounded by the command timeout) is
     // not a snapshot from the future.
@@ -656,7 +685,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     // missing lineage as recovery.
     let mut unrecognised: Vec<String> = Vec::new();
     let mut untargetable: Vec<String> = Vec::new();
-    for (id, envelope) in &snapshot.evaluations {
+    for (position, (id, envelope)) in snapshot.evaluations.iter().enumerate() {
         let Some(envelope) = envelope else {
             unrecognised.push(format!("evaluation {id:?} has no evaluation envelope"));
             continue;
@@ -706,13 +735,22 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             ));
             continue;
         }
-        let Ok(evaluated_at) = rfc3339_seconds(&text("/evaluated_at")) else {
+        let Ok(evaluated) = parse_rfc3339(&text("/evaluated_at")) else {
             unrecognised.push(format!(
                 "evaluation {id:?} (instance {instance_id:?}) has no valid evaluated_at"
             ));
             continue;
         };
+        let evaluated_at = evaluated.unix_timestamp();
+        // Newest by full evaluated_at precision; on an exact tie the later
+        // history record (higher sequence) wins. A later sequence with an
+        // earlier evaluated_at loses.
+        let order = (
+            evaluated.unix_timestamp_nanos(),
+            if history { position } else { 0 },
+        );
         let lineage = Lineage {
+            order,
             evaluated_at,
             state: text("/result/state"),
             evaluation_id: text("/evaluation_id"),
@@ -735,7 +773,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             }
             if units
                 .get(&unit)
-                .is_none_or(|existing| existing.evaluated_at < evaluated_at)
+                .is_none_or(|existing| existing.order < order)
             {
                 units.insert(unit, lineage);
             }
@@ -748,13 +786,13 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             }
             if filesystems
                 .get(&target)
-                .is_none_or(|existing| existing.evaluated_at < evaluated_at)
+                .is_none_or(|existing| existing.order < order)
             {
                 filesystems.insert(target, lineage);
             }
         } else if memory
             .as_ref()
-            .is_none_or(|existing| existing.evaluated_at < evaluated_at)
+            .is_none_or(|existing| existing.order < order)
         {
             memory = Some(lineage);
         }
@@ -770,6 +808,14 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         .chain(memory.as_ref())
         .filter(|lineage| stale_instance(lineage))
         .map(|lineage| lineage.instance_id.as_str())
+        .chain(
+            roster
+                .iter()
+                .filter(|(_, at)| history && generated - **at > input.stale_after_seconds)
+                .map(|(instance, _)| instance.as_str()),
+        )
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
         .collect();
     let indeterminate: Vec<String> = units
         .iter()

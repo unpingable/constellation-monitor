@@ -160,6 +160,11 @@ pub struct NqStatusInput {
     /// watcher's evaluations.
     #[serde(default = "default_window_records")]
     pub window_records: u32,
+    /// Evaluation-history mode: watcher instances the operator has removed
+    /// from NQ. Every other watcher ever seen is remembered and is stale once
+    /// it stops evaluating, even after it leaves the window.
+    #[serde(default)]
+    pub retired_instances: Vec<String>,
     /// argv printing `nq.status_snapshot.v3` JSON, e.g.
     /// `["/usr/bin/nq","--config","/etc/nq/nqd-ops.toml","--json","status","export"]`.
     pub command: Option<Vec<String>>,

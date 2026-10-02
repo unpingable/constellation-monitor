@@ -19,6 +19,12 @@ pub struct State {
     /// Unix seconds of the last completed pass.
     pub updated_at: i64,
     pub conditions: BTreeMap<String, ConditionState>,
+    /// Evaluation-history mode: every NQ watcher instance ever seen, per NQ
+    /// status input label, with its newest `evaluated_at` (unix seconds). A
+    /// watcher that leaves the window stays stale from that time until the
+    /// operator lists it in `retired_instances`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nq_watchers: BTreeMap<String, BTreeMap<String, i64>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -81,6 +87,7 @@ impl State {
             site: site.into(),
             updated_at: 0,
             conditions: BTreeMap::new(),
+            nq_watchers: BTreeMap::new(),
         }
     }
 
