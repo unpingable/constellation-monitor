@@ -21,6 +21,9 @@ use crate::util::{
 
 const STATUS_EXPORT_LIMIT: usize = 16 * 1024 * 1024;
 const SAVED_CHECK_LIMIT: usize = 1024 * 1024;
+/// The host-posture projection these rules read, and its known generations.
+pub const HOST_POSTURE_PROJECTION: &str = "operator-filesystem-capacity";
+pub const HOST_POSTURE_GENERATIONS: &[&str] = &["filesystem-capacity-v1"];
 pub const NQ_STATUS_SCHEMA: &str = "nq.status_snapshot.v3";
 pub const SYSTEMD_UNIT_PROFILE: &str = "nq.systemd_unit";
 pub const SYSTEMD_UNIT_VERSION: u64 = 2;
@@ -176,6 +179,32 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
             return;
         }
     };
+    if artifact.projection_id != HOST_POSTURE_PROJECTION
+        || !HOST_POSTURE_GENERATIONS.contains(&artifact.projection_generation.as_str())
+    {
+        // Other producers write the same status object schema (memory, load,
+        // systemd units, inodes); only the filesystem-capacity projection
+        // feeds these rules.
+        read.reports.push(InputReport {
+            label: input.label.clone(),
+            kind: "host_posture",
+            component: "host_posture",
+            source,
+            status: InputStatus::Unavailable,
+            error: Some(format!(
+                "CURRENT is projection {:?} generation {:?}, not {HOST_POSTURE_PROJECTION:?} ({})",
+                artifact.projection_id,
+                artifact.projection_generation,
+                HOST_POSTURE_GENERATIONS.join(", ")
+            )),
+            identity: json!({
+                "artifact_id": artifact.artifact_id,
+                "projection_id": artifact.projection_id,
+                "projection_generation": artifact.projection_generation,
+            }),
+        });
+        return;
+    }
     let uncertainty = i64::try_from(artifact.admitted_clock_uncertainty_ms).unwrap_or(i64::MAX);
     let generated = i64::try_from(artifact.generated_at_unix_ms).unwrap_or(i64::MAX);
     let fresh_until = i64::try_from(artifact.fresh_until_unix_ms).unwrap_or(i64::MAX);

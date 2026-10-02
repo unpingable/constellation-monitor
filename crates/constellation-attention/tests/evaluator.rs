@@ -1429,3 +1429,57 @@ fn clock_regression_is_refused() {
     assert_eq!(harness.calls().len(), 4);
     assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), state);
 }
+
+/// Review A11: a CURRENT naming another projection that writes the same
+/// status object schema is unavailable, never read as disk pressure.
+#[test]
+fn foreign_projection_is_unavailable() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    let mut report = Value::Null;
+    for offset in (0..=960).step_by(60) {
+        let mut artifact = status_object(ProjectedStateV1::Degraded, T0 + offset - 5, 300);
+        artifact.projection_id = "operator-memory-pressure".into();
+        artifact.projection_generation = "memory-pressure-v1".into();
+        artifact.components[0].id = "memory-pressure".into();
+        artifact.artifact_id = artifact.compute_id().unwrap();
+        publish(&harness.root("root"), &artifact);
+        report = harness.evaluate(T0 + offset);
+    }
+    assert_eq!(report["inputs"][0]["status"], "unavailable");
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("\"operator-memory-pressure\"")
+    );
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-root-trigger-"));
+}
+
+/// Review N3: `nq.host_memory` is read only at the profile version it was
+/// qualified against.
+#[test]
+fn unrecognised_host_memory_version_is_not_current() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let value = retimed("healthy.json", t, |value| {
+        for component in value["components"].as_array_mut().unwrap() {
+            if component["kind"] == "evaluation"
+                && component["detail"]["result"]["context"]["instance_id"] == "host-memory"
+            {
+                component["detail"]["result"]["profile"]["profile"]["version"] = json!(2);
+            }
+        }
+    });
+    write_status(&status, &value);
+    let report = harness.evaluate(t + 3);
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unrecognised profile \"nq.host_memory\" version 2")
+    );
+}
