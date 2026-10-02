@@ -12,9 +12,9 @@ pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
 
 /// Minimum spacing between delivery retries for one condition and route.
 pub const RESEND_INTERVAL_SECONDS: i64 = 900;
-/// The longest run of unknown observations a persistence or confirmation
-/// interval may contain: one 60 s pass interval plus timer jitter. A longer
-/// unknown gap restarts the interval at the next definite observation.
+/// The longest run of unknown observations an interval absorbs: one 60 s
+/// pass interval plus timer jitter. A longer run moves the start of the
+/// persistence or confirmation interval forward by its length.
 pub const UNKNOWN_GAP_SECONDS: i64 = 90;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

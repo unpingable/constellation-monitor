@@ -1487,10 +1487,10 @@ fn unrecognised_host_memory_version_is_not_current() {
     );
 }
 
-/// Review A9: an unknown gap longer than one pass interval does not count
-/// toward persistence; the bound restarts at the next present observation.
+/// Review A9: an unknown run longer than one pass interval does not count
+/// toward persistence; the interval's start moves forward by the run.
 #[test]
-fn long_unknown_gap_restarts_persistence() {
+fn long_unknown_gap_does_not_count_toward_persistence() {
     let mut harness = Harness::new();
     harness.host_posture("root");
     harness.raw("[rules.host-disk]\nclass = \"page\"\n");
@@ -1513,15 +1513,16 @@ fn long_unknown_gap_restarts_persistence() {
     let state = harness.state();
     assert_eq!(
         state["conditions"]["constellation:labelwatch:host_posture:host-disk:root"]["first_seen"],
-        T0 + 960
+        T0 + 900,
+        "T0 plus the 900 s unknown run"
     );
-    for offset in (1020..=1860).step_by(60) {
+    for offset in (1020..=1800).step_by(60) {
         set(&harness, "root", ProjectedStateV1::Degraded, T0 + offset);
         harness.evaluate(T0 + offset);
     }
     assert_eq!(disk(&harness.calls()), 0);
-    set(&harness, "root", ProjectedStateV1::Degraded, T0 + 1920);
-    harness.evaluate(T0 + 1920);
+    set(&harness, "root", ProjectedStateV1::Degraded, T0 + 1860);
+    harness.evaluate(T0 + 1860);
     assert_eq!(disk(&harness.calls()), 2, "{:?}", harness.calls());
 }
 
@@ -1560,9 +1561,9 @@ fn single_unknown_pass_keeps_the_interval() {
     );
 }
 
-/// A long unknown gap inside the resolve confirmation restarts it.
+/// A long unknown run inside the resolve confirmation is not counted as clear.
 #[test]
-fn long_unknown_gap_restarts_resolve_confirmation() {
+fn long_unknown_gap_does_not_count_as_clear() {
     let mut harness = Harness::new();
     harness.host_posture("root");
     for offset in [0, 660] {
@@ -1576,15 +1577,11 @@ fn long_unknown_gap_restarts_resolve_confirmation() {
     for offset in [780, 840, 900] {
         harness.evaluate(T0 + offset);
     }
-    for offset in [960, 1020] {
-        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
-        assert!(
-            intents(&harness.evaluate(T0 + offset)).is_empty(),
-            "+{offset}"
-        );
-    }
-    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1080);
-    assert_eq!(intents(&harness.evaluate(T0 + 1080)).len(), 2);
+    // Clear since +720, unknown +780..+900 (180 s): clear_since moves to +900.
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 960);
+    assert!(intents(&harness.evaluate(T0 + 960)).is_empty());
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1020);
+    assert_eq!(intents(&harness.evaluate(T0 + 1020)).len(), 2);
 }
 
 /// A `local_file` notice route keeps qualification notices out of
@@ -1704,4 +1701,70 @@ fn saved_check_reads_the_per_reference_evaluate_document() {
     let report = harness.evaluate(T0 + 125);
     assert_eq!(report["inputs"][0]["status"], "not_current");
     assert_eq!(report["inputs"][0]["identity"]["outcome"], "missing");
+}
+
+fn cron_calls(harness: &Harness) -> Vec<String> {
+    harness
+        .calls()
+        .into_iter()
+        .filter(|call| call.contains("service-down-cron"))
+        .collect()
+}
+
+/// Second review P4: nqd crash-looping makes every watcher stale on 2 of
+/// every 5 passes while cron.service stays down. The unknown passes do not
+/// count, but they do not erase the observed presence either: it pages.
+#[test]
+fn intermittent_stale_input_still_pages_a_continuing_condition() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    for step in 0..120 {
+        let offset = step * 60;
+        let stale = step % 5 >= 3;
+        let value = retimed("cron-down.json", t + offset, |value| {
+            if stale {
+                for component in value["components"].as_array_mut().unwrap() {
+                    if component["kind"] == "instance" {
+                        component["observed_at"] = json!(rfc3339(t + offset - 400));
+                    }
+                }
+            }
+        });
+        write_status(&status, &value);
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = cron_calls(&harness);
+    assert_eq!(calls.len(), 2, "{:?}", harness.calls());
+    assert!(calls.iter().all(|call| call.contains("-trigger-")));
+    assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+}
+
+/// Second review P4b: NQ's detector answers `cannot_evaluate` on 2 of every
+/// 6 passes while cron.service stays down for two hours. It pages.
+#[test]
+fn intermittent_indeterminate_detector_still_pages() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let mut trigger_step = None;
+    for step in 0..120 {
+        let offset = step * 60;
+        let state = if step % 6 >= 4 {
+            "cannot_evaluate"
+        } else {
+            "present"
+        };
+        write_status(
+            &status,
+            &retimed("cron-down.json", t + offset, cron_state(state)),
+        );
+        let report = harness.evaluate(t + offset + 3);
+        if trigger_step.is_none() && !intents(&report).is_empty() {
+            trigger_step = Some(step);
+        }
+    }
+    let calls = cron_calls(&harness);
+    assert_eq!(calls.len(), 2, "{:?}", harness.calls());
+    // Present 0..3, unknown 4..5 (shifted out), present again from 6:
+    // 240 s of observed presence exceeds the 180 s bound at step 6.
+    assert_eq!(trigger_step, Some(6));
 }

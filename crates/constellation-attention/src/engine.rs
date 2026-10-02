@@ -90,18 +90,24 @@ pub fn step(
     persistence_seconds: i64,
     now: i64,
 ) -> Option<Action> {
-    // An unknown gap longer than one pass interval breaks the interval it
-    // falls in: the bound must be covered by definite observations.
-    let gap = condition
+    // Time spent unknown never counts toward an interval, and never erases
+    // the observed part of it either: a run of unknown observations longer
+    // than one pass interval moves the interval's start forward by the run's
+    // length. A condition that is present whenever it can be observed still
+    // reaches its bound, on present observations only.
+    let shift = condition
         .unknown_since
-        .is_some_and(|since| now - since > UNKNOWN_GAP_SECONDS);
+        .map(|since| now - since)
+        .filter(|run| *run > UNKNOWN_GAP_SECONDS);
     if observation != Observation::Unknown {
         condition.unknown_since = None;
     }
     match observation {
         Observation::Present => {
-            if gap && !condition.active {
-                condition.first_seen = None;
+            if let (Some(run), false) = (shift, condition.active)
+                && let Some(first_seen) = condition.first_seen.as_mut()
+            {
+                *first_seen = (*first_seen + run).min(now);
             }
             let first_seen = *condition.first_seen.get_or_insert(now);
             condition.last_seen = Some(now);
@@ -114,8 +120,8 @@ pub fn step(
         }
         Observation::Clear => {
             if condition.active {
-                if gap {
-                    condition.clear_since = None;
+                if let (Some(run), Some(since)) = (shift, condition.clear_since.as_mut()) {
+                    *since = (*since + run).min(now);
                 }
                 let since = *condition.clear_since.get_or_insert(now);
                 if now - since >= RESOLVE_CONFIRM_SECONDS {
@@ -406,6 +412,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             "note": note,
             "reference": item.map(|item| item.reference.clone()),
             "first_seen": condition.first_seen.map(format_seconds),
+            "unknown_since": condition.unknown_since.map(format_seconds),
             "persisted_seconds": condition.first_seen.map(|first| now - first),
             "persistence_bound_seconds": persistence,
             "active": condition.active,
