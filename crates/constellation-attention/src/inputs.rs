@@ -81,6 +81,39 @@ pub struct InputReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub identity: Value,
+    /// Why the input is not `ok`, one class per kind of fault
+    /// ([`INPUT_CAUSES`]). Each class is its own
+    /// `evaluator-input-unavailable` condition, so a lasting fault of one
+    /// class never masks a later fault of another.
+    pub causes: Vec<&'static str>,
+}
+
+/// Fault classes of an input, each keyed separately (`{label}.{cause}`).
+pub const INPUT_CAUSES: &[&str] = &[
+    "unreadable",
+    "stale",
+    "unrecognised",
+    "untargetable",
+    "indeterminate",
+    "unreported",
+    "empty",
+];
+
+impl InputReport {
+    /// Record a fault: its class, the worse of the two statuses, and the
+    /// message appended to `error`.
+    pub fn fault(&mut self, cause: &'static str, status: InputStatus, message: &str) {
+        if !self.causes.contains(&cause) {
+            self.causes.push(cause);
+        }
+        if self.status == InputStatus::Ok || status == InputStatus::Unavailable {
+            self.status = status;
+        }
+        self.error = Some(match self.error.take() {
+            Some(error) if !error.is_empty() => format!("{error}; {message}"),
+            _ => message.to_owned(),
+        });
+    }
 }
 
 pub struct InputsRead {
@@ -128,6 +161,15 @@ pub fn read_all(context: &Context<'_>) -> InputsRead {
     for input in &context.config.inputs.saved_checks {
         saved_check(context, input, &mut read);
     }
+    for report in &mut read.reports {
+        if report.causes.is_empty() {
+            match report.status {
+                InputStatus::Unavailable => report.causes.push("unreadable"),
+                InputStatus::NotCurrent => report.causes.push("stale"),
+                InputStatus::Ok => {}
+            }
+        }
+    }
     read
 }
 
@@ -168,6 +210,7 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         Ok(artifact) => artifact,
         Err(error) => {
             read.reports.push(InputReport {
+                causes: Vec::new(),
                 label: input.label.clone(),
                 kind: "host_posture",
                 component: "host_posture",
@@ -186,6 +229,7 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         // systemd units, inodes); only the filesystem-capacity projection
         // feeds these rules.
         read.reports.push(InputReport {
+            causes: Vec::new(),
             label: input.label.clone(),
             kind: "host_posture",
             component: "host_posture",
@@ -225,6 +269,7 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         .iter()
         .all(|component| component.mode == ModeV1::Maintenance);
     read.reports.push(InputReport {
+        causes: Vec::new(),
         label: input.label.clone(),
         kind: "host_posture",
         component: "host_posture",
@@ -342,6 +387,7 @@ struct Lineage {
 
 fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead) {
     let mut report = InputReport {
+        causes: Vec::new(),
         label: input.label.clone(),
         kind: "nq_status",
         component: "nq",
@@ -521,34 +567,66 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         .filter(|lineage| stale_instance(lineage))
         .map(|lineage| lineage.instance_id.as_str())
         .collect();
-    let mut problems = Vec::new();
+    let indeterminate: Vec<String> = units
+        .iter()
+        .map(|(unit, lineage)| (unit.as_str(), lineage))
+        .chain(memory.as_ref().map(|lineage| ("host memory", lineage)))
+        .filter(|(_, lineage)| {
+            current
+                && !stale_instance(lineage)
+                && !matches!(lineage.state.as_str(), "present" | "explicitly_absent")
+        })
+        .map(|(name, lineage)| format!("{name} ({})", lineage.state))
+        .collect();
     if !current {
-        problems.push(format!("status export generated {snapshot_age} s ago"));
+        report.fault(
+            "stale",
+            InputStatus::NotCurrent,
+            &format!("status export generated {snapshot_age} s ago"),
+        );
     }
     if !stale.is_empty() {
-        report.status = InputStatus::NotCurrent;
-        problems.push(format!(
-            "watchers with no collection for more than {} s: {}",
-            input.stale_after_seconds,
-            stale.join(",")
-        ));
+        report.fault(
+            "stale",
+            InputStatus::NotCurrent,
+            &format!(
+                "watchers with no collection for more than {} s: {}",
+                input.stale_after_seconds,
+                stale.join(",")
+            ),
+        );
     }
     if !unrecognised.is_empty() {
-        report.status = InputStatus::NotCurrent;
-        problems.push(format!(
-            "evaluations this input cannot interpret: {}",
-            unrecognised.join("; ")
-        ));
+        report.fault(
+            "unrecognised",
+            InputStatus::NotCurrent,
+            &format!(
+                "evaluations this input cannot interpret: {}",
+                unrecognised.join("; ")
+            ),
+        );
     }
     if !untargetable.is_empty() {
-        report.status = InputStatus::NotCurrent;
-        problems.push(format!(
-            "systemd units that map to no bounded target class: {}",
-            untargetable.join(", ")
-        ));
+        report.fault(
+            "untargetable",
+            InputStatus::NotCurrent,
+            &format!(
+                "systemd units that map to no bounded target class: {}",
+                untargetable.join(", ")
+            ),
+        );
     }
-    if !problems.is_empty() {
-        report.error = Some(problems.join("; "));
+    if !indeterminate.is_empty() {
+        // Per-condition unknown on an otherwise current export: reported
+        // so a lasting `cannot_evaluate` reaches the operator.
+        report.fault(
+            "indeterminate",
+            InputStatus::NotCurrent,
+            &format!(
+                "detectors that cannot evaluate: {}",
+                indeterminate.join(", ")
+            ),
+        );
     }
     read.reports.push(report);
     let observe = |lineage: &Lineage| -> (Observation, String) {
@@ -605,6 +683,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
 
 fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsRead) {
     let mut report = InputReport {
+        causes: Vec::new(),
         label: input.label.clone(),
         kind: "nightshift",
         component: "nightshift",
@@ -622,8 +701,11 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
         }
     };
     let Some((cycle_id, closed_at)) = newest else {
-        report.status = InputStatus::NotCurrent;
-        report.error = Some("no closed observation cycle".into());
+        report.fault(
+            "empty",
+            InputStatus::NotCurrent,
+            "no closed observation cycle",
+        );
         read.reports.push(report);
         push(
             context,
@@ -703,6 +785,7 @@ pub fn newest_closed_cycle(path: &Path) -> Result<Option<(String, i64)>, String>
 fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut InputsRead) {
     let label = input.reference.as_str();
     let mut report = InputReport {
+        causes: Vec::new(),
         label: label.to_owned(),
         kind: "saved_check",
         component: "nq",
@@ -757,28 +840,28 @@ fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut Inputs
         "read_attempted_at": read_at.as_ref().and_then(|value| value.as_ref().ok()).map(|value| format_seconds(*value)),
     });
     report.identity = identity.clone();
-    let (observation, status, note) = match (outcome.as_str(), read_at) {
+    let (observation, cause, note) = match (outcome.as_str(), read_at) {
         ("passed" | "failed", Some(Ok(at))) if context.now - at > input.max_age_seconds => (
             Observation::Unknown,
-            InputStatus::NotCurrent,
+            Some("stale"),
             format!("result read {} s ago; not current", context.now - at),
         ),
-        ("failed", Some(Ok(_))) => (Observation::Present, InputStatus::Ok, "failed".into()),
-        ("passed", Some(Ok(_))) => (Observation::Clear, InputStatus::Ok, "passed".into()),
+        ("failed", Some(Ok(_))) => (Observation::Present, None, "failed".into()),
+        ("passed", Some(Ok(_))) => (Observation::Clear, None, "passed".into()),
         ("passed" | "failed", _) => (
             Observation::Unknown,
-            InputStatus::NotCurrent,
+            Some("unrecognised"),
             "result has no valid read_attempted_at".into(),
         ),
         (other, _) => (
             Observation::Unknown,
-            InputStatus::NotCurrent,
+            Some("indeterminate"),
             format!("result is {other}; indeterminate"),
         ),
     };
-    report.status = status;
-    if status != InputStatus::Ok {
-        report.error = Some(note.clone());
+    report.status = InputStatus::Ok;
+    if let Some(cause) = cause {
+        report.fault(cause, InputStatus::NotCurrent, &note);
     }
     read.reports.push(report);
     push(

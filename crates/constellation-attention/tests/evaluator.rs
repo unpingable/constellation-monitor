@@ -603,15 +603,13 @@ fn unreadable_input_is_a_notice_and_never_pages() {
     let calls = harness.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(calls[0].starts_with(
-        "submit operations labelwatch-evaluator-input-unavailable-observation-trigger-"
+        "submit operations labelwatch-evaluator-input-unavailable-observation.unreadable-trigger-"
     ));
     let intent: Value = serde_json::from_slice(&harness.submitted_intent("n1")).unwrap();
     assert_eq!(intent["schema"], "nq.notification_delivery_intent.v1");
-    assert!(
-        intent["summary"].as_str().unwrap().contains(
-            "constellation:labelwatch:nightshift:evaluator-input-unavailable:observation"
-        )
-    );
+    assert!(intent["summary"].as_str().unwrap().contains(
+        "constellation:labelwatch:nightshift:evaluator-input-unavailable:observation.unreadable"
+    ));
 }
 
 #[test]
@@ -743,10 +741,9 @@ fn stopped_daemon_is_a_stale_input_notice() {
     );
     let calls = harness.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert!(
-        calls[0]
-            .starts_with("submit operations labelwatch-evaluator-input-unavailable-nqd-trigger-")
-    );
+    assert!(calls[0].starts_with(
+        "submit operations labelwatch-evaluator-input-unavailable-nqd.stale-trigger-"
+    ));
 }
 
 #[test]
@@ -1087,9 +1084,8 @@ fn unrecognised_profile_version_holds_an_open_page() {
         "{error}"
     );
     assert!(
-        calls
-            .iter()
-            .any(|call| call.contains("labelwatch-evaluator-input-unavailable-nqd-trigger-")),
+        calls.iter().any(|call| call
+            .contains("labelwatch-evaluator-input-unavailable-nqd.unrecognised-trigger-")),
         "{calls:?}"
     );
     // Verified recovery under the recognised profile resolves with the
@@ -1168,7 +1164,8 @@ fn vanished_watcher_holds_an_open_page() {
     assert!(
         calls
             .iter()
-            .any(|call| call.contains("labelwatch-evaluator-input-unavailable-nqd-trigger-")),
+            .any(|call| call
+                .contains("labelwatch-evaluator-input-unavailable-nqd.unreported-trigger-")),
         "{calls:?}"
     );
 }
@@ -1227,7 +1224,7 @@ fn untargetable_unit_makes_the_input_not_current() {
     );
     let calls = harness.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-nqd-trigger-"));
+    assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-nqd.untargetable-trigger-"));
 }
 
 /// Review A4: a trigger the nq command refused before custody is retried on
@@ -1458,7 +1455,7 @@ fn foreign_projection_is_unavailable() {
     );
     let calls = harness.calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
-    assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-root-trigger-"));
+    assert!(calls[0].contains("labelwatch-evaluator-input-unavailable-root.unreadable-trigger-"));
 }
 
 /// Review N3: `nq.host_memory` is read only at the profile version it was
@@ -1821,4 +1818,102 @@ fn relabel_without_observation_is_not_a_removal() {
             .all(|call| !call.contains("-resolve-"))
     );
     assert_eq!(harness.state()["conditions"][CRON]["active"], true);
+}
+
+/// Second review R5: a lasting fault of one class (a watched templated
+/// unit) does not mask a later fault of another (nqd stops collecting).
+#[test]
+fn lasting_input_fault_does_not_mask_a_later_stall() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let templated = |value: &mut Value| {
+        cron_eval(value)["detail"]["result"]["context"]["subject"] =
+            json!("systemd-unit:1853ff04ff7a42679bf212ec9a569c4f/getty@tty1.service");
+    };
+    for offset in (0..=600).step_by(60) {
+        write_status(&status, &retimed("cron-down.json", t + offset, templated));
+        harness.evaluate(t + offset + 3);
+    }
+    let notices = |harness: &Harness, cause: &str| {
+        harness
+            .calls()
+            .iter()
+            .filter(|call| {
+                call.contains(&format!("evaluator-input-unavailable-nqd.{cause}-trigger-"))
+            })
+            .count()
+    };
+    assert_eq!(notices(&harness, "untargetable"), 1);
+    // nqd stops: every collection ages while the templated watcher remains.
+    for offset in (660..=1320).step_by(60) {
+        let value = retimed("cron-down.json", t + offset, |value| {
+            templated(value);
+            for component in value["components"].as_array_mut().unwrap() {
+                if component["kind"] == "instance" {
+                    component["observed_at"] = json!(rfc3339(t + 597));
+                }
+            }
+        });
+        write_status(&status, &value);
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(notices(&harness, "stale"), 1, "{:?}", harness.calls());
+    let report = harness.report();
+    let causes = report["inputs"][0]["causes"].as_array().unwrap();
+    assert!(causes.contains(&json!("stale")) && causes.contains(&json!("untargetable")));
+}
+
+/// Second review R1: a detector that stays `cannot_evaluate` on an
+/// otherwise current export reaches the operator as an input notice.
+#[test]
+fn sustained_cannot_evaluate_is_an_input_notice() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let mut codes = Vec::new();
+    for offset in (0..=420).step_by(60) {
+        write_status(
+            &status,
+            &retimed("cron-down.json", t + offset, cron_state("cannot_evaluate")),
+        );
+        codes.push(harness.evaluate_at(t + offset + 3, &[]).status.code());
+    }
+    assert!(codes.iter().all(|code| *code == Some(3)), "{codes:?}");
+    let report = harness.report();
+    assert_eq!(report["inputs"][0]["causes"], json!(["indeterminate"]));
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("cron.service (cannot_evaluate)")
+    );
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].contains("evaluator-input-unavailable-nqd.indeterminate-trigger-"));
+}
+
+/// An open input notice under the pre-cause key format is closed as no
+/// longer evaluated, never held forever.
+#[test]
+fn input_notice_in_the_old_key_format_is_closed() {
+    let mut harness = Harness::new();
+    let store = harness.path("missing/nightshift.sqlite");
+    harness.raw(&format!(
+        "[inputs.nightshift]\nlabel = \"observation\"\nstore_path = \"{}\"\n",
+        store.display()
+    ));
+    for offset in (0..=420).step_by(60) {
+        harness.evaluate(T0 + offset);
+    }
+    let path = harness.path("state/state.json");
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace("observation.unreadable", "observation");
+    fs::write(&path, text).unwrap();
+    let report = harness.evaluate(T0 + 480);
+    let old = "constellation:labelwatch:nightshift:evaluator-input-unavailable:observation";
+    assert!(
+        intents(&report).contains(&(old.into(), "notice".into(), "resolve".into())),
+        "{:?}",
+        intents(&report)
+    );
 }

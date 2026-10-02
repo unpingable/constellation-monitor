@@ -296,7 +296,9 @@ impl Config {
         }
         let mut labels = BTreeSet::new();
         let mut label = |value: &str| -> Result<(), String> {
-            validate_token("input label", value, 48)?;
+            // 48-byte target class minus `.` and the longest fault class
+            // (`indeterminate`), for `evaluator-input-unavailable` keys.
+            validate_token("input label", value, 34)?;
             if !labels.insert(value.to_owned()) {
                 return Err(format!("input label {value:?} is used twice"));
             }

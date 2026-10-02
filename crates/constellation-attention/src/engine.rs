@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::condition::ConditionKey;
 use crate::config::{Config, EffectiveRule};
-use crate::inputs::{self, Context, InputReport, InputStatus, Observation, Observed};
+use crate::inputs::{self, Context, INPUT_CAUSES, InputReport, InputStatus, Observation, Observed};
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{
@@ -307,39 +307,50 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             .iter_mut()
             .find(|report| report.label == condition.input_label)
         {
-            report.status = InputStatus::NotCurrent;
-            let problem =
-                format!("open condition {id} is no longer reported; recovery not observed");
-            report.error = Some(match report.error.take() {
-                Some(error) => format!("{error}; {problem}"),
-                None => problem,
-            });
+            report.fault(
+                "unreported",
+                InputStatus::NotCurrent,
+                &format!("open condition {id} is no longer reported; recovery not observed"),
+            );
         }
     }
     if rule_for(&rules, INPUT_UNAVAILABLE).is_some_and(|rule| rule.enabled) {
         for report in &read.reports {
-            let unavailable = report.status == InputStatus::Unavailable
-                || (report.status == InputStatus::NotCurrent && report.kind != "host_posture");
-            let Ok(key) = ConditionKey::new(
-                &config.site,
-                report.component,
-                INPUT_UNAVAILABLE,
-                Some(&report.label),
-            ) else {
-                continue;
-            };
-            observed.entry(key.id()).or_insert(Observed {
-                key,
-                rule: INPUT_UNAVAILABLE,
-                input_label: report.label.clone(),
-                observation: if unavailable {
-                    Observation::Present
-                } else {
-                    Observation::Clear
-                },
-                reference: json!({"input": report.label, "kind": report.kind, "status": report.status}),
-                note: report.error.clone().unwrap_or_default(),
-            });
+            for cause in INPUT_CAUSES {
+                // A stale host-posture CURRENT is `host-posture-unknown`.
+                if report.kind == "host_posture" && *cause == "stale" {
+                    continue;
+                }
+                let Ok(key) = ConditionKey::new(
+                    &config.site,
+                    report.component,
+                    INPUT_UNAVAILABLE,
+                    Some(&format!("{}.{cause}", report.label)),
+                ) else {
+                    continue;
+                };
+                observed.entry(key.id()).or_insert(Observed {
+                    key,
+                    rule: INPUT_UNAVAILABLE,
+                    input_label: report.label.clone(),
+                    observation: if report.causes.contains(cause) {
+                        Observation::Present
+                    } else {
+                        Observation::Clear
+                    },
+                    reference: json!({
+                        "input": report.label,
+                        "kind": report.kind,
+                        "status": report.status,
+                        "cause": cause,
+                    }),
+                    note: if report.causes.contains(cause) {
+                        report.error.clone().unwrap_or_default()
+                    } else {
+                        String::new()
+                    },
+                });
+            }
         }
     }
 
@@ -381,6 +392,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         let rule = rule_for(&rules, &condition.key.rule);
         let (observation, note) = if let Some(item) = item {
             (item.observation, item.note.clone())
+        } else if condition.key.rule == INPUT_UNAVAILABLE {
+            // Every configured input reports every fault class, so an
+            // unreported one names a removed input or an older key format.
+            (
+                Observation::Removed,
+                "input or fault class no longer evaluated".into(),
+            )
         } else {
             match rule {
                 Some(rule) if rule.enabled && config.has_input(rule.rule.input) => {
