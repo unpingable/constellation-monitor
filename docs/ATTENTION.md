@@ -43,8 +43,8 @@ anchors marked (M) are below in this document.
 | `host-posture-unknown` | page | yes | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch. |
 | `host-disk` | notice | yes | persists 900 s | `host_posture` | publication-root label | host-posture `CURRENT`: current and `aggregate_state` degraded or worse | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
 | `nq-no-fresh-acquisition` | page | yes | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
-| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status export: newest current `nq.systemd_unit` v2 evaluation reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
-| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status export: newest current `nq.host_memory` evaluation reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
+| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status export: newest `nq.systemd_unit` v2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
+| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status export: newest `nq.host_memory` evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
 | `nightshift-recurrence-missing` | page | yes | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | no | persists 600 s | `nq` | saved-check reference | NQ saved-check result: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `evaluator-input-unavailable` | notice | no | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | input label | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
@@ -170,14 +170,24 @@ The newest retained NQ saved-check result for the reference failed (its
 bounded query returned the failing shape). Read it with
 `nq --json saved-check result --evaluation-id ID` and inspect the named file
 (freelist, WAL size) as the owning account. Never edit the store to clear it.
-NQ's CLI looks results up by evaluation id, not reference, so the configured
-input is the command or file that the check's own timer produces.
+NQ 0.2.1's `saved-check result` takes only `--evaluation-id` (caller-chosen,
+for example `sc-<unix>`), and there is no command that lists results by
+reference. The simplest supported input is therefore the file the check's
+own timer writes: it runs `nq --json saved-check evaluate REF
+--evaluation-id sc-$(date +%s) ...` and writes that output atomically to the
+configured `path` (or a `command` prints the newest result). A result that
+names a different `reference` is refused as unavailable. Results expose only
+`passed`, `failed` or `refused`, never the measured value.
 
 ### evaluator-input-unavailable
 
 A configured input could not be read (missing path, permission, command
-failure, malformed JSON) or is not current (stale status export, stale or
-indeterminate saved-check result, no closed Nightshift cycle yet). Read the
+failure, malformed JSON) or is not current (status export older than
+`max_age_seconds`, a watcher whose last collection is older than
+`stale_after_seconds` at the export's `generated_at` (default 180 s, three
+60 s intervals; a stopped nqd still answers `status export` from its store,
+so this is the only daemon-down signal), a stale or indeterminate
+saved-check result, no closed Nightshift cycle yet). Read the
 input's `error` in `report.json`. Rules fed by the input hold their state
 until it is readable again. A stale host-posture `CURRENT` is reported as
 `host-posture-unknown`, not here.
@@ -190,7 +200,8 @@ until it is readable again. A stale host-posture `CURRENT` is reported as
   acquisitions; those surface as `host-posture-unknown`.
 - `host-disk` inherits NQ's compiled 90 % capacity threshold through the
   projection; Cartography's rule says 85 %.
-- `service-down` reads NQ's evaluation result, not the status component's
-  coarse `state`: NQ projects a present condition as `healthy` in that field.
+- `service-down` reads NQ's evaluation result, not a component's coarse
+  `state`: NQ reports `healthy` for both instance and evaluation components
+  while a unit is down. It cannot tell failed from inactive or not-found.
 - Only one `nq.host_memory` lineage (one host) is expected per export.
 - Docket and AG inputs are not deployed; their rules stay disabled.

@@ -646,49 +646,104 @@ fn triggers_are_ordered_before_resolves_one_intent_per_condition() {
     );
 }
 
-#[test]
-fn service_down_from_nq_status_export() {
+fn nq_status_harness() -> (Harness, PathBuf) {
     let mut harness = Harness::new();
     let status = harness.path("nq-status.json");
     harness.raw(&format!(
         "[inputs.nq_status]\nlabel = \"nqd\"\npath = \"{}\"\n",
         status.display()
     ));
-    let fixture: Value = serde_json::from_slice(
-        &fs::read(Path::new(FIXTURES).join("nq-status-export-unit-failed.json")).unwrap(),
-    )
-    .unwrap();
-    for offset in (0..=240).step_by(60) {
-        let mut value = fixture.clone();
-        value["generated_at"] = json!(rfc3339(T0 + offset));
-        for component in value["components"].as_array_mut().unwrap() {
-            if component["kind"] == "evaluation" {
-                component["detail"]["result"]["evaluated_at"] = json!(rfc3339(T0 + offset - 10));
-            }
-        }
-        fs::write(&status, serde_json::to_vec(&value).unwrap()).unwrap();
-        harness.evaluate(T0 + offset);
+    (harness, status)
+}
+
+fn use_sample(status: &Path, name: &str) {
+    fs::copy(Path::new(FIXTURES).join("nq-status").join(name), status).unwrap();
+}
+
+fn at(value: &str) -> i64 {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .unwrap()
+        .unix_timestamp()
+}
+
+/// Real `nq --json status export` samples from the nqd-ops spike (nq 0.2.1):
+/// cron.service stopped, then started again.
+#[test]
+fn service_down_from_real_nq_status_export() {
+    let (harness, status) = nq_status_harness();
+    use_sample(&status, "healthy.json");
+    let report = harness.evaluate(at("2026-10-02T21:31:10Z"));
+    assert_eq!(report["inputs"][0]["status"], "ok");
+    assert!(intents(&report).is_empty());
+    use_sample(&status, "cron-down.json");
+    for time in [
+        "2026-10-02T21:32:20Z",
+        "2026-10-02T21:34:20Z",
+        "2026-10-02T21:35:20Z",
+    ] {
+        assert!(intents(&harness.evaluate(at(time))).is_empty(), "{time}");
     }
-    let calls = harness.calls();
-    assert_eq!(calls.len(), 2, "{calls:?}");
+    // Present since 21:32:20; beyond the 180 s bound at 21:35:30.
+    let report = harness.evaluate(at("2026-10-02T21:35:30Z"));
+    let cron = "constellation:labelwatch:service:service-down:cron.service";
+    assert_eq!(
+        intents(&report),
+        vec![
+            (cron.into(), "notice".into(), "trigger".into()),
+            (cron.into(), "page".into(), "trigger".into()),
+        ]
+    );
     let intent: Value = serde_json::from_slice(&harness.submitted_intent("n2")).unwrap();
     assert_eq!(
         intent["condition"],
-        json!({"component":"service","rule":"service-down","site":"labelwatch","target_class":"nqd.service"})
+        json!({"component":"service","rule":"service-down","site":"labelwatch","target_class":"cron.service"})
     );
-    assert_eq!(intent["details"]["input"]["instance_id"], "unit-nqd");
-    // Memory pressure is explicitly absent: no condition opened.
-    assert!(
-        !harness.state()["conditions"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .any(|key| key.contains("memory-pressure"))
+    assert_eq!(intent["details"]["input"]["instance_id"], "unit-cron");
+    assert_eq!(
+        intent["details"]["input"]["collected_at"],
+        "2026-10-02T21:32:14Z"
     );
-    // A stale export holds state and raises the input notice, nothing else.
-    let report = harness.evaluate(T0 + 1000);
+    // ssh stays explicitly absent and memory pressure never opens a condition.
+    let state = harness.state();
+    let keys: Vec<&String> = state["conditions"].as_object().unwrap().keys().collect();
+    assert_eq!(keys, vec![cron], "{keys:?}");
+    use_sample(&status, "recovered.json");
+    assert!(intents(&harness.evaluate(at("2026-10-02T21:48:40Z"))).is_empty());
+    let report = harness.evaluate(at("2026-10-02T21:50:40Z"));
+    assert_eq!(
+        intents(&report),
+        vec![
+            (cron.into(), "notice".into(), "resolve".into()),
+            (cron.into(), "page".into(), "resolve".into()),
+        ]
+    );
+}
+
+/// The daemon was stopped: the export still answers from the store, but every
+/// instance's last collection is 195 s old. That is a stale input (notice),
+/// never a page and never a service condition.
+#[test]
+fn stopped_daemon_is_a_stale_input_notice() {
+    let (harness, status) = nq_status_harness();
+    use_sample(&status, "daemon-stopped.json");
+    let start = at("2026-10-02T21:48:35Z");
+    let mut report = Value::Null;
+    for offset in (0..=360).step_by(60) {
+        report = harness.evaluate(start + offset);
+    }
     assert_eq!(report["inputs"][0]["status"], "not_current");
-    assert!(intents(&report).is_empty());
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unit-cron")
+    );
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(
+        calls[0]
+            .starts_with("submit operations labelwatch-evaluator-input-unavailable-nqd-trigger-")
+    );
 }
 
 #[test]

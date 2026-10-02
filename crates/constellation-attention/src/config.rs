@@ -111,13 +111,22 @@ pub struct NqStatusInput {
     pub command: Option<Vec<String>>,
     /// Or a status JSON file written by a timer.
     pub path: Option<PathBuf>,
-    /// Snapshot and per-evaluation currentness bound.
+    /// The snapshot's `generated_at` must be at most this old.
     #[serde(default = "default_status_age")]
     pub max_age_seconds: i64,
+    /// A watcher whose instance `observed_at` (last collection commit) is
+    /// older than this at `generated_at` is stale. NQ's export has no
+    /// staleness flag; default 3 x the 60 s watcher interval.
+    #[serde(default = "default_instance_stale")]
+    pub stale_after_seconds: i64,
 }
 
 const fn default_status_age() -> i64 {
     300
+}
+
+const fn default_instance_stale() -> i64 {
+    180
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -259,6 +268,7 @@ impl Config {
             label(&input.label)?;
             source("nq_status", input.command.as_ref(), input.path.as_ref())?;
             age("nq_status.max_age_seconds", input.max_age_seconds)?;
+            age("nq_status.stale_after_seconds", input.stale_after_seconds)?;
         }
         if let Some(input) = &self.inputs.nightshift {
             label(&input.label)?;

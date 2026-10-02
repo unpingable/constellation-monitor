@@ -367,6 +367,16 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         "generated_at": format_seconds(generated),
         "evaluation_through_sequence": snapshot.get("evaluation_through_sequence"),
     });
+    // Last collection commit per watcher instance: the only liveness signal.
+    let collected: BTreeMap<String, i64> = components
+        .iter()
+        .filter(|component| component.get("kind").and_then(Value::as_str) == Some("instance"))
+        .filter_map(|component| {
+            let id = component.get("id")?.as_str()?.to_owned();
+            let at = rfc3339_seconds(component.get("observed_at")?.as_str()?).ok()?;
+            Some((id, at))
+        })
+        .collect();
     let mut units: BTreeMap<String, Lineage> = BTreeMap::new();
     let mut memory: Option<Lineage> = None;
     let mut untargetable = Vec::new();
@@ -433,19 +443,44 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             memory = Some(lineage);
         }
     }
+    let stale_instance = |lineage: &Lineage| {
+        collected
+            .get(&lineage.instance_id)
+            .is_none_or(|at| generated - at > input.stale_after_seconds)
+    };
+    let stale: Vec<&str> = units
+        .values()
+        .chain(memory.as_ref())
+        .filter(|lineage| stale_instance(lineage))
+        .map(|lineage| lineage.instance_id.as_str())
+        .collect();
+    let mut problems = Vec::new();
+    if !current {
+        problems.push(format!("status export generated {snapshot_age} s ago"));
+    }
+    if !stale.is_empty() {
+        report.status = InputStatus::NotCurrent;
+        problems.push(format!(
+            "watchers with no collection for more than {} s: {}",
+            input.stale_after_seconds,
+            stale.join(",")
+        ));
+    }
     if !untargetable.is_empty() {
-        report.error = Some(format!(
+        problems.push(format!(
             "systemd unit watchers with names outside the target_class charset were skipped: {}",
             untargetable.join(",")
         ));
     }
+    if !problems.is_empty() {
+        report.error = Some(problems.join("; "));
+    }
     read.reports.push(report);
     let observe = |lineage: &Lineage| -> (Observation, String) {
-        let age = context.now - lineage.evaluated_at;
-        if !current || age > input.max_age_seconds {
+        if !current || stale_instance(lineage) {
             return (
                 Observation::Unknown,
-                format!("evaluation is {age} s old; not current"),
+                "watcher collection is not current".to_owned(),
             );
         }
         match lineage.state.as_str() {
@@ -457,6 +492,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     let reference = |lineage: &Lineage| {
         json!({
             "instance_id": lineage.instance_id,
+            "collected_at": collected.get(&lineage.instance_id).map(|at| format_seconds(*at)),
             "evaluation_id": lineage.evaluation_id,
             "evaluated_at": format_seconds(lineage.evaluated_at),
             "status_generated_at": format_seconds(generated),
@@ -618,6 +654,13 @@ fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut Inputs
             return;
         }
     };
+    if let Some(named) = result.get("reference").and_then(Value::as_str)
+        && named != label
+    {
+        report.error = Some(format!("result names saved check {named:?}, not {label:?}"));
+        read.reports.push(report);
+        return;
+    }
     let outcome = result
         .get("outcome")
         .and_then(Value::as_str)

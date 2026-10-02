@@ -31,14 +31,17 @@ publication_root = "/var/lib/constellation-host-posture/status"
 label = "nqd"
 command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json", "status", "export"]
 # or: path = "/var/lib/constellation-attention/inputs/nq-status.json"
-max_age_seconds = 300
+max_age_seconds = 300              # export generated_at must be at most this old
+stale_after_seconds = 180          # a watcher with no collection for longer is stale
 
 [inputs.nightshift]
 label = "observation"
 store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
 
+# The check's own timer runs `nq --json saved-check evaluate REF --evaluation-id sc-<unix> ...`
+# and writes that output to `path` atomically; NQ cannot list results by reference.
 # [[inputs.saved_checks]]
-# reference = "atproto-freelist"   # target_class
+# reference = "atproto-freelist"   # target_class; must match the result's reference
 # path = "/var/lib/nightshift/atproto-saved-check/latest-result.json"
 # max_age_seconds = 3600
 
