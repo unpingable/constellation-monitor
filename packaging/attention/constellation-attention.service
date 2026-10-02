@@ -28,12 +28,16 @@ EnvironmentFile=-/etc/constellation-attention/nq-routes.env
 ExecStart=/usr/bin/constellation-attention evaluate --config /etc/constellation-attention/attention.toml
 # Exit 3 (an input not current, or a delivery not accepted) is left as a
 # failure so it shows in `systemctl --failed` without a recursive notice.
-# A pass runs the nq_status command, each saved-check command and each
-# submission, every one bounded by command_timeout_seconds (90 s by
-# default). Keep this at least 4 x command_timeout_seconds plus margin.
-# State is saved before and after every submission, so a pass stopped here
-# is resumed by the next one and loses only its report.
-TimeoutStartSec=420
+# Every child a pass runs is bounded by command_timeout_seconds (T, 90 s by
+# default): the command inputs (I: an nq_status command plus each saved-check
+# command) and one nq call per submission (S). Budget:
+#   TimeoutStartSec >= (I + S) * T + 60
+# This unit assumes I <= 2 and S <= 6 (three page-class conditions changing
+# in one pass, notice and page each): 8 * 90 + 60 = 780. Raise it, or lower
+# command_timeout_seconds, for more command inputs. A pass stopped here
+# loses only its report: state is saved before and after every submission
+# and the next pass resumes with the remaining work.
+TimeoutStartSec=780
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
