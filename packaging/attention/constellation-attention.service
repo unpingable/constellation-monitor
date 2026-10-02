@@ -4,6 +4,9 @@ Documentation=file:/usr/share/doc/constellation-attention/ATTENTION.md
 After=local-fs.target network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/constellation-attention/attention.toml
+# Nothing in the estate watches this unit (ATTENTION.md, Known limits). A
+# failed pass can optionally start a local handler the operator provides:
+#OnFailure=constellation-attention-failed.service
 
 [Service]
 Type=oneshot
@@ -22,7 +25,12 @@ EnvironmentFile=-/etc/constellation-attention/nq-routes.env
 ExecStart=/usr/bin/constellation-attention evaluate --config /etc/constellation-attention/attention.toml
 # Exit 3 (an input not current, or a delivery not accepted) is left as a
 # failure so it shows in `systemctl --failed` without a recursive notice.
-TimeoutStartSec=300
+# A pass runs the nq_status command, each saved-check command and each
+# submission, every one bounded by command_timeout_seconds (90 s by
+# default). Keep this at least 4 x command_timeout_seconds plus margin.
+# State is saved before and after every submission, so a pass stopped here
+# is resumed by the next one and loses only its report.
+TimeoutStartSec=420
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -44,9 +52,17 @@ CapabilityBoundingSet=
 # nq needs HTTPS for webhook and PagerDuty routes.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=-/etc/constellation-attention -/etc/nq
-# nq's notification custody lives in its store; SQLite needs -shm write access
-# to read a WAL-mode Nightshift store even when opened read-only.
-ReadWritePaths=/var/lib/constellation-attention /var/lib/nq
+# nq's notification custody lives in its store: this must be the parent of
+# `database_path` in the NQ configuration named by `[nq] config`. On the
+# Linode that is /etc/nq/nqd-ops.toml with database_path
+# /var/lib/nq-ops/nq.db. A missing path without `-` fails the unit at
+# namespace setup (226/NAMESPACE), which is the intended loud failure; a
+# store outside these paths is read-only and every submission fails as
+# command_error. SQLite needs -shm write access to read a WAL-mode
+# Nightshift store even when opened read-only. A local_file qualification
+# route's inbox directory must be added here too.
+ReadWritePaths=/var/lib/constellation-attention /var/lib/nq-ops
+ReadWritePaths=-/var/lib/nq
 ReadWritePaths=-/var/lib/constellation-nightshift-observation
 LimitCORE=0
 TasksMax=64
