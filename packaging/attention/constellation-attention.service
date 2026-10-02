@@ -1,0 +1,56 @@
+[Unit]
+Description=Constellation operator-attention evaluator (one pass)
+Documentation=file:/usr/share/doc/constellation-attention/ATTENTION.md
+After=local-fs.target network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/constellation-attention/attention.toml
+
+[Service]
+Type=oneshot
+# Host-posture status and the Nightshift store are nq-owned, and the
+# evaluator submits through nq into nq's store: it runs as nq.
+User=nq
+Group=nq
+UMask=0077
+StateDirectory=constellation-attention
+StateDirectoryMode=0700
+# NQ route locators only (the variables named by the NQ routes'
+# endpoint_secret_locator / routing_key_env). Root-owned, mode 0600. systemd
+# reads it; the evaluator passes its environment to the nq child and never
+# reads, stores or prints the values.
+EnvironmentFile=-/etc/constellation-attention/nq-routes.env
+ExecStart=/usr/bin/constellation-attention evaluate --config /etc/constellation-attention/attention.toml
+# Exit 3 (an input not current, or a delivery not accepted) is left as a
+# failure so it shows in `systemctl --failed` without a recursive notice.
+TimeoutStartSec=300
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# nq needs HTTPS for webhook and PagerDuty routes.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=-/etc/constellation-attention -/etc/nq
+# nq's notification custody lives in its store; SQLite needs -shm write access
+# to read a WAL-mode Nightshift store even when opened read-only.
+ReadWritePaths=/var/lib/constellation-attention /var/lib/nq
+ReadWritePaths=-/var/lib/constellation-nightshift-observation
+LimitCORE=0
+TasksMax=64
+MemoryMax=512M
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,49 @@
+# /etc/constellation-attention/attention.toml (root:root 0644 or 0640 root:nq).
+# No secrets belong here. Route secrets are NQ's: its routes name environment
+# variables, provided to this service by /etc/constellation-attention/nq-routes.env.
+schema = "constellation.attention_config.v1"
+# Bounded token [a-z0-9._-]{1,64}; no long digit runs, dates or digests.
+site = "labelwatch"
+state_path = "/var/lib/constellation-attention/state.json"
+command_timeout_seconds = 90
+
+[runbooks]
+# Optional published https copies; rules link to `#<anchor>`.
+# cartography_url = "https://example.org/constellation/beta-observability/RUNBOOKS.md"
+# monitor_url = "https://example.org/constellation/monitor/ATTENTION.md"
+
+[nq]
+program = "/usr/bin/nq"
+# The NQ configuration that holds the notification routes below.
+config = "/etc/nq/nqd-ops.toml"
+
+[routes]
+notice_route = "operations"        # an NQ slack or discord route
+notice_transport = "slack"         # slack | discord (names the destination label)
+page_route = "pagerduty-ops"       # an NQ pagerduty route; omit to send notices only
+network_enabled = false            # true passes --enable-network to nq
+
+[[inputs.host_posture]]
+label = "root"                     # target_class
+publication_root = "/var/lib/constellation-host-posture/status"
+
+[inputs.nq_status]
+label = "nqd"
+command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json", "status", "export"]
+# or: path = "/var/lib/constellation-attention/inputs/nq-status.json"
+max_age_seconds = 300
+
+[inputs.nightshift]
+label = "observation"
+store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
+
+# [[inputs.saved_checks]]
+# reference = "atproto-freelist"   # target_class
+# path = "/var/lib/nightshift/atproto-saved-check/latest-result.json"
+# max_age_seconds = 3600
+
+# Overrides are limited to enabled, threshold_seconds and class (page|notice
+# where the registry allows paging).
+# [rules.host-disk]
+# class = "page"
+# threshold_seconds = 900

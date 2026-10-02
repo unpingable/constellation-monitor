@@ -115,7 +115,13 @@ proposition-exact support adapters:
   projection: a pure projector plus bounded Pulse admission,
   audience-reduced status artifacts, reduced rendering, and local atomic
   publication helpers. It is not a public status source; see
-  `docs/status-projection-v1.md`, "Positioning".
+  `docs/status-projection-v1.md`, "Positioning"; and
+- `constellation-attention`: a bounded operator-attention evaluator that reads
+  qualified current state (host-posture status objects, NQ's status export,
+  the Nightshift observation store, NQ saved-check results) through a closed
+  rule registry and hands notification intents to `nq notification submit`.
+  It is not evidence, observation or execution authority; see
+  `docs/ATTENTION.md`.
 
 `pulse-runtime` is a bounded local owner for
 receiver admission, exact context-generation barriers, per-consumer support
