@@ -85,7 +85,8 @@ case "$cmd" in
   dispatch)
     expect authorization_consumed
     [ -e "$st/docket" ] && { echo "Docket already holds custody of this issuance" >&2; exit 1; }
-    refusal=$("$dsr" 2>&1 < /dev/null > /dev/null) || { echo "external-process:$refusal" >&2; exit 1; }
+    [ -e "$dir/dispatch_unavailable" ] && { echo "Error: Docket boundary unavailable: connection reset" >&2; exit 1; }
+    refusal=$("$dsr" 2>&1 < /dev/null > /dev/null) || { echo "Error: external boundary refused (external-process:refused/error: process-refused:$refusal)" >&2; exit 1; }
     put docket accepted; echo "start" >> "$dir/effects.log"; put pc dispatched
     if [ -e "$dir/crash_in_dispatch" ]; then rm "$dir/crash_in_dispatch"; kill -9 "$PPID"; fi
     snapshot;;

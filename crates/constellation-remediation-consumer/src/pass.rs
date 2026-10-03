@@ -161,6 +161,15 @@ pub fn docket_refusal(message: &str) -> String {
         )
 }
 
+/// A dispatch failure that is Docket's own refusal (its process exited
+/// non-zero and AG reports the external boundary refused), as opposed to a
+/// timeout, a killed or unreachable boundary.
+fn docket_refused(failure: &Failure) -> bool {
+    failure.code.is_some_and(|code| code != 0)
+        && failure.message.contains("external boundary refused")
+        && failure.message.contains("external-process:")
+}
+
 fn find_string(value: &Value, key: &str) -> Option<String> {
     match value {
         Value::Object(map) => map
@@ -762,6 +771,12 @@ impl Pass<'_> {
                     };
                     match recovered.get("result").and_then(Value::as_str) {
                         Some("issuance_not_accepted") if episode.dispatch_started => {
+                            // Never a second dispatch; Docket may still answer
+                            // for an interrupted one until the window ends.
+                            if self.now_seconds() < episode.window_until {
+                                self.event("dispatch_unconfirmed", json!({}))?;
+                                return Ok("pending".into());
+                            }
                             return self.close("dispatch_not_accepted", json!({}));
                         }
                         Some("issuance_not_accepted") => {
@@ -780,10 +795,21 @@ impl Pass<'_> {
                                 // revoked, expired, ...).
                                 let confirmed = self.external.ag_recover(&plan);
                                 self.step_event("recover", &confirmed)?;
-                                if confirmed.as_ref().is_ok_and(|value| {
+                                let not_accepted = confirmed.as_ref().is_ok_and(|value| {
                                     value.get("result").and_then(Value::as_str)
                                         == Some("issuance_not_accepted")
-                                }) {
+                                });
+                                if not_accepted && !docket_refused(failure) {
+                                    // A timeout or an unreachable boundary is
+                                    // not a refusal: keep driving; later
+                                    // passes ask AG's recover again.
+                                    self.event(
+                                        "dispatch_unconfirmed",
+                                        json!({"failure": failure_detail(failure)}),
+                                    )?;
+                                    return Ok("pending".into());
+                                }
+                                if not_accepted {
                                     return self.close(
                                         "dispatch_refused",
                                         json!({

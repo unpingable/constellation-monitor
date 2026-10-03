@@ -715,9 +715,62 @@ fn crash_after_dispatch_with_lost_custody_reply_closes_without_dispatch() {
         serde_json::to_vec(&state).unwrap(),
     )
     .unwrap();
-    assert_eq!(harness.result(), "dispatch_not_accepted");
+    // Inside the window it keeps asking AG's recover, never dispatching.
+    assert_eq!(harness.result(), "pending");
+    assert_eq!(harness.count("ag dispatch"), 0);
+    // At window end it closes without a claim.
+    let config = harness.config();
+    let window_until = harness.state()["active"]["window_until"].as_i64().unwrap();
+    let after = u64::try_from(window_until + 1).unwrap() * 1000;
+    assert_eq!(
+        run_pass(&config, &|| after).unwrap().result,
+        "dispatch_not_accepted"
+    );
     assert_eq!(harness.count("ag dispatch"), 0);
     assert_eq!(harness.effects(), 0);
+}
+
+/// Review F4: a dispatch error that is not Docket's refusal (a timeout, an
+/// unreachable boundary) never closes the episode as refused; the next
+/// passes keep asking AG's recover and never dispatch again.
+#[test]
+fn unconfirmed_dispatch_error_keeps_driving() {
+    let harness = Harness::new();
+    harness.control("dispatch_unavailable", "");
+    assert_eq!(harness.result(), "pending");
+    assert!(!harness.events("dispatch_unconfirmed").is_empty());
+    assert!(harness.closed_outcomes().is_empty());
+    assert_eq!(harness.result(), "pending");
+    assert_eq!(harness.count("ag dispatch"), 1);
+    assert_eq!(harness.effects(), 0);
+}
+
+/// Review F4: a timed-out command's whole process group is killed, so no
+/// descendant can complete an effect after the consumer gave up on it.
+#[test]
+fn timeout_kills_the_whole_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("late-effect");
+    let script = dir.path().join("slow.sh");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n( sleep 2; touch '{}' ) &\nsleep 30\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let failure = constellation_remediation_consumer::external::run(
+        &script,
+        &[],
+        None,
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap_err();
+    assert!(failure.message.contains("timed out"), "{}", failure.message);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert!(!marker.exists(), "a descendant survived the timeout");
 }
 
 #[test]

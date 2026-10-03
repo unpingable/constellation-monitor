@@ -4,6 +4,7 @@
 //! bounded output.
 
 use std::io::{Read, Write as _};
+use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -102,6 +103,9 @@ pub fn run(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Own process group: a timeout kills every descendant (Docket,
+        // ag-effectd, resolvers), never only the direct child.
+        .process_group(0)
         .spawn()
         .map_err(|error| failure(None, format!("cannot start: {error}")))?;
     if let Some(bytes) = stdin
@@ -125,6 +129,7 @@ pub fn run(
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() >= deadline => {
+                kill_group(child.id());
                 let _ = child.kill();
                 let _ = child.wait();
                 break None;
@@ -149,6 +154,17 @@ pub fn run(
         return Err(failure(status.code(), stderr));
     }
     Ok(Output { stdout, stderr })
+}
+
+/// SIGKILL the whole process group led by `pid` (no unsafe code: `kill(1)`).
+fn kill_group(pid: u32) {
+    let _ = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 fn json(output: &Output, argv: &[String]) -> Result<Value, Failure> {
