@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v2";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v3";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -38,6 +38,30 @@ impl Class {
     }
 }
 
+/// How a human should be reached for a rule, carried in every intent as
+/// `response_class`. Closed; there is no default.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseClass {
+    /// Worth knowing; nobody needs to act.
+    Informational,
+    /// A human should look when they can (notice routes).
+    Attention,
+    /// A human should interrupt what they are doing (`PagerDuty`).
+    Page,
+}
+
+impl ResponseClass {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Informational => "informational",
+            Self::Attention => "attention",
+            Self::Page => "page",
+        }
+    }
+}
+
 /// The kind of configured input a rule reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,15 +89,52 @@ pub enum ThresholdMeaning {
     Age,
 }
 
+/// A registry rule. Every field is required and `Rule` has no `Default`:
+/// a rule cannot be constructed without an explicit `response_class`.
+///
+/// ```compile_fail
+/// use constellation_attention::registry::{Class, InputKind, Rule, ThresholdMeaning};
+/// let rule = Rule {
+///     id: "x", version: 1, default_class: Class::Notice, page_allowed: false,
+///     // no response_class
+///     operator_action: "", escalation_reason: "", severity: "warning",
+///     component: Some("nq"), input: InputKind::NqStatus,
+///     threshold_meaning: ThresholdMeaning::Persistence, default_threshold_seconds: 60,
+///     fixed_persistence_seconds: 0, runbook_anchor: "x", runbook_document: "x",
+///     operator_response: "x", condition: "x", disabled: None,
+/// };
+/// ```
+///
+/// ```
+/// use constellation_attention::registry::{
+///     Class, InputKind, ResponseClass, Rule, ThresholdMeaning,
+/// };
+/// let rule = Rule {
+///     id: "x", version: 1, default_class: Class::Notice, page_allowed: false,
+///     response_class: ResponseClass::Attention,
+///     operator_action: "", escalation_reason: "", severity: "warning",
+///     component: Some("nq"), input: InputKind::NqStatus,
+///     threshold_meaning: ThresholdMeaning::Persistence, default_threshold_seconds: 60,
+///     fixed_persistence_seconds: 0, runbook_anchor: "x", runbook_document: "x",
+///     operator_response: "x", condition: "x", disabled: None,
+/// };
+/// assert_eq!(rule.response_class.as_str(), "attention");
+/// ```
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Rule {
     /// Registry anchor (the Cartography `RUNBOOKS.md` anchor where one exists).
     pub id: &'static str,
     pub version: u32,
     pub default_class: Class,
-    /// Whether configuration may make the rule page. Only anchors NQ's v2
-    /// PagerDuty contract accepts can page.
+    /// Whether NQ's v2 `PagerDuty` contract accepts this anchor at all.
     pub page_allowed: bool,
+    /// Page eligibility, decided here and explicit per rule: only a rule
+    /// whose response class is `page` can reach a `PagerDuty` route.
+    pub response_class: ResponseClass,
+    /// Page rules: what the human does when paged.
+    pub operator_action: &'static str,
+    /// Page rules: why persistence beyond the bound is worth an interruption.
+    pub escalation_reason: &'static str,
     /// v2 severity when the rule pages.
     pub severity: &'static str,
     /// NQ v2 `condition.component`. `None` means "the component of the input"
@@ -103,6 +164,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Page,
         page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "Read the runner's refusal code in its journal and fix the cause it names (re-enroll on digest mismatch); the projection cannot recover by itself.",
+        escalation_reason: "Unknown or stale for more than 600 s: the projection has stopped saying anything about disk pressure, so a full disk would go unseen.",
         severity: "critical",
         component: Some("host_posture"),
         input: InputKind::HostPosture,
@@ -117,9 +181,12 @@ pub const RULES: [Rule; 10] = [
     },
     Rule {
         id: "host-disk",
-        version: 2,
+        version: 3,
         default_class: Class::Notice,
         page_allowed: true,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
         severity: "warning",
         component: Some("host_posture"),
         input: InputKind::HostPostureOrNqStatus,
@@ -137,6 +204,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Page,
         page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "Read the runner journal for acquisition_refused; if the runner is down start it and watch two occurrences.",
+        escalation_reason: "No status object generated for more than 600 s, then 300 s more: the host-posture runner has stopped and nothing is being observed.",
         severity: "critical",
         component: Some("nq"),
         input: InputKind::HostPosture,
@@ -154,6 +224,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Page,
         page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors.",
+        escalation_reason: "The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts.",
         severity: "critical",
         component: Some("service"),
         input: InputKind::NqStatus,
@@ -171,6 +244,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Notice,
         page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
         severity: "warning",
         component: Some("host_posture"),
         input: InputKind::NqStatus,
@@ -188,6 +264,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Page,
         page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow.",
+        escalation_reason: "No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale.",
         severity: "critical",
         component: Some("nightshift"),
         input: InputKind::Nightshift,
@@ -205,6 +284,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Notice,
         page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
         severity: "warning",
         component: Some("nq"),
         input: InputKind::SavedCheck,
@@ -222,6 +304,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Notice,
         page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
         severity: "warning",
         component: None,
         input: InputKind::Evaluator,
@@ -239,6 +324,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Page,
         page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "Determine whether the executor is available or the observer never reported, then follow the Docket reconciliation procedure.",
+        escalation_reason: "The oldest accepted governed-loop attempt is older than 3600 s, then 300 s more: work is stuck unsettled.",
         severity: "critical",
         component: Some("docket"),
         input: InputKind::NotDeployed,
@@ -256,6 +344,9 @@ pub const RULES: [Rule; 10] = [
         version: 1,
         default_class: Class::Page,
         page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "Check the ag-effectd unit; restart it only on a crash; an intentional stop is acknowledged for its declared window.",
+        escalation_reason: "AG effectd not ready for more than 300 s: governed actions cannot execute.",
         severity: "critical",
         component: Some("ag"),
         input: InputKind::NotDeployed,
@@ -326,6 +417,38 @@ mod tests {
                 assert!(NQ_V2_COMPONENTS.contains(&component), "{}", rule.id);
             }
             crate::condition::validate_token("rule", rule.id, 64).unwrap();
+        }
+    }
+
+    /// The page set is explicit and closed; each page rule says what the
+    /// human does and why its persistence is worth an interruption.
+    #[test]
+    fn page_eligibility_is_explicit_per_rule() {
+        let pages: Vec<&str> = RULES
+            .iter()
+            .filter(|rule| rule.response_class == ResponseClass::Page)
+            .map(|rule| rule.id)
+            .collect();
+        assert_eq!(
+            pages,
+            [
+                "host-posture-unknown",
+                "nq-no-fresh-acquisition",
+                "service-down",
+                "nightshift-recurrence-missing",
+                "docket-unsettled",
+                "ag-executor-unavailable",
+            ]
+        );
+        for rule in RULES {
+            if rule.response_class == ResponseClass::Page {
+                assert!(rule.page_allowed, "{}", rule.id);
+                assert_eq!(rule.default_class, Class::Page, "{}", rule.id);
+                assert!(!rule.operator_action.is_empty(), "{}", rule.id);
+                assert!(!rule.escalation_reason.is_empty(), "{}", rule.id);
+            } else {
+                assert_eq!(rule.default_class, Class::Notice, "{}", rule.id);
+            }
         }
     }
 

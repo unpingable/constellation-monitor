@@ -65,6 +65,11 @@ if [ -e "$dir/crash" ]; then rm -f "$dir/crash"; kill -9 "$PPID"; sleep 2; exit 
 crash_after=false
 if [ -e "$dir/crash_after" ]; then rm -f "$dir/crash_after"; crash_after=true; fi
 if [ -e "$dir/command_error" ]; then echo "notification condition target_class is refused" >&2; exit 1; fi
+# NQ refuses, before custody, a PagerDuty (v2) intent that is not a page.
+if [ "$sub" = submit ] && grep -q '"schema":"nq.notification_delivery_intent.v2"' "$intent" \
+  && ! grep -q '"response_class":"page"' "$intent"; then
+  echo "notification refused: response_class_not_page" >&2; exit 1
+fi
 state=$(cat "$dir/next_state" 2>/dev/null || echo accepted)
 mkdir -p "$dir/records" "$dir/intents"
 n=$(($(ls "$dir/intents" | wc -l) + 1))

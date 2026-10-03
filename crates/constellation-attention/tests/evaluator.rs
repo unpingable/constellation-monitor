@@ -909,9 +909,24 @@ fn check_config_rejects_digest_like_labels_and_forbidden_pages() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("input not deployed"));
 
+    // Page eligibility is the registry's: host-disk (attention) cannot be
+    // overridden onto the PagerDuty route, only its threshold tuned.
     let mut harness = Harness::new();
     harness.host_posture("root");
-    harness.raw("[rules.host-disk]\nclass = \"page\"\nthreshold_seconds = 1800\n");
+    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
+    let config = harness.config_path();
+    let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("rule host-disk may not page: its response class is attention")
+    );
+
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.raw(
+        "[rules.host-disk]\nthreshold_seconds = 1800\n[rules.service-down]\nclass = \"notice\"\n",
+    );
     let config = harness.config_path();
     let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
     assert_eq!(
@@ -1506,7 +1521,6 @@ fn unrecognised_host_memory_version_is_not_current() {
 fn long_unknown_gap_does_not_count_toward_persistence() {
     let mut harness = Harness::new();
     harness.host_posture("root");
-    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
     set(&harness, "root", ProjectedStateV1::Degraded, T0);
     harness.evaluate(T0);
     let current = harness.root("root").join("CURRENT");
@@ -1536,7 +1550,7 @@ fn long_unknown_gap_does_not_count_toward_persistence() {
     assert_eq!(disk(&harness.calls()), 0);
     set(&harness, "root", ProjectedStateV1::Degraded, T0 + 1860);
     harness.evaluate(T0 + 1860);
-    assert_eq!(disk(&harness.calls()), 2, "{:?}", harness.calls());
+    assert_eq!(disk(&harness.calls()), 1, "{:?}", harness.calls());
 }
 
 /// One unknown pass inside an interval is tolerated: persistence and the
@@ -2764,8 +2778,7 @@ fn evaluation_history_configuration_is_bounded() {
 /// host-posture source.
 #[test]
 fn nq_filesystem_capacity_feeds_host_disk() {
-    let mut harness = history_harness(300);
-    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
+    let harness = history_harness(300);
     let t = at("2026-10-02T21:32:17Z");
     let zonestorage = |envelope: &mut Value| {
         if envelope["context"]["instance_id"] == "fs-root-capacity" {
@@ -2793,22 +2806,18 @@ fn nq_filesystem_capacity_feeds_host_disk() {
     assert_eq!(condition["persistence_bound_seconds"], 900);
     append_round(&harness, t + 960, zonestorage);
     let report = harness.evaluate(t + 963);
+    // host-disk is attention: a notice, never a page.
     assert_eq!(
         intents(&report),
-        vec![
-            (disk.into(), "notice".into(), "trigger".into()),
-            (disk.into(), "page".into(), "trigger".into()),
-        ]
+        vec![(disk.into(), "notice".into(), "trigger".into())]
     );
-    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n2")).unwrap();
-    assert_eq!(
-        intent["condition"],
-        json!({"component":"host_posture","rule":"host-disk","site":"labelwatch","target_class":"fs-zonestorage"})
-    );
-    assert_eq!(intent["details"]["rule_version"], 2);
-    assert_eq!(
-        intent["details"]["registry"],
-        "constellation.attention_registry.v2"
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n1")).unwrap();
+    assert_eq!(intent["response_class"], "attention");
+    assert!(
+        intent["summary"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("TRIGGER {disk} [notice]"))
     );
 }
 
@@ -2964,7 +2973,6 @@ fn history_ties_go_to_the_later_sequence() {
 #[test]
 fn host_disk_fed_by_two_inputs_is_unrecognised() {
     let mut harness = history_harness(300);
-    harness.raw("[rules.host-disk]\nclass = \"page\"\n");
     harness.host_posture("fs-root-capacity");
     let t = at("2026-10-02T21:32:17Z");
     for offset in (0..=1200).step_by(60) {
@@ -3151,4 +3159,96 @@ fn roster_ids_are_bounded_and_error_text_truncated() {
     let report = harness.evaluate(t + 3);
     let error = report["inputs"][0]["error"].as_str().unwrap();
     assert!(error.len() < 2048, "{}", error.len());
+}
+
+// PagerDuty routing semantics: response_class.
+
+/// Every intent carries `response_class`: v2 is always `page`; v1 is `page`
+/// for a page rule's decision, `attention` for a notice rule and for a
+/// configuration-removal resolve. The fake nq refuses a v2 intent that is
+/// not a page, as NQ does, so the suite proves none reaches PagerDuty.
+#[test]
+fn every_intent_carries_its_response_class() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in (0..=660).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let intent = |harness: &Harness, call: &str| -> Value {
+        let id = call.split(' ').nth(3).unwrap();
+        serde_json::from_slice(&harness.submitted_intent(id)).unwrap()
+    };
+    let calls = harness.calls();
+    // host-posture-unknown (page): the notice and the page both say page.
+    assert!(calls[0].starts_with("submit operations ") && calls[0].contains("-trigger-"));
+    assert_eq!(intent(&harness, &calls[0])["response_class"], "page");
+    assert!(calls[1].starts_with("submit pagerduty-ops "));
+    assert_eq!(intent(&harness, &calls[1])["response_class"], "page");
+    // Removing the page rule from configuration: the resolve is attention
+    // on the notice route and still a page on PagerDuty.
+    harness.raw("[rules.host-posture-unknown]\nenabled = false\n");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(intents(&report).len(), 2);
+    let calls = harness.calls();
+    assert!(calls[2].starts_with("submit operations ") && calls[2].contains("-resolve-"));
+    assert_eq!(intent(&harness, &calls[2])["response_class"], "attention");
+    assert!(calls[3].starts_with("submit pagerduty-ops ") && calls[3].contains("-resolve-"));
+    assert_eq!(intent(&harness, &calls[3])["response_class"], "page");
+    // host-disk (attention): a notice only.
+    for offset in (780..=1740).step_by(60) {
+        set(&harness, "root", ProjectedStateV1::Degraded, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 5, "{calls:?}");
+    assert!(
+        calls[4].starts_with("submit operations ") && calls[4].contains("host-disk-root-trigger")
+    );
+    assert_eq!(intent(&harness, &calls[4])["response_class"], "attention");
+    // Every v2 the fake accepted is a page.
+    for call in calls.iter().filter(|call| call.contains("pagerduty-ops")) {
+        let value = intent(&harness, call);
+        assert_eq!(value["schema"], "nq.notification_delivery_intent.v2");
+        assert_eq!(value["response_class"], "page");
+    }
+}
+
+/// A hand-edited PagerDuty intent without `response_class` is refused by
+/// nq before custody: it is recorded as command_error and never becomes a
+/// page.
+#[test]
+fn pagerduty_intent_without_response_class_is_refused() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let file = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["intent_file"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let path = harness.path("state/intents").join(file);
+    let mut intent: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    intent.as_object_mut().unwrap().remove("response_class");
+    fs::write(&path, serde_jcs::to_vec(&intent).unwrap()).unwrap();
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    for offset in [720, 780, 840] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(3));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("response_class_not_page"));
+    }
+    let calls = harness.calls();
+    assert!(
+        calls.iter().all(|call| !call.contains("pagerduty-ops")),
+        "{calls:?}"
+    );
+    assert_eq!(
+        harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["outcome"],
+        "command_error"
+    );
 }

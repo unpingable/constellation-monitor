@@ -7,7 +7,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::condition::ConditionKey;
 use crate::config::{Config, EffectiveRule};
-use crate::registry::REGISTRY_VERSION;
+use crate::registry::{REGISTRY_VERSION, ResponseClass};
 use crate::util::{format_seconds, truncate};
 
 pub const INTENT_V1: &str = "nq.notification_delivery_intent.v1";
@@ -54,6 +54,7 @@ pub fn policy_digest(rules: &[EffectiveRule]) -> String {
                 "version": rule.rule.version,
                 "enabled": rule.enabled,
                 "class": rule.class.as_str(),
+                "response_class": rule.rule.response_class.as_str(),
                 "threshold_seconds": rule.threshold_seconds,
             })
         })
@@ -171,6 +172,8 @@ pub fn v2(input: &IntentInput<'_>, route: &str) -> Value {
         "summary": truncate(&summary(input), V2_SUMMARY_MAX),
         "inspection_reference": truncate(&inspection_reference(input), 1024),
         "action": input.action.as_str(),
+        // Only page-class decisions reach a PagerDuty route.
+        "response_class": ResponseClass::Page.as_str(),
         "condition": condition,
         "severity": input.rule.rule.severity,
         "details": details(input),
@@ -205,7 +208,21 @@ pub fn v1(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
         "destination_identity": format!("{label}:{route}"),
         "summary": truncate(&summary(input), V1_SUMMARY_MAX),
         "inspection_reference": truncate(&inspection_reference(input), 1024),
+        "response_class": response_class(input).as_str(),
     })
+}
+
+/// The response class of a notice: `page` for a decision that also pages,
+/// otherwise `attention`, including a configuration-removal resolve ("no
+/// longer evaluated"), which asks nobody to interrupt anything.
+fn response_class(input: &IntentInput<'_>) -> ResponseClass {
+    let removal =
+        input.action == Action::Resolve && input.resolve_reason == ResolveReason::NoLongerEvaluated;
+    if input.rule.class == crate::registry::Class::Page && !removal {
+        ResponseClass::Page
+    } else {
+        ResponseClass::Attention
+    }
 }
 
 /// Size of the message NQ renders for a v1 intent on a `local_file` route

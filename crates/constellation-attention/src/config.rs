@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::condition::validate_token;
-use crate::registry::{self, Class, InputKind, RULES, Rule, ThresholdMeaning};
+use crate::registry::{self, Class, InputKind, RULES, ResponseClass, Rule, ThresholdMeaning};
 
 pub const CONFIG_SCHEMA: &str = "constellation.attention_config.v1";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -371,8 +371,11 @@ impl Config {
                     rule.disabled.unwrap_or_default()
                 ));
             }
-            if value.class == Some(Class::Page) && !rule.page_allowed {
-                return Err(format!("rule {id} may not page"));
+            if value.class == Some(Class::Page) && rule.response_class != ResponseClass::Page {
+                return Err(format!(
+                    "rule {id} may not page: its response class is {}",
+                    rule.response_class.as_str()
+                ));
             }
             if let Some(threshold) = value.threshold_seconds {
                 age(&format!("rules.{id}.threshold_seconds"), threshold)?;
