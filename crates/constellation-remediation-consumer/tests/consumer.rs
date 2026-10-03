@@ -561,11 +561,13 @@ fn ag_refusal_is_recorded_and_never_retried() {
 fn exhausted_grant_refuses_dispatch_without_retry() {
     let harness = Harness::new();
     harness.control("grant_max", "0");
-    assert_eq!(harness.result(), "dispatch_not_accepted");
+    assert_eq!(harness.result(), "dispatch_refused");
     assert_eq!(harness.count("ag dispatch"), 1);
     assert_eq!(harness.count("grant 0/0"), 1);
     assert_eq!(harness.effects(), 0);
-    assert_eq!(harness.closed_outcomes(), ["dispatch_not_accepted"]);
+    assert_eq!(harness.closed_outcomes(), ["dispatch_refused"]);
+    let closed = &harness.events("episode_closed")[0]["detail"];
+    assert_eq!(closed["detail"]["refusal"], "grant_exhausted");
     // A later episode is blocked while that spent issuance stays unresolved.
     let mut state = harness.state();
     state["last_window_until"] = json!(0);
@@ -582,6 +584,21 @@ fn exhausted_grant_refuses_dispatch_without_retry() {
     assert_eq!(harness.abstentions(), ["prior_campaign_unresolved"]);
     assert_eq!(harness.count("ag dispatch"), 1);
     assert_eq!(harness.count("ag init"), 1);
+}
+
+#[test]
+fn revoked_grant_refuses_dispatch_with_its_reason() {
+    let harness = Harness::new();
+    harness.control("grant_revoked", "");
+    assert_eq!(harness.result(), "dispatch_refused");
+    assert_eq!(harness.count("ag dispatch"), 1);
+    assert_eq!(harness.effects(), 0);
+    let closed = &harness.events("episode_closed")[0]["detail"];
+    assert_eq!(closed["detail"]["refusal"], "grant_revoked");
+    assert_eq!(
+        constellation_remediation_consumer::pass::docket_refusal("executor failed"),
+        "docket_refused"
+    );
 }
 
 #[test]

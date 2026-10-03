@@ -85,7 +85,7 @@ case "$cmd" in
   dispatch)
     expect authorization_consumed
     [ -e "$st/docket" ] && { echo "Docket already holds custody of this issuance" >&2; exit 1; }
-    "$dsr" < /dev/null > /dev/null || { echo "Docket refused execution standing" >&2; exit 1; }
+    refusal=$("$dsr" 2>&1 < /dev/null > /dev/null) || { echo "external-process:$refusal" >&2; exit 1; }
     put docket accepted; echo "start" >> "$dir/effects.log"; put pc dispatched
     if [ -e "$dir/crash_in_dispatch" ]; then rm "$dir/crash_in_dispatch"; kill -9 "$PPID"; fi
     snapshot;;

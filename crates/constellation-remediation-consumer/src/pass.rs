@@ -140,6 +140,27 @@ pub fn program_counter(snapshot: &Value) -> Option<String> {
     state.keys().next().cloned()
 }
 
+/// Docket's standing refusal reason inside an AG dispatch failure, as a
+/// closed token: the grant resolver prints `execution-standing refused:
+/// execution-standing-grant-<reason>`.
+#[must_use]
+pub fn docket_refusal(message: &str) -> String {
+    const PREFIX: &str = "execution-standing-grant-";
+    message
+        .find(PREFIX)
+        .map(|start| {
+            message[start + PREFIX.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect::<String>()
+        })
+        .filter(|reason| !reason.is_empty())
+        .map_or_else(
+            || "docket_refused".to_owned(),
+            |reason| format!("grant_{}", reason.replace('-', "_")),
+        )
+}
+
 fn find_string(value: &Value, key: &str) -> Option<String> {
     match value {
         Value::Object(map) => map
@@ -751,6 +772,27 @@ impl Pass<'_> {
                             self.event("dispatch_started", json!({"plan": plan}))?;
                             let dispatched = self.external.ag_dispatch(&plan);
                             self.step_event("dispatch", &dispatched)?;
+                            if let Err(failure) = &dispatched {
+                                // AG's restart law says whether Docket took
+                                // custody despite the error; only a refusal
+                                // it confirms closes the episode, with
+                                // Docket's own reason (grant exhausted,
+                                // revoked, expired, ...).
+                                let confirmed = self.external.ag_recover(&plan);
+                                self.step_event("recover", &confirmed)?;
+                                if confirmed.as_ref().is_ok_and(|value| {
+                                    value.get("result").and_then(Value::as_str)
+                                        == Some("issuance_not_accepted")
+                                }) {
+                                    return self.close(
+                                        "dispatch_refused",
+                                        json!({
+                                            "refusal": docket_refusal(&failure.message),
+                                            "failure": failure_detail(failure),
+                                        }),
+                                    );
+                                }
+                            }
                         }
                         Some("advanced") => {}
                         other => {
