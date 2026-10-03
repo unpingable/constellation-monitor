@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use constellation_remediation_resolver::{
-    ACTIVE_BASIS_TYPE, BASIS_TYPE, CURRENTNESS_DOMAIN, TYPED_BASIS_SCHEMA, hash_domain, jcs,
+    ACTIVE_BASIS_TYPE, BASIS_TYPE, CURRENTNESS_DOMAIN, ResolutionFields, Status,
+    TYPED_BASIS_SCHEMA, hash_domain, jcs,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -497,4 +498,55 @@ fn active_claim_prints_its_own_basis_and_unknown_claims_refuse() {
     harness.extra = vec!["--claim".into(), "recovered".into()];
     assert!(harness.refuse().contains("--claim must be"));
     assert!(harness.calls().is_empty());
+}
+
+/// The exported projection carries exactly the typed fields a consumer may
+/// forward, and refuses anything outside the closed vocabulary.
+#[test]
+fn resolution_fields_export_the_typed_projection() {
+    let harness = Harness::new();
+    harness.append(&canary(NOW - 3_000, "present"));
+    let record = harness.resolve();
+    let fields = ResolutionFields::from_value(&record).unwrap();
+    assert_eq!(
+        fields,
+        ResolutionFields {
+            status: Status::Current,
+            resolver_id: RESOLVER_ID.into(),
+            basis_type: BASIS_TYPE.into(),
+            currentness: witness(1, NOW - 3_000, "present"),
+            fresh_until_unix_ms: NOW + 57_000,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&fields).unwrap(),
+        json!({
+            "status": "current",
+            "resolver_id": RESOLVER_ID,
+            "basis_type": BASIS_TYPE,
+            "currentness": witness(1, NOW - 3_000, "present"),
+            "fresh_until_unix_ms": NOW + 57_000,
+        })
+    );
+    for (pointer, value) in [
+        ("/status", json!("fixed")),
+        ("/status", json!(null)),
+        (
+            "/basis/basis_type",
+            json!("constellation.remediation.other/v1"),
+        ),
+        ("/currentness", json!("not-a-digest")),
+        ("/fresh_until_unix_ms", json!(-1)),
+        ("/resolver_id", json!("")),
+    ] {
+        let mut bad = record.clone();
+        *bad.pointer_mut(pointer).unwrap() = value.clone();
+        assert!(
+            ResolutionFields::from_value(&bad).is_err(),
+            "{pointer} = {value}"
+        );
+    }
+    for status in Status::ALL {
+        assert_eq!(Status::parse(status.as_str()), Some(status));
+    }
 }

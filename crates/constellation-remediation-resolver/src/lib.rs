@@ -268,6 +268,97 @@ pub enum Status {
     Refused,
 }
 
+impl Status {
+    pub const ALL: [Self; 6] = [
+        Self::Current,
+        Self::Stale,
+        Self::Contradictory,
+        Self::Absent,
+        Self::Unsupported,
+        Self::Refused,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Stale => "stale",
+            Self::Contradictory => "contradictory",
+            Self::Absent => "absent",
+            Self::Unsupported => "unsupported",
+            Self::Refused => "refused",
+        }
+    }
+
+    /// The closed vocabulary; anything else is not a status.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == value)
+    }
+}
+
+/// The typed fields of one v3 resolution that a consumer may carry forward
+/// (for example into a model decider's evidence projection): status, the
+/// resolver's identity, the basis type, the currentness witness digest and
+/// the freshness bound. Nothing else of the record is exported.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ResolutionFields {
+    pub status: Status,
+    pub resolver_id: String,
+    pub basis_type: String,
+    pub currentness: String,
+    pub fresh_until_unix_ms: u64,
+}
+
+impl ResolutionFields {
+    /// Validate and extract the fields from a resolution document a resolver
+    /// printed. Unknown statuses, basis types other than this resolver's
+    /// two, non-digest witnesses and missing fields are errors.
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let text = |pointer: &str| value.pointer(pointer).and_then(Value::as_str);
+        let status = text("/status")
+            .and_then(Status::parse)
+            .ok_or("resolution status is not in AG's closed vocabulary")?;
+        let resolver_id = text("/resolver_id").ok_or("resolution has no resolver_id")?;
+        bounded_text("resolver_id", resolver_id, 256)?;
+        let basis_type = text("/basis/basis_type").ok_or("resolution has no basis type")?;
+        if basis_type != BASIS_TYPE && basis_type != ACTIVE_BASIS_TYPE {
+            return Err(format!(
+                "resolution basis type {basis_type:?} is not this resolver's"
+            ));
+        }
+        let currentness = text("/currentness").ok_or("resolution has no currentness")?;
+        if !is_digest(currentness) {
+            return Err("resolution currentness is not a sha256: digest".into());
+        }
+        let fresh_until_unix_ms = value
+            .get("fresh_until_unix_ms")
+            .and_then(Value::as_u64)
+            .ok_or("resolution has no fresh_until_unix_ms")?;
+        Ok(Self {
+            status,
+            resolver_id: resolver_id.to_owned(),
+            basis_type: basis_type.to_owned(),
+            currentness: currentness.to_owned(),
+            fresh_until_unix_ms,
+        })
+    }
+}
+
+impl From<&Resolution> for ResolutionFields {
+    fn from(resolution: &Resolution) -> Self {
+        Self {
+            status: resolution.status,
+            resolver_id: resolution.resolver_id.clone(),
+            basis_type: resolution.basis.basis_type.clone(),
+            currentness: resolution.currentness.clone(),
+            fresh_until_unix_ms: resolution.fresh_until_unix_ms,
+        }
+    }
+}
+
 /// AG's `ag.governed-loop.observation-resolution/v3`, field for field.
 #[derive(Clone, Debug, Serialize)]
 pub struct Resolution {
