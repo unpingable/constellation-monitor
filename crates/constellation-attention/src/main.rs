@@ -140,7 +140,7 @@ fn run() -> Result<u8, (u8, String)> {
                 "valid": true,
                 "site": config.site,
                 "registry": REGISTRY_VERSION,
-                "attention_policy_digest": policy_digest(&rules),
+                "attention_policy_digest": policy_digest(&rules, &config.remediation.targets),
                 "rules": engine::rules_report(&rules, &config),
             }));
             Ok(0)

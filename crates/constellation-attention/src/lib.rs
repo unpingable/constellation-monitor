@@ -17,5 +17,6 @@ pub mod inputs;
 pub mod intent;
 pub mod nq;
 pub mod registry;
+pub mod remediation;
 pub mod state;
 pub mod util;

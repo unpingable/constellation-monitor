@@ -3331,3 +3331,206 @@ fn legacy_unanswered_page_is_rerendered() {
     assert!(page[0].ends_with(" accepted new"), "{calls:?}");
     assert!(page[0].contains("-trigger-1790943120"), "{calls:?}");
 }
+
+// response_policy (cartography #55).
+
+fn remediation_harness(window: Option<i64>) -> (Harness, PathBuf) {
+    let (mut harness, status) = nq_status_harness();
+    harness.raw(&format!(
+        "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"cron.service\"\n\
+         policy = \"auto_remediate_then_page\"\n{}",
+        window.map_or_else(String::new, |window| format!("window_seconds = {window}\n"))
+    ));
+    (harness, status)
+}
+
+fn cron_row(report: &Value) -> Value {
+    report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|condition| condition["id"] == CRON)
+        .unwrap()
+        .clone()
+}
+
+/// Default: every rule is observe_only, and service-down pages at the bound.
+#[test]
+fn observe_only_is_the_default_policy() {
+    let (harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let report = harness.report();
+    let row = cron_row(&report);
+    assert_eq!(row["response_policy"], "observe_only");
+    assert_eq!(row["remediation_window_until"], Value::Null);
+    assert!(harness.calls()[1].starts_with("submit pagerduty-ops "));
+    let _ = t;
+}
+
+/// auto_remediate_then_page: the notice goes out at the bound, the page
+/// waits for the remediation window (first_seen + 240 s) and goes out once
+/// the condition is still present then.
+#[test]
+fn remediation_target_defers_the_page_until_the_window_expires() {
+    let (harness, status) = remediation_harness(None);
+    let t = at("2026-10-02T21:32:17Z");
+    let first_seen = t + 3;
+    let mut report = Value::Null;
+    for offset in [0, 60, 120, 181] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        report = harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(
+        intents(&report),
+        vec![(CRON.into(), "notice".into(), "trigger".into())]
+    );
+    let row = cron_row(&report);
+    assert_eq!(row["response_policy"], "auto_remediate_then_page");
+    assert_eq!(row["remediation_window_until"], first_seen + 240);
+    assert_eq!(row["page_deferred"], true);
+    assert!(
+        cron_calls(&harness)
+            .iter()
+            .all(|call| !call.contains("pagerduty"))
+    );
+    // Still present inside the window: held.
+    write_status(&status, &retimed("cron-down.json", t + 236, |_| {}));
+    assert!(intents(&harness.evaluate(t + 239)).is_empty());
+    // At the window's end and present: the page goes out.
+    write_status(&status, &retimed("cron-down.json", t + 240, |_| {}));
+    let report = harness.evaluate(t + 243);
+    assert_eq!(
+        intents(&report),
+        vec![(CRON.into(), "page".into(), "trigger".into())]
+    );
+    let calls = cron_calls(&harness);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let id = calls[1].split(' ').nth(3).unwrap();
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+    assert_eq!(intent["response_class"], "page");
+    assert_eq!(
+        intent["transition_id"],
+        format!("labelwatch-service-down-cron.service-trigger-{}", t + 184)
+    );
+    assert_eq!(
+        intent["stable_event_id"],
+        format!("labelwatch-service-down-cron.service-trigger-{}", t + 243)
+    );
+    // Never twice; recovery then resolves on both routes.
+    for offset in [300, 360] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(cron_calls(&harness).len(), 2);
+    for offset in [420, 480, 540] {
+        write_status(
+            &status,
+            &retimed(
+                "cron-down.json",
+                t + offset,
+                cron_state("explicitly_absent"),
+            ),
+        );
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = cron_calls(&harness);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.contains("-resolve-"))
+            .count(),
+        2,
+        "{calls:?}"
+    );
+}
+
+/// A condition that clears inside the remediation window never pages; the
+/// resolve notice says it recovered within the window.
+#[test]
+fn recovery_inside_the_remediation_window_never_pages() {
+    let (harness, status) = remediation_harness(None);
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    for offset in (200..=380).step_by(60) {
+        write_status(
+            &status,
+            &retimed(
+                "cron-down.json",
+                t + offset,
+                cron_state("explicitly_absent"),
+            ),
+        );
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = cron_calls(&harness);
+    assert!(
+        calls.iter().all(|call| !call.contains("pagerduty")),
+        "{calls:?}"
+    );
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert!(calls[1].starts_with("submit operations ") && calls[1].contains("-resolve-"));
+    let id = calls[1].split(' ').nth(3).unwrap();
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+    assert!(
+        intent["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("recovered within the remediation window; no page was sent."),
+        "{intent}"
+    );
+    assert_eq!(intent["response_class"], "attention");
+}
+
+#[test]
+fn remediation_configuration_refusals() {
+    for (toml, message) in [
+        (
+            "[[remediation.targets]]\nrule = \"host-disk\"\ntarget_class = \"root\"\npolicy = \"auto_remediate_then_page\"\n",
+            "cannot carry remediation targets",
+        ),
+        (
+            "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"getty@tty1.service\"\npolicy = \"auto_remediate_then_page\"\n",
+            "remediation target_class",
+        ),
+        (
+            "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"cron.service\"\npolicy = \"observe_only\"\n",
+            "must be auto_remediate_then_page",
+        ),
+        (
+            "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"cron.service\"\npolicy = \"auto_remediate_then_page\"\nwindow_seconds = 30\n",
+            "window_seconds must be 60..=600",
+        ),
+        (
+            "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"cron.service\"\npolicy = \"auto_remediate_then_page\"\n\
+             [[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"cron.service\"\npolicy = \"auto_remediate_then_page\"\nwindow_seconds = 300\n",
+            "listed twice",
+        ),
+        (
+            "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"cron.service\"\npolicy = \"restart\"\n",
+            "invalid configuration",
+        ),
+    ] {
+        let mut harness = Harness::new();
+        harness.raw(toml);
+        let config = harness.config_path();
+        let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(2), "{toml}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{toml}: {stderr}");
+    }
+    let mut harness = Harness::new();
+    harness.raw(
+        "[[remediation.targets]]\nrule = \"service-down\"\ntarget_class = \"attention-canary.service\"\npolicy = \"auto_remediate_then_page\"\nwindow_seconds = 240\n",
+    );
+    let config = harness.config_path();
+    let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

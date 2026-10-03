@@ -18,6 +18,7 @@ use crate::registry::{
     Class, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS,
     UNKNOWN_GAP_SECONDS,
 };
+use crate::remediation::{self, PageDecision};
 use crate::state::{ConditionState, LastIntent, State};
 use crate::util::{format_seconds, read_bounded, write_atomic};
 
@@ -246,7 +247,7 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 )]
 pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let rules = config.effective_rules();
-    let digest = intent::policy_digest(&rules);
+    let digest = intent::policy_digest(&rules, &config.remediation.targets);
     let state_dir = config.state_dir();
     let output_dir = if options.dry_run {
         state_dir.join("dry-run")
@@ -424,6 +425,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .chain(state.conditions.keys().cloned())
         .collect();
     let mut transitions: Vec<(String, Action, ResolveReason)> = Vec::new();
+    // Conditions whose deferred page is due this pass (page route only).
+    let mut deferred_pages: BTreeSet<String> = BTreeSet::new();
     let mut condition_reports = Vec::new();
     for id in &ids {
         let item = observed.get(id);
@@ -441,6 +444,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 transition_at: None,
                 last_intent: BTreeMap::new(),
                 pending_trigger: BTreeMap::new(),
+                page_deferred: false,
             }
         });
         if let Some(item) = item {
@@ -491,13 +495,35 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         };
         let persistence = rule.map_or(0, EffectiveRule::persistence_seconds);
         let transition = step(condition, observation, persistence, now);
+        let (policy, window) =
+            config.response_policy(&condition.key.rule, condition.key.target_class.as_deref());
+        let window_until =
+            window.and_then(|window| remediation::window_until(condition.first_seen, window));
         if let Some(action) = transition {
             let reason = if observation == Observation::Removed {
                 ResolveReason::NoLongerEvaluated
+            } else if condition.page_deferred {
+                ResolveReason::RecoveredWithinWindow
             } else {
                 ResolveReason::Recovered
             };
+            match action {
+                Action::Resolve => condition.page_deferred = false,
+                // The trigger's notice goes out now; its page may wait.
+                Action::Trigger => {
+                    condition.page_deferred = rule.is_some_and(|rule| rule.class == Class::Page)
+                        && remediation::page_decision(policy, window_until, observation, now)
+                            == PageDecision::Defer;
+                }
+            }
             transitions.push((id.clone(), action, reason));
+        } else if condition.active
+            && condition.page_deferred
+            && remediation::page_decision(policy, window_until, observation, now)
+                == PageDecision::Send
+        {
+            condition.page_deferred = false;
+            deferred_pages.insert(id.clone());
         }
         condition_reports.push(json!({
             "id": id,
@@ -511,6 +537,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             "persistence_bound_seconds": persistence,
             "active": condition.active,
             "transition": transition.map(Action::as_str),
+            "response_policy": policy.as_str(),
+            "remediation_window_until": window_until,
+            "page_deferred": condition.page_deferred,
         }));
     }
 
@@ -520,7 +549,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     let mut plan: Vec<Planned> = Vec::new();
     let mut superseded: Vec<Value> = Vec::new();
     let notice_route = config.routes.notice_route.clone();
-    for (id, action, reason) in &transitions {
+    let work: Vec<(String, Action, ResolveReason, bool)> = transitions
+        .iter()
+        .map(|(id, action, reason)| (id.clone(), *action, *reason, false))
+        .chain(
+            deferred_pages
+                .iter()
+                .map(|id| (id.clone(), Action::Trigger, ResolveReason::Recovered, true)),
+        )
+        .collect();
+    for (id, action, reason, page_only) in &work {
+        let (action, reason) = (*action, *reason);
         let condition = state
             .conditions
             .get_mut(id)
@@ -530,8 +569,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         };
         let mut roles: Vec<(String, String)> = Vec::new();
         match action {
+            // The remediation window expired with the condition present: the
+            // held page goes out now, under its own event id, bound to the
+            // trigger's transition.
+            Action::Trigger if *page_only => {
+                if let Some(page) = &config.routes.page_route {
+                    roles.push(("page".into(), page.clone()));
+                }
+            }
             Action::Trigger => {
                 if rule.class == Class::Page
+                    && !condition.page_deferred
                     && let Some(page) = &config.routes.page_route
                 {
                     roles.push(("page".into(), page.clone()));
@@ -547,7 +595,16 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 }
             }
         }
-        let stable_event_id = intent::event_id(&condition.key, *action, now);
+        let stable_event_id = intent::event_id(&condition.key, action, now);
+        let transition_id = if *page_only {
+            intent::event_id(
+                &condition.key,
+                Action::Trigger,
+                condition.transition_at.unwrap_or(now),
+            )
+        } else {
+            stable_event_id.clone()
+        };
         let reference = observed
             .get(id)
             .map_or(Value::Null, |item| item.reference.clone());
@@ -556,10 +613,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             config,
             rule,
             key: &condition.key,
-            action: *action,
-            resolve_reason: *reason,
+            action,
+            resolve_reason: reason,
             stable_event_id: &stable_event_id,
-            transition_id: &stable_event_id,
+            transition_id: &transition_id,
             policy_digest: &digest,
             first_seen: condition.first_seen,
             persisted_seconds: persisted,
@@ -585,7 +642,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 role.clone(),
                 LastIntent {
                     stable_event_id: stable_event_id.clone(),
-                    transition_id: stable_event_id.clone(),
+                    transition_id: transition_id.clone(),
                     action: action.as_str().into(),
                     route,
                     schema: schema.into(),
@@ -599,7 +656,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             plan.push(Planned {
                 condition_id: id.clone(),
                 role,
-                action: *action,
+                action,
                 operation: Operation::Submit,
                 retry_of: None,
             });
@@ -632,7 +689,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             }
         }
     }
-    let transitioned: BTreeSet<&String> = transitions.iter().map(|(id, _, _)| id).collect();
+    // Conditions that got an intent this pass: no follow-up besides it.
+    let transitioned: BTreeSet<&String> = transitions
+        .iter()
+        .map(|(id, _, _)| id)
+        .chain(deferred_pages.iter())
+        .collect();
     let mut unreadable: Vec<IntentReport> = Vec::new();
     for (id, condition) in &mut state.conditions {
         if transitioned.contains(id) {

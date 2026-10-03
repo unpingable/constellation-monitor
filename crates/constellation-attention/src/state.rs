@@ -54,6 +54,10 @@ pub struct ConditionState {
     /// reported as a dropped trigger.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending_trigger: BTreeMap<String, LastIntent>,
+    /// `auto_remediate_then_page`: triggered, notice sent, page held for the
+    /// remediation window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page_deferred: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

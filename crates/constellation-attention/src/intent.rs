@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 use crate::condition::ConditionKey;
-use crate::config::{Config, EffectiveRule};
+use crate::config::{Config, EffectiveRule, RemediationTarget};
 use crate::registry::{REGISTRY_VERSION, ResponseClass};
 use crate::util::{format_seconds, truncate};
 
@@ -45,7 +45,7 @@ impl Action {
 /// `sha256:` digest of the effective registry: rule ids, versions, enablement,
 /// class and threshold. It names the policy that decided the intent.
 #[must_use]
-pub fn policy_digest(rules: &[EffectiveRule]) -> String {
+pub fn policy_digest(rules: &[EffectiveRule], remediation: &[RemediationTarget]) -> String {
     let rules: Vec<Value> = rules
         .iter()
         .map(|rule| {
@@ -55,12 +55,15 @@ pub fn policy_digest(rules: &[EffectiveRule]) -> String {
                 "enabled": rule.enabled,
                 "class": rule.class.as_str(),
                 "response_class": rule.rule.response_class.as_str(),
+                "response_policy": rule.rule.response_policy.as_str(),
                 "threshold_seconds": rule.threshold_seconds,
             })
         })
         .collect();
-    let bytes = serde_jcs::to_vec(&json!({"registry": REGISTRY_VERSION, "rules": rules}))
-        .unwrap_or_default();
+    let bytes = serde_jcs::to_vec(
+        &json!({"registry": REGISTRY_VERSION, "rules": rules, "remediation": remediation}),
+    )
+    .unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
@@ -78,6 +81,9 @@ pub enum ResolveReason {
     /// The rule, its input or the input label was removed from the
     /// configuration; recovery was not observed.
     NoLongerEvaluated,
+    /// An `auto_remediate_then_page` condition recovered before its
+    /// remediation window expired; no page was sent.
+    RecoveredWithinWindow,
 }
 
 pub struct IntentInput<'a> {
@@ -109,6 +115,10 @@ fn summary(input: &IntentInput<'_>) -> String {
                 "RESOLVE {id} [{}]: underlying state clear for at least {} s.",
                 input.rule.class.as_str(),
                 crate::registry::RESOLVE_CONFIRM_SECONDS,
+            ),
+            ResolveReason::RecoveredWithinWindow => format!(
+                "RESOLVE {id} [{}]: recovered within the remediation window; no page was sent.",
+                input.rule.class.as_str(),
             ),
             ResolveReason::NoLongerEvaluated => format!(
                 "RESOLVE {id} [{}]: no longer evaluated; recovery not observed.",
@@ -216,8 +226,11 @@ pub fn v1(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
 /// otherwise `attention`, including a configuration-removal resolve ("no
 /// longer evaluated"), which asks nobody to interrupt anything.
 fn response_class(input: &IntentInput<'_>) -> ResponseClass {
-    let removal =
-        input.action == Action::Resolve && input.resolve_reason == ResolveReason::NoLongerEvaluated;
+    let removal = input.action == Action::Resolve
+        && matches!(
+            input.resolve_reason,
+            ResolveReason::NoLongerEvaluated | ResolveReason::RecoveredWithinWindow
+        );
     if input.rule.class == crate::registry::Class::Page && !removal {
         ResponseClass::Page
     } else {
@@ -303,7 +316,7 @@ mod tests {
                     resolve_reason: ResolveReason::NoLongerEvaluated,
                     stable_event_id: &event,
                     transition_id: &event,
-                    policy_digest: &policy_digest(&rules),
+                    policy_digest: &policy_digest(&rules, &[]),
                     first_seen: Some(1_790_942_400),
                     persisted_seconds: 660,
                     reference: &Value::Null,

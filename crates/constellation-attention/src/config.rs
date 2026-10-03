@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::condition::validate_token;
-use crate::registry::{self, Class, InputKind, RULES, ResponseClass, Rule, ThresholdMeaning};
+use crate::registry::{
+    self, Class, InputKind, REMEDIATION_RULES, RULES, ResponseClass, ResponsePolicy, Rule,
+    ThresholdMeaning,
+};
+use crate::remediation::{MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS};
 
 pub const CONFIG_SCHEMA: &str = "constellation.attention_config.v1";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -34,6 +38,33 @@ pub struct Config {
     pub inputs: Inputs,
     #[serde(default)]
     pub rules: BTreeMap<String, RuleOverride>,
+    #[serde(default)]
+    pub remediation: Remediation,
+}
+
+/// `[remediation]`: per-target `response_policy` (cartography #55).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remediation {
+    #[serde(default)]
+    pub targets: Vec<RemediationTarget>,
+}
+
+/// `[[remediation.targets]]`: one condition target of a rule in
+/// `REMEDIATION_RULES` given `auto_remediate_then_page`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemediationTarget {
+    pub rule: String,
+    /// The condition's target class, e.g. `attention-canary.service`.
+    pub target_class: String,
+    pub policy: ResponsePolicy,
+    #[serde(default = "default_window")]
+    pub window_seconds: i64,
+}
+
+const fn default_window() -> i64 {
+    crate::remediation::DEFAULT_WINDOW_SECONDS
 }
 
 const fn default_command_timeout() -> u64 {
@@ -381,7 +412,70 @@ impl Config {
                 age(&format!("rules.{id}.threshold_seconds"), threshold)?;
             }
         }
+        let mut targets = BTreeSet::new();
+        for target in &self.remediation.targets {
+            let rule = registry::rule(&target.rule).ok_or_else(|| {
+                format!("remediation target names unknown rule {:?}", target.rule)
+            })?;
+            if !REMEDIATION_RULES.contains(&rule.id) || rule.response_class != ResponseClass::Page {
+                return Err(format!(
+                    "rule {} cannot carry remediation targets (only {})",
+                    rule.id,
+                    REMEDIATION_RULES.join(", ")
+                ));
+            }
+            validate_token("remediation target_class", &target.target_class, 48)?;
+            if target.policy != ResponsePolicy::AutoRemediateThenPage {
+                return Err(format!(
+                    "remediation target {} policy must be auto_remediate_then_page (observe_only is the default)",
+                    target.target_class
+                ));
+            }
+            if !(MIN_WINDOW_SECONDS..=MAX_WINDOW_SECONDS).contains(&target.window_seconds) {
+                return Err(format!(
+                    "remediation target {} window_seconds must be {MIN_WINDOW_SECONDS}..={MAX_WINDOW_SECONDS}",
+                    target.target_class
+                ));
+            }
+            if !targets.insert((target.rule.clone(), target.target_class.clone())) {
+                return Err(format!(
+                    "remediation target {} {} is listed twice",
+                    target.rule, target.target_class
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// The configured remediation target of a condition, if any.
+    #[must_use]
+    pub fn remediation_target(
+        &self,
+        rule: &str,
+        target_class: Option<&str>,
+    ) -> Option<&RemediationTarget> {
+        self.remediation.targets.iter().find(|target| {
+            target.rule == rule && Some(target.target_class.as_str()) == target_class
+        })
+    }
+
+    /// A condition's effective response policy and window.
+    #[must_use]
+    pub fn response_policy(
+        &self,
+        rule: &str,
+        target_class: Option<&str>,
+    ) -> (ResponsePolicy, Option<i64>) {
+        self.remediation_target(rule, target_class).map_or_else(
+            || {
+                (
+                    registry::rule(rule)
+                        .map_or(ResponsePolicy::ObserveOnly, |rule| rule.response_policy),
+                    None,
+                )
+            },
+            |target| (target.policy, Some(target.window_seconds)),
+        )
     }
 
     #[must_use]

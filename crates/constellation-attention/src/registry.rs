@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v3";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v4";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -62,6 +62,34 @@ impl ResponseClass {
     }
 }
 
+/// What happens between "the condition persisted past its bound" and "a
+/// human is paged" (cartography #55). Closed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsePolicy {
+    /// Notify and page on the rule's normal schedule. Every rule's default.
+    #[default]
+    ObserveOnly,
+    /// For a configured remediation target of a page rule: the notice goes
+    /// out on schedule, the page waits for the remediation window and is
+    /// never sent if the condition clears inside it.
+    AutoRemediateThenPage,
+}
+
+impl ResponsePolicy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ObserveOnly => "observe_only",
+            Self::AutoRemediateThenPage => "auto_remediate_then_page",
+        }
+    }
+}
+
+/// Rules that may carry `auto_remediate_then_page` targets (v1: only
+/// `service-down`). Each must be a page rule.
+pub const REMEDIATION_RULES: [&str; 1] = ["service-down"];
+
 /// The kind of configured input a rule reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,11 +121,12 @@ pub enum ThresholdMeaning {
 /// a rule cannot be constructed without an explicit `response_class`.
 ///
 /// ```compile_fail
-/// use constellation_attention::registry::{Class, InputKind, Rule, ThresholdMeaning};
+/// use constellation_attention::registry::{Class, InputKind, ResponsePolicy, Rule, ThresholdMeaning};
 /// let rule = Rule {
 ///     id: "x", version: 1, default_class: Class::Notice, page_allowed: false,
 ///     // no response_class
-///     operator_action: "", escalation_reason: "", severity: "warning",
+///     operator_action: "", escalation_reason: "",
+///     response_policy: ResponsePolicy::ObserveOnly, severity: "warning",
 ///     component: Some("nq"), input: InputKind::NqStatus,
 ///     threshold_meaning: ThresholdMeaning::Persistence, default_threshold_seconds: 60,
 ///     fixed_persistence_seconds: 0, runbook_anchor: "x", runbook_document: "x",
@@ -107,12 +136,13 @@ pub enum ThresholdMeaning {
 ///
 /// ```
 /// use constellation_attention::registry::{
-///     Class, InputKind, ResponseClass, Rule, ThresholdMeaning,
+///     Class, InputKind, ResponseClass, ResponsePolicy, Rule, ThresholdMeaning,
 /// };
 /// let rule = Rule {
 ///     id: "x", version: 1, default_class: Class::Notice, page_allowed: false,
 ///     response_class: ResponseClass::Attention,
-///     operator_action: "", escalation_reason: "", severity: "warning",
+///     operator_action: "", escalation_reason: "",
+///     response_policy: ResponsePolicy::ObserveOnly, severity: "warning",
 ///     component: Some("nq"), input: InputKind::NqStatus,
 ///     threshold_meaning: ThresholdMeaning::Persistence, default_threshold_seconds: 60,
 ///     fixed_persistence_seconds: 0, runbook_anchor: "x", runbook_document: "x",
@@ -135,6 +165,9 @@ pub struct Rule {
     pub operator_action: &'static str,
     /// Page rules: why persistence beyond the bound is worth an interruption.
     pub escalation_reason: &'static str,
+    /// The registry default; configuration may set `auto_remediate_then_page`
+    /// for named targets of a rule in [`REMEDIATION_RULES`] only.
+    pub response_policy: ResponsePolicy,
     /// v2 severity when the rule pages.
     pub severity: &'static str,
     /// NQ v2 `condition.component`. `None` means "the component of the input"
@@ -167,6 +200,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Page,
         operator_action: "Read the runner's refusal code in its journal and fix the cause it names (re-enroll on digest mismatch); the projection cannot recover by itself.",
         escalation_reason: "Unknown or stale for more than 600 s: the projection has stopped saying anything about disk pressure, so a full disk would go unseen.",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "critical",
         component: Some("host_posture"),
         input: InputKind::HostPosture,
@@ -187,6 +221,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Attention,
         operator_action: "",
         escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "warning",
         component: Some("host_posture"),
         input: InputKind::HostPostureOrNqStatus,
@@ -207,6 +242,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Page,
         operator_action: "Read the runner journal for acquisition_refused; if the runner is down start it and watch two occurrences.",
         escalation_reason: "No status object generated for more than 600 s, then 300 s more: the host-posture runner has stopped and nothing is being observed.",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "critical",
         component: Some("nq"),
         input: InputKind::HostPosture,
@@ -227,6 +263,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Page,
         operator_action: "systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors.",
         escalation_reason: "The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts.",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "critical",
         component: Some("service"),
         input: InputKind::NqStatus,
@@ -247,6 +284,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Attention,
         operator_action: "",
         escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "warning",
         component: Some("host_posture"),
         input: InputKind::NqStatus,
@@ -267,6 +305,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Page,
         operator_action: "systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow.",
         escalation_reason: "No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale.",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "critical",
         component: Some("nightshift"),
         input: InputKind::Nightshift,
@@ -287,6 +326,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Attention,
         operator_action: "",
         escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "warning",
         component: Some("nq"),
         input: InputKind::SavedCheck,
@@ -307,6 +347,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Attention,
         operator_action: "",
         escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "warning",
         component: None,
         input: InputKind::Evaluator,
@@ -327,6 +368,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Page,
         operator_action: "Determine whether the executor is available or the observer never reported, then follow the Docket reconciliation procedure.",
         escalation_reason: "The oldest accepted governed-loop attempt is older than 3600 s, then 300 s more: work is stuck unsettled.",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "critical",
         component: Some("docket"),
         input: InputKind::NotDeployed,
@@ -347,6 +389,7 @@ pub const RULES: [Rule; 10] = [
         response_class: ResponseClass::Page,
         operator_action: "Check the ag-effectd unit; restart it only on a crash; an intentional stop is acknowledged for its declared window.",
         escalation_reason: "AG effectd not ready for more than 300 s: governed actions cannot execute.",
+        response_policy: ResponsePolicy::ObserveOnly,
         severity: "critical",
         component: Some("ag"),
         input: InputKind::NotDeployed,
@@ -449,6 +492,21 @@ mod tests {
             } else {
                 assert_eq!(rule.default_class, Class::Notice, "{}", rule.id);
             }
+        }
+    }
+
+    #[test]
+    fn every_rule_observes_only_by_default_and_remediation_rules_page() {
+        for rule in RULES {
+            assert_eq!(
+                rule.response_policy,
+                ResponsePolicy::ObserveOnly,
+                "{}",
+                rule.id
+            );
+        }
+        for id in REMEDIATION_RULES {
+            assert_eq!(super::rule(id).unwrap().response_class, ResponseClass::Page);
         }
     }
 
