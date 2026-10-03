@@ -18,10 +18,20 @@
 //! AG's `recover`/`poll` run), and never claims a completion the
 //! postcondition resolver has not answered `current`. Anything else leaves
 //! the condition present and the evaluator pages at window expiry.
+//!
+//! `--decider model` (v2, opt-in) inserts one bounded reasoning phase before
+//! `init`: a Linear Accountant reservation, at most two accounted calls to
+//! one enrolled model over an explicit evidence projection, and an
+//! authoritative local parser of `{start_canary, abstain, escalate}`. Only a
+//! `start_canary` with reason `current_down` continues, and then exactly as
+//! above, from the pinned plan; nothing the model returns becomes an argument.
 
 pub mod config;
+pub mod decider;
 pub mod external;
+pub mod la;
 pub mod pass;
+pub mod provider;
 pub mod report;
 pub mod store;
 

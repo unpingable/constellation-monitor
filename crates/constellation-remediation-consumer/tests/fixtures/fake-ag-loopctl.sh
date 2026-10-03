@@ -3,8 +3,8 @@
 # "$DB.d/", answering with snapshots shaped like AG's OccurrenceSnapshotV1
 # ({"state":{"<program_counter>":{...}}}). Docket custody is "$DB.d/docket";
 # every real effect is one line in "$FAKE_DIR/effects.log". Controls in
-# $FAKE_DIR: refuse_<command> (exit 1), crash_after_authorize and
-# crash_in_dispatch (SIGKILL the caller once), dispatch_outcome
+# $FAKE_DIR: refuse_<command> (exit 1), crash_before_init, crash_after_authorize
+# and crash_in_dispatch (SIGKILL the caller once), dispatch_outcome
 # (success|failure|indeterminate|pending).
 set -u
 dir="$FAKE_DIR"
@@ -70,6 +70,7 @@ settle() {
 case "$cmd" in
   init)
     [ -e "$db" ] && { echo "campaign store already exists: $db" >&2; exit 1; }
+    if [ -e "$dir/crash_before_init" ]; then rm "$dir/crash_before_init"; kill -9 "$PPID"; exit 0; fi
     refuse
     touch "$db"; mkdir -p "$st"
     put campaign "$(field campaign "$genesis")"; put occurrence "$(field occurrence "$genesis")"

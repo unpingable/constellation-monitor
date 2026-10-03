@@ -23,6 +23,11 @@ pub struct Candidate {
     pub window_until: i64,
     pub page_deferred: bool,
     pub evaluated_at: String,
+    /// The selected report fields a model decider may see, verbatim.
+    pub projection: Value,
+    /// The condition's `summary`, if any: untrusted narration, never an
+    /// authority input (bounded again by the decider).
+    pub narration: String,
 }
 
 #[derive(Clone, Debug)]
@@ -45,9 +50,17 @@ fn parse_time(text: &str) -> Option<i64> {
         .map(OffsetDateTime::unix_timestamp)
 }
 
-/// Judge one report at `now` (unix seconds).
+/// Judge one report at `now` (unix seconds) with the deterministic
+/// decider's window margin.
 #[must_use]
 pub fn select(config: &Config, report: &Value, now: i64) -> Selection {
+    select_with_margin(config, report, now, config.consumer.window_margin_seconds)
+}
+
+/// Judge one report at `now`, requiring at least `margin` seconds of the
+/// remediation window left.
+#[must_use]
+pub fn select_with_margin(config: &Config, report: &Value, now: i64, margin: i64) -> Selection {
     if report.get("schema").and_then(Value::as_str) != Some(REPORT_SCHEMA) {
         return abstain("report_malformed", json!({"schema": report.get("schema")}));
     }
@@ -144,14 +157,33 @@ pub fn select(config: &Config, report: &Value, now: i64) -> Selection {
     if condition.get("page_deferred").and_then(Value::as_bool) != Some(true) {
         return abstain("page_not_deferred", detail);
     }
-    if window_until - now < config.consumer.window_margin_seconds {
-        return abstain("window_too_short", detail);
+    if window_until - now < margin {
+        return abstain(
+            "window_too_short",
+            json!({"condition": detail, "remaining_seconds": window_until - now, "required_seconds": margin}),
+        );
     }
+    let projection = json!({
+        "evaluated_at": evaluated_at,
+        "rule": condition.get("rule"),
+        "observation": condition.get("observation"),
+        "response_policy": condition.get("response_policy"),
+        "first_seen": first_seen,
+        "remediation_window_until": window_until,
+        "page_deferred": true,
+    });
+    let narration = condition
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     Selection::Act(Candidate {
         condition_id: expected,
         first_seen,
         window_until,
         page_deferred: true,
         evaluated_at,
+        projection,
+        narration,
     })
 }

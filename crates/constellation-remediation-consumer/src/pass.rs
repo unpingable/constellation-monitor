@@ -10,14 +10,16 @@ use std::thread;
 use std::time::Duration;
 
 use constellation_remediation_resolver::{
-    ACTIVE_BASIS_TYPE, BASIS_TYPE, REQUEST_SCHEMA, hash_domain, jcs,
+    ACTIVE_BASIS_TYPE, BASIS_TYPE, REQUEST_SCHEMA, ResolutionFields, hash_domain, jcs,
 };
 use serde_json::{Value, json};
 
 use crate::config::{Config, Plan};
 use crate::external::{External, Failure};
-use crate::report::{Selection, select};
-use crate::store::{Episode, OpenError, State, Store, write_atomic};
+use crate::report::{Candidate, Selection, select_with_margin};
+use crate::store::{Episode, OpenError, Reasoning, State, Store, write_atomic};
+
+mod reasoning;
 
 pub const PASS_SCHEMA: &str = "constellation.remediation-consumer.pass/v1";
 const EPISODE_DOMAIN: &str = "constellation.remediation.episode/v1";
@@ -55,8 +57,51 @@ impl Summary {
     }
 }
 
-/// Run one pass. `now_ms` is the clock (injectable for tests).
+/// Which decider judges a selected condition episode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Decider {
+    /// v1: the verified precondition alone opens the AG occurrence.
+    #[default]
+    Deterministic,
+    /// v2: one bounded, LA-accounted model call (one retry) chooses among
+    /// `start_canary`, `abstain` and `escalate` before any AG work.
+    Model,
+}
+
+impl Decider {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "deterministic" => Ok(Self::Deterministic),
+            "model" => Ok(Self::Model),
+            other => Err(format!(
+                "--decider must be deterministic or model, not {other:?}"
+            )),
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deterministic => "deterministic",
+            Self::Model => "model",
+        }
+    }
+}
+
+/// Run one deterministic pass. `now_ms` is the clock (injectable for tests).
 pub fn run_pass(config: &Config, now_ms: &dyn Fn() -> u64) -> Result<Summary, String> {
+    run_pass_with(config, Decider::Deterministic, now_ms)
+}
+
+/// Run one pass with the chosen decider.
+pub fn run_pass_with(
+    config: &Config,
+    decider: Decider,
+    now_ms: &dyn Fn() -> u64,
+) -> Result<Summary, String> {
+    if decider == Decider::Model {
+        config.model()?;
+    }
     let pass_id = random_hex(8)?;
     let store = match Store::open(&config.consumer.state_dir, pass_id.clone()) {
         Ok(store) => store,
@@ -72,6 +117,7 @@ pub fn run_pass(config: &Config, now_ms: &dyn Fn() -> u64) -> Result<Summary, St
     let state = store.load()?;
     let mut pass = Pass {
         config,
+        decider,
         external: External { config },
         store,
         state,
@@ -84,10 +130,25 @@ pub fn run_pass(config: &Config, now_ms: &dyn Fn() -> u64) -> Result<Summary, St
         active.as_ref(),
         json!({"phase": active.as_ref().map(|e| &e.phase)}),
     )?;
-    let result = if active.is_some() {
-        pass.resume()?
+    // LA's restart law before any new work: settle what an earlier pass left
+    // begun. A failure blocks new reasoning, never a v1 campaign in flight.
+    let swept = if decider == Decider::Model {
+        pass.la_sweep()
     } else {
-        pass.consider()?
+        Ok(())
+    };
+    if let Err(error) = &swept {
+        pass.store.event(
+            now_ms(),
+            "la_recovery_failed",
+            active.as_ref(),
+            json!({"error": error}),
+        )?;
+    }
+    let result = match (&active, swept) {
+        (Some(_), _) => pass.resume()?,
+        (None, Ok(())) => pass.consider()?,
+        (None, Err(error)) => pass.abstain("la_recovery_failed", json!({"error": error}))?,
     };
     let episode = pass
         .state
@@ -111,10 +172,26 @@ pub fn run_pass(config: &Config, now_ms: &dyn Fn() -> u64) -> Result<Summary, St
 
 struct Pass<'a> {
     config: &'a Config,
+    decider: Decider,
     external: External<'a>,
     store: Store,
     state: State,
     now_ms: &'a dyn Fn() -> u64,
+}
+
+/// One resolver answer: its status (or the consumer's own `unbound`,
+/// `malformed`, `resolver_failed`), the recorded detail, and the typed fields
+/// when the record was well formed and bound.
+pub(crate) struct Resolved {
+    pub status: String,
+    pub detail: Value,
+    pub fields: Option<ResolutionFields>,
+}
+
+/// Evidence re-established for one model call.
+pub(crate) struct Fresh {
+    pub candidate: Candidate,
+    pub fields: ResolutionFields,
 }
 
 /// A chosen, verified owner plan.
@@ -291,7 +368,11 @@ impl Pass<'_> {
                 return self.abstain("report_unreadable", json!({"report": path, "error": error}));
             }
         };
-        let candidate = match select(self.config, &report, self.now_seconds()) {
+        let margin = match self.decider {
+            Decider::Deterministic => self.config.consumer.window_margin_seconds,
+            Decider::Model => self.config.model()?.window_min_seconds,
+        };
+        let candidate = match select_with_margin(self.config, &report, self.now_seconds(), margin) {
             Selection::Act(candidate) => candidate,
             Selection::Abstain { reason, detail } => return self.abstain(reason, detail),
         };
@@ -336,17 +417,45 @@ impl Pass<'_> {
         );
         let occurrence = uuid_v4()?;
         let observation = self.observation_id(&campaign, &occurrence, "unit-not-active");
-        let (status, detail) =
+        let resolved =
             self.resolve(false, &campaign, &occurrence, &observation, &chosen.subject)?;
-        if status != "current" {
+        if resolved.status != "current" {
             return self.abstain(
-                &format!("precondition_{status}"),
-                json!({"candidate": candidate_detail, "resolution": detail}),
+                &format!("precondition_{}", resolved.status),
+                json!({"candidate": candidate_detail, "resolution": resolved.detail}),
             );
         }
+        let fresh = match (self.decider, resolved.fields) {
+            (Decider::Deterministic, _) => None,
+            (Decider::Model, Some(fields)) => {
+                let model = self.config.model()?;
+                if let Err(error) = crate::provider::key_file_ready(&model.key_file) {
+                    return self.abstain("model_key_unavailable", json!({"error": error}));
+                }
+                Some(Fresh {
+                    candidate: candidate.clone(),
+                    fields,
+                })
+            }
+            (Decider::Model, None) => {
+                return self.abstain(
+                    "precondition_malformed",
+                    json!({"candidate": candidate_detail, "resolution": resolved.detail}),
+                );
+            }
+        };
         if let Err((reason, detail)) = self.retire_prior_campaign() {
             return self.abstain(reason, detail);
         }
+        let reasoning = fresh.as_ref().map(|_| {
+            let now = self.now();
+            Reasoning {
+                started_at_unix_ms: now,
+                deadline_unix_ms: now
+                    .saturating_add(self.config.model.as_ref().map_or(0, |m| m.wall_ms)),
+                ..Reasoning::default()
+            }
+        });
         self.state.active = Some(Episode {
             episode: episode_id,
             condition_id: candidate.condition_id,
@@ -360,14 +469,33 @@ impl Pass<'_> {
             scope: chosen.scope.clone(),
             campaign: campaign.clone(),
             occurrence: occurrence.clone(),
-            phase: "opening".into(),
+            phase: if reasoning.is_some() {
+                "reasoning".into()
+            } else {
+                "opening".into()
+            },
             opened_at_unix_ms: self.now(),
+            decider: reasoning.as_ref().map(|_| "model".to_owned()),
+            reasoning,
             ..Episode::default()
         });
         self.state.last_window_until = Some(candidate.window_until);
         self.save()?;
-        self.event("episode_opened", candidate_detail)?;
+        let mut opened = candidate_detail;
+        opened["decider"] = json!(self.decider.as_str());
+        self.event("episode_opened", opened)?;
+        if let Some(fresh) = fresh {
+            return self.reason(Some(fresh));
+        }
+        self.begin_campaign()
+    }
+
+    /// Write the episode's genesis and proposal from the pinned plan and the
+    /// shell's own identities, initialise the AG occurrence and drive it.
+    fn begin_campaign(&mut self) -> Result<String, String> {
         let episode = self.active()?;
+        let (campaign, occurrence) = (episode.campaign.clone(), episode.occurrence.clone());
+        let observation = self.observation_id(&campaign, &occurrence, "unit-not-active");
         let dir = self.store.episode_dir(&episode.episode)?;
         let genesis = dir.join("genesis.json");
         write_json(
@@ -376,7 +504,7 @@ impl Pass<'_> {
                 "campaign": campaign,
                 "occurrence": occurrence,
                 "program": self.program(),
-                "expected_ag_work": chosen.work,
+                "expected_ag_work": episode.work,
                 "residuals": [],
                 "budget": {
                     "retry_limit": 0, "retries_used": 0,
@@ -392,10 +520,10 @@ impl Pass<'_> {
                 "proposal": {
                     "schema": PROPOSAL_SCHEMA,
                     "campaign": campaign,
-                    "subject": chosen.subject,
-                    "scope": chosen.scope,
+                    "subject": episode.subject,
+                    "scope": episode.scope,
                     "work_schema": self.config.ag.work_schema,
-                    "work": chosen.work,
+                    "work": episode.work,
                     "repair": null,
                 },
                 "class": "initial",
@@ -510,7 +638,7 @@ impl Pass<'_> {
         occurrence: &str,
         observation: &str,
         subject: &str,
-    ) -> Result<(String, Value), String> {
+    ) -> Result<Resolved, String> {
         let a = &self.config.ag;
         let (resolver, resolver_id, basis_type) = if post {
             (
@@ -532,6 +660,7 @@ impl Pass<'_> {
             "subject": subject,
             "now_unix_ms": self.now(),
         });
+        let mut fields = None;
         let (status, detail) = match self.external.resolve(resolver, &jcs(&request)) {
             Ok((resolution, note)) => {
                 let status = resolution
@@ -546,6 +675,9 @@ impl Pass<'_> {
                         .and_then(Value::as_str)
                         == Some(basis_type);
                 let status = if bound { status } else { "unbound".to_owned() };
+                if bound {
+                    fields = ResolutionFields::from_value(&resolution).ok();
+                }
                 (
                     status,
                     json!({
@@ -567,7 +699,11 @@ impl Pass<'_> {
         recorded["status"] = json!(status);
         recorded["occurrence"] = json!(occurrence);
         self.event(event, recorded)?;
-        Ok((status, detail))
+        Ok(Resolved {
+            status,
+            detail,
+            fields,
+        })
     }
 
     /// Archive the previous episode's campaign so this episode can be
@@ -637,6 +773,9 @@ impl Pass<'_> {
     fn resume(&mut self) -> Result<String, String> {
         let episode = self.active()?;
         self.event("episode_resumed", json!({"phase": episode.phase}))?;
+        if episode.phase == "reasoning" {
+            return self.resume_reasoning();
+        }
         if episode.phase == "opening" && !self.config.ag.database.exists() {
             // Crashed before `init`: nothing exists in AG, nothing was spent.
             return self.close("interrupted_before_init", json!({}));
@@ -993,7 +1132,7 @@ impl Pass<'_> {
         let observation = self.observation_id(&episode.campaign, &occurrence, "unit-active");
         let attempts = self.config.consumer.postcondition_attempts;
         for index in 0..attempts {
-            let (status, detail) = self.resolve(
+            let Resolved { status, detail, .. } = self.resolve(
                 true,
                 &episode.campaign,
                 &occurrence,

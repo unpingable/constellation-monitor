@@ -54,6 +54,50 @@ pub struct Episode {
     pub outcome: Option<String>,
     pub opened_at_unix_ms: u64,
     pub closed_at_unix_ms: Option<u64>,
+    /// `model` for an episode the model decider opened; absent for the
+    /// deterministic decider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decider: Option<String>,
+    /// The model decider's durable reasoning record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Reasoning>,
+}
+
+/// The reasoning phase of a model-decided episode. Saved before LA
+/// `reserve`; each call's record is saved before `begin-call`, again (with
+/// the invocation) before the send, and again after settlement.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reasoning {
+    pub started_at_unix_ms: u64,
+    /// The wall ceiling: no call starts that cannot finish before it.
+    pub deadline_unix_ms: u64,
+    pub reservation: Option<String>,
+    pub calls: Vec<Call>,
+    /// The validated decision (`start_canary` only ever with `current_down`).
+    pub decision: Option<String>,
+    pub reason: Option<String>,
+    /// LA `close` done.
+    #[serde(default)]
+    pub la_closed: bool,
+}
+
+/// One model call. `state`: `begin_requested` (begin-call asked, no send
+/// permission saved, so never sent) → `begun` (permission saved; a send may
+/// have happened) → `settled`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Call {
+    pub index: u32,
+    pub state: String,
+    pub invocation: Option<String>,
+    pub terminal: Option<String>,
+    pub usage_source: Option<String>,
+    pub receipt: Option<String>,
+    /// A settled malformed answer, provider error or proven-unsent failure:
+    /// one more call may follow within the ceilings.
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

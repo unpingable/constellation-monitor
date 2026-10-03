@@ -21,6 +21,58 @@ pub struct Config {
     pub nq: Nq,
     #[serde(default)]
     pub evaluator: Evaluator,
+    /// The model decider (`--decider model`); absent, only the
+    /// deterministic decider can run.
+    #[serde(default)]
+    pub model: Option<Model>,
+}
+
+/// OpenRouter endpoint the model decider posts to.
+pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
+/// Least remediation window left to open a model-decided episode: 35 s
+/// reasoning, dispatch and collection, the 15 s dwell and the evaluator's
+/// 120 s continuous clear.
+pub const MODEL_WINDOW_MIN_SECONDS: i64 = 210;
+/// Reasoning wall ceiling: every call, parse and settlement of an episode.
+pub const MODEL_WALL_MAX_MS: u64 = 35_000;
+pub const MODEL_TOTAL_TIMEOUT_MAX_MS: u64 = 15_000;
+pub const MODEL_CONNECT_TIMEOUT_MAX_MS: u64 = 3_000;
+pub const MODEL_RETRY_BACKOFF_MAX_MS: u64 = 2_000;
+
+/// The model decider: Linear Accountant for every call, the provider adapter
+/// for the call itself. Model, provider, request shape and per-episode
+/// ceilings are constants of the decider, not configuration.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Model {
+    /// The `la_inference` program.
+    pub la_program: PathBuf,
+    /// Fixed arguments placed before each subcommand (e.g. the store path).
+    #[serde(default)]
+    pub la_arguments: Vec<String>,
+    /// The owner-installed LA enrollment (`admission_id`) this consumer
+    /// reserves under.
+    pub la_admission_id: String,
+    /// Opaque eligibility reference carried on every reservation (the
+    /// owner's grant of this remediation envelope); LA never interprets it.
+    pub la_eligibility_ref: String,
+    /// `https://openrouter.ai/api/v1/chat/completions`; a loopback
+    /// `http://127.0.0.1:PORT/...` only for qualification fakes.
+    #[serde(default = "default_endpoint")]
+    pub endpoint: String,
+    /// Root-owned 0600 env file holding `OPENROUTER_API_KEY=...`; read only
+    /// by the provider adapter, never logged.
+    pub key_file: PathBuf,
+    #[serde(default = "default_model_window")]
+    pub window_min_seconds: i64,
+    #[serde(default = "default_wall")]
+    pub wall_ms: u64,
+    #[serde(default = "default_total_timeout")]
+    pub total_timeout_ms: u64,
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_ms: u64,
+    #[serde(default = "default_backoff")]
+    pub retry_backoff_ms: u64,
 }
 
 /// The one unit this consumer may ever ask about.
@@ -187,6 +239,24 @@ fn default_evaluator_unit() -> String {
 fn default_true() -> bool {
     true
 }
+fn default_endpoint() -> String {
+    OPENROUTER_ENDPOINT.to_owned()
+}
+fn default_model_window() -> i64 {
+    MODEL_WINDOW_MIN_SECONDS
+}
+fn default_wall() -> u64 {
+    MODEL_WALL_MAX_MS
+}
+fn default_total_timeout() -> u64 {
+    MODEL_TOTAL_TIMEOUT_MAX_MS
+}
+fn default_connect_timeout() -> u64 {
+    MODEL_CONNECT_TIMEOUT_MAX_MS
+}
+fn default_backoff() -> u64 {
+    1_000
+}
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -297,7 +367,17 @@ impl Config {
         if self.evaluator.unit == e.unit {
             return Err("evaluator.unit must not be the enrolled unit".into());
         }
+        if let Some(model) = &self.model {
+            model.validate()?;
+        }
         Ok(())
+    }
+
+    /// The model section, required by `--decider model`.
+    pub fn model(&self) -> Result<&Model, String> {
+        self.model
+            .as_ref()
+            .ok_or_else(|| "--decider model needs a [model] section".to_owned())
     }
 
     /// The evaluator's condition id for the enrolled unit.
@@ -308,6 +388,83 @@ impl Config {
             self.enrollment.site, self.enrollment.unit
         )
     }
+}
+
+impl Model {
+    pub fn validate(&self) -> Result<(), String> {
+        absolute("model.la_program", &self.la_program)?;
+        absolute("model.key_file", &self.key_file)?;
+        for (name, value) in [
+            ("model.la_admission_id", &self.la_admission_id),
+            ("model.la_eligibility_ref", &self.la_eligibility_ref),
+        ] {
+            if !crate::la::valid_id(value) {
+                return Err(format!(
+                    "{name} must be an LA identifier ([A-Za-z0-9._:/@+=-], 1..=128 bytes)"
+                ));
+            }
+        }
+        if self.la_arguments.len() > 16 {
+            return Err("model.la_arguments takes at most 16 arguments".into());
+        }
+        for (index, argument) in self.la_arguments.iter().enumerate() {
+            text(&format!("model.la_arguments[{index}]"), argument)?;
+        }
+        endpoint(&self.endpoint)?;
+        if !(MODEL_WINDOW_MIN_SECONDS..=600).contains(&self.window_min_seconds) {
+            return Err(format!(
+                "model.window_min_seconds must be {MODEL_WINDOW_MIN_SECONDS}..=600"
+            ));
+        }
+        if !(1_000..=MODEL_WALL_MAX_MS).contains(&self.wall_ms) {
+            return Err(format!("model.wall_ms must be 1000..={MODEL_WALL_MAX_MS}"));
+        }
+        if !(100..=MODEL_TOTAL_TIMEOUT_MAX_MS).contains(&self.total_timeout_ms) {
+            return Err(format!(
+                "model.total_timeout_ms must be 100..={MODEL_TOTAL_TIMEOUT_MAX_MS}"
+            ));
+        }
+        if !(100..=MODEL_CONNECT_TIMEOUT_MAX_MS).contains(&self.connect_timeout_ms)
+            || self.connect_timeout_ms > self.total_timeout_ms
+        {
+            return Err(format!(
+                "model.connect_timeout_ms must be 100..={MODEL_CONNECT_TIMEOUT_MAX_MS} and at most total_timeout_ms"
+            ));
+        }
+        if self.retry_backoff_ms > MODEL_RETRY_BACKOFF_MAX_MS {
+            return Err(format!(
+                "model.retry_backoff_ms must be at most {MODEL_RETRY_BACKOFF_MAX_MS}"
+            ));
+        }
+        // Two calls, their backoff and settlement must fit the wall ceiling.
+        if 2 * self.total_timeout_ms + self.retry_backoff_ms > self.wall_ms {
+            return Err("model.wall_ms must cover two calls and the retry backoff".into());
+        }
+        Ok(())
+    }
+}
+
+/// The exact OpenRouter endpoint, or a loopback HTTP endpoint for
+/// qualification fakes. Nothing else: no other host, no redirect target.
+fn endpoint(value: &str) -> Result<(), String> {
+    if value == OPENROUTER_ENDPOINT {
+        return Ok(());
+    }
+    let loopback = value.strip_prefix("http://127.0.0.1:").is_some_and(|rest| {
+        let (port, path) = rest.split_once('/').unwrap_or((rest, ""));
+        !port.is_empty()
+            && port.len() <= 5
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && path.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.')
+            })
+    });
+    if loopback {
+        return Ok(());
+    }
+    Err(format!(
+        "model.endpoint must be {OPENROUTER_ENDPOINT} (or a loopback http://127.0.0.1:PORT/ fake)"
+    ))
 }
 
 fn text(name: &str, value: &str) -> Result<(), String> {
