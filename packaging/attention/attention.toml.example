@@ -67,3 +67,12 @@ store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
 # threshold_seconds = 900
 # [rules.service-down]
 # class = "notice"
+
+# response_policy: hold the page for a remediation window (service-down only).
+# The notice goes out at the bound; the page only if the unit is still down
+# at first_seen + window_seconds (60..=600, default 240).
+# [[remediation.targets]]
+# rule = "service-down"
+# target_class = "attention-canary.service"
+# policy = "auto_remediate_then_page"
+# window_seconds = 240

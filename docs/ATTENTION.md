@@ -25,7 +25,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v3`).
+  compiled in and versioned (`constellation.attention_registry.v4`).
   Configuration may enable or disable a rule, change its one threshold, and
   move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
@@ -307,6 +307,50 @@ first-seen time, persistence and the input identities (status artifact id,
 evaluation id, cycle id, saved-check reference), never payloads or secrets.
 `runbook_url` and `inspection_reference` come from the configured published
 runbook copies.
+
+## Response policy (remediation window)
+
+Every rule has `response_policy = observe_only` in the registry: notices
+and pages go out on the rule's normal schedule. The one alternative,
+`auto_remediate_then_page` (cartography #55), is configured per condition
+target and only for rules in the registry's remediation list (v1:
+`service-down`, a page rule):
+
+```toml
+[[remediation.targets]]
+rule = "service-down"
+target_class = "attention-canary.service"   # the unit, a bounded token
+policy = "auto_remediate_then_page"
+window_seconds = 240                         # 60..=600, default 240
+```
+
+`check-config` refuses any other rule, a target that is not a bounded unit
+token, any other policy (`observe_only` is the default and is not listed),
+a window outside 60..=600 and a duplicate rule/target pair.
+
+For such a target (v1 semantics; the rule lives in one function,
+`remediation::page_decision`, so a later design can change it in one
+place):
+
+- The trigger is decided at the rule's bound as usual, and its notice goes
+  out then.
+- The page is held until the remediation window ends, at `first_seen +
+  window_seconds`, and is sent at the first pass at or after that moment
+  that still observes the condition present (an unknown observation keeps
+  holding). It is a v2 page under its own event id, bound to the trigger's
+  transition id.
+- If the condition clears and resolves while the page is held, no page is
+  ever sent. The resolve goes only to the notice route and says
+  `RESOLVE <id> [page]: recovered within the remediation window; no page
+  was sent.` (`response_class: attention`). The resolve still needs the
+  usual 120 s of clear.
+- Once the page is sent, recovery resolves both routes as usual.
+
+The evaluator does not remediate anything itself; the window is time for
+whatever remediation exists (for example a unit's own `Restart=`) to work
+before a human is interrupted. Report rows show `response_policy`,
+`remediation_window_until` (unix seconds, for targets) and `page_deferred`.
+The remediation targets are part of the policy digest.
 
 ## Sink failures and restarts
 
