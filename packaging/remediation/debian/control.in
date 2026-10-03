@@ -1,0 +1,13 @@
+Package: constellation-remediation
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Constellation contributors
+Depends: libc6, systemd, nq-ng (>= 0.2.3), constellation-attention, agent-governor-ng-operator-tools, agent-governor-ng-systemd-executor, constellation-docket
+Description: Constellation bounded autonomous remediation consumer (v1)
+ A deterministic oneshot consumer (30 s timer) that asks AG for one governed
+ start of one owner-enrolled unit per attention condition episode, plus the
+ NQ unit observation resolver AG pins for the precondition and the
+ postcondition. Installation is inert: no configuration, enrollment, keys or
+ grants; the timer is neither enabled nor started.

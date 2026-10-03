@@ -1,0 +1,67 @@
+# /etc/constellation-remediation/consumer.toml (root:root 0644). No secrets.
+# Every path is owner-installed. The consumer writes only consumer.state_dir
+# and the AG campaign directory (it archives a finished campaign beside it);
+# AG, Docket, ag-effectd and the grant resolver write their own state under
+# the same /var/lib/constellation-remediation tree.
+
+[enrollment]
+site = "labelwatch"                       # the evaluator's site
+unit = "attention-canary.service"         # the one unit this consumer may ask about
+instance_id = "svc-attention-canary"      # NQ ops-store watcher of that unit
+machine_id = "REPLACE-32-lowercase-hex"   # /etc/machine-id
+
+[consumer]
+state_dir = "/var/lib/constellation-remediation/consumer"
+report = "/var/lib/constellation-attention/report.json"
+window_margin_seconds = 90                # least remediation window left to open an episode
+report_max_age_seconds = 120
+poll_attempts = 10
+poll_interval_ms = 1000
+postcondition_attempts = 3
+postcondition_interval_ms = 2000
+command_timeout_seconds = 60
+
+[ag]
+loopctl = "/usr/bin/ag-loopctl"
+# Pinned by /usr/libexec/agent-governor-ng/ag-effectd.deployment.json; one
+# campaign per condition episode is initialised here after the previous one
+# is archived to ../archive/.
+database = "/var/lib/constellation-remediation/ag/campaign.sqlite"
+runtime_profile = "/etc/constellation-remediation/runtime-profile.json"
+catalog = "/etc/constellation-remediation/catalog.json"
+observation_resolver = "/etc/constellation-remediation/resolvers/unit-not-active"
+observation_resolver_id = "constellation.remediation.unit-not-active/v1"
+standing_resolver = "/etc/constellation-remediation/resolvers/ag-standing"
+standing_resolver_id = "constellation.remediation.ag-standing/v1"
+max_standing_ttl_ms = 60000
+postcondition_resolver = "/etc/constellation-remediation/resolvers/unit-active"
+postcondition_resolver_id = "constellation.remediation.unit-active/v1"
+
+[[ag.plans]]
+prestate = "inactive"
+path = "/etc/constellation-remediation/plans/start-inactive.json"
+
+[[ag.plans]]
+prestate = "failed"
+path = "/etc/constellation-remediation/plans/start-failed.json"
+
+[docket]
+program = "/usr/bin/docket"
+state_dir = "/var/lib/constellation-remediation/docket"
+trust = "/etc/constellation-remediation/docket-trust.json"
+standing_resolver = "/usr/bin/docket-standing-grant-resolver"
+executor = "/usr/libexec/agent-governor-ng/ag-effectd"
+issuer_principal = "constellation-remediation-owner"
+issuer_key_id = "REPLACE-key-id"
+issuer_key = "/etc/constellation-remediation/private/issuer.pk8"
+
+[nq]
+# Runs `nq collect` as nq inside the nqd sandbox (see README).
+program = "/usr/libexec/constellation-remediation/nq-ops-as-nq"
+config = "/etc/nq/nqd-ops.toml"
+collect = true
+
+[evaluator]
+systemctl = "/usr/bin/systemctl"
+unit = "constellation-attention.service"
+trigger = true
