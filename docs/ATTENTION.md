@@ -5,6 +5,11 @@ Constellation component needs attention, and asks NQ to tell them. It answers
 Cartography issue #20 (who evaluates the beta alert registry) for the rules
 whose inputs exist today.
 
+**Minimum NQ: 0.2.2.** Every intent carries `response_class`, which NQ
+0.2.2 introduced. NQ 0.2.1 parses intents with unknown fields refused, so it
+refuses every intent from this build before custody: nothing would be
+delivered. Do not install the evaluator against an NQ older than 0.2.2.
+
 ## Boundary
 
 The evaluator consumes qualified, current product state and produces
@@ -260,9 +265,18 @@ rule that persists beyond its bound pages. Only fresh verified recovery (or
 an explicit configuration removal) resolves.
 
 Every intent carries `response_class`: v2 (PagerDuty) intents are always
-`page`, and NQ refuses a v2 intent that is not (`response_class_not_page`),
-before custody; v1 notices are `page` for a paging decision's notice copy
-and `attention` otherwise, including a configuration-removal resolve.
+`page`. A v2 intent that is not a page, presented to NQ's PagerDuty route,
+is retained as a `refused` record (reason `response_class_not_page`) and
+nothing is sent; it is not dropped before custody. v1 notices are `page`
+for a paging decision's notice copy and `attention` otherwise, including a
+configuration-removal resolve.
+
+Across the upgrade from builds before 784df43, a retained page intent has
+no `response_class`, and every resubmit of its NQ record would be refused
+the same way. When such a page is due for a retry (an unanswered or
+not-accepted record), the evaluator re-renders it with `response_class:
+page` under a new event id (same transition id) and submits it, so a page
+open across the upgrade is delivered.
 
 | Class | Trigger and resolve go to |
 |---|---|

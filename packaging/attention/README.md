@@ -27,6 +27,15 @@ The jammy Debian package for host-posture lives on the packaging branch
 (`packaging/build-deb.sh`); this directory is the standalone recipe until the
 binary is added there.
 
+## Requirements
+
+NQ 0.2.2 or later. This build writes `response_class` into every intent;
+NQ 0.2.1 refuses unknown intent fields, so it would refuse every intent
+before custody and nothing would be delivered. Do not install the evaluator
+against an older NQ; upgrade NQ first. A page retained by an earlier build
+of the evaluator is re-rendered with `response_class` on its next retry
+(ATTENTION.md, Routing).
+
 ## Install (by hand)
 
 ```sh
