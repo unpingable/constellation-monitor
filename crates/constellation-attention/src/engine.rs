@@ -494,6 +494,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             }
         };
         let persistence = rule.map_or(0, EffectiveRule::persistence_seconds);
+        // A resolve clears first_seen and clear_since: keep when the window
+        // ended and when the clear began, to name the resolve reason.
+        let (opened_at, cleared_at) = (condition.first_seen, condition.clear_since.unwrap_or(now));
         let transition = step(condition, observation, persistence, now);
         let (policy, window) =
             config.response_policy(&condition.key.rule, condition.key.target_class.as_deref());
@@ -502,7 +505,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         if let Some(action) = transition {
             let reason = if observation == Observation::Removed {
                 ResolveReason::NoLongerEvaluated
-            } else if condition.page_deferred {
+            } else if condition.page_deferred
+                && window
+                    .and_then(|window| remediation::window_until(opened_at, window))
+                    .is_some_and(|until| cleared_at < until)
+            {
+                // Held page never sent and the clear began inside the window.
                 ResolveReason::RecoveredWithinWindow
             } else {
                 ResolveReason::Recovered

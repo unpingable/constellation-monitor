@@ -336,11 +336,11 @@ place):
   out then.
 - The page is held until the remediation window ends, at `first_seen +
   window_seconds`, and is sent at the first pass at or after that moment
-  that still observes the condition present (an unknown observation keeps
-  holding). It is a v2 page under its own event id, bound to the trigger's
+  that does not observe it clear: present, or unknown (an input that is not
+  current is not recovery and never holds a page past the window). It is a v2 page under its own event id, bound to the trigger's
   transition id.
-- If the condition clears and resolves while the page is held, no page is
-  ever sent. The resolve goes only to the notice route and says
+- If the condition clears inside the window and resolves while the page is
+  held, no page is ever sent. The resolve goes only to the notice route and says
   `RESOLVE <id> [page]: recovered within the remediation window; no page
   was sent.` (`response_class: attention`). The resolve still needs the
   usual 120 s of clear.

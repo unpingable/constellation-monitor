@@ -31,10 +31,12 @@ pub fn window_until(first_seen: Option<i64>, window_seconds: i64) -> Option<i64>
 /// observation.
 ///
 /// v1 semantics: `observe_only` pages at once. `auto_remediate_then_page`
-/// holds the page until the window has expired **and** the condition is
-/// observed present at or after that moment; a clear inside the window
-/// resolves without any page (decided by the lifecycle, not here), and an
-/// unknown observation keeps holding.
+/// holds the page until the window has expired, then sends it at the first
+/// pass that does not observe the condition clear: present **or unknown**
+/// (no current qualified state is not recovery, and must not hold a page
+/// forever). A clear inside the window resolves without any page (decided by
+/// the lifecycle, not here); a removed condition is closed by the operator's
+/// configuration, not paged.
 #[must_use]
 pub fn page_decision(
     policy: ResponsePolicy,
@@ -45,7 +47,7 @@ pub fn page_decision(
     match (policy, window_until) {
         (ResponsePolicy::ObserveOnly, _) | (_, None) => PageDecision::Send,
         (ResponsePolicy::AutoRemediateThenPage, Some(until)) => {
-            if now >= until && observation == Observation::Present {
+            if now >= until && matches!(observation, Observation::Present | Observation::Unknown) {
                 PageDecision::Send
             } else {
                 PageDecision::Defer
@@ -80,7 +82,16 @@ mod tests {
             PageDecision::Send
         );
         assert_eq!(
+            page_decision(policy, Some(240), Observation::Unknown, 239),
+            PageDecision::Defer
+        );
+        // Unknown past expiry is not recovery: the held page goes out.
+        assert_eq!(
             page_decision(policy, Some(240), Observation::Unknown, 300),
+            PageDecision::Send
+        );
+        assert_eq!(
+            page_decision(policy, Some(240), Observation::Clear, 300),
             PageDecision::Defer
         );
         assert_eq!(window_until(Some(100), 240), Some(340));

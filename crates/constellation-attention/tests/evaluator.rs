@@ -3534,3 +3534,59 @@ fn remediation_configuration_refusals() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Review F1: a held page whose input goes stale (unknown) across the window's
+/// end is not held forever: it goes out at the first pass after expiry, and a
+/// later recovery resolves both routes as an ordinary recovery.
+#[test]
+fn held_page_with_stale_input_pages_at_window_expiry() {
+    let (harness, status) = remediation_harness(Some(600));
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        harness.evaluate(t + offset + 3);
+    }
+    // The last status (present) is never refreshed: the input goes stale.
+    let mut paged_at = None;
+    for offset in (241..=3600).step_by(60) {
+        harness.evaluate(t + offset);
+        if paged_at.is_none()
+            && cron_calls(&harness)
+                .iter()
+                .any(|call| call.contains("pagerduty"))
+        {
+            paged_at = Some(offset);
+        }
+    }
+    let paged_at = paged_at.expect("the held page never went out");
+    assert!(
+        (603..=663).contains(&paged_at),
+        "paged at {paged_at}, window ends at 603"
+    );
+    let row = cron_row(&harness.report());
+    assert_eq!(row["page_deferred"], false);
+    let pages = cron_calls(&harness)
+        .iter()
+        .filter(|call| call.contains("pagerduty") && call.contains("-trigger-"))
+        .count();
+    assert_eq!(pages, 1);
+    // Recovery after the window: both routes resolve, not "within the window".
+    for offset in (3601..=3900).step_by(60) {
+        write_status(
+            &status,
+            &retimed(
+                "cron-down.json",
+                t + offset,
+                cron_state("explicitly_absent"),
+            ),
+        );
+        harness.evaluate(t + offset + 3);
+    }
+    let calls = cron_calls(&harness);
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("pagerduty") && call.contains("-resolve-")),
+        "{calls:?}"
+    );
+}
