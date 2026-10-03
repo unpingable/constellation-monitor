@@ -2,6 +2,7 @@
 members = [
     "crates/constellation-attention",
     "crates/constellation-host-posture",
+    "crates/constellation-remediation-resolver",
     "crates/constellation-status-nq-filesystem-capacity",
     "crates/constellation-status-nq-filesystem-inodes",
     "crates/constellation-status-nq-load-pressure",

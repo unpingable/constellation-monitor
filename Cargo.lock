@@ -99,6 +99,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "constellation-remediation-resolver"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "time",
+]
+
+[[package]]
 name = "constellation-status-nq-filesystem-capacity"
 version = "0.1.0"
 dependencies = [
