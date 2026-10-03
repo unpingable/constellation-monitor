@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use constellation_remediation_resolver::{
-    BASIS_TYPE, CURRENTNESS_DOMAIN, TYPED_BASIS_SCHEMA, hash_domain, jcs,
+    ACTIVE_BASIS_TYPE, BASIS_TYPE, CURRENTNESS_DOMAIN, TYPED_BASIS_SCHEMA, hash_domain, jcs,
 };
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -414,5 +414,87 @@ fn malformed_request_is_refused_before_nq() {
         assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
     }
+    assert!(harness.calls().is_empty());
+}
+
+fn active_basis() -> Value {
+    let identity = json!({"instance_id": INSTANCE, "machine_id": MACHINE, "unit": UNIT});
+    json!({
+        "schema": TYPED_BASIS_SCHEMA,
+        "basis_type": ACTIVE_BASIS_TYPE,
+        "basis_identity": hash_domain(ACTIVE_BASIS_TYPE, &jcs(&identity)),
+    })
+}
+
+fn active_harness() -> Harness {
+    let mut harness = Harness::new();
+    harness.extra = vec!["--claim".into(), "active".into()];
+    harness
+}
+
+#[test]
+fn active_claim_is_current_only_when_newest_shows_unit_active() {
+    let harness = active_harness();
+    harness.append(&canary(NOW - 20_000, "present"));
+    harness.append(&canary(NOW - 2_000, "explicitly_absent"));
+    let record = harness.resolve();
+    assert_eq!(record["status"], "current");
+    assert_eq!(record["basis"], active_basis());
+    assert_eq!(
+        record["normalized_preconditions"],
+        hash_domain(TYPED_BASIS_SCHEMA, &jcs(&active_basis()))
+    );
+    assert_eq!(
+        record["currentness"],
+        witness(2, NOW - 2_000, "explicitly_absent")
+    );
+    assert_eq!(record["fresh_until_unix_ms"], NOW + 58_000);
+    assert_ne!(record["basis"], basis());
+
+    // Still down: the postcondition is contradicted, never current.
+    let harness = active_harness();
+    harness.append(&canary(NOW - 20_000, "explicitly_absent"));
+    harness.append(&canary(NOW - 2_000, "present"));
+    assert_eq!(harness.resolve()["status"], "contradictory");
+}
+
+#[test]
+fn active_claim_is_not_current_on_stale_absent_or_indeterminate_evidence() {
+    let harness = active_harness();
+    harness.append(&canary(NOW - 60_000, "explicitly_absent"));
+    assert_eq!(harness.resolve()["status"], "stale");
+
+    let harness = active_harness();
+    harness.append(&other(NOW - 1_000));
+    assert_eq!(harness.resolve()["status"], "absent");
+
+    let harness = active_harness();
+    harness.append(&canary(NOW - 1_000, "cannot_evaluate"));
+    assert_eq!(harness.resolve()["status"], "unsupported");
+}
+
+#[test]
+fn active_claim_prints_its_own_basis_and_unknown_claims_refuse() {
+    let output = Command::new(env!("CARGO_BIN_EXE_constellation-nq-unit-resolver"))
+        .args([
+            "--print-basis",
+            "--claim",
+            "active",
+            "--instance-id",
+            INSTANCE,
+            "--unit",
+            UNIT,
+            "--machine-id",
+            MACHINE,
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(printed["basis"], active_basis());
+
+    let mut harness = Harness::new();
+    harness.extra = vec!["--claim".into(), "recovered".into()];
+    assert!(harness.refuse().contains("--claim must be"));
     assert!(harness.calls().is_empty());
 }

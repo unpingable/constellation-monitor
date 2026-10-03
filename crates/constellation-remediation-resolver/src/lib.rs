@@ -1,6 +1,11 @@
 //! AG typed-v3 observation resolver over NQ ops-store `nq.systemd_unit` v2
 //! evaluations, for Bounded Autonomous Remediation v1.
 //!
+//! The same program also owns the postcondition claim (`--claim active`):
+//! the newest evaluation is fresh and shows the unit active, i.e. the
+//! not-active condition explicitly absent. That claim has its own basis type,
+//! so a postcondition answer can never be mistaken for a precondition one.
+//!
 //! AG invokes the pinned resolver once per resolution with an
 //! `ag.governed-loop.observation-request/v1` document on stdin and reads one
 //! `ag.governed-loop.observation-resolution/v3` document from stdout. This
@@ -31,6 +36,8 @@ pub const RESOLUTION_SCHEMA: &str = "ag.governed-loop.observation-resolution/v3"
 pub const TYPED_BASIS_SCHEMA: &str = "ag.governed-loop.typed-observation-basis/v1";
 /// Application-owned basis type: "the enrolled unit is not active".
 pub const BASIS_TYPE: &str = "constellation.remediation.systemd-not-active/v1";
+/// Application-owned postcondition basis type: "the enrolled unit is active".
+pub const ACTIVE_BASIS_TYPE: &str = "constellation.remediation.systemd-active/v1";
 /// Domain of the currentness witness digest.
 pub const CURRENTNESS_DOMAIN: &str = "constellation.remediation.nq-unit-currentness/v1";
 pub const EVALUATION_HISTORY_SCHEMA: &str = "nq.evaluation_history.v1";
@@ -51,9 +58,40 @@ pub const TIMEOUT_SECONDS_DEFAULT: u64 = 10;
 pub const FUTURE_SKEW_MS: u64 = 2_000;
 const REQUEST_BYTES_MAX: u64 = 64 * 1024;
 
+/// Which claim this enrolment of the resolver owns.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Claim {
+    /// Precondition: the newest fresh evaluation shows the unit not active.
+    #[default]
+    NotActive,
+    /// Postcondition: the newest fresh evaluation shows the unit active.
+    Active,
+}
+
+impl Claim {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "not-active" => Ok(Self::NotActive),
+            "active" => Ok(Self::Active),
+            other => Err(format!(
+                "--claim must be not-active or active, not {other:?}"
+            )),
+        }
+    }
+
+    #[must_use]
+    pub const fn basis_type(self) -> &'static str {
+        match self {
+            Self::NotActive => BASIS_TYPE,
+            Self::Active => ACTIVE_BASIS_TYPE,
+        }
+    }
+}
+
 /// Bounded deployment inputs, fixed by the pinned wrapper's argv.
 #[derive(Clone, Debug)]
 pub struct Settings {
+    pub claim: Claim,
     pub nq_program: String,
     pub nq_config: String,
     pub instance_id: String,
@@ -103,10 +141,11 @@ impl Settings {
             "machine_id": self.machine_id,
             "unit": self.unit,
         });
+        let basis_type = self.claim.basis_type();
         Basis {
             schema: TYPED_BASIS_SCHEMA.into(),
-            basis_type: BASIS_TYPE.into(),
-            basis_identity: hash_domain(BASIS_TYPE, &jcs(&identity)),
+            basis_type: basis_type.into(),
+            basis_identity: hash_domain(basis_type, &jcs(&identity)),
         }
     }
 }
@@ -367,13 +406,17 @@ pub fn judge(settings: &Settings, window: &Window, now_ms: u64) -> Judgement {
             ),
         );
     }
+    let (when_not_active, when_active) = match settings.claim {
+        Claim::NotActive => (Status::Current, Status::Contradictory),
+        Claim::Active => (Status::Contradictory, Status::Current),
+    };
     match state.as_str() {
         "present" => judged(
-            Status::Current,
+            when_not_active,
             format!("sequence {}: unit not active", newest.sequence),
         ),
         "explicitly_absent" => judged(
-            Status::Contradictory,
+            when_active,
             format!("sequence {}: unit active", newest.sequence),
         ),
         other => unusable(

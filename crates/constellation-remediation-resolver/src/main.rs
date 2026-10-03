@@ -2,18 +2,20 @@
 //!
 //! AG runs the genesis-pinned resolver with no arguments, so deployment pins a
 //! wrapper whose argv fixes every input below. `--print-basis` prints the
-//! catalog-constant typed basis for enrolment and reads nothing.
+//! catalog-constant typed basis for enrolment and reads nothing. `--claim
+//! active` enrols the postcondition claim (unit active) instead of the
+//! default precondition claim (unit not active).
 
 use std::time::Duration;
 
 use constellation_remediation_resolver::{
-    MAX_AGE_MS_DEFAULT, PAGE_BYTES_DEFAULT, Request, Settings, TIMEOUT_SECONDS_DEFAULT,
+    Claim, MAX_AGE_MS_DEFAULT, PAGE_BYTES_DEFAULT, Request, Settings, TIMEOUT_SECONDS_DEFAULT,
     WINDOW_RECORDS_DEFAULT, jcs, judge, read_window, resolution,
 };
 
 const USAGE: &str = "usage: constellation-nq-unit-resolver --config NQ_CONFIG \
 --instance-id ID --unit UNIT --machine-id HEX32 --resolver-id ID \
-[--nq-program PATH] [--window-records N] [--max-age-ms MS] \
+[--claim not-active|active] [--nq-program PATH] [--window-records N] [--max-age-ms MS] \
 [--max-page-bytes N] [--timeout-seconds S] [--print-basis] < request.json";
 
 fn main() {
@@ -54,6 +56,7 @@ fn run() -> Result<String, String> {
 }
 
 fn parse(arguments: impl Iterator<Item = String>) -> Result<(Settings, bool), String> {
+    let mut claim = Claim::NotActive;
     let mut nq_program = "/usr/bin/nq".to_owned();
     let mut nq_config = None;
     let mut instance_id = None;
@@ -80,6 +83,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<(Settings, bool), St
                 .map_err(|_| format!("{flag} must be an unsigned integer"))
         };
         match flag.as_str() {
+            "--claim" => claim = Claim::parse(&value)?,
             "--nq-program" => nq_program = value,
             "--config" => nq_config = Some(value),
             "--instance-id" => instance_id = Some(value),
@@ -112,6 +116,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<(Settings, bool), St
     };
     Ok((
         Settings {
+            claim,
             nq_program,
             nq_config,
             instance_id: required(instance_id, "--instance-id")?,
