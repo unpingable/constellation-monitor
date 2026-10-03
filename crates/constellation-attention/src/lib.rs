@@ -9,6 +9,7 @@
 //! `resubmit`) and records the outcome. It never reads Classic NQ and never
 //! stores secrets.
 
+pub mod build_info;
 pub mod condition;
 pub mod config;
 pub mod engine;

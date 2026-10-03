@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use constellation_attention::build_info;
 use constellation_attention::config::Config;
 use constellation_attention::engine::{self, PassOptions};
 use constellation_attention::intent::policy_digest;
@@ -16,6 +17,7 @@ use constellation_attention::util::parse_rfc3339;
 use serde_json::json;
 
 const USAGE: &str = "usage:
+  constellation-attention --version | --build-info
   constellation-attention evaluate --config FILE [--dry-run] [--now RFC3339]
   constellation-attention state --config FILE
   constellation-attention reset-clock --config FILE
@@ -84,7 +86,28 @@ fn clock(now: Option<&str>) -> Result<(i64, i64), (u8, String)> {
 }
 
 fn run() -> Result<u8, (u8, String)> {
-    let arguments = parse(std::env::args().skip(1)).map_err(|error| (2, error))?;
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    match raw
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--version"] => {
+            println!("{}", build_info::version_line());
+            return Ok(0);
+        }
+        ["--build-info"] => {
+            println!(
+                "{}",
+                serde_json::to_string(&build_info::build_information())
+                    .map_err(|error| (1, error.to_string()))?
+            );
+            return Ok(0);
+        }
+        _ => {}
+    }
+    let arguments = parse(raw.into_iter()).map_err(|error| (2, error))?;
     match arguments.command.as_str() {
         "rules" => {
             if arguments.config.is_some() {
