@@ -395,6 +395,15 @@ fn load_json(
     Ok((source, value))
 }
 
+/// Bound on error text that carries watcher, unit or evaluation ids.
+const ID_TEXT_MAX: usize = 512;
+
+/// A watcher instance id the roster may remember: 1..=128 bytes, none of
+/// them control bytes.
+fn bounded_instance_id(id: &str) -> bool {
+    (1..=128).contains(&id.len()) && id.bytes().all(|byte| byte >= 0x20 && byte != 0x7f)
+}
+
 /// The pass-clock time a source answered: the pass's `now` plus the time
 /// the read took, rounded up to whole seconds.
 fn answered_at(context: &Context<'_>, started: Instant) -> i64 {
@@ -648,16 +657,34 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     // History mode: liveness is the remembered roster merged with the
     // window, so a watcher that stops evaluating stays stale after its
     // records scroll out, until the operator retires it.
-    let mut liveness = snapshot.collected.clone();
+    // No entry is later than the page itself: a window evaluation from more
+    // than the 60 s skew allowance after the page (a past forward clock
+    // step) is no liveness at all, and a remembered time is capped at the
+    // page, so a clock step never leaves a watcher looking fresh for ever.
+    let mut liveness: BTreeMap<String, i64> = snapshot
+        .collected
+        .iter()
+        .filter(|(_, at)| !history || **at <= generated + 60)
+        .map(|(instance, at)| (instance.clone(), (*at).min(generated)))
+        .collect();
     if history && let Some(remembered) = context.nq_watchers {
         for (instance, at) in remembered {
-            let newest = liveness.entry(instance.clone()).or_insert(*at);
-            *newest = (*newest).max(*at);
+            let at = (*at).min(generated);
+            let newest = liveness.entry(instance.clone()).or_insert(at);
+            *newest = (*newest).max(at);
         }
     }
+    let mut unbounded_ids = Vec::new();
     let roster: BTreeMap<String, i64> = liveness
         .iter()
         .filter(|(instance, _)| !input.retired_instances.contains(instance))
+        .filter(|(instance, _)| {
+            let bounded = bounded_instance_id(instance);
+            if !bounded {
+                unbounded_ids.push(format!("{:?}", truncate(instance, 64)));
+            }
+            bounded
+        })
         .map(|(instance, at)| (instance.clone(), *at))
         .collect();
     if history {
@@ -684,6 +711,12 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     // the input not current: a rule fed by it must hold, never read the
     // missing lineage as recovery.
     let mut unrecognised: Vec<String> = Vec::new();
+    if !unbounded_ids.is_empty() {
+        unrecognised.push(format!(
+            "watcher instance ids beyond 128 printable bytes, not remembered: {}",
+            unbounded_ids.join(", ")
+        ));
+    }
     let mut untargetable: Vec<String> = Vec::new();
     for (position, (id, envelope)) in snapshot.evaluations.iter().enumerate() {
         let Some(envelope) = envelope else {
@@ -845,7 +878,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             &format!(
                 "watchers with no collection for more than {} s: {}",
                 input.stale_after_seconds,
-                stale.join(",")
+                truncate(&stale.join(","), ID_TEXT_MAX)
             ),
         );
     }
@@ -855,7 +888,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             InputStatus::NotCurrent,
             &format!(
                 "evaluations this input cannot interpret: {}",
-                unrecognised.join("; ")
+                truncate(&unrecognised.join("; "), ID_TEXT_MAX)
             ),
         );
     }
@@ -865,7 +898,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             InputStatus::NotCurrent,
             &format!(
                 "systemd units that map to no bounded target class: {}",
-                untargetable.join(", ")
+                truncate(&untargetable.join(", "), ID_TEXT_MAX)
             ),
         );
     }
@@ -877,7 +910,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             InputStatus::NotCurrent,
             &format!(
                 "detectors that cannot evaluate: {}",
-                indeterminate.join(", ")
+                truncate(&indeterminate.join(", "), ID_TEXT_MAX)
             ),
         );
     }

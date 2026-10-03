@@ -125,6 +125,11 @@ impl State {
             }
         };
         clamp(&mut self.updated_at);
+        for roster in self.nq_watchers.values_mut() {
+            for at in roster.values_mut() {
+                clamp(at);
+            }
+        }
         for condition in self.conditions.values_mut() {
             for value in [
                 &mut condition.first_seen,

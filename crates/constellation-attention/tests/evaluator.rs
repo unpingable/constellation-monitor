@@ -3066,3 +3066,89 @@ fn nq_host_disk_holds_through_relabel_and_watcher_removal() {
             .contains("fs-root-capacity")
     );
 }
+
+/// A forward clock step leaves future evaluation times in the history and
+/// the roster. After `reset-clock`, a watcher that dies is stale within the
+/// bound: neither the roster nor the window keeps it fresh.
+#[test]
+fn watcher_dies_after_reset_clock_is_stale_within_the_bound() {
+    let harness = history_harness(50);
+    let t = at("2026-10-02T21:32:17Z");
+    let healthy = |envelope: &mut Value| {
+        set_state(envelope, "unit-cron", "explicitly_absent");
+        true
+    };
+    for offset in [0, 60] {
+        append_round(&harness, t + offset, healthy);
+        harness.evaluate(t + offset + 3);
+    }
+    // One pass at a clock stepped forward a day.
+    append_round(&harness, t + 86_400, healthy);
+    harness.evaluate(t + 86_403);
+    assert_eq!(
+        harness.state()["nq_watchers"]["nqd"]["unit-cron"],
+        t + 86_397
+    );
+    let config = harness.config_path();
+    let now = rfc3339(t + 300);
+    let output = harness.command(&[
+        "reset-clock",
+        "--config",
+        config.to_str().unwrap(),
+        "--now",
+        &now,
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(harness.state()["nq_watchers"]["nqd"]["unit-cron"], t + 300);
+    // cron's watcher dies at the corrected time.
+    let mut stale_at = None;
+    for step in 1..=6 {
+        let at_ = t + 300 + 60 * step;
+        append_round(&harness, at_, |envelope| {
+            envelope["context"]["instance_id"] != "unit-cron"
+        });
+        let report = harness.evaluate(at_ + 3);
+        let causes = report["inputs"][0]["causes"].as_array().unwrap().clone();
+        if stale_at.is_none() && causes.contains(&json!("stale")) {
+            stale_at = Some(60 * step);
+        }
+    }
+    // Stale once more than 180 s have passed since t + 300.
+    assert_eq!(stale_at, Some(240), "{:?}", harness.report()["inputs"][0]);
+}
+
+/// Roster ids are bounded, and error text carrying ids is truncated.
+#[test]
+fn roster_ids_are_bounded_and_error_text_truncated() {
+    let harness = history_harness(300);
+    let t = at("2026-10-02T21:32:17Z");
+    let long = "w".repeat(200);
+    append_round(&harness, t, |envelope| {
+        if envelope["context"]["instance_id"] == "unit-ssh" {
+            envelope["context"]["instance_id"] = json!(long.clone());
+        }
+        true
+    });
+    let report = harness.evaluate(t + 3);
+    let roster = harness.state()["nq_watchers"]["nqd"].clone();
+    assert!(!roster.as_object().unwrap().contains_key(&long));
+    assert!(roster.as_object().unwrap().contains_key("unit-cron"));
+    let error = report["inputs"][0]["error"].as_str().unwrap();
+    assert!(error.contains("beyond 128 printable bytes"), "{error}");
+    // Many stale watchers: the listed ids are cut at 512 bytes.
+    let harness = history_harness(2000);
+    for index in 0..100 {
+        append_round(&harness, t - 3600, |envelope| {
+            let instance = envelope["context"]["instance_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            envelope["context"]["instance_id"] = json!(format!("{instance}-{index}"));
+            true
+        });
+    }
+    harness.fake("history_generated_at", &rfc3339(t));
+    let report = harness.evaluate(t + 3);
+    let error = report["inputs"][0]["error"].as_str().unwrap();
+    assert!(error.len() < 2048, "{}", error.len());
+}
