@@ -75,3 +75,25 @@ collect = true
 systemctl = "/usr/bin/systemctl"
 unit = "constellation-attention.service"
 trigger = true
+
+# Model decider (bounded autonomous remediation v2), opt-in. Used only with
+# `--decider model` (see model-decider.conf); without that flag this section
+# is validated and ignored, and the deterministic decider runs unchanged.
+# Model, provider route, request shape and per-episode ceilings (2 calls, one
+# retry, 8192/512 tokens, 2500 micro-USD per call, 5000 per episode) are
+# fixed in the binary, not configuration.
+#
+# [model]
+# la_program = "/usr/bin/la_inference"
+# la_arguments = ["--store", "/var/lib/linear-accountant/inference.sqlite"]
+# la_admission_id = "REPLACE-owner-enrolled-admission-id"  # LA `enroll` admission_id
+# la_eligibility_ref = "REPLACE-owner-grant-ref"           # opaque, carried on each reservation
+# endpoint = "https://openrouter.ai/api/v1/chat/completions"
+# # root:root 0600, one line OPENROUTER_API_KEY=...; read only by the
+# # provider adapter, never logged, never passed to a child.
+# key_file = "/etc/constellation-remediation/openrouter.env"
+# window_min_seconds = 210   # >= 210: 35 s reasoning, dispatch, 15 s dwell, 120 s clear
+# wall_ms = 35000            # <= 35000, covers two calls and the backoff
+# total_timeout_ms = 15000   # <= 15000 per HTTP call
+# connect_timeout_ms = 3000  # <= 3000
+# retry_backoff_ms = 1000    # <= 2000

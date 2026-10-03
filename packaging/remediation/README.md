@@ -12,11 +12,70 @@ exactly that unit), decided deterministically. The package carries:
 | `nq-ops-as-nq` (runs `nq` as `nq` in nqd's sandbox over `/var/lib/nq-ops`; used for `nq collect`) | `/usr/libexec/constellation-remediation/` |
 | `constellation-remediation-consumer.{service,timer}` | `/lib/systemd/system/` |
 | `consumer.toml.example` | `/etc/constellation-remediation/` (conffile) |
+| `model-decider.conf` (systemd drop-in example for `--decider model`) | `/usr/share/doc/constellation-remediation/` |
 
 Installation is inert: no configuration, AG profile, catalog, plans, keys,
 Docket trust or grant, and the timer is neither enabled nor started.
 
+## Model decider (v2, opt-in)
+
+`--decider model` (cartography `architecture/agentic-remediation-v2/DESIGN.md`
+sections 2 and 3) adds one reasoning phase to the same consumer, before
+`ag init`; the default stays deterministic. Every v1 gate runs first (report,
+NQ input, observation, held page, current bound precondition), and model mode
+needs at least 210 s of remediation window. Then, in order: the episode is
+saved; Linear Accountant `reserve`; per call a saved call record, LA
+`begin-call`, the saved send permission, one HTTPS call, LA `settle`, the
+saved settlement and decision; on `start_canary`/`current_down` only: LA
+`close`, a fresh report, window (175 s) and precondition check, then the v1
+AG/Docket path from the pinned plan. `abstain` and `escalate` close the
+episode without any AG work; the held page goes out if the condition persists.
+One fresh retry follows a malformed answer, a provider error or a proven
+unsent request; a timeout, an uncertain send, a budget refusal or an LA fault
+ends the episode. There is no deterministic fallback in model mode.
+
+The model sees an explicit projection only: the resolver's status, id, basis
+type, currentness and freshness bound, the checked prestate, the canary
+label, seven report fields, the remaining seconds, the three candidates, and
+the condition's `summary` (at most 512 bytes) labelled
+`untrusted_narration`. The evaluator does not emit `summary` today, so it is
+empty unless a qualification fixture supplies it. The answer must be exactly
+`{"decision","reason"}` with closed enums; anything else is malformed.
+
+- **LA.** `la_inference` (linear-accountant) runs as a child like every other
+  command; `[model].la_arguments` selects its store. Each model-mode pass
+  first settles, through LA `recover`, any call this consumer's state shows
+  begun but unsettled (never sent: `cancelled_unsent`; possibly sent:
+  `crash_unknown` at its ceiling, never re-sent), and fails closed for new
+  reasoning while LA is unavailable. Reconcile with `la_inference reconcile
+  --milestone ID`.
+- **Provider.** One POST to `https://openrouter.ai/api/v1/chat/completions`
+  (`google/gemini-2.5-flash-lite`, `provider.only = ["google-vertex"]`, no
+  fallbacks, `require_parameters`, `data_collection = "deny"`, `max_price`,
+  temperature 0, 256 tokens, reasoning disabled, strict JSON schema). 3 s
+  connect and 15 s total deadline, no redirects, no proxy from the
+  environment. The input is bounded before the send by the UTF-8 bytes of
+  its message contents and response schema plus 256 for the chat template
+  (a byte-level or byte-fallback tokenizer emits at most one token per byte);
+  over 4096 the call is not sent. The reported usage is checked against the
+  ceilings afterwards.
+- **Key.** `/etc/constellation-remediation/openrouter.env`, root 0600, one
+  `OPENROUTER_API_KEY=` line. The adapter reads it inside its own thread for
+  each call; it is never in the environment, configuration, state, journal or
+  any child. A key file readable by group or others is refused before
+  anything is spent.
+- **Sandbox.** Install `model-decider.conf` as a drop-in: it adds
+  `--decider model`, `AF_INET`/`AF_INET6` (unit-wide; children stay
+  env-cleared with fixed argv) and `/var/lib/linear-accountant` to the
+  writable paths. Without the drop-in nothing has network access.
+- **Records.** Each episode directory keeps `evidence-N.json` (the exact
+  projection) and `response-N.json` (the provider's answer) in the private
+  state directory; LA holds only typed accounting metadata.
+
 ## Build (hermetic, Ubuntu 22.04)
+
+The provider adapter links `ureq` with `rustls` and `ring`; vendoring covers
+them and `ring` builds its C and assembly parts with the image's `cc`.
 
 As for `packaging/attention` (see its README): vendor a `git archive`
 export on the host, then build inside `jammy-packager:1` with
@@ -60,7 +119,8 @@ page at window expiry.
   (consumer state, AG campaign and archive, Docket state, executor attempt
   store, grant use journal) and `/var/lib/nq-ops` (SQLite `-shm` for the
   resolvers' reads). `/etc/constellation-remediation` and `/etc/nq` are
-  read-only. Only `AF_UNIX` (the systemd bus).
+  read-only. Only `AF_UNIX` (the systemd bus); the model decider's drop-in adds
+  `AF_INET`/`AF_INET6`.
 - **Campaign lifecycle.** One AG campaign per condition episode at the path
   `ag-effectd.deployment.json` pins (`ag.database`). Before opening the next
   episode the consumer archives a finished campaign (completed, halted,

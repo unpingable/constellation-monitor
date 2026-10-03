@@ -32,7 +32,9 @@ RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallArchitectures=native
-# systemd's bus (StartUnit, systemd-run, systemctl start) is AF_UNIX.
+# systemd's bus (StartUnit, systemd-run, systemctl start) is AF_UNIX. The
+# deterministic decider needs nothing else; the model decider's drop-in
+# (/usr/share/doc/constellation-remediation/model-decider.conf) adds IP egress.
 RestrictAddressFamilies=AF_UNIX
 ReadOnlyPaths=/etc/constellation-remediation /etc/nq
 # Exactly: consumer state, AG campaign + archive, Docket state, the executor
