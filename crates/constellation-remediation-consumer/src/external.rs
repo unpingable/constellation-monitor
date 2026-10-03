@@ -182,7 +182,7 @@ impl External<'_> {
         ["--database".into(), path(&self.config.ag.database)]
     }
 
-    fn gate(&self) -> Vec<String> {
+    fn gate(&self, plan: &Path) -> Vec<String> {
         let a = &self.config.ag;
         vec![
             "--catalog".into(),
@@ -197,6 +197,8 @@ impl External<'_> {
             a.standing_resolver_id.clone(),
             "--max-standing-ttl-ms".into(),
             a.max_standing_ttl_ms.to_string(),
+            "--executor-plan".into(),
+            path(plan),
         ]
     }
 
@@ -231,8 +233,8 @@ impl External<'_> {
         self.ag(argv)
     }
 
-    /// `ag-loopctl init --database DB --genesis G --runtime-profile P`
-    pub fn ag_init(&self, genesis: &Path) -> Result<Value, Failure> {
+    /// `ag-loopctl init --database DB --genesis G --runtime-profile P --executor-plan PLAN`
+    pub fn ag_init(&self, genesis: &Path, plan: &Path) -> Result<Value, Failure> {
         self.step(
             "init",
             vec![
@@ -240,6 +242,8 @@ impl External<'_> {
                 path(genesis),
                 "--runtime-profile".into(),
                 path(&self.config.ag.runtime_profile),
+                "--executor-plan".into(),
+                path(plan),
             ],
         )
     }
@@ -270,14 +274,14 @@ impl External<'_> {
         self.step("require-standing", Vec::new())
     }
 
-    /// `ag-loopctl decide --database DB <gate>`
-    pub fn ag_decide(&self) -> Result<Value, Failure> {
-        self.step("decide", self.gate())
+    /// `ag-loopctl decide --database DB <gate> --executor-plan PLAN`
+    pub fn ag_decide(&self, plan: &Path) -> Result<Value, Failure> {
+        self.step("decide", self.gate(plan))
     }
 
-    /// `ag-loopctl authorize --database DB <gate>`
-    pub fn ag_authorize(&self) -> Result<Value, Failure> {
-        self.step("authorize", self.gate())
+    /// `ag-loopctl authorize --database DB <gate> --executor-plan PLAN`
+    pub fn ag_authorize(&self, plan: &Path) -> Result<Value, Failure> {
+        self.step("authorize", self.gate(plan))
     }
 
     /// `ag-loopctl dispatch --database DB <docket>`
@@ -296,13 +300,23 @@ impl External<'_> {
         self.step("recover", self.docket(plan))
     }
 
-    /// `ag-loopctl continue --database DB --input I`
-    pub fn ag_continue(&self, input: &Path) -> Result<Value, Failure> {
-        self.step("continue", vec!["--input".into(), path(input)])
+    /// `ag-loopctl continue --database DB --input I --executor-plan PLAN`
+    pub fn ag_continue(&self, input: &Path, plan: &Path) -> Result<Value, Failure> {
+        self.step(
+            "continue",
+            vec![
+                "--input".into(),
+                path(input),
+                "--executor-plan".into(),
+                path(plan),
+            ],
+        )
     }
 
-    /// `ag-loopctl complete --database DB --input I --observation-resolver POST --expected-observation-resolver-id POST_ID`
-    pub fn ag_complete(&self, input: &Path) -> Result<Value, Failure> {
+    /// `ag-loopctl complete --database DB --input I --observation-resolver POST
+    /// --expected-observation-resolver-id POST_ID --executor-plan PLAN`: AG
+    /// accepts only its genesis-pinned postcondition resolver here.
+    pub fn ag_complete(&self, input: &Path, plan: &Path) -> Result<Value, Failure> {
         let a = &self.config.ag;
         self.step(
             "complete",
@@ -313,6 +327,8 @@ impl External<'_> {
                 path(&a.postcondition_resolver),
                 "--expected-observation-resolver-id".into(),
                 a.postcondition_resolver_id.clone(),
+                "--executor-plan".into(),
+                path(plan),
             ],
         )
     }

@@ -371,7 +371,7 @@ impl Pass<'_> {
                 "class": "initial",
             }),
         )?;
-        let init = self.external.ag_init(&genesis);
+        let init = self.external.ag_init(&genesis, &episode.plan);
         self.step_event("init", &init)?;
         if init.is_err() && !self.config.ag.database.exists() {
             return self.close("refused_at_init", json!({}));
@@ -705,7 +705,10 @@ impl Pass<'_> {
                     }
                 }
                 "standing_required" => {
-                    if self.ag_step("decide", &pc, |x| x.ag_decide())?.is_none() {
+                    if self
+                        .ag_step("decide", &pc, |x| x.ag_decide(&plan))?
+                        .is_none()
+                    {
                         return self.close(&refused("decide"), json!({}));
                     }
                 }
@@ -714,7 +717,7 @@ impl Pass<'_> {
                         return self.close("window_expired_before_authorization", json!({}));
                     }
                     if self
-                        .ag_step("authorize", &pc, |x| x.ag_authorize())?
+                        .ag_step("authorize", &pc, |x| x.ag_authorize(&plan))?
                         .is_none()
                     {
                         return self.close(&refused("authorize"), json!({}));
@@ -860,7 +863,7 @@ impl Pass<'_> {
                 &json!({"occurrence": occurrence, "expected_ag_work": episode.work}),
             )?;
             if self
-                .ag_step("continue", &pc, |x| x.ag_continue(&input))?
+                .ag_step("continue", &pc, |x| x.ag_continue(&input, &episode.plan))?
                 .is_none()
             {
                 return self.unproven("continue_refused");
@@ -930,7 +933,7 @@ impl Pass<'_> {
                 )?;
                 if self
                     .ag_step("complete", "observation_required", |x| {
-                        x.ag_complete(&input)
+                        x.ag_complete(&input, &episode.plan)
                     })?
                     .is_some()
                 {

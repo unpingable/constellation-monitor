@@ -9,9 +9,10 @@
 set -u
 dir="$FAKE_DIR"
 cmd="$1"; shift
-db=""; input=""; genesis=""; dsr=""; obsres=""
+db=""; input=""; genesis=""; dsr=""; obsres=""; plan=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --executor-plan) plan="$2"; shift 2;;
     --database) db="$2"; shift 2;;
     --input) input="$2"; shift 2;;
     --genesis) genesis="$2"; shift 2;;
@@ -22,6 +23,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 echo "ag $cmd" >> "$dir/calls.log"
+# Every catalog entry pins its plans: these steps need the exact plan (AG 18aac24).
+case "$cmd" in
+  init|decide|authorize|continue|complete)
+    [ -n "$plan" ] || { echo "the catalog pins exact plans; the exact executor plan is required" >&2; exit 1; }
+    echo "$cmd $plan" >> "$dir/plans.log";;
+esac
 st="$db.d"
 D0="sha256:0000000000000000000000000000000000000000000000000000000000000000"
 ISS="sha256:1111111111111111111111111111111111111111111111111111111111111111"

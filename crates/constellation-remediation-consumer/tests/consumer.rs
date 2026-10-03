@@ -373,6 +373,15 @@ fn happy_path_drives_one_occurrence_to_completion() {
     );
     assert_eq!(harness.closed_outcomes(), ["completed"]);
     let closed = &harness.state()["closed"][0];
+    // Every plan-gated AG step names the one chosen owner plan.
+    let plan = closed["plan"].as_str().unwrap();
+    assert_eq!(
+        lines(&harness.path("fake/plans.log")),
+        ["init", "decide", "authorize", "continue", "complete"]
+            .iter()
+            .map(|step| format!("{step} {plan}"))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(closed["dispatch_started"], true);
     assert_eq!(closed["condition_id"], CONDITION);
     assert_eq!(closed["prestate"], "inactive");
