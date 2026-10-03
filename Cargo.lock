@@ -99,6 +99,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "constellation-remediation-consumer"
+version = "0.1.0"
+dependencies = [
+ "constellation-remediation-resolver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "toml",
+]
+
+[[package]]
 name = "constellation-remediation-resolver"
 version = "0.1.0"
 dependencies = [
