@@ -20,9 +20,9 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v2`).
+  compiled in and versioned (`constellation.attention_registry.v3`).
   Configuration may enable or disable a rule, change its one threshold, and
-  choose `page` or `notice` where the registry allows it. There are no
+  move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
 - **Delivery is NQ's job.** The evaluator writes a canonical intent file and
   runs `nq notification submit` (or `resubmit`, or `deliver-local` for a
@@ -39,24 +39,46 @@ which the condition must persist a further fixed time. Runbook anchors marked
 (C) are in Cartography `architecture/beta-observability/docs/RUNBOOKS.md`;
 anchors marked (M) are below in this document.
 
-| Rule | Class (default) | May page | Bound | Component | Target class | Input | Runbook | Operator response |
+| Rule | Class (default) | Response class | Bound | Component | Target class | Input | Runbook | Operator response |
 |---|---|---|---|---|---|---|---|---|
-| `host-posture-unknown` | page | yes | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT` of projection `operator-filesystem-capacity`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch. |
-| `host-disk` (v2) | notice | yes | persists 900 s | `host_posture` | publication-root label, or the NQ filesystem watcher's instance id (e.g. `fs-zonestorage`) | host-posture `CURRENT`: current and `aggregate_state` degraded or worse; or NQ: newest `nq.host_filesystem_capacity` version 1 evaluation of a non-stale watcher reports `filesystem_capacity_pressure` present | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
-| `nq-no-fresh-acquisition` | page | yes | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
-| `service-down` | page | yes | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
-| `memory-pressure` | notice | no | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
-| `nightshift-recurrence-missing` | page | yes | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
-| `sqlite-health` | notice | no | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
-| `evaluator-input-unavailable` | notice | no | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
-| `docket-unsettled` | page | yes | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
-| `ag-executor-unavailable` | page | yes | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
+| `host-posture-unknown` | page | page | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT` of projection `operator-filesystem-capacity`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch. |
+| `host-disk` (v3) | notice | attention | persists 900 s | `host_posture` | publication-root label, or the NQ filesystem watcher's instance id (e.g. `fs-zonestorage`) | host-posture `CURRENT`: current and `aggregate_state` degraded or worse; or NQ: newest `nq.host_filesystem_capacity` version 1 evaluation of a non-stale watcher reports `filesystem_capacity_pressure` present | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
+| `nq-no-fresh-acquisition` | page | page | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
+| `service-down` | page | page | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
+| `memory-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
+| `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
+| `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
+| `evaluator-input-unavailable` | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
+| `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
+| `ag-executor-unavailable` | page | page | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
 
-"May page" is fixed by NQ 0.2.1: its v2 (PagerDuty) contract accepts only
-the 17 Cartography registry anchors. `memory-pressure`, `sqlite-health` and
-`evaluator-input-unavailable` are not anchors, so NQ would refuse them on a
-PagerDuty route; they are notices until the registry and NQ add them.
-`evaluator-input-unavailable` never pages by design.
+The response class is the registry's page eligibility, explicit per rule
+and closed (`informational`, `attention`, `page`; no rule is informational
+today). Only the six `page` rules can reach a PagerDuty route; configuration
+may move a page rule down to `notice` but never moves another rule up, so
+`[rules.host-disk] class = "page"` is refused. NQ 0.2.1's v2 contract
+accepts 17 Cartography anchors (`host-disk` among them); `memory-pressure`,
+`sqlite-health` and `evaluator-input-unavailable` are not anchors at all.
+`host-disk` is version 3: version 2 added NQ filesystem watchers, version 3
+made it attention-only.
+
+### Classification
+
+Generated from the registry (`constellation-attention rules` prints the
+same `response_class`, `operator_action` and `escalation_reason`).
+
+| Rule | Informational | Attention | Page | Escalation/persistence condition | Operator action |
+|---|---|---|---|---|---|
+| `host-posture-unknown` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 600 s | Unknown or stale for more than 600 s: the projection has stopped saying anything about disk pressure, so a full disk would go unseen. | Read the runner's refusal code in its journal and fix the cause it names (re-enroll on digest mismatch); the projection cannot recover by itself. |
+| `host-disk` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 900 s | never (not page-eligible) | persists 900 s; persistence never escalates it to a page | Ordinary host operations: check the NQ store, host-posture state root, Nightshift stores and Classic backups first. |
+| `nq-no-fresh-acquisition` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 600 s, then persists 300 s | No status object generated for more than 600 s, then 300 s more: the host-posture runner has stopped and nothing is being observed. | Read the runner journal for acquisition_refused; if the runner is down start it and watch two occurrences. |
+| `service-down` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 180 s | The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts. | systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors. |
+| `memory-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/memory) and the largest resident processes; this is stall pressure, not memory used. |
+| `nightshift-recurrence-missing` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 1800 s, then persists 300 s | No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale. | systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow. |
+| `sqlite-health` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Inspect the saved check's retained result (nq saved-check result) and the named SQLite file; do not edit the store. |
+| `evaluator-input-unavailable` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 300 s | never (not page-eligible) | persists 300 s; persistence never escalates it to a page | Read report.json for the input's error; fix permissions, paths or the producing timer. Rules fed by the input hold their state meanwhile. |
+| `docket-unsettled` (disabled: input not deployed) | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 3600 s, then persists 300 s | The oldest accepted governed-loop attempt is older than 3600 s, then 300 s more: work is stuck unsettled. | Determine whether the executor is available or the observer never reported, then follow the Docket reconciliation procedure. |
+| `ag-executor-unavailable` (disabled: input not deployed) | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 300 s | AG effectd not ready for more than 300 s: governed actions cannot execute. | Check the ag-effectd unit; restart it only on a crash; an intentional stop is acknowledged for its declared window. |
 
 `constellation-attention rules` prints the registry with versions.
 
@@ -219,6 +241,28 @@ of the decision. `transition_id` is the event id of the transition and stays
 fixed across retries.
 
 ## Routing
+
+Notification sinks are not semantically interchangeable. PagerDuty is an
+interruption channel: a page means a human should interrupt what they are
+doing. Page eligibility is the evaluator's decision, explicit per rule,
+expressed in every intent, and refused by NQ's PagerDuty transport when
+absent.
+
+```text
+condition observed -> attention -> persists beyond the rule's bound -> page
+                                                                     |
+                                    fresh verified recovery -> resolve
+```
+
+A condition is visible in `report.json` from its first observation. A notice
+rule that persists beyond its bound sends one `attention` notice; a page
+rule that persists beyond its bound pages. Only fresh verified recovery (or
+an explicit configuration removal) resolves.
+
+Every intent carries `response_class`: v2 (PagerDuty) intents are always
+`page`, and NQ refuses a v2 intent that is not (`response_class_not_page`),
+before custody; v1 notices are `page` for a paging decision's notice copy
+and `attention` otherwise, including a configuration-removal resolve.
 
 | Class | Trigger and resolve go to |
 |---|---|

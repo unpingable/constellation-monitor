@@ -61,8 +61,9 @@ store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
 # path = "/var/lib/nq-ops-results/atproto-freelist.json"
 # max_age_seconds = 3600
 
-# Overrides are limited to enabled, threshold_seconds and class (page|notice
-# where the registry allows paging).
+# Overrides are limited to enabled, threshold_seconds and class. class can
+# move a page rule down to "notice"; only the registry's page rules can page.
 # [rules.host-disk]
-# class = "page"
 # threshold_seconds = 900
+# [rules.service-down]
+# class = "notice"
