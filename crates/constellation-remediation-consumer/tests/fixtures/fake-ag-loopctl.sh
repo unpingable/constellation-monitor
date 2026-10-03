@@ -51,7 +51,7 @@ snapshot() {
     dispatched) body="{\"authorized\":{\"issuance\":{\"issuance\":\"$ISS\",\"key\":$k}},\"custody\":{\"attempt\":\"$ATT\"}}";;
     reconciliation_required) body="{\"dispatch\":{\"authorized\":{\"issuance\":{\"key\":$k}},\"custody\":{\"attempt\":\"$ATT\"}}}";;
     settled_observation_required)
-      body="{\"dispatch\":{\"authorized\":{\"issuance\":{\"key\":$k}}},\"settlement\":{\"attempt\":\"$ATT\",\"issuance\":\"$ISS\",\"outcome\":\"$(get outcome)\",\"settlement\":\"$SET\"}}";;
+      body="{\"dispatch\":{\"authorized\":{\"issuance\":{\"key\":$k}}},\"settlement\":{\"attempt\":\"$ATT\",\"issuance\":\"$ISS\",\"outcome\":\"$(get outcome)\",\"settled_at_unix_ms\":$(get settled_at),\"settlement\":\"$SET\"}}";;
     completed) body="{\"meta\":{\"key\":$(key "$(get cont)")}}";;
     *) echo "fake has no state $pc" >&2; exit 70;;
   esac
@@ -61,8 +61,8 @@ expect() { [ "$(get pc)" = "$1" ] || { echo "illegal transition from $(get pc) t
 refuse() { [ -e "$dir/refuse_$cmd" ] && { cat "$dir/refuse_$cmd" >&2; echo " ($cmd refused)" >&2; exit 1; }; return 0; }
 settle() {
   case "$(cat "$dir/dispatch_outcome" 2>/dev/null || echo success)" in
-    success) put outcome success; put pc settled_observation_required;;
-    failure) put outcome failure; put pc settled_observation_required;;
+    success) put outcome success; put pc settled_observation_required; put settled_at $(( $(date +%s%3N) - $(cat "$dir/settled_ago_ms" 2>/dev/null || echo 60000) ));;
+    failure) put outcome failure; put pc settled_observation_required; put settled_at "$(date +%s%3N)";;
     indeterminate) put pc reconciliation_required;;
     pending) [ "$1" = recover ] && put pc reconciliation_required;;
   esac

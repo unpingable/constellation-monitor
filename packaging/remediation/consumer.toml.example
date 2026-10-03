@@ -17,9 +17,13 @@ report = "/var/lib/constellation-attention/report.json"
 # while the evaluator holds the page (after the 180 s service-down bound).
 # Evaluator passes run each minute with up to 5 s jitter, so the trigger lands
 # at first_seen + 180 or + 240; with window_seconds = 300 that leaves 120 or
-# 60 s, and a 30 s timer must still find >= this margin. A fix needs ~5 s plus
-# one on-demand evaluator pass, after which the held page is not sent.
-window_margin_seconds = 20
+# 60 s, and a 30 s timer must still find >= this margin. A fix needs ~3 s,
+# the postcondition dwell below and one on-demand evaluator pass before the
+# window ends; otherwise the held page goes out (fail-safe).
+window_margin_seconds = 25
+# Completion needs an NQ evaluation taken at least this long after Docket's
+# settlement that still shows the unit active (5..=120).
+postcondition_dwell_seconds = 15
 report_max_age_seconds = 120
 poll_attempts = 10
 poll_interval_ms = 1000

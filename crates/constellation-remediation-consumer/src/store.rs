@@ -47,6 +47,10 @@ pub struct Episode {
     pub settlement: Option<String>,
     pub continuation_occurrence: Option<String>,
     pub collect_requested: bool,
+    /// Docket's settlement time (AG's settlement record), or when the
+    /// consumer first saw the settlement if AG did not carry it.
+    #[serde(default)]
+    pub settled_at_unix_ms: Option<u64>,
     pub outcome: Option<String>,
     pub opened_at_unix_ms: u64,
     pub closed_at_unix_ms: Option<u64>,

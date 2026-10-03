@@ -835,7 +835,12 @@ impl Pass<'_> {
                         };
                         let (id, attempt, issuance) =
                             (text("settlement"), text("attempt"), text("issuance"));
+                        let settled_at = settlement
+                            .get("settled_at_unix_ms")
+                            .and_then(Value::as_u64)
+                            .unwrap_or_else(|| self.now());
                         self.update(|e| {
+                            e.settled_at_unix_ms = Some(settled_at);
                             e.settlement = id;
                             e.attempt = attempt.or(e.attempt.take());
                             e.issuance = issuance.or(e.issuance.take());
@@ -928,6 +933,24 @@ impl Pass<'_> {
             let kept = occurrence.clone();
             self.update(|e| e.continuation_occurrence = Some(kept))?;
         }
+        // Dwell: only an evaluation taken this long after the settlement may
+        // prove the unit came up and stayed up. Wait for it inside the pass
+        // when the window allows, else on a later pass.
+        let not_before = episode
+            .settled_at_unix_ms
+            .unwrap_or_else(|| self.now())
+            .saturating_add(self.config.consumer.postcondition_dwell_seconds * 1000);
+        let window_end_ms = u64::try_from(episode.window_until)
+            .unwrap_or(0)
+            .saturating_mul(1000);
+        if self.now() < not_before {
+            if not_before >= window_end_ms {
+                return self.unproven("dwell_beyond_window");
+            }
+            thread::sleep(Duration::from_millis(
+                not_before - self.now().min(not_before),
+            ));
+        }
         if !episode.collect_requested && self.config.nq.collect {
             let collected = self.external.nq_collect();
             self.event(
@@ -951,7 +974,25 @@ impl Pass<'_> {
                 &observation,
                 &episode.subject,
             )?;
-            if status == "current" {
+            let sampled_at = if status == "current" {
+                match self.external.newest_evaluated_at_ms() {
+                    Ok(at) => at,
+                    Err(error) => {
+                        self.event("postcondition_sample_unreadable", json!({"error": error}))?;
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let after_dwell = sampled_at.is_some_and(|at| at >= not_before);
+            if status == "current" && !after_dwell {
+                self.event(
+                    "postcondition_before_dwell",
+                    json!({"sampled_at_unix_ms": sampled_at, "not_before_unix_ms": not_before}),
+                )?;
+            }
+            if status == "current" && after_dwell {
                 let witness = hash_domain(
                     TERMINAL_DOMAIN,
                     &jcs(&json!({

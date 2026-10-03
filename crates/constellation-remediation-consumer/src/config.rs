@@ -60,6 +60,10 @@ pub struct Consumer {
     pub postcondition_attempts: u32,
     #[serde(default = "default_post_interval")]
     pub postcondition_interval_ms: u64,
+    /// The unit must still be active in an NQ evaluation taken at least this
+    /// long after Docket's settlement before a completion is claimed.
+    #[serde(default = "default_post_dwell")]
+    pub postcondition_dwell_seconds: u64,
     /// Deadline of each external command.
     #[serde(default = "default_timeout")]
     pub command_timeout_seconds: u64,
@@ -162,6 +166,9 @@ fn default_post_attempts() -> u32 {
 fn default_post_interval() -> u64 {
     2000
 }
+fn default_post_dwell() -> u64 {
+    15
+}
 fn default_timeout() -> u64 {
     60
 }
@@ -213,6 +220,9 @@ impl Config {
         }
         if c.poll_attempts == 0 || c.postcondition_attempts == 0 {
             return Err("poll and postcondition attempts must be at least 1".into());
+        }
+        if !(5..=120).contains(&c.postcondition_dwell_seconds) {
+            return Err("consumer.postcondition_dwell_seconds must be 5..=120".into());
         }
         if !(1..=600).contains(&c.command_timeout_seconds) {
             return Err("consumer.command_timeout_seconds must be 1..=600".into());

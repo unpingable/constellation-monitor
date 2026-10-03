@@ -37,6 +37,18 @@ docker run --rm --network none -v "$src":/work -w /work \
     rc=$?; chown -R '"$(id -u):$(id -g)"' /work; exit $rc'
 ```
 
+## What a completion asserts
+
+AG `completed` (and the consumer's `completed`) means: Docket settled the
+one start as success, and an NQ ops-store evaluation taken at least
+`postcondition_dwell_seconds` (default 15) after that settlement, and within
+the resolver's 60 s freshness bound when AG asked, showed the unit loaded and
+active. A unit that dies inside the dwell is never claimed (the episode
+closes `postcondition_not_proven` at window end and the held page goes out).
+It does not assert durable recovery: the evaluator resolves the condition only
+after 120 s of continuous clear, and a relapse before that sends the held
+page at window expiry.
+
 ## Runtime premises (declared)
 
 - **Same root.** The unit runs `User=root`: the consumer, AG's issuer key,

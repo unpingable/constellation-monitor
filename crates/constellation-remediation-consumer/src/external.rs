@@ -359,6 +359,40 @@ impl External<'_> {
         run(&nq.program, &argv, None, self.timeout()).map(|_| ())
     }
 
+    /// `evaluated_at` (unix ms) of the newest NQ evaluation of the enrolled
+    /// watcher instance, read the way the resolver reads it.
+    pub fn newest_evaluated_at_ms(&self) -> Result<Option<u64>, String> {
+        let e = &self.config.enrollment;
+        let settings = constellation_remediation_resolver::Settings {
+            claim: constellation_remediation_resolver::Claim::Active,
+            nq_program: path(&self.config.nq.program),
+            nq_config: path(&self.config.nq.config),
+            instance_id: e.instance_id.clone(),
+            unit: e.unit.clone(),
+            machine_id: e.machine_id.clone(),
+            resolver_id: "constellation.remediation.consumer-dwell-check".into(),
+            window_records: constellation_remediation_resolver::WINDOW_RECORDS_DEFAULT,
+            max_age_ms: constellation_remediation_resolver::MAX_AGE_MS_DEFAULT,
+            page_bytes: constellation_remediation_resolver::PAGE_BYTES_DEFAULT,
+            timeout: self.timeout(),
+        };
+        let window = constellation_remediation_resolver::read_window(&settings)?;
+        Ok(window.newest.and_then(|newest| {
+            newest
+                .envelope
+                .pointer("/evaluated_at")
+                .and_then(Value::as_str)
+                .and_then(|text| {
+                    time::OffsetDateTime::parse(
+                        text,
+                        &time::format_description::well_known::Rfc3339,
+                    )
+                    .ok()
+                })
+                .and_then(|at| u64::try_from(at.unix_timestamp_nanos() / 1_000_000).ok())
+        }))
+    }
+
     /// `systemctl show --property=ActiveState --value UNIT`, enrolled unit only.
     pub fn unit_active_state(&self) -> Result<String, Failure> {
         let argv = vec![

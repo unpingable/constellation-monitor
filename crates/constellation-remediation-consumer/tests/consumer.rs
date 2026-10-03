@@ -131,6 +131,7 @@ poll_attempts = 2
 poll_interval_ms = 10
 postcondition_attempts = 2
 postcondition_interval_ms = 10
+postcondition_dwell_seconds = 5
 command_timeout_seconds = 20
 
 [ag]
@@ -743,6 +744,32 @@ fn unproven_postcondition_is_never_claimed() {
     assert_eq!(harness.count("ag complete"), 0);
     assert_eq!(harness.count("ag continue"), 1);
     assert_eq!(harness.count("ag dispatch"), 1);
+}
+
+/// Review F2: a current "active" answer from a sample taken before the dwell
+/// after Docket's settlement never completes.
+#[test]
+fn postcondition_sample_before_the_dwell_is_never_claimed() {
+    let harness = Harness::new();
+    // Settled 60 s ago; dwell 15 s; the newest sample is 100 s old.
+    harness.control("sample_offset_s", "-100");
+    assert_eq!(harness.result(), "awaiting_postcondition");
+    assert_eq!(harness.count("ag complete"), 0);
+    assert!(!harness.events("postcondition_before_dwell").is_empty());
+    // A fresh sample after the dwell completes.
+    fs::remove_file(harness.path("fake/sample_offset_s")).unwrap();
+    assert_eq!(harness.result(), "completed");
+    assert_eq!(harness.count("ag complete"), 1);
+}
+
+/// The consumer waits out the dwell after a settlement it has just seen.
+#[test]
+fn postcondition_waits_for_the_dwell_after_settlement() {
+    let harness = Harness::new();
+    harness.control("settled_ago_ms", "0");
+    let started = std::time::Instant::now();
+    assert_eq!(harness.result(), "completed");
+    assert!(started.elapsed() >= std::time::Duration::from_secs(5));
 }
 
 #[test]
