@@ -121,7 +121,14 @@ the same lineages, checks and fault classes.
   lists it in `[inputs.nq_status] retired_instances = ["unit-old"]`, which
   also drops it from the roster. Retire a watcher only after removing it
   from NQ; a retired id that evaluates again is read normally but never
-  stale. `status_export` mode needs no roster: NQ's instance components
+  stale. Roster ids are at most 128 printable bytes (longer ids are reported
+  `unrecognised` and not remembered), times are capped at the page's
+  `generated_at`, an evaluation stamped more than 60 s after the page (a
+  past forward clock step) counts as no liveness, and `reset-clock` clamps
+  the roster like every other timestamp. **Rollback:** builds before
+  bac0e1a refuse a `state.json` that contains `nq_watchers` (the state is
+  read with unknown fields refused). Before rolling back, stop the timer and
+  remove that field from the state file. `status_export` mode needs no roster: NQ's instance components
   keep `observed_at` for every configured watcher.
 
   **Ordering.** Per lineage the evaluation with the newest `evaluated_at`
