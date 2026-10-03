@@ -13,7 +13,13 @@ machine_id = "REPLACE-32-lowercase-hex"   # /etc/machine-id
 [consumer]
 state_dir = "/var/lib/constellation-remediation/consumer"
 report = "/var/lib/constellation-attention/report.json"
-window_margin_seconds = 90                # least remediation window left to open an episode
+# Least remediation window left to open an episode. The consumer acts only
+# while the evaluator holds the page (after the 180 s service-down bound).
+# Evaluator passes run each minute with up to 5 s jitter, so the trigger lands
+# at first_seen + 180 or + 240; with window_seconds = 300 that leaves 120 or
+# 60 s, and a 30 s timer must still find >= this margin. A fix needs ~5 s plus
+# one on-demand evaluator pass, after which the held page is not sent.
+window_margin_seconds = 20
 report_max_age_seconds = 120
 poll_attempts = 10
 poll_interval_ms = 1000

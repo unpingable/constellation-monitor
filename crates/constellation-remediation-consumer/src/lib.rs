@@ -3,7 +3,8 @@
 //!
 //! One oneshot pass (a 30 s timer, lock-protected) reads the attention
 //! evaluator's report, selects only the enrolled `service-down` condition
-//! under `auto_remediate_then_page` with enough remediation window left,
+//! under `auto_remediate_then_page` while the evaluator holds its page
+//! (`page_deferred`) with enough remediation window left,
 //! re-establishes the precondition through the pinned resolver, and drives
 //! exactly one AG occurrence per condition episode: `init`,
 //! `record-proposal`, `require-standing`, `decide`, `authorize`, `dispatch`

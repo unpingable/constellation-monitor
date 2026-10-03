@@ -202,7 +202,7 @@ systemctl = "{systemctl}"
                     "transition": null,
                     "response_policy": report.policy,
                     "remediation_window_until": now + report.window_left,
-                    "page_deferred": true,
+                    "page_deferred": report.page_deferred,
                 }],
             }))
             .unwrap(),
@@ -302,6 +302,7 @@ struct Report {
     policy: &'static str,
     window_left: i64,
     first_seen: Option<i64>,
+    page_deferred: bool,
 }
 
 impl Default for Report {
@@ -313,6 +314,7 @@ impl Default for Report {
             policy: "auto_remediate_then_page",
             window_left: 200,
             first_seen: None,
+            page_deferred: true,
         }
     }
 }
@@ -497,6 +499,15 @@ fn stale_or_not_ok_input_abstains_before_any_resolution() {
                 ..Report::default()
             },
             "policy_not_auto_remediate",
+        ),
+        // Below the rule's bound (or after the page was sent) the evaluator
+        // holds no page: there is nothing to remediate before a human sees it.
+        (
+            Report {
+                page_deferred: false,
+                ..Report::default()
+            },
+            "page_not_deferred",
         ),
     ];
     for (report, reason) in cases {

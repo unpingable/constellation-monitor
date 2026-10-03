@@ -136,6 +136,14 @@ pub fn select(config: &Config, report: &Value, now: i64) -> Selection {
     else {
         return abstain("report_malformed", detail);
     };
+    // Act only while the evaluator holds the page (cartography decision
+    // memo, section 4): the condition has triggered at the rule's bound, its
+    // notice is out, and the page waits for the remediation window. Before
+    // the bound nothing has been reported; after the page is sent the
+    // window is over.
+    if condition.get("page_deferred").and_then(Value::as_bool) != Some(true) {
+        return abstain("page_not_deferred", detail);
+    }
     if window_until - now < config.consumer.window_margin_seconds {
         return abstain("window_too_short", detail);
     }
@@ -143,10 +151,7 @@ pub fn select(config: &Config, report: &Value, now: i64) -> Selection {
         condition_id: expected,
         first_seen,
         window_until,
-        page_deferred: condition
-            .get("page_deferred")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
+        page_deferred: true,
         evaluated_at,
     })
 }
