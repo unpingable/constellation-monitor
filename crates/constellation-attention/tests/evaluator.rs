@@ -3215,18 +3215,9 @@ fn every_intent_carries_its_response_class() {
     }
 }
 
-/// A hand-edited PagerDuty intent without `response_class` is refused by
-/// nq before custody: it is recorded as command_error and never becomes a
-/// page.
-#[test]
-fn pagerduty_intent_without_response_class_is_refused() {
-    let mut harness = Harness::new();
-    harness.host_posture("root");
-    harness.fake("command_error", "");
-    for offset in [0, 660] {
-        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
-        harness.evaluate(T0 + offset);
-    }
+/// Strip `response_class` from the retained page intent, as a build before
+/// 784df43 wrote it.
+fn make_legacy_page(harness: &Harness) {
     let file = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["intent_file"]
         .as_str()
         .unwrap()
@@ -3235,20 +3226,108 @@ fn pagerduty_intent_without_response_class_is_refused() {
     let mut intent: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     intent.as_object_mut().unwrap().remove("response_class");
     fs::write(&path, serde_jcs::to_vec(&intent).unwrap()).unwrap();
-    fs::remove_file(harness.path("fake/command_error")).unwrap();
-    for offset in [720, 780, 840] {
+}
+
+/// NQ 0.2.2 (mirrored by the fake) retains a non-page v2 as a refused
+/// record, reason `response_class_not_page`, and sends nothing.
+#[test]
+fn fake_nq_retains_a_non_page_v2_as_refused() {
+    let harness = Harness::new();
+    let intent = harness.path("legacy.json");
+    fs::write(
+        &intent,
+        br#"{"schema":"nq.notification_delivery_intent.v2","stable_event_id":"labelwatch-x-trigger-1"}"#,
+    )
+    .unwrap();
+    let output = Command::new(Path::new(FIXTURES).join("fake-nq.sh"))
+        .args([
+            "--config",
+            "/etc/nq/nqd-ops.toml",
+            "--json",
+            "notification",
+            "submit",
+        ])
+        .arg("--intent")
+        .arg(&intent)
+        .args(["--route", "pagerduty-ops", "--enable-network"])
+        .env("FAKE_NQ_DIR", harness.path("fake"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(answer["delivery_state"], "refused");
+    assert_eq!(answer["notification_id"], "n1");
+}
+
+/// Round-5-style state across the upgrade: a page retained `failed` whose
+/// intent file has no `response_class`. Resubmitting that record would be
+/// refused every 120 s; instead the page is re-rendered under a new event
+/// id, submitted, and delivered.
+#[test]
+fn legacy_failed_page_is_rerendered_and_delivered() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("next_state", "failed");
+    for offset in [0, 660] {
         set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
-        let output = harness.evaluate_at(T0 + offset, &[]);
-        assert_eq!(output.status.code(), Some(3));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("response_class_not_page"));
+        harness.evaluate(T0 + offset);
     }
+    make_legacy_page(&harness);
+    // NQ's retained copy of that record is the legacy intent too.
+    harness.fake("records/nopage-n2", "");
+    harness.fake("next_state", "accepted");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let output = harness.evaluate_at(T0 + 780, &[]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("re-rendered as a page"));
     let calls = harness.calls();
-    assert!(
-        calls.iter().all(|call| !call.contains("pagerduty-ops")),
+    assert_eq!(
+        calls[2],
+        "submit pagerduty-ops labelwatch-host-posture-unknown-root-trigger-1790943180 n3 accepted new",
         "{calls:?}"
+    );
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n3")).unwrap();
+    assert_eq!(intent["response_class"], "page");
+    assert_eq!(
+        intent["transition_id"],
+        "labelwatch-host-posture-unknown-root-trigger-1790943060"
     );
     assert_eq!(
         harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["outcome"],
-        "command_error"
+        "accepted"
     );
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1200);
+    harness.evaluate(T0 + 1200);
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .all(|call| !call.starts_with("resubmit")),
+        "{:?}",
+        harness.calls()
+    );
+}
+
+/// A legacy page that NQ never answered (command error before custody) is
+/// re-rendered on the next pass rather than sent again as non-page bytes.
+#[test]
+fn legacy_unanswered_page_is_rerendered() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    make_legacy_page(&harness);
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    harness.evaluate(T0 + 720);
+    let calls = harness.calls();
+    let page: Vec<&String> = calls
+        .iter()
+        .filter(|call| call.contains("pagerduty-ops"))
+        .collect();
+    assert_eq!(page.len(), 1, "{calls:?}");
+    assert!(page[0].ends_with(" accepted new"), "{calls:?}");
+    assert!(page[0].contains("-trigger-1790943120"), "{calls:?}");
 }

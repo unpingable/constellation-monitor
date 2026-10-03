@@ -655,7 +655,42 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 continue;
             };
             let mut retry_of = None;
-            if operation != Operation::SubmitAgain {
+            // A v2 intent retained before intents carried `response_class`
+            // (builds before 784df43) would be refused by NQ's PagerDuty
+            // route on every retry. Render it again as a page under a new
+            // event id and submit it, so a page open across the upgrade is
+            // delivered.
+            let legacy_page = (last.schema == INTENT_V2)
+                .then(|| {
+                    read_bounded(
+                        &state_dir.join("intents").join(&last.intent_file),
+                        64 * 1024,
+                    )
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                })
+                .flatten()
+                .filter(|prior| prior.get("response_class") != Some(&json!("page")));
+            let (operation, rendered) = if let Some(prior) = legacy_page {
+                let stable_event_id = intent::event_id(&snapshot.key, action, now);
+                let mut fresh = intent::with_event_id(&prior, &stable_event_id);
+                fresh["response_class"] = json!("page");
+                let file = format!("{stable_event_id}.{role}.json");
+                write_atomic(&intents_dir.join(&file), &intent::canonical(&fresh)?)?;
+                eprintln!(
+                    "follow-up condition={id} route={} intent without response_class re-rendered as a page under {stable_event_id}",
+                    last.route
+                );
+                last.intent_file = file;
+                last.stable_event_id = stable_event_id;
+                last.notification_id = None;
+                (Operation::Submit, true)
+            } else {
+                (operation, false)
+            };
+            if rendered {
+                // A fresh record: nothing to resubmit from.
+            } else if operation != Operation::SubmitAgain {
                 // A new record for the same condition: same bytes, new event id.
                 let prior = match read_bounded(
                     &state_dir.join("intents").join(&last.intent_file),

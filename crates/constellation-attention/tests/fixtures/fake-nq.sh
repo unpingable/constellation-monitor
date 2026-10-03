@@ -65,13 +65,17 @@ if [ -e "$dir/crash" ]; then rm -f "$dir/crash"; kill -9 "$PPID"; sleep 2; exit 
 crash_after=false
 if [ -e "$dir/crash_after" ]; then rm -f "$dir/crash_after"; crash_after=true; fi
 if [ -e "$dir/command_error" ]; then echo "notification condition target_class is refused" >&2; exit 1; fi
-# NQ refuses, before custody, a PagerDuty (v2) intent that is not a page.
-if [ "$sub" = submit ] && grep -q '"schema":"nq.notification_delivery_intent.v2"' "$intent" \
-  && ! grep -q '"response_class":"page"' "$intent"; then
-  echo "notification refused: response_class_not_page" >&2; exit 1
-fi
 state=$(cat "$dir/next_state" 2>/dev/null || echo accepted)
 mkdir -p "$dir/records" "$dir/intents"
+# NQ 0.2.2 retains a PagerDuty (v2) intent that is not a page as a refused
+# record (reason response_class_not_page) and sends nothing; a resubmit of
+# that record re-derives the same intent and is refused again.
+nopage=false
+if [ "$sub" = submit ] && grep -q '"schema":"nq.notification_delivery_intent.v2"' "$intent" \
+  && ! grep -q '"response_class":"page"' "$intent"; then
+  nopage=true
+fi
+if [ "$sub" = resubmit ] && [ -e "$dir/records/nopage-$from" ]; then nopage=true; fi
 n=$(($(ls "$dir/intents" | wc -l) + 1))
 if [ "$sub" = deliver-local ]; then
   # NQ 0.2.1: a local_file route takes no --enable-network, requires
@@ -86,6 +90,7 @@ elif [ -e "$dir/local_route" ] && [ "$route" = "$(cat "$dir/local_route")" ]; th
 else
   $net || state=refused
 fi
+$nopage && state=refused
 case "$sub" in
   submit)
     event=$(sed -n 's/.*"stable_event_id":"\([^"]*\)".*/\1/p' "$intent")
@@ -98,6 +103,7 @@ case "$sub" in
     fi
     id="n$n"
     cp "$intent" "$dir/intents/$id.json"
+    $nopage && touch "$dir/records/nopage-$id"
     echo "$id $state" > "$record"
     echo "submit $route $event $id $state new" >> "$dir/calls.log"
     if $crash_after; then kill -9 "$PPID"; sleep 2; exit 1; fi
@@ -106,6 +112,7 @@ case "$sub" in
   resubmit)
     id="n$n"
     touch "$dir/intents/$id.json"
+    $nopage && touch "$dir/records/nopage-$id"
     original=$(grep -l "^$from " "$dir"/records/* | head -1)
     echo "$id $state" > "$dir/records/$event@${original##*@}"
     echo "resubmit $from $event $id $state" >> "$dir/calls.log"
