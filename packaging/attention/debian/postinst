@@ -1,0 +1,13 @@
+#!/bin/sh
+# Creates the state directory only. Never renders configuration, writes
+# secrets, enables or starts the timer.
+set -eu
+if [ "${1:-}" = configure ]; then
+  if getent passwd nq >/dev/null 2>&1; then
+    install -d -o nq -g nq -m 0700 /var/lib/constellation-attention
+  else
+    echo "constellation-attention: nq account missing; /var/lib/constellation-attention not created" >&2
+  fi
+  if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+fi
+exit 0

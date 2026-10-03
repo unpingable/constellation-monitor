@@ -20,12 +20,12 @@ It stores no secrets and never contacts Slack, Discord or PagerDuty itself.
 | `constellation-attention` (release binary) | `/usr/bin/constellation-attention` |
 | `constellation-attention.service` | `/lib/systemd/system/` |
 | `constellation-attention.timer` | `/lib/systemd/system/` |
-| `attention.toml.example` | `/etc/constellation-attention/attention.toml` (edit) |
-| `docs/ATTENTION.md` | `/usr/share/doc/constellation-attention/` |
+| `attention.toml.example` | `/etc/constellation-attention/attention.toml.example` (package conffile); copy to `attention.toml` and edit |
+| `docs/ATTENTION.md`, `README.md` | `/usr/share/doc/constellation-attention/` |
+| `build-deb.sh`, `debian/` | the Debian package recipe (below) |
 
-The jammy Debian package for host-posture lives on the packaging branch
-(`packaging/build-deb.sh`); this directory is the standalone recipe until the
-binary is added there.
+`build-deb.sh` follows the host-posture package recipe on the packaging
+branch (`packaging/build-deb.sh`).
 
 ## Requirements
 
@@ -35,6 +35,44 @@ before custody and nothing would be delivered. Do not install the evaluator
 against an older NQ; upgrade NQ first. A page retained by an earlier build
 of the evaluator is re-rendered with `response_class` on its next retry
 (ATTENTION.md, Routing).
+
+## Build the Debian package (hermetic, Ubuntu 22.04)
+
+The package is built from a `git archive` export of one commit, inside the
+local `jammy-packager:1` image (ubuntu:22.04 with rustup 1.94.0, the image
+the NQ 0.2.x bundles are built in), with no network. The image carries no
+cargo registry, so the export is vendored on the host first:
+
+```sh
+commit=$(git rev-parse HEAD)            # the commit to package
+src=$(mktemp -d)
+git archive "$commit" | tar -x -C "$src"
+( cd "$src" && mkdir -p .cargo && \
+  CARGO_NET_OFFLINE=true cargo +1.94.0 vendor --locked vendor > .cargo/config.toml )
+docker run --rm --network none -v "$src":/work -w /work \
+  -e MONITOR_SOURCE_COMMIT="$commit" \
+  -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$commit")" \
+  jammy-packager:1 bash -c '
+    cargo build --release --locked --offline -p constellation-attention &&
+    packaging/attention/build-deb.sh 0.1.0 amd64 target/release dist;
+    rc=$?; chown -R '"$(id -u):$(id -g)"' /work; exit $rc'
+ls "$src/dist"   # constellation-attention_0.1.0_amd64.deb and .sha256
+```
+
+`build-deb.sh VERSION ARCH BIN_DIR OUT_DIR` refuses a binary whose
+`--build-info` does not carry that version, `minimum_nq` 0.2.2 and a source
+commit. The package contains `/usr/bin/constellation-attention`, the unit
+and timer under `/lib/systemd/system/`,
+`/etc/constellation-attention/attention.toml.example` (a conffile; the live
+`attention.toml` is never packaged) and `ATTENTION.md` and this README under
+`/usr/share/doc/constellation-attention/`. It `Depends: nq-ng (>= 0.2.2)`.
+The postinst only creates `/var/lib/constellation-attention` (0700 nq:nq)
+when the `nq` account exists and reloads systemd; it never writes
+configuration or secrets and never enables or starts the timer. Purge
+removes the state directory. Install with `sudo apt install
+./constellation-attention_0.1.0_amd64.deb`, then continue at "Qualify before
+enabling" (copy the example to `attention.toml` and create
+`nq-routes.env` as below).
 
 ## Install (by hand)
 
