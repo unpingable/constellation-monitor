@@ -75,5 +75,28 @@ page at window expiry.
   Later episodes abstain (`prior_campaign_unresolved`) and the evaluator
   pages at window expiry until the operator archives the campaign by hand
   (stop the timer; move `campaign.sqlite*` to `archive/`). Declared limit.
+- **The sandbox can write what bounds it (review F3).** The writable paths
+  cover the grant use journal, Docket custody state, the AG campaign
+  database, the executor attempt store and the NQ ops store that holds the
+  pre- and postcondition evidence, and the process tree reads the AG issuer
+  key. `docket` takes its standing resolver from argv (only `ag-loopctl`
+  checks it against the profile). So `max_uses`, revocation and the
+  independence of the postcondition hold only while the consumer binary is
+  the reviewed one. The profile pins the resolver wrappers' bytes, not
+  `constellation-nq-unit-resolver` or `nq`. Not yet mitigated: running the
+  resolvers as `nq` via `systemd-run` (so `/var/lib/nq-ops` leaves
+  `ReadWritePaths`) and Docket pinning its own standing resolver.
+- **Torn grant journal entry (review F5).** A crash between the `O_EXCL`
+  create and the write of `use-NNNNNN.json` leaves an empty entry; every
+  later derivation then refuses (`journal-entry-document`) and remediation
+  stops (fail closed, the evaluator pages). Repair is an owner step: enroll a
+  new grant with a new, empty journal and a new pin (Docket
+  `execution-standing-enrollment.md`, "Torn journal entry").
+- **D-Bus address from the environment (review F6).** `ag-effectd` connects
+  with `Connection::system()`, which honours `DBUS_SYSTEM_BUS_ADDRESS`. The
+  consumer clears the environment of every command, which is the only thing
+  pinning the executor to `unix:path=/run/dbus/system_bus_socket` today.
+- **Grant has no rate limit.** Per-episode attempts are bounded by the
+  consumer and by `max_uses`; choose a small `max_uses` and a short validity.
 - **Start only.** v1 starts a not-active unit (prestates enrolled per plan);
   it never restarts an active-but-wedged unit.
