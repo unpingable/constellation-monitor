@@ -57,7 +57,7 @@ pub struct Model {
     /// owner's grant of this remediation envelope); LA never interprets it.
     pub la_eligibility_ref: String,
     /// `https://openrouter.ai/api/v1/chat/completions`; a loopback
-    /// `http://127.0.0.1:PORT/...` only for qualification fakes.
+    /// `http://127.0.0.1:PORT/...` requires a qualification-loopback build.
     #[serde(default = "default_endpoint")]
     pub endpoint: String,
     /// Root-owned 0600 env file holding `OPENROUTER_API_KEY=...`; read only
@@ -446,24 +446,26 @@ impl Model {
 
 /// The exact OpenRouter endpoint, or a loopback HTTP endpoint for
 /// qualification fakes. Nothing else: no other host, no redirect target.
-fn endpoint(value: &str) -> Result<(), String> {
+pub(crate) fn endpoint(value: &str) -> Result<(), String> {
     if value == OPENROUTER_ENDPOINT {
         return Ok(());
     }
-    let loopback = value.strip_prefix("http://127.0.0.1:").is_some_and(|rest| {
-        let (port, path) = rest.split_once('/').unwrap_or((rest, ""));
-        !port.is_empty()
-            && port.len() <= 5
-            && port.bytes().all(|byte| byte.is_ascii_digit())
-            && path.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.')
-            })
-    });
+    let loopback = cfg!(feature = "qualification-loopback")
+        && value.strip_prefix("http://127.0.0.1:").is_some_and(|rest| {
+            let (port, path) = rest.split_once('/').unwrap_or((rest, ""));
+            !port.is_empty()
+                && port.len() <= 5
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && port.parse::<u16>().is_ok_and(|port| port != 0)
+                && path.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.')
+                })
+        });
     if loopback {
         return Ok(());
     }
     Err(format!(
-        "model.endpoint must be {OPENROUTER_ENDPOINT} (or a loopback http://127.0.0.1:PORT/ fake)"
+        "model.endpoint must be {OPENROUTER_ENDPOINT}; loopback fixtures require a qualification-loopback build"
     ))
 }
 
@@ -493,4 +495,26 @@ fn absolute(name: &str, path: &Path) -> Result<(), String> {
         return Err(format!("{name} must be an absolute path"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod endpoint_tests {
+    use super::{OPENROUTER_ENDPOINT, endpoint};
+
+    #[test]
+    fn only_the_enrolled_provider_or_compiled_fixture_is_allowed() {
+        assert!(endpoint(OPENROUTER_ENDPOINT).is_ok());
+        assert_eq!(
+            endpoint("http://127.0.0.1:8099/api/v1/chat/completions").is_ok(),
+            cfg!(feature = "qualification-loopback")
+        );
+        for invalid in [
+            "http://127.0.0.1:0/",
+            "http://127.0.0.1:65536/",
+            "http://openrouter.ai/api/v1/chat/completions",
+            "https://example.invalid/",
+        ] {
+            assert!(endpoint(invalid).is_err());
+        }
+    }
 }

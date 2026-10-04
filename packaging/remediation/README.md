@@ -72,6 +72,39 @@ empty unless a qualification fixture supplies it. The answer must be exactly
   projection) and `response-N.json` (the provider's answer) in the private
   state directory; LA holds only typed accounting metadata.
 
+### Qualification fixture credentials and closeout
+
+Ordinary builds accept only the exact enrolled OpenRouter HTTPS endpoint.
+Loopback HTTP requires the explicit `qualification-loopback` Cargo feature;
+record that feature in the qualification artifact identity and remove that
+artifact from the host at closeout. Run model fixture tests with
+`cargo test -p constellation-remediation-consumer --features qualification-loopback`.
+For a fixture destination the adapter never opens the configured provider key
+file: it sends only `CONSTELLATION_QUALIFICATION_ONLY_NOT_A_PROVIDER_KEY`.
+The real HTTPS path retains the private-file check and reads the owner key.
+
+Synthetic provider scripts must accept only this public marker, suppress header
+and body logging, and record counts or modes only. Configure a separate
+synthetic credential path for fixture cases; switch both `endpoint` and
+`key_file` together when selecting a real case. Prove isolation with the real
+key file absent, and prove a default production build rejects loopback.
+Never use a real credential as the fake-provider prerequisite.
+
+On the live host, retain the original production configuration and grant before
+qualification. Every induced escalation uses the dedicated TEST PagerDuty
+service, with a verified distinct route and accepted TEST receipt. At closeout,
+restore the original production routes, configuration and grant pin; remove the
+qualification model drop-in and fixture endpoint; stop the exact fake-provider
+unit and remove its restart or activation paths. Verify the fake has no process
+or listener, model mode is disabled, the canary is healthy, and the original
+grant's use/revocation state is reconciled. The historical v1 closeout script
+issues a new grant and omits model/fake cleanup: it must not be reused for this
+v2 restoration. Retain failed occurrences and independently reviewed records.
+
+Record bounded credential-retention inspection without displaying matching
+bytes, and the separate credential rotation/disposition decision. A stopped
+fixture proves neither absent disk retention nor provider-side revocation.
+
 ## Build (hermetic, Ubuntu 22.04)
 
 The provider adapter links `ureq` with `rustls` and `ring`; vendoring covers

@@ -256,6 +256,31 @@ fn basis_binding_matches_ag_vector() {
 }
 
 #[test]
+fn future_sample_boundary_and_retained_decide_times() {
+    // Retained #71 decide sample; the failed authorize sample is unavailable.
+    const SAMPLE: u64 = 1_791_092_229_403;
+    const DECIDE: u64 = 1_791_092_229_270;
+    for (now, expected) in [
+        (DECIDE, "current"),
+        (SAMPLE - 2_000, "current"),
+        (SAMPLE - 2_001, "unsupported"),
+    ] {
+        let harness = Harness::new();
+        // Never substitute older current evidence for the newest future record.
+        harness.append(&canary(now - 1_000, "present"));
+        harness.append(&canary(SAMPLE, "present"));
+        let output = harness.run_with(&request(now));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(record["status"], expected, "sample={SAMPLE}, now={now}");
+    }
+}
+
+#[test]
 fn stale_when_newest_is_older_than_the_bound() {
     let harness = Harness::new();
     harness.append(&canary(NOW - 60_000, "present"));
@@ -386,14 +411,13 @@ fn nq_failure_is_refused() {
     assert!(harness.refuse().contains("cannot start"));
 }
 
-/// A read that races an NQ append fails once; the one re-read answers.
+/// An unqualified read is a boundary failure, not a temporal diagnosis.
 #[test]
-fn one_transient_nq_failure_is_reread() {
+fn a_single_nq_failure_is_refused_without_a_speculative_retry() {
     let harness = Harness::new();
     harness.append(&canary(NOW - 1_000, "present"));
     harness.control("fail_once");
-    let resolution = harness.resolve();
-    assert_eq!(resolution["status"], "current");
+    assert!(harness.refuse().contains("transient"));
     assert!(!harness.path("fake/fail_once").exists());
 }
 

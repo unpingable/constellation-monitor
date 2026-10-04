@@ -6,6 +6,10 @@ rust-version = "1.89"
 license.workspace = true
 description = "Deterministic one-shot consumer that drives one governed AG/Docket start of the enrolled unit per attention condition episode."
 
+[features]
+# Qualification artifacts only; ordinary production builds accept HTTPS alone.
+qualification-loopback = []
+
 [[bin]]
 name = "constellation-remediation-consumer"
 path = "src/main.rs"

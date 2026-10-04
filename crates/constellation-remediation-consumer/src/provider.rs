@@ -13,7 +13,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use crate::config::Model;
+use crate::config::{Model, OPENROUTER_ENDPOINT, endpoint};
+
+/// Public fixture marker, never an owner credential.
+pub const SYNTHETIC_CREDENTIAL: &str = "CONSTELLATION_QUALIFICATION_ONLY_NOT_A_PROVIDER_KEY";
 
 /// Response bodies larger than this are not an answer.
 const BODY_LIMIT: u64 = 64 * 1024;
@@ -83,8 +86,22 @@ fn read_key(path: &Path) -> Result<String, String> {
     Ok(key)
 }
 
+/// Validate the destination before any credential-file access.
+pub fn credentials_ready(model: &Model) -> Result<(), String> {
+    endpoint(&model.endpoint)?;
+    if model.endpoint == OPENROUTER_ENDPOINT {
+        key_file_ready(&model.key_file)?;
+    }
+    Ok(())
+}
+
 fn exchange(model: &Model, body: &[u8]) -> Result<Exchange, SendError> {
-    let key = read_key(&model.key_file).map_err(SendError::Unsent)?;
+    credentials_ready(model).map_err(SendError::Unsent)?;
+    let key = if model.endpoint == OPENROUTER_ENDPOINT {
+        read_key(&model.key_file).map_err(SendError::Unsent)?
+    } else {
+        SYNTHETIC_CREDENTIAL.to_owned()
+    };
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .proxy(None)
         .max_redirects(0)

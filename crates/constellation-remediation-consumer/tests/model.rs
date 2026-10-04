@@ -2,6 +2,8 @@
 //! and a fake `la_inference`, plus the v1 fakes for AG, Docket, the
 //! resolvers, nq and systemctl.
 
+#![cfg(feature = "qualification-loopback")]
+
 mod common;
 
 use std::fs;
@@ -80,6 +82,35 @@ fn keys(value: &Value) -> Vec<String> {
 }
 
 #[test]
+fn fixture_never_reads_the_configured_provider_key() {
+    let provider = FakeProvider::start(vec![decision("abstain", "conflicting_evidence")]);
+    let harness = Harness::model(&provider);
+    // A missing credential file proves the fixture path does not open it.
+    fs::remove_file(harness.path("etc/openrouter.env")).unwrap();
+    assert_eq!(harness.result(), "model_abstained");
+    assert_eq!(provider.sends(), 1);
+    let received = &provider.received()[0];
+    assert!(
+        received
+            .headers
+            .iter()
+            .any(|(name, value)| name == "authorization"
+                && value
+                    == &format!(
+                        "Bearer {}",
+                        constellation_remediation_consumer::provider::SYNTHETIC_CREDENTIAL
+                    ))
+    );
+    assert!(
+        received
+            .headers
+            .iter()
+            .all(|(_, value)| !value.contains(API_KEY))
+    );
+    assert_key_never_recorded(&harness);
+}
+
+#[test]
 fn valid_start_is_accounted_before_the_governed_start() {
     let provider = FakeProvider::start(vec![decision("start_canary", "current_down")]);
     let harness = Harness::model(&provider);
@@ -100,7 +131,13 @@ fn valid_start_is_accounted_before_the_governed_start() {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.clone())
     };
-    assert_eq!(header("authorization"), Some(format!("Bearer {API_KEY}")));
+    assert_eq!(
+        header("authorization"),
+        Some(format!(
+            "Bearer {}",
+            constellation_remediation_consumer::provider::SYNTHETIC_CREDENTIAL
+        ))
+    );
     assert_eq!(header("content-type").as_deref(), Some("application/json"));
     let body = &received.body;
     assert_eq!(body["model"], "google/gemini-2.5-flash-lite");
@@ -797,7 +834,15 @@ fn model_configuration_is_checked() {
         assert_eq!(output.status.code(), Some(2), "{args:?}");
     }
     assert!(!plain.path("state").exists());
-    // A key file readable by others is refused before anything is spent.
+    // The real provider still refuses a key file readable by others before spending.
+    fs::write(
+        harness.path("consumer.toml"),
+        text.replace(
+            &endpoint,
+            constellation_remediation_consumer::config::OPENROUTER_ENDPOINT,
+        ),
+    )
+    .unwrap();
     let key = harness.path("etc/openrouter.env");
     fs::set_permissions(&key, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
     assert_eq!(harness.result(), "abstained");

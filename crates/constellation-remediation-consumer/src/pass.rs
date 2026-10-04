@@ -429,7 +429,7 @@ impl Pass<'_> {
             (Decider::Deterministic, _) => None,
             (Decider::Model, Some(fields)) => {
                 let model = self.config.model()?;
-                if let Err(error) = crate::provider::key_file_ready(&model.key_file) {
+                if let Err(error) = crate::provider::credentials_ready(model) {
                     return self.abstain("model_key_unavailable", json!({"error": error}));
                 }
                 Some(Fresh {
