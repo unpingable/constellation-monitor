@@ -256,8 +256,8 @@ fn basis_binding_matches_ag_vector() {
 }
 
 #[test]
-fn future_sample_boundary_and_retained_decide_times() {
-    // Retained #71 decide sample; the failed authorize sample is unavailable.
+fn synthetic_future_sample_boundary() {
+    // Synthetic clock boundary; these values are not the retained #71 sample.
     const SAMPLE: u64 = 1_791_092_229_403;
     const DECIDE: u64 = 1_791_092_229_270;
     for (now, expected) in [
@@ -278,6 +278,23 @@ fn future_sample_boundary_and_retained_decide_times() {
         let record: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(record["status"], expected, "sample={SAMPLE}, now={now}");
     }
+}
+
+#[test]
+fn retained_71_newest_expired_testimony_refuses_authorization() {
+    let mut harness = Harness::new();
+    harness.extra = vec!["--max-age-ms".into(), "90000".into()];
+    // Exact retained evaluation timestamps: the earlier present evaluation is
+    // recent, but NQ's later testimony-expiry judgment takes precedence.
+    harness.append(&canary(1_791_092_199_403, "present"));
+    let decide = harness.run_with(&request(1_791_092_229_270));
+    let record: Value = serde_json::from_slice(&decide.stdout).unwrap();
+    assert_eq!(record["status"], "current");
+    harness.append(&canary(1_791_092_229_693, "cannot_evaluate"));
+    let authorize = harness.run_with(&request(1_791_092_229_832));
+    assert!(authorize.status.success());
+    let record: Value = serde_json::from_slice(&authorize.stdout).unwrap();
+    assert_eq!(record["status"], "unsupported");
 }
 
 #[test]

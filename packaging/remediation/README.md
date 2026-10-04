@@ -193,3 +193,19 @@ page at window expiry.
   consumer and by `max_uses`; choose a small `max_uses` and a short validity.
 - **Start only.** v1 starts a not-active unit (prestates enrolled per plan);
   it never restarts an active-but-wedged unit.
+
+### Canary collection cadence
+
+Before host qualification, inspect the `svc-attention-canary` watcher's
+`[watchers.schedule]` in `/etc/nq/nqd-ops.toml`. Use `interval_seconds = 30`
+for the profile's 60-second testimony reliance. A 60-second sleep after
+collection allows the freshness sweep to publish `cannot_evaluate` before
+the next collection completes (#71). Keep the testimony reliance and the
+enrolled resolver's evaluation recency unchanged. Collection failures or
+long delays must still refuse authorization; this cadence is not a guarantee
+of continuously qualified evidence. Preserve other watcher schedules.
+
+The retained #71 evaluation was at 05:36:39.403Z, with a 90-second resolver
+recency bound. The subsequent 05:37:09.693Z evaluation expired testimony
+observed at 05:36:09.654Z (age 60.039 seconds). The earlier inferred
+future-sample diagnosis used the wrong recency bound and is withdrawn.
