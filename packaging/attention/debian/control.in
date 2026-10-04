@@ -1,0 +1,15 @@
+Package: constellation-attention
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Constellation contributors
+Depends: libc6, nq-ng (>= 0.2.2)
+Description: bounded operator-attention evaluator for Constellation
+ Evaluates a closed registry of attention rules over qualified, current
+ Constellation state once a minute and asks NQ to deliver notification
+ intents (PagerDuty pages, Slack/Discord/local notices). Requires NQ 0.2.2
+ or later (the response_class intent contract). Installation creates the
+ state directory only; configuration, qualification and enabling the timer
+ are explicit operator steps documented in
+ /usr/share/doc/constellation-attention/README.md.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Constellation bounded remediation consumer every 30 s
+
+[Timer]
+OnBootSec=60s
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=constellation-remediation-consumer.service
+
+[Install]
+WantedBy=timers.target

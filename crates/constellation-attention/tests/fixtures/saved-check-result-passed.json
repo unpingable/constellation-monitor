@@ -1,0 +1,1 @@
+{"detail":{"binding":{"definition_digest":"sha256:8888888888888888888888888888888888888888888888888888888888888888","source_observed_at":"2026-10-02T11:55:00Z","target":"/var/lib/nightshift/atproto-saved-check/store.sqlite"},"read_attempted_at":"2026-10-02T11:55:01Z","refusal_reason":null},"evaluation_id":"freelist-20261002T1155","indeterminate":false,"outcome":"passed"}

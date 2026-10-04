@@ -1,0 +1,87 @@
+[Unit]
+Description=Constellation operator-attention evaluator (one pass)
+Documentation=file:/usr/share/doc/constellation-attention/ATTENTION.md
+# Event identities and the backwards-clock refusal depend on wall time: never
+# run a pass before the clock is synchronized (a bad RTC at boot would set
+# updated_at in the future).
+After=local-fs.target network-online.target time-sync.target
+Wants=network-online.target
+ConditionPathExists=/etc/constellation-attention/attention.toml
+# Nothing in the estate watches this unit (ATTENTION.md, Known limits). A
+# failed pass can optionally start a local handler the operator provides:
+#OnFailure=constellation-attention-failed.service
+
+[Service]
+Type=oneshot
+# Host-posture status and the Nightshift store are nq-owned, and the
+# evaluator submits through nq into nq's store: it runs as nq.
+User=nq
+Group=nq
+UMask=0077
+StateDirectory=constellation-attention
+StateDirectoryMode=0700
+# NQ route locators only (the variables named by the NQ routes'
+# endpoint_secret_locator / routing_key_env). Root-owned, mode 0600. systemd
+# reads it; the evaluator passes its environment to the nq child and never
+# reads, stores or prints the values.
+EnvironmentFile=-/etc/constellation-attention/nq-routes.env
+ExecStart=/usr/bin/constellation-attention evaluate --config /etc/constellation-attention/attention.toml
+# Exit 3 (an input not current, or a delivery not accepted) is left as a
+# failure so it shows in `systemctl --failed` without a recursive notice.
+# Every child a pass runs is bounded by command_timeout_seconds (T, 90 s by
+# default): the command inputs (I: an nq_status command plus each saved-check
+# command) and one nq call per submission (S). Budget:
+#   TimeoutStartSec >= (I + S) * T + 60
+# This unit assumes I <= 2 and S <= 6 (three page-class conditions changing
+# in one pass, notice and page each): 8 * 90 + 60 = 780. Raise it, or lower
+# command_timeout_seconds, for more command inputs. A pass stopped here
+# loses only its report: state is saved before and after every submission
+# and the next pass resumes with the remaining work.
+TimeoutStartSec=780
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# nq needs HTTPS for webhook and PagerDuty routes.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=-/etc/constellation-attention -/etc/nq
+# nq's notification custody lives in its store: this must be the parent of
+# `database_path` in the NQ configuration named by `[nq] config`. On the
+# Linode that is /etc/nq/nqd-ops.toml with database_path
+# /var/lib/nq-ops/nq.db. A missing path without `-` fails the unit at
+# namespace setup (226/NAMESPACE), which is the intended loud failure; a
+# store outside these paths is read-only and every submission fails as
+# command_error. SQLite needs -shm write access to read a WAL-mode
+# Nightshift store even when opened read-only.
+# Qualification only: a local_file notice route's inbox lies outside these
+# paths, so ProtectSystem=strict blocks nq deliver-local (the notice is
+# retained as `failed`). Add it with a drop-in, and remove that drop-in
+# before production; it must never be present there:
+#   /etc/systemd/system/constellation-attention.service.d/qualification-inbox.conf
+#   [Service]
+#   ReadWritePaths=/var/lib/nq-ops-attention-test-inbox
+# An [inputs.nq_status] path= file must be readable by nq and outside
+# ProtectHome paths: /root and /home are invisible to this unit.
+ReadWritePaths=/var/lib/constellation-attention /var/lib/nq-ops
+ReadWritePaths=-/var/lib/nq
+ReadWritePaths=-/var/lib/constellation-nightshift-observation
+LimitCORE=0
+TasksMax=64
+MemoryMax=512M
+CPUQuota=50%
+StandardOutput=journal
+StandardError=journal

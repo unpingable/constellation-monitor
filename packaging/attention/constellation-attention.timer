@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Constellation operator-attention evaluator every minute
+
+[Timer]
+OnCalendar=*:*:00
+RandomizedDelaySec=5
+AccuracySec=1s
+Persistent=false
+Unit=constellation-attention.service
+
+[Install]
+WantedBy=timers.target

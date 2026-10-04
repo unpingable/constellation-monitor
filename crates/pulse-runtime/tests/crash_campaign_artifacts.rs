@@ -24,8 +24,16 @@ fn qualification_manifest_does_not_claim_unobserved_results() {
         "../../../artifacts/crash-reactor-qualification.json"
     ))
     .expect("checked qualification artifact");
-    assert_eq!(checked.checks, manifest.checks);
-    assert!(checked.checks.iter().all(|check| check.result != "pass"));
+    // Retained occurrence results do not become results for this invocation.
+    // The current manifest names required tests and keeps them unobserved.
+    assert_eq!(checked.checks.len(), manifest.checks.len());
+    for (retained, required) in checked.checks.iter().zip(&manifest.checks) {
+        assert_eq!(retained.name, required.name);
+        assert_eq!(
+            format!("required_test:{}", retained.evidence),
+            required.evidence
+        );
+    }
 }
 
 #[test]

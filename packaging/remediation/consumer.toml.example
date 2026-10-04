@@ -1,0 +1,99 @@
+# /etc/constellation-remediation/consumer.toml (root:root 0644). No secrets.
+# Every path is owner-installed. The consumer writes only consumer.state_dir
+# and the AG campaign directory (it archives a finished campaign beside it);
+# AG, Docket, ag-effectd and the grant resolver write their own state under
+# the same /var/lib/constellation-remediation tree.
+
+[enrollment]
+site = "reference"                       # the evaluator's site
+unit = "attention-canary.service"         # the one unit this consumer may ask about
+instance_id = "svc-attention-canary"      # NQ ops-store watcher of that unit
+machine_id = "REPLACE-32-lowercase-hex"   # /etc/machine-id
+
+[consumer]
+state_dir = "/var/lib/constellation-remediation/consumer"
+report = "/var/lib/constellation-attention/report.json"
+# Least remediation window left to open an episode. The consumer acts only
+# while the evaluator holds the page (after the 180 s service-down bound).
+# Evaluator passes run each minute with up to 5 s jitter, so the trigger lands
+# at first_seen + 180 or + 240; with window_seconds = 300 that leaves 120 or
+# 60 s, and a 30 s timer must still find >= this margin. A fix needs ~3 s,
+# the postcondition dwell below and one on-demand evaluator pass before the
+# window ends; otherwise the held page goes out (fail-safe).
+window_margin_seconds = 25
+# Completion needs an NQ evaluation taken at least this long after Docket's
+# settlement that still shows the unit active (5..=120).
+postcondition_dwell_seconds = 15
+report_max_age_seconds = 120
+poll_attempts = 10
+poll_interval_ms = 1000
+postcondition_attempts = 3
+postcondition_interval_ms = 2000
+command_timeout_seconds = 60
+
+[ag]
+loopctl = "/usr/bin/ag-loopctl"
+# Pinned by /usr/libexec/agent-governor-ng/ag-effectd.deployment.json; one
+# campaign per condition episode is initialised here after the previous one
+# is archived to ../archive/.
+database = "/var/lib/constellation-remediation/ag/campaign.sqlite"
+runtime_profile = "/etc/constellation-remediation/runtime-profile.json"
+catalog = "/etc/constellation-remediation/catalog.json"
+observation_resolver = "/etc/constellation-remediation/resolvers/unit-not-active"
+observation_resolver_id = "constellation.remediation.unit-not-active/v1"
+standing_resolver = "/etc/constellation-remediation/resolvers/ag-standing"
+standing_resolver_id = "constellation.remediation.ag-standing/v1"
+max_standing_ttl_ms = 60000
+postcondition_resolver = "/etc/constellation-remediation/resolvers/unit-active"
+postcondition_resolver_id = "constellation.remediation.unit-active/v1"
+
+[[ag.plans]]
+prestate = "inactive"
+path = "/etc/constellation-remediation/plans/start-inactive.json"
+
+[[ag.plans]]
+prestate = "failed"
+path = "/etc/constellation-remediation/plans/start-failed.json"
+
+[docket]
+program = "/usr/bin/docket"
+state_dir = "/var/lib/constellation-remediation/docket"
+trust = "/etc/constellation-remediation/docket-trust.json"
+standing_resolver = "/usr/bin/docket-standing-grant-resolver"
+executor = "/usr/libexec/agent-governor-ng/ag-effectd"
+issuer_principal = "constellation-remediation-owner"
+issuer_key_id = "REPLACE-key-id"
+issuer_key = "/etc/constellation-remediation/private/issuer.pk8"
+
+[nq]
+# Runs `nq collect` as nq inside the nqd sandbox (see README).
+program = "/usr/libexec/constellation-remediation/nq-ops-as-nq"
+config = "/etc/nq/nqd-ops.toml"
+collect = true
+
+[evaluator]
+systemctl = "/usr/bin/systemctl"
+unit = "constellation-attention.service"
+trigger = true
+
+# Model decider (bounded autonomous remediation v2), opt-in. Used only with
+# `--decider model` (see model-decider.conf); without that flag this section
+# is validated and ignored, and the deterministic decider runs unchanged.
+# Model, provider route, request shape and per-episode ceilings (2 calls, one
+# retry, 8192/512 tokens, 2500 micro-USD per call, 5000 per episode) are
+# fixed in the binary, not configuration.
+#
+# [model]
+# la_program = "/usr/bin/la_inference"
+# la_arguments = ["--store", "/var/lib/linear-accountant/inference.sqlite"]
+# la_admission_id = "REPLACE-owner-enrolled-admission-id"  # LA `enroll` admission_id
+# la_eligibility_ref = "REPLACE-owner-grant-ref"           # opaque, carried on each reservation
+# endpoint = "https://openrouter.ai/api/v1/chat/completions"
+# # root:root 0600, one line OPENROUTER_API_KEY=...; read only by the
+# # provider adapter, never logged, never passed to a child.
+# key_file = "/etc/constellation-remediation/openrouter.env"
+# window_min_seconds = 210   # >= 210: 35 s reasoning, dispatch, 15 s dwell, 120 s clear
+# wall_ms = 35000            # <= 35000, covers two calls and the backoff
+# total_timeout_ms = 15000   # <= 15000 per HTTP call
+# connect_timeout_ms = 3000  # <= 3000
+# retry_backoff_ms = 1000    # <= 2000

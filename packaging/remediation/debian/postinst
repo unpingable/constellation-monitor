@@ -1,0 +1,6 @@
+#!/bin/sh
+# Reloads systemd only. Never writes configuration, keys or grants and never
+# enables or starts the timer.
+set -eu
+if [ "${1:-}" = configure ] && [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

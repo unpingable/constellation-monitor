@@ -12,15 +12,14 @@ use pulse_nq_load_correspondence::fixture::{
     start_reactor, synthetic_profile,
 };
 use pulse_nq_load_correspondence::{
-    ACQUISITION_ID_PREFIX, COVERAGE_TAG, Coproducer, CorrespondenceConstantsV1,
-    CorrespondenceProfileV1, FRAME_DISCLOSURE, FRAME_VALIDITY_MS, FixedSubjectIncarnation,
-    INGRESS_DISCLOSURE, INGRESS_FENCE_MS, INTENT_SCHEMA_V1, NQ_CLAIM_ID, NQ_CONDITION,
-    NQ_PROFILE_DIGEST, NQ_PROFILE_ID, NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST, NQ_QUESTION_ID,
-    NQ_QUESTION_VERSION, NQ_RELIANCE_WINDOW_MS, NQ_SELECTION_RULE_ID, OCCURRENCE_SCHEMA_V1,
-    ObserverLineage, PROFILE_SCHEMA_V1, PULSE_PROFILE_DOMAIN, PULSE_PROFILE_NAME,
-    PULSE_PROFILE_VERSION, PULSE_SCOPE, QuestionV1, RECORD_SCHEMA_V1, TRANSPORT_PATH,
-    acquisition_id, build_frame, evidence_ref, frame_ingress, occurrence_path,
-    pulse_profile_digest,
+    ACQUISITION_ID_PREFIX, COVERAGE_TAG, Coproducer, CorrespondenceConstantsV1, FRAME_DISCLOSURE,
+    FRAME_VALIDITY_MS, FixedSubjectIncarnation, INGRESS_DISCLOSURE, INGRESS_FENCE_MS,
+    INTENT_SCHEMA_V1, NQ_CLAIM_ID, NQ_CONDITION, NQ_PROFILE_DIGEST, NQ_PROFILE_ID,
+    NQ_PROFILE_VERSION, NQ_QUESTION_DIGEST, NQ_QUESTION_ID, NQ_QUESTION_VERSION,
+    NQ_RELIANCE_WINDOW_MS, NQ_SELECTION_RULE_ID, OCCURRENCE_SCHEMA_V1, ObserverLineage,
+    PROFILE_SCHEMA_V1, PULSE_PROFILE_DOMAIN, PULSE_PROFILE_NAME, PULSE_PROFILE_VERSION,
+    PULSE_SCOPE, QuestionV1, RECORD_SCHEMA_V1, TRANSPORT_PATH, acquisition_id, build_frame,
+    evidence_ref, frame_ingress, occurrence_path, pulse_profile_digest,
 };
 use pulse_runtime::RuntimeInputV1;
 use pulse_types::{AuthenticationResultV1, IncarnationId};

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Leaves configuration, AG/Docket state and the consumer journal in place,
+# also on purge: they are the record of spent authority.
+set -eu
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

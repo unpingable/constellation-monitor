@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "crates/constellation-attention",
+    "crates/constellation-remediation-consumer",
+    "crates/constellation-remediation-resolver",
     "crates/constellation-host-posture",
     "crates/constellation-status-nq-filesystem-capacity",
     "crates/constellation-status-nq-filesystem-inodes",

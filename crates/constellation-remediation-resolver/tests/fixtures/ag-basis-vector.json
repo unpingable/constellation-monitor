@@ -1,0 +1,1 @@
+{"basis":{"basis_identity":"sha256:21403196dd4e2542fc733a0899a4018c78c579e2717e8044e2fdd7185614ae92","basis_type":"constellation.remediation.systemd-not-active/v1","schema":"ag.governed-loop.typed-observation-basis/v1"},"normalized_preconditions":"sha256:8d6d22106cd8e5c185a5fd5b567d2cb53ae0271dbbeec2f5be253e6721e2be95"}

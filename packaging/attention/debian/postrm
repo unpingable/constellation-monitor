@@ -1,0 +1,7 @@
+#!/bin/sh
+# Leaves state and configuration in place on remove; purge removes the state
+# directory (condition state, report, intent files: no secrets).
+set -eu
+if [ "${1:-}" = purge ]; then rm -rf /var/lib/constellation-attention; fi
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

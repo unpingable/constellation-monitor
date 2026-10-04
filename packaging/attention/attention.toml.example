@@ -1,0 +1,78 @@
+# /etc/constellation-attention/attention.toml (root:root 0644 or 0640 root:nq).
+# No secrets belong here. Route secrets are NQ's: its routes name environment
+# variables, provided to this service by /etc/constellation-attention/nq-routes.env.
+schema = "constellation.attention_config.v1"
+# Bounded token [a-z0-9._-]{1,64}; no long digit runs, dates or digests.
+site = "reference"
+state_path = "/var/lib/constellation-attention/state.json"
+command_timeout_seconds = 90
+
+[runbooks]
+# Optional published https copies; rules link to `#<anchor>`.
+# cartography_url = "https://example.org/constellation/beta-observability/RUNBOOKS.md"
+# monitor_url = "https://example.org/constellation/monitor/ATTENTION.md"
+
+[nq]
+program = "/usr/bin/nq"
+# The NQ configuration that holds the notification routes below.
+config = "/etc/nq/nqd-ops.toml"
+
+[routes]
+notice_route = "operations"        # an NQ slack, discord or local_file route
+# slack | discord | local_file. local_file is for qualification: notices go
+# through `nq notification deliver-local` to an NQ inbox directory and never
+# reach a production channel (route reference at most 128 bytes).
+notice_transport = "slack"
+page_route = "pagerduty-ops"       # an NQ pagerduty route; omit to send notices only
+network_enabled = false            # true passes --enable-network to nq (not used by local_file)
+
+[[inputs.host_posture]]
+label = "root"                     # target_class
+publication_root = "/var/lib/constellation-host-posture/status"
+
+[inputs.nq_status]
+label = "nqd"
+# Operated stores: read bounded evaluation-history pages. `status export`
+# walks the whole history (nq#20) and takes 60-90 s on the ops store.
+source = "evaluation_history"
+command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json"]
+window_records = 300               # newest evaluations read (50..=5000); must hold
+                                   # more than stale_after_seconds of every watcher
+# Watchers removed from NQ; every other watcher ever seen stays stale once it
+# stops evaluating (remembered in state.json).
+# retired_instances = ["unit-old"]
+# Small stores only:
+# source = "status_export"
+# command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json", "status", "export"]
+# or: path = "/var/lib/constellation-attention/inputs/nq-status.json"
+max_age_seconds = 300              # snapshot generated_at must be at most this old
+stale_after_seconds = 180          # a watcher with no collection or evaluation for longer is stale
+
+[inputs.nightshift]
+label = "observation"
+store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
+
+# One file per reference: the check's own timer runs
+# `nq --json saved-check evaluate REF --evaluation-id sc-<unix> ...` and writes
+# that raw output to `path` atomically. NQ cannot list results by reference,
+# and the run summary (latest.json, nq-ops.saved-check-run.v1) is not accepted.
+# [[inputs.saved_checks]]
+# reference = "atproto-freelist"   # target_class; must match the result's reference
+# path = "/var/lib/nq-ops-results/atproto-freelist.json"
+# max_age_seconds = 3600
+
+# Overrides are limited to enabled, threshold_seconds and class. class can
+# move a page rule down to "notice"; only the registry's page rules can page.
+# [rules.host-disk]
+# threshold_seconds = 900
+# [rules.service-down]
+# class = "notice"
+
+# response_policy: hold the page for a remediation window (service-down only).
+# The notice goes out at the bound; the page only if the unit is still down
+# at first_seen + window_seconds (60..=600, default 240).
+# [[remediation.targets]]
+# rule = "service-down"
+# target_class = "attention-canary.service"
+# policy = "auto_remediate_then_page"
+# window_seconds = 240
