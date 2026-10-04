@@ -13,6 +13,9 @@ use constellation_remediation_resolver::{
     WINDOW_RECORDS_DEFAULT, jcs, judge, read_window, resolution,
 };
 
+/// Pause before the one re-read of the evaluation window.
+const REREAD_DELAY_MS: u64 = 300;
+
 const USAGE: &str = "usage: constellation-nq-unit-resolver --config NQ_CONFIG \
 --instance-id ID --unit UNIT --machine-id HEX32 --resolver-id ID \
 [--claim not-active|active] [--nq-program PATH] [--window-records N] [--max-age-ms MS] \
@@ -45,7 +48,17 @@ fn run() -> Result<String, String> {
         ));
     }
     let request = Request::read(std::io::stdin().lock())?;
-    let window = read_window(&settings)?;
+    // One bounded re-read: a window read that races an NQ append (the page
+    // moves, or nq's own integrity check sees a half-visible revision) is
+    // not evidence of anything; a second failure is.
+    let window = match read_window(&settings) {
+        Ok(window) => window,
+        Err(first) => {
+            eprintln!("constellation-nq-unit-resolver: re-reading after: {first}");
+            std::thread::sleep(std::time::Duration::from_millis(REREAD_DELAY_MS));
+            read_window(&settings)?
+        }
+    };
     let judgement = judge(&settings, &window, request.now_unix_ms);
     eprintln!(
         "constellation-nq-unit-resolver: {:?} {} (through_sequence {})",

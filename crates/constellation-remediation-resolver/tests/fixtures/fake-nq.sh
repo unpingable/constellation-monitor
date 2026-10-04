@@ -21,6 +21,7 @@ while [ $# -gt 0 ]; do
 done
 echo "evaluations ${limit} ${after:-none} ${through:-none}" >> "$dir/calls.log"
 [ -e "$dir/fail" ] && { echo "store is locked" >&2; exit 1; }
+[ -e "$dir/fail_once" ] && { rm -f "$dir/fail_once"; echo "nq: database integrity check failed: transient" >&2; exit 1; }
 [ -e "$dir/oversize" ] && { head -c 200000 /dev/zero | tr '\0' ' '; exit 0; }
 [ -e "$dir/malformed" ] && { echo '{"schema":"nq.status_snapshot.v3","records":[]}'; exit 0; }
 hist="$dir/history"

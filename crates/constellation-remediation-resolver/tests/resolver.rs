@@ -386,6 +386,17 @@ fn nq_failure_is_refused() {
     assert!(harness.refuse().contains("cannot start"));
 }
 
+/// A read that races an NQ append fails once; the one re-read answers.
+#[test]
+fn one_transient_nq_failure_is_reread() {
+    let harness = Harness::new();
+    harness.append(&canary(NOW - 1_000, "present"));
+    harness.control("fail_once");
+    let resolution = harness.resolve();
+    assert_eq!(resolution["status"], "current");
+    assert!(!harness.path("fake/fail_once").exists());
+}
+
 #[test]
 fn oversize_output_is_refused() {
     let mut harness = Harness::new();
