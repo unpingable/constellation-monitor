@@ -30,7 +30,7 @@ Section: admin
 Priority: optional
 Architecture: $arch
 Maintainer: Constellation contributors
-Depends: libc6, python3 (>= 3.10), nq-ng (>= 0.2.4)
+Depends: libc6, python3 (>= 3.10), nq-ng (>= 0.2.5)
 Description: Bounded native NQ reliance and GET-only Kubernetes observation
  Installs the boot-bound unit resolver, native HTTP evidence reader and
  optional GET-only Kubernetes acquisition CLI. No service, configuration,
