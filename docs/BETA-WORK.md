@@ -60,7 +60,7 @@ Intended outcome: Define versioned secret-free receipt correlation and named cur
 
 Scope/exclusions: No target-specific adapters, blanket telemetry architecture or revived native compatibility predicates.
 
-Dependencies: NQ immutable evidence; Integration V1; [PA-04](https://github.com/unpingable/cartography/issues/5) traceability.
+Dependencies: NQ immutable evidence; Integration V1; PA-04 (private program record) traceability.
 
 Acceptance/evidence: Pinned shared vectors consumed by each live owner, missing/stale/conflicting references explicit, no private identity leakage.
 
