@@ -1,6 +1,6 @@
 # NQ systemd-unit required-active / Pulse correspondence v1
 
-Status: **Candidate**, qualified read-only on one real host (`crow`,
+Status: **Candidate**, qualified read-only on one real host (the qualification host,
 systemd 255) through the disposable same-process profile recorded in the
 campaign receipts
 (`.campaign-artifacts/host-posture-20260924/systemd-v2-20260924/`, local). The

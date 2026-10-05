@@ -18,7 +18,7 @@ condition projection, not a public status component.
 | NQ question | `nq.host_memory.pressure_stall` / `1` / `sha256:3fe0860e…7278` |
 | NQ profile | `nq.host_memory` / `1` / `sha256:e4eb42dd…523e` (detector refusal names version `1`) |
 | Claim, condition | `claim:memory_pressure_stall`, `memory_pressure_stall` |
-| Subject rule | prefix `host:` (NQ's `host:<machine-id>`), shared with load's `host:crow`; a bare prefix is refused |
+| Subject rule | prefix `host:` (NQ's `host:<machine-id>`), shared with load's `host:reference-node`; a bare prefix is refused |
 | Reliance window, frame validity | `120000 ms`, `118999 ms` (`reliance - fence(1000) - 1`, the same law as every row, checked at compile time) |
 | Pulse scope, coverage tag | `nq.host_memory.pressure_stall/v1`, `nq_host_memory_pressure_stall_v1_terminal_artifact` |
 | Acquisition id prefix | `constellation-nq-memory-stall:v1:` |
