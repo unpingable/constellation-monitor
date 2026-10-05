@@ -183,6 +183,13 @@ attestation, confidentiality, observer truth, or production transport.
 Pulses are hot, bounded, ephemeral records. JSONL is used for fixtures, replay,
 diagnostics, and sparse durable events, not as the assumed high-rate wire.
 
+## Published Kubernetes observation
+
+The finite [published Kubernetes adapter](docs/kubernetes-published-observation-v1.md)
+provides ordinary GET-only acquisition for explicitly enrolled namespace/node
+scopes and application probes. It preserves native facts and missingness; it
+grants no mutation and asserts no aggregate health or Pulse current support.
+
 ## Local commands
 
 ```sh

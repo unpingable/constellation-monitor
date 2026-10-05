@@ -750,3 +750,6 @@ pub fn hash_domain(domain: &str, payload: &[u8]) -> String {
     }
     text
 }
+
+/// Separately named systemd v3 acquired-boot consumer; existing v2 unchanged.
+pub mod boot_unit;

@@ -10,6 +10,10 @@ description = "AG typed-v3 observation resolver over NQ ops-store systemd unit e
 name = "constellation-nq-unit-resolver"
 path = "src/main.rs"
 
+[[bin]]
+name = "constellation-nq-boot-unit-resolver"
+path = "src/boot_main.rs"
+
 [dependencies]
 serde.workspace = true
 serde_jcs.workspace = true
