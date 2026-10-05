@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Architecture: @ARCH@
 Maintainer: Constellation contributors
-Depends: libc6, systemd, nq-ng (>= 0.2.3), constellation-attention, agent-governor-ng-operator-tools, agent-governor-ng-systemd-executor, constellation-docket
+Depends: libc6, libgcc-s1, systemd, nq-ng (>= 0.2.3), constellation-attention, agent-governor-ng-operator-tools, agent-governor-ng-systemd-executor, constellation-docket
 Description: Constellation bounded autonomous remediation consumer (v1)
  A deterministic oneshot consumer (30 s timer) that asks AG for one governed
  start of one owner-enrolled unit per attention condition episode, plus the

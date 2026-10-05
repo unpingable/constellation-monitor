@@ -1,5 +1,16 @@
 # Constellation Monitor
 
+## Current operator candidate
+
+The prepared combined candidate targets Ubuntu 22.04 amd64. Use its source-free
+[operator guide](https://github.com/unpingable/unpingable-site/blob/dev/operator-beta/constellation/combined-candidate/README.md) for download verification, exact package installation,
+separate enrollment, Workbench, currentness and day-two recovery. It is a neutral
+owner-review candidate; BC1 is not tagged or published. Component source alone
+does not install the composed product or grant authority.
+
+The component-specific development and historical records below retain their
+own narrower scope; they are not installation instructions for this candidate.
+
 Constellation Monitor acquires bounded observations and evaluates whether a
 named consumer may still rely on current evidence. Pulse is the hosted
 subsystem that carries the repository's bounded observation, custody,

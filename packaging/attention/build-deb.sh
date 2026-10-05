@@ -28,10 +28,12 @@ install -m 0644 "$root/packaging/attention/constellation-attention.service" "$ro
 # The example only; the live attention.toml is the operator's.
 install -m 0644 "$root/packaging/attention/attention.toml.example" "$d/etc/constellation-attention/"
 install -m 0644 "$root/docs/ATTENTION.md" "$doc/"
-install -m 0644 "$root/packaging/attention/README.md" "$doc/"
+install -m 0644 "$root/packaging/attention/OPERATOR.md" "$doc/README.md"
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCH@/$arch/g" "$root/packaging/attention/debian/control.in" > "$d/DEBIAN/control"
 install -m 0644 "$root/packaging/attention/debian/conffiles" "$d/DEBIAN/conffiles"
 for s in postinst postrm; do install -m 0755 "$root/packaging/attention/debian/$s" "$d/DEBIAN/$s"; done
+install -m 0644 "$root/LICENSE" "$doc/copyright"
+install -m 0644 "$root/NOTICE" "$doc/NOTICE"
 find "$d" -exec touch -h -d "@${SOURCE_DATE_EPOCH:-0}" {} +
 dpkg-deb --root-owner-group --build "$d" "$out_dir/$name.deb" >/dev/null
 ( cd "$out_dir" && sha256sum "$name.deb" > "$name.deb.sha256" )

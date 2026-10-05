@@ -19,7 +19,7 @@ install -d "$d/DEBIAN" "$d/usr/bin" "$d/usr/share/doc/constellation-live-observa
 install -m 0755 "$bin_dir/constellation-nq-boot-unit-resolver" "$d/usr/bin/"
 install -m 0755 "$root/scripts/nq_live_http_read.py" "$d/usr/bin/constellation-nq-live-http-reader"
 install -m 0755 "$root/scripts/kubernetes_observation.py" "$d/usr/bin/constellation-kubernetes-observation"
-install -m 0644 "$root"/docs/{BOOT_BOUND_UNIT_RELIANCE,nq-current-boot-unit-resolver-v1,nq-live-http-read-v1,kubernetes-published-observation-v1}.md \
+install -m 0644 "$root"/docs/{BOOT_BOUND_UNIT_RELIANCE,nq-current-boot-unit-resolver-v1,nq-live-http-read-v1,kubernetes-published-observation-v1,project-concern-contract}.md \
   "$root/packaging/live-observation/README.md" "$d/usr/share/doc/constellation-live-observation/"
 install -m 0644 "$root/operational-contract/fixtures/systemd-unit-v3/observation-export-vectors.v1.json" \
   "$d/usr/share/constellation-live-observation/systemd-unit-v3/"
@@ -30,12 +30,14 @@ Section: admin
 Priority: optional
 Architecture: $arch
 Maintainer: Constellation contributors
-Depends: libc6, python3 (>= 3.10), nq-ng (>= 0.2.5)
+Depends: libc6, libgcc-s1, python3 (>= 3.10), nq-ng (>= 0.2.5)
 Description: Bounded native NQ reliance and GET-only Kubernetes observation
  Installs the boot-bound unit resolver, native HTTP evidence reader and
  optional GET-only Kubernetes acquisition CLI. No service, configuration,
  enrollment, token, executor or effect authority is installed or activated.
 EOF
+install -m 0644 "$root/LICENSE" "$d/usr/share/doc/constellation-live-observation/copyright"
+install -m 0644 "$root/NOTICE" "$d/usr/share/doc/constellation-live-observation/NOTICE"
 find "$d" -exec touch -h -d "@${SOURCE_DATE_EPOCH:-0}" {} +
 dpkg-deb --root-owner-group --build "$d" "$out_dir/$name.deb" >/dev/null
 (cd "$out_dir" && sha256sum "$name.deb" > "$name.deb.sha256")

@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Architecture: @ARCH@
 Maintainer: Constellation contributors
-Depends: libc6, nq-ng (>= 0.2.0), adduser
+Depends: libc6, libgcc-s1, nq-ng (>= 0.2.0), adduser
 Description: installed filesystem-capacity host-posture observation profile
  Runs the narrow constellation-host-posture composition over an installed
  NQ-ng watcher and publishes a read-only status projection. Also ships the

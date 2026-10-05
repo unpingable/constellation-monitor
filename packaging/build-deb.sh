@@ -28,6 +28,8 @@ if [[ -n "${QUAL_INPUT_DIR:-}" ]]; then
 fi
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCH@/$arch/g" "$root/packaging/debian/control.in" > "$d/DEBIAN/control"
 for s in postinst prerm postrm; do install -m 0755 "$root/packaging/debian/$s" "$d/DEBIAN/$s"; done
+install -m 0644 "$root/LICENSE" "$d/usr/share/doc/constellation-host-posture/copyright"
+install -m 0644 "$root/NOTICE" "$d/usr/share/doc/constellation-host-posture/NOTICE"
 find "$d" -exec touch -h -d "@${SOURCE_DATE_EPOCH:-0}" {} +
 dpkg-deb --root-owner-group --build "$d" "$out_dir/constellation-host-posture_${version}_${arch}.deb" >/dev/null
 ( cd "$out_dir" && sha256sum "constellation-host-posture_${version}_${arch}.deb" > "constellation-host-posture_${version}_${arch}.deb.sha256" )

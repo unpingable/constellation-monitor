@@ -1,5 +1,11 @@
 # Generic project-concern discovery and acquisition contract
 
+Source-integrator contract reference. Broader `monitor-concerns` development
+commands below are not installed by the combined Ubuntu candidate. Its optional
+Kubernetes reader is GET-only observation/diagnosis with no cluster executor.
+Use the candidate operator guide for installation; this contract is not a
+source-build prerequisite for operation.
+
 This contract lets a repository state which bounded propositions should be
 observable and lets Monitor acquire a project-owned status document without
 learning those propositions' domain semantics.

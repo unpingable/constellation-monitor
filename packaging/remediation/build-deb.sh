@@ -32,10 +32,13 @@ install -m 0755 "$here/nq-ops-as-nq" "$d/usr/libexec/constellation-remediation/"
 install -m 0644 "$here/constellation-remediation-consumer.service" \
   "$here/constellation-remediation-consumer.timer" "$d/lib/systemd/system/"
 install -m 0644 "$here/consumer.toml.example" "$d/etc/constellation-remediation/"
-install -m 0644 "$here/README.md" "$here/model-decider.conf" "$doc/"
+install -m 0644 "$here/OPERATOR.md" "$doc/README.md"
+install -m 0644 "$here/model-decider.conf" "$doc/"
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCH@/$arch/g" "$here/debian/control.in" > "$d/DEBIAN/control"
 install -m 0644 "$here/debian/conffiles" "$d/DEBIAN/conffiles"
 for s in postinst postrm; do install -m 0755 "$here/debian/$s" "$d/DEBIAN/$s"; done
+install -m 0644 "$root/LICENSE" "$doc/copyright"
+install -m 0644 "$root/NOTICE" "$doc/NOTICE"
 find "$d" -exec touch -h -d "@${SOURCE_DATE_EPOCH:-0}" {} +
 dpkg-deb --root-owner-group --build "$d" "$out_dir/$name.deb" >/dev/null
 ( cd "$out_dir" && sha256sum "$name.deb" > "$name.deb.sha256" )
