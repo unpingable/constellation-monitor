@@ -200,17 +200,21 @@ intent per route role.
   observations; then exactly one trigger is decided and `active` is set.
 - Clear while not active: `first_seen` is reset. Presence below the bound is
   never notified, however often it recurs.
-- Clear while active: the condition resolves exactly once after it has stayed
-  clear for 120 s. A flap inside that window sends nothing.
+- Clear while active: the condition resolves exactly once after a clear
+  confirmation interval of at least 120 s. Presence returning before a resolve
+  is decided cancels that interval and sends no new transition. This is
+  **within-episode clear confirmation**, not post-resolution flap control.
 - Unknown: nothing changes. Legitimate unknown or refusal never notifies on its
   own; it reaches the operator through `host-posture-unknown` (for the
   projection) or `evaluator-input-unavailable` (for an input).
-- Unknown runs: time spent unknown never counts toward an interval, and
-  never erases the observed part of it. At the next definite observation
+- Unknown runs: an unknown observation cannot itself trigger or resolve a
+  condition. The implementation absorbs a short unknown run as sampling
+  tolerance; it does not prove that every second was observed. At the next
+definite observation
   after a run of unknown observations longer than 90 s (one 60 s pass
   interval plus timer jitter), the interval's start (`first_seen`, or
   `clear_since` while active) moves forward by the run's length. A bound is
-  therefore met only by present (or clear) observations, and a condition
+  therefore decided only on present (or clear) observations, and a condition
   that is present whenever it can be observed still reaches it: cron.service
   down for two hours with NQ answering `cannot_evaluate` on 2 of every 6
   passes pages after about 240 s of observed presence. One unknown pass is
@@ -244,6 +248,49 @@ newest-only rule for `submit`, which NQ itself enforces only for `resubmit`.
 `stable_event_id` is `{site}-{rule}[-{target_class}]-{action}-{unix_seconds}`
 of the decision. `transition_id` is the event id of the transition and stays
 fixed across retries.
+
+### Recurrence and the meaning of flapping
+
+Here **flapping** means repeated qualifying present/clear episodes for the same
+condition, each capable of completing a trigger/resolve cycle. A short clear
+interval inside an active episode is a separate confirmation-boundary case.
+The current evaluator suppresses transitions for that short interval; it does
+**not** detect, count, summarize or suppress flapping across resolved episodes.
+
+| Observation sequence | Current decision |
+|---|---|
+| Inactive: present for at most its bound, then clear | No trigger; clear resets presence timing |
+| Active: clear for less than 120 s, then present | No resolve or new trigger; clear confirmation restarts |
+| Active: clear at a pass with at least 120 s confirmation | Resolve; `active` becomes false and `first_seen` is cleared |
+| Inactive after resolve: present again | A new presence interval starts immediately, with no cooldown |
+| New presence reaches exactly the persistence bound | No trigger: the comparison is strictly `>` |
+| New presence exceeds the bound | New trigger and event identity, same condition/dedup identity |
+| Repeated completed episodes | The same rules repeat indefinitely; no cross-episode churn counter |
+
+For a 300 s input-notice bound, resolve at 10:53 followed by stale returning at
+10:53:59 produces another trigger at 10:59:00 (`Persisted 301 s`). This is an
+illustrative deterministic reproduction of the reported timing, not a readback
+of a production occurrence. An observed-clear resolve establishes recovery
+of the monitored input for the evaluated scope; it does not establish repair
+of the underlying application. Configuration removal is not observed recovery.
+
+Settled inactive conditions and their unreferenced intent files are pruned.
+Even if a resolve is retained for delivery work, its presence timer is reset
+and it supplies no cooldown. Each invocation loads persisted state, so a
+process restart neither adds nor removes this policy. Reports retain the raw
+observation on each pass, including present below bound and unknown while
+active. The latest report/state is not a retained archive of every episode.
+
+Delivery retry spacing (900 s for notice retries, 120 s for page resubmission)
+is not retrigger hysteresis. Retained failed resolves can be replaced by a
+later trigger; the evaluator retains the newest route slot, not an unbounded
+delivery queue. Trigger-before-resolve describes local submission ordering,
+with dropped triggers reported; it does not promise successful destination
+delivery of every transition.
+
+The [bounded recurrence design recommendation](ATTENTION-RECURRENCE-DESIGN.md)
+records the missing policy and acceptance decisions. No suppression, threshold,
+state-schema or notification-protocol change is implemented by that note.
 
 ## Routing
 

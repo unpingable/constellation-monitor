@@ -2360,6 +2360,183 @@ fn transient_config_drop_resolves_then_repages() {
     );
 }
 
+const STALE_NQD: &str = "constellation:reference:nq:evaluator-input-unavailable:nqd.stale";
+
+/// Use the real parser and a fresh binary invocation for every persisted pass.
+/// A fresh export does not renew the instance collection times.
+fn input_staleness(harness: &Harness, status: &Path, now: i64, stale: bool) -> Value {
+    let value = retimed("healthy.json", now, |value| {
+        if stale {
+            for component in value["components"].as_array_mut().unwrap() {
+                if component["kind"] == "instance" {
+                    component["observed_at"] = json!(rfc3339(now - 400));
+                }
+            }
+        }
+    });
+    write_status(status, &value);
+    harness.evaluate(now)
+}
+
+fn stale_input_row(report: &Value) -> &Value {
+    report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == STALE_NQD)
+        .unwrap()
+}
+
+fn stale_transition(action: &str) -> Vec<(String, String, String)> {
+    vec![(STALE_NQD.into(), "notice".into(), action.into())]
+}
+
+/// Exact reported pattern: resolve 10:53, stale returns 10:53:59, trigger 10:59.
+#[test]
+fn stale_input_retriggers_301_seconds_after_1053_resolve() {
+    let (harness, status) = nq_status_harness();
+    let start = at("2026-10-06T10:45:00Z");
+    for offset in [0, 60, 120, 180, 240, 300] {
+        let report = input_staleness(&harness, &status, start + offset, true);
+        assert!(intents(&report).is_empty());
+        assert_eq!(stale_input_row(&report)["observation"], "present");
+        assert_eq!(stale_input_row(&report)["active"], false);
+    }
+    let report = input_staleness(&harness, &status, start + 301, true);
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    for offset in [360, 420, 479] {
+        assert!(intents(&input_staleness(&harness, &status, start + offset, false)).is_empty());
+    }
+    let resolved = at("2026-10-06T10:53:00Z");
+    let report = input_staleness(&harness, &status, resolved, false);
+    assert_eq!(intents(&report), stale_transition("resolve"));
+    assert_eq!(stale_input_row(&report)["observation"], "clear");
+    assert_eq!(stale_input_row(&report)["active"], false);
+    assert!(harness.state()["conditions"].get(STALE_NQD).is_none());
+    let returned = resolved + 59;
+    for offset in [0, 60, 120, 180, 240, 300] {
+        let report = input_staleness(&harness, &status, returned + offset, true);
+        assert!(intents(&report).is_empty());
+        assert_eq!(stale_input_row(&report)["observation"], "present");
+        assert_eq!(stale_input_row(&report)["persisted_seconds"], offset);
+    }
+    let report = input_staleness(&harness, &status, at("2026-10-06T10:59:00Z"), true);
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    assert_eq!(stale_input_row(&report)["persisted_seconds"], 301);
+    assert_eq!(stale_input_row(&report)["persistence_bound_seconds"], 300);
+    assert_eq!(harness.calls().len(), 3);
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .all(|call| call.starts_with("submit operations "))
+    );
+}
+
+#[test]
+fn stale_input_below_bound_oscillation_never_triggers() {
+    let (harness, status) = nq_status_harness();
+    for episode in 0..3 {
+        let start = T0 + episode * 400;
+        for offset in [0, 60, 120, 180, 240, 300] {
+            let report = input_staleness(&harness, &status, start + offset, true);
+            assert!(intents(&report).is_empty());
+            assert_eq!(stale_input_row(&report)["persisted_seconds"], offset);
+        }
+        let report = input_staleness(&harness, &status, start + 301, false);
+        assert!(intents(&report).is_empty());
+        assert!(harness.state()["conditions"].get(STALE_NQD).is_none());
+    }
+    assert!(harness.calls().is_empty());
+}
+
+#[test]
+fn stale_input_short_clear_and_other_fault_do_not_resolve_it() {
+    let (harness, status) = nq_status_harness();
+    input_staleness(&harness, &status, T0, true);
+    input_staleness(&harness, &status, T0 + 301, true);
+    for offset in [360, 420, 479] {
+        assert!(intents(&input_staleness(&harness, &status, T0 + offset, false)).is_empty());
+    }
+    // Present at the 120 s boundary cancels confirmation rather than resolving.
+    assert!(intents(&input_staleness(&harness, &status, T0 + 480, true)).is_empty());
+    input_staleness(&harness, &status, T0 + 600, false);
+    // Another fault makes stale unknown, not clear. Its long run is excluded.
+    fs::write(&status, b"").unwrap();
+    for offset in [660, 720, 780] {
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(stale_input_row(&report)["observation"], "unknown");
+        assert_eq!(stale_input_row(&report)["active"], true);
+        assert!(intents(&report).is_empty());
+    }
+    for offset in [840, 899] {
+        assert!(intents(&input_staleness(&harness, &status, T0 + offset, false)).is_empty());
+    }
+    let report = input_staleness(&harness, &status, T0 + 900, false);
+    assert_eq!(intents(&report), stale_transition("resolve"));
+    assert_eq!(harness.calls().len(), 2);
+}
+
+#[test]
+fn stale_input_repeated_episodes_keep_condition_identity_but_get_new_events() {
+    let (harness, status) = nq_status_harness();
+    for episode in 0..3 {
+        let start = T0 + episode * 600;
+        input_staleness(&harness, &status, start, true);
+        let report = input_staleness(&harness, &status, start + 301, true);
+        assert_eq!(intents(&report), stale_transition("trigger"));
+        input_staleness(&harness, &status, start + 360, false);
+        let report = input_staleness(&harness, &status, start + 480, false);
+        assert_eq!(intents(&report), stale_transition("resolve"));
+        assert!(harness.state()["conditions"].get(STALE_NQD).is_none());
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 6);
+    let events: std::collections::BTreeSet<_> = calls
+        .iter()
+        .map(|call| call.split_whitespace().nth(2).unwrap())
+        .collect();
+    assert_eq!(events.len(), 6);
+    for index in 1..=6 {
+        let intent: Value =
+            serde_json::from_slice(&harness.submitted_intent(&format!("n{index}"))).unwrap();
+        assert_eq!(intent["response_class"], "attention");
+        assert!(intent["summary"].as_str().unwrap().contains(STALE_NQD));
+    }
+}
+
+/// Pin a delivery limit: a failed resolve is not a post-resolution cooldown.
+#[test]
+fn stale_input_recurrence_can_replace_an_unaccepted_resolve() {
+    let (harness, status) = nq_status_harness();
+    input_staleness(&harness, &status, T0, true);
+    input_staleness(&harness, &status, T0 + 301, true);
+    harness.fake("next_state", "failed");
+    input_staleness(&harness, &status, T0 + 360, false);
+    input_staleness(&harness, &status, T0 + 480, false);
+    assert_eq!(
+        harness.state()["conditions"][STALE_NQD]["last_intent"]["notice"]["action"],
+        "resolve"
+    );
+    assert_eq!(
+        harness.state()["conditions"][STALE_NQD]["last_intent"]["notice"]["outcome"],
+        "failed"
+    );
+    harness.fake("next_state", "accepted");
+    input_staleness(&harness, &status, T0 + 539, true);
+    let report = input_staleness(&harness, &status, T0 + 840, true);
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    assert_eq!(harness.calls().len(), 3);
+    assert_eq!(
+        harness.state()["conditions"][STALE_NQD]["last_intent"]["notice"]["action"],
+        "trigger"
+    );
+    assert_eq!(
+        harness.state()["conditions"][STALE_NQD]["last_intent"]["notice"]["outcome"],
+        "accepted"
+    );
+}
+
 // Third review regressions.
 
 fn nq_notices(harness: &Harness) -> Vec<String> {
