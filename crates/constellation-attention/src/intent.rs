@@ -67,6 +67,19 @@ pub fn policy_digest(rules: &[EffectiveRule], remediation: &[RemediationTarget])
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+/// Disabled policy retains the exact v1 digest, including existing golden vectors.
+#[must_use]
+pub fn config_policy_digest(config: &Config, rules: &[EffectiveRule]) -> String {
+    let base = policy_digest(rules, &config.remediation.targets);
+    let Some(policy) = &config.notice_recurrence else {
+        return base;
+    };
+    let bytes = serde_jcs::to_vec(&json!({"base_policy_digest": base,
+        "notice_recurrence": {"version": 1, "parameters": policy}}))
+    .unwrap_or_default();
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
 /// `{site}-{rule}[-{target_class}]-{action}-{unix_seconds}`.
 #[must_use]
 pub fn event_id(key: &ConditionKey, action: Action, at: i64) -> String {

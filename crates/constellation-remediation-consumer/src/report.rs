@@ -10,6 +10,7 @@ use time::format_description::well_known::Rfc3339;
 use crate::config::Config;
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
+pub const RECURRENCE_REPORT_SCHEMA: &str = "constellation.attention_report.v2";
 pub const RULE: &str = "service-down";
 pub const POLICY: &str = "auto_remediate_then_page";
 /// A report stamped further than this in the future is not trusted.
@@ -61,7 +62,12 @@ pub fn select(config: &Config, report: &Value, now: i64) -> Selection {
 /// remediation window left.
 #[must_use]
 pub fn select_with_margin(config: &Config, report: &Value, now: i64, margin: i64) -> Selection {
-    if report.get("schema").and_then(Value::as_str) != Some(REPORT_SCHEMA) {
+    // v2 adds notice-only episode state; effects still select the identical
+    // raw condition fields below, never notification summaries or counters.
+    if !matches!(
+        report.get("schema").and_then(Value::as_str),
+        Some(REPORT_SCHEMA | RECURRENCE_REPORT_SCHEMA)
+    ) {
         return abstain("report_malformed", json!({"schema": report.get("schema")}));
     }
     let evaluated_at = report

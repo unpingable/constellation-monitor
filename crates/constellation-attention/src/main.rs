@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use constellation_attention::build_info;
 use constellation_attention::config::Config;
 use constellation_attention::engine::{self, PassOptions};
-use constellation_attention::intent::policy_digest;
+use constellation_attention::intent::config_policy_digest;
 use constellation_attention::registry::{
     PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, RULES,
     UNKNOWN_GAP_SECONDS,
@@ -21,6 +21,7 @@ const USAGE: &str = "usage:
   constellation-attention evaluate --config FILE [--dry-run] [--now RFC3339]
   constellation-attention state --config FILE
   constellation-attention reset-clock --config FILE
+  constellation-attention retire-recurrence --config FILE
   constellation-attention rules
   constellation-attention check-config --config FILE";
 
@@ -140,7 +141,8 @@ fn run() -> Result<u8, (u8, String)> {
                 "valid": true,
                 "site": config.site,
                 "registry": REGISTRY_VERSION,
-                "attention_policy_digest": policy_digest(&rules, &config.remediation.targets),
+                "attention_policy_digest": config_policy_digest(&config, &rules),
+                "notice_recurrence": config.notice_recurrence,
                 "rules": engine::rules_report(&rules, &config),
             }));
             Ok(0)
@@ -150,6 +152,11 @@ fn run() -> Result<u8, (u8, String)> {
             let state =
                 State::load(&config.state_path, &config.site).map_err(|error| (1, error))?;
             print(&serde_json::to_value(&state).map_err(|error| (1, error.to_string()))?);
+            Ok(0)
+        }
+        "retire-recurrence" => {
+            let config = load(&arguments).map_err(|error| (2, error))?;
+            print(&engine::retire_recurrence(&config).map_err(|error| (1, error))?);
             Ok(0)
         }
         "evaluate" => {

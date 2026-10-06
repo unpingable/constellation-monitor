@@ -28,6 +28,8 @@ install -m 0644 "$root/packaging/attention/constellation-attention.service" "$ro
 # The example only; the live attention.toml is the operator's.
 install -m 0644 "$root/packaging/attention/attention.toml.example" "$d/etc/constellation-attention/"
 install -m 0644 "$root/docs/ATTENTION.md" "$doc/"
+install -m 0644 "$root/packaging/attention/attention-recurrence.toml.example" "$doc/"
+install -m 0644 "$root/docs/ATTENTION-RECURRENCE-DESIGN.md" "$doc/"
 install -m 0644 "$root/packaging/attention/OPERATOR.md" "$doc/README.md"
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCH@/$arch/g" "$root/packaging/attention/debian/control.in" > "$d/DEBIAN/control"
 install -m 0644 "$root/packaging/attention/debian/conffiles" "$d/DEBIAN/conffiles"

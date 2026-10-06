@@ -106,3 +106,35 @@ warrants a small transition model covering unknown, removal, restart and clock
 reset plus deterministic correspondence tests. Integration owner records this
 proposal; policy and independent acceptance owners select its bounds. No
 universal anti-flapping or successful-delivery guarantee is claimed.
+
+## Subsequent operator-beta candidate
+
+The owner subsequently authorized implementation as a candidate, with production
+untouched until incident closure and independent qualification. The investigation
+above remains historical evidence of the original behavior. Candidate policy is
+explicitly selected at 1800 s horizon / 600 s summary cadence; see
+[the precise lifecycle contract](ATTENTION.md#opt-in-notice-recurrence-candidate).
+The package default remains v1/off. This is not retroactive acceptance of the
+original incident, a production rollout, or a claim of universal flap suppression.
+
+Implementation keeps raw `engine::step` independent from `recurrence::Memory`.
+Config/state/report v2 deliberately expose compatibility; existing NQ notice
+serialization suffices. A narrow remediation-report adapter accepts v2 while
+selecting exactly the legacy raw fields. An unresolved removed scope cannot be
+restored until removal custody is reconciled, preventing old removal from hiding
+a newly active fault. Uncertain retained delivery can block forever and remains
+visible rather than being declared successfully closed.
+
+Formalization consideration: a bounded executable transition model explores
+262144 six-pass histories of present/clear/unknown/removed observations and
+eligible/blocked delivery. It compares raw lifecycle state to the unextended path,
+checks counters, and constrains final quiet resolution to current clear, inactive
+raw state and the observed-quiet bound. It uses the actual two transition functions
+and the minimum admissible policy bounds. This is correspondence evidence, not an
+independent formal proof. Binary regression cases separately cover production-like
+300/301 s and 119/120 s boundaries, 1800 s recurrence/quiet, 600 s summaries,
+unknown gaps, fault classes, custody, restart, clock reset, migration and removal.
+Collector internals, NQ/sink delivery, absent passes, arbitrary concurrent filesystem
+writers and OS-random uniqueness are outside the model. Practical bounded tests
+and prose are sufficient for this optional candidate; independent acceptance of
+exact source/artifact identities remains separate from test execution.

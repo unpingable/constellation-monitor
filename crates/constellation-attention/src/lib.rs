@@ -16,6 +16,7 @@ pub mod engine;
 pub mod inputs;
 pub mod intent;
 pub mod nq;
+pub mod recurrence;
 pub mod registry;
 pub mod remediation;
 pub mod state;
