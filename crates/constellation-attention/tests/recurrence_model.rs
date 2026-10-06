@@ -155,6 +155,7 @@ fn recurrence_summary_retains_full_identity_and_qualifier_at_maximum_input_bound
         let text = recurrence::summary(&key, &label, &s).unwrap();
         assert!(text.len() <= 512);
         assert!(text.contains(&key.id()));
+        assert!(text.contains("Notice episode; evidence: unknown."));
         assert!(text.contains(if kind == "removed" {
             "Recovery was not observed"
         } else {

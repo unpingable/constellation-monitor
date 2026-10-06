@@ -425,7 +425,7 @@ pub fn summary(key: &ConditionKey, label: &str, snapshot: &Snapshot) -> Result<S
         "Monitoring only; service recovery not established."
     };
     let text = format!(
-        "{}/{label}: {title}.\nNotice episode: {}.\nChanges: {} raw, {} coalesced, {} included.\n{qualifier}\nInspect collector/acquisition.\nID: {}",
+        "{}/{label}: {title}.\nNotice episode; evidence: {}.\nChanges: {} raw, {} coalesced, {} included.\n{qualifier}\nInspect acquisition.\nID: {}",
         key.site,
         snapshot.observation,
         snapshot.raw_transitions,
