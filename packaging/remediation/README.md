@@ -9,7 +9,7 @@ exactly that unit), decided deterministically. The package carries:
 |---|---|
 | `constellation-remediation-consumer` | `/usr/bin/` |
 | `constellation-nq-unit-resolver` (AG typed-v3 observation resolver over NQ ops-store `nq.systemd_unit` v2 evaluations; `--claim not-active` precondition, `--claim active` postcondition) | `/usr/bin/` |
-| `nq-ops-as-nq` (runs `nq` as `nq` in nqd's sandbox over `/var/lib/nq-ops`; used for `nq collect`) | `/usr/libexec/constellation-remediation/` |
+| `nq-ops-as-nq` (runs `nq` as `nq` in nqd's sandbox over `/var/lib/nq-ops`; used for writable `nq init`, maintenance and `nq collect`) | `/usr/libexec/constellation-remediation/` |
 | `constellation-remediation-consumer.{service,timer}` | `/lib/systemd/system/` |
 | `consumer.toml.example` | `/etc/constellation-remediation/` (conffile) |
 | `model-decider.conf` (systemd drop-in example for `--decider model`) | `/usr/share/doc/constellation-remediation/` |
@@ -209,3 +209,25 @@ The retained #71 evaluation was at 05:36:39.403Z, with a 90-second resolver
 recency bound. The subsequent 05:37:09.693Z evaluation expired testimony
 observed at 05:36:09.654Z (age 60.039 seconds). The earlier inferred
 future-sample diagnosis used the wrong recency bound and is withdrawn.
+
+## Fixed NQ operation envelope
+
+`nq-ops-as-nq` carries `LimitFSIZE=1G`, `MemoryMax=2G` and
+`MemorySwapMax=0`, matching the current packaged NQ `nqd.service`
+(source correspondence: NQ commit `605d9d61b3f281e70c23e7ccdc3cc0a38a4fcf8e`,
+`packaging/systemd/nqd.service`). These are fixed package controls, not
+configuration-selected limits. Writable initialization must use this wrapper
+so the persisted NQ capacity envelope observes the same file limit as later
+operations and the daemon. NQ's automatic envelope derives from actual
+filesystem capacity and the effective per-file limit at initialization;
+reopen uses the persisted envelope and refuses incompatible limits rather
+than silently resizing it. A 1 GiB per-file limit is not a 1 GiB aggregate
+store allowance, and 2 GiB MemoryMax is a runtime ceiling, not a promise that
+all retained workloads fit in memory. Package controls and actual runtime
+correspondence require separate installed qualification.
+
+Focused wrapper source check (does not launch systemd or NQ):
+
+```sh
+python3 packaging/remediation/test_nq_ops_wrapper.py
+```

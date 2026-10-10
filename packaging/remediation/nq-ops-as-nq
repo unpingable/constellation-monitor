@@ -2,7 +2,8 @@
 # Run /usr/bin/nq as nq:nq with nqd's four-capability ceiling and sandbox,
 # writable only to the NQ ops store (/var/lib/nq-ops, /run/nq-ops), exactly
 # as NQ's OPERATIONS.md `nq_helper_command` does for /var/lib/nq. Root only.
-# The consumer uses it for `nq --config /etc/nq/nqd-ops.toml collect INSTANCE`.
+# Consumers use it for writable initialization, maintenance and collection.
+# Match packaged nqd.service: LimitFSIZE=1G, MemoryMax=2G, MemorySwapMax=0.
 exec /usr/bin/systemd-run --quiet --wait --pipe --collect \
   --property=User=nq --property=Group=nq --property=UMask=0077 \
   --property=NoNewPrivileges=yes --property=PrivateTmp=yes \
@@ -19,5 +20,6 @@ exec /usr/bin/systemd-run --quiet --wait --pipe --collect \
   '--property=ReadWritePaths=/var/lib/nq-ops /run/nq-ops' \
   '--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_KILL' \
   '--property=AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_KILL' \
-  --property=LimitNOFILE=4096 --property=LimitCORE=0 --property=TasksMax=256 \
+  --property=LimitNOFILE=4096 --property=LimitFSIZE=1G --property=LimitCORE=0 --property=TasksMax=256 \
+  --property=MemoryMax=2G --property=MemorySwapMax=0 \
   -- /usr/bin/nq "$@"
