@@ -15,3 +15,13 @@ service journal and notification outcome. Configure and check before enabling
 Stop both `constellation-attention.timer` and `.service` before upgrade/removal.
 Retain owner configuration, delivery state and notification credential custody
 separately. Installation/removal never acknowledges a page automatically.
+
+## Optional notice recurrence candidate
+
+The default configuration remains v1/off. The separate
+`attention-recurrence.toml.example` under this documentation directory demonstrates
+an opt-in, notice-only operator-beta candidate using local/test routes. Read
+[ATTENTION.md](ATTENTION.md#opt-in-notice-recurrence-candidate) for exact bounds,
+blocked delivery, report v2 compatibility and explicit state retirement. Do not
+replace a live configuration merely by installing this package. Production
+promotion requires incident closure and independent qualification.

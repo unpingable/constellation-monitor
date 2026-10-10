@@ -647,3 +647,105 @@ These are operator acceptance items.
   `state`: NQ reports `healthy` for both instance and evaluation components
   while a unit is down. It cannot tell failed from inactive or not-found.
 - Docket and AG inputs are not deployed; their rules stay disabled.
+
+## Opt-in notice recurrence candidate
+
+This is an **operator-beta candidate**, separately qualified from the existing
+v1 lifecycle. The package's default example remains v1 with recurrence off.
+Production promotion requires closure of the active operational incident and
+independent qualification of the exact candidate; neither installing the binary
+nor passing these local cases enables this policy.
+
+Only `evaluator-input-unavailable` notices participate. Each exact input/fault
+condition has separate memory. Raw observations, 300 s persistence (trigger at
+**greater than** the bound), 120 s clear confirmation, page rules and remediation
+selection remain unchanged. A report can show a raw inactive condition while
+its notification episode remains open. That means notification churn is being
+coalesced; it does not assert that the input is still unavailable or healthy.
+
+The candidate parameters are a **1800 s recurrence horizon** and **600 s summary
+interval**. They are explicit opt-in values, not new production defaults:
+
+```toml
+schema = "constellation.attention_config.v2"
+# Other configuration fields are unchanged.
+[notice_recurrence]
+recurrence_horizon_seconds = 1800
+summary_interval_seconds = 600
+```
+
+| Event | Notification policy |
+|---|---|
+| First raw trigger/resolve | Existing ordinary episode policy. |
+| Raw trigger within **<= horizon** of observed raw resolution | Open a notification episode and announce recurrence, when prior notice custody permits. |
+| Further raw triggers/resolves in that episode | Keep every raw decision visible; accumulate transition counts instead of individual notices. |
+| Pending transitions and **>= interval** since last notice decision | Emit one summary naming present/clear/unknown state and counts. Decision time is not delivery time. |
+| Current clear, raw inactive, and **>= horizon** observed quiet | Emit final monitoring-evidence recovery, with priority over periodic summary. |
+| Removed input/rule | Close as no longer evaluated; recovery was not observed. |
+
+Quiet starts at the first definite clear sample after recurrence opens.
+Any present sample cancels it, including presence below the raw trigger bound.
+Unknown cannot close an episode. The existing 90 s sampling-gap tolerance applies;
+longer unknown intervals are shifted out when definite clear returns. Passes that
+never run remain the existing unsampled-gap limitation, not unknown evidence.
+A new fault class gets its own ordinary first notice. Periodic summaries can be
+sent while raw state is clear or unknown; their trigger action refers to the
+**notification episode**, not a new raw condition trigger. The text explicitly
+limits recovery to monitoring evidence and retains the complete condition ID.
+Reports retain episode timing, the latest summary, raw/coalesced/pending counts,
+notice event/record IDs, outcome and `blocked_custody` separately from raw fields.
+
+### Delivery and state compatibility
+
+Coalesced decisions cannot replace an uncertain or unretained previous notice.
+The existing NQ retry path retains exact bytes; a retained uncertain notice can
+block a summary or final notice indefinitely. Reports expose that blocked state
+and unresolved delivery; elapsed time does not prove delivery. Definite failed
+or refused retained notices may be superseded, explicitly recorded in
+`superseded_notices`. Ordinary non-recurring episodes retain the legacy replacement
+and trigger-before-resolve policy; this extension does not promise complete sink
+delivery. Input recurrence remains notice-only and never acquires page authority.
+
+Opt-in uses config/state/report **v2**, while existing NQ notice intents remain
+v1. A v1 configuration refuses persisted recurrence state. Parameters and the
+notice route/transport are bound to enrollment; changing them refuses until the
+settled state is explicitly retired. Rule/input removal remains available.
+Restoring a removed scope while its episode or delivery custody is still retained
+refuses without altering saved state. Reconcile the removal first; do not discard
+its pending notice to force restoration.
+
+Recent settled resolutions expire only after **> horizon**. Open episodes and
+unsettled custody do not expire. Memory is limited to 1024 identities; capacity or
+counter exhaustion refuses rather than dropping state. Every managed notice has
+an OS-random 128-bit issuance epoch and checked sequence number. Restart and
+`reset-clock` retain the epoch, sequence and frozen intent bytes. Reset clamps
+scheduling clocks, not the timestamps in already-decided summary evidence.
+Dry runs leave real state and counters untouched.
+
+Before retiring policy, stop both evaluator timer and service and confirm no
+pass is running. Keep the v2 config while reconciliation completes. Once no
+recurrence entries, active input conditions or pending/unsettled input notices
+remain, run:
+
+```sh
+constellation-attention retire-recurrence --config /etc/constellation-attention/attention.toml
+```
+
+This converts the settled state to v1; it does not change configuration. Restore
+the v1 configuration before restarting evaluation. Re-enabling later creates a
+fresh issuance epoch. Do not feed v2 state to an older binary, delete state to
+bypass refusal, or roll back from a backup without reconciling intervening NQ
+custody. Other read-model consumers must explicitly support report v2; the
+remediation consumer accepts its unchanged raw condition projection and ignores
+recurrence summaries as effect selectors.
+
+### Candidate integration limit
+
+The retained combined-release status renderer currently accepts only report v1.
+It will report v2 as unsupported, rather than silently declaring it healthy.
+This candidate ships the evaluator and the narrow remediation-consumer v2 reader;
+it does not replace the frozen combined release or its renderer. Before enabling
+recurrence in that installation, reconcile and independently check the renderer
+(and any other named report consumer) against raw v2 state and episode custody.
+Local evaluator qualification is not acceptance of an upgraded combined live
+installation. The incident-closure and independent-qualification gates still apply.

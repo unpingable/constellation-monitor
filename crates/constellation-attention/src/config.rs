@@ -16,6 +16,7 @@ use crate::registry::{
 use crate::remediation::{MAX_WINDOW_SECONDS, MIN_WINDOW_SECONDS};
 
 pub const CONFIG_SCHEMA: &str = "constellation.attention_config.v1";
+pub const RECURRENCE_CONFIG_SCHEMA: &str = "constellation.attention_config.v2";
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const MAX_THRESHOLD_SECONDS: i64 = 7 * 24 * 3600;
 
@@ -40,6 +41,26 @@ pub struct Config {
     pub rules: BTreeMap<String, RuleOverride>,
     #[serde(default)]
     pub remediation: Remediation,
+    /// Explicit opt-in; v1 configurations cannot select recurrence policy.
+    pub notice_recurrence: Option<NoticeRecurrence>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoticeRecurrence {
+    pub recurrence_horizon_seconds: i64,
+    pub summary_interval_seconds: i64,
+}
+
+impl NoticeRecurrence {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(120..=86400).contains(&self.recurrence_horizon_seconds)
+            || !(60..=self.recurrence_horizon_seconds).contains(&self.summary_interval_seconds)
+        {
+            return Err("notice_recurrence requires horizon 120..=86400 s and summary interval 60..=horizon s".into());
+        }
+        Ok(())
+    }
 }
 
 /// `[remediation]`: per-target `response_policy` (cartography #55).
@@ -312,8 +333,18 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != CONFIG_SCHEMA {
-            return Err(format!("schema must be {CONFIG_SCHEMA}"));
+        match (self.schema.as_str(), &self.notice_recurrence) {
+            (CONFIG_SCHEMA, None) => {}
+            (RECURRENCE_CONFIG_SCHEMA, Some(policy)) => {
+                policy.validate()?;
+                let sources = self.inputs.host_posture.len() + self.inputs.saved_checks.len()
+                    + usize::from(self.inputs.nq_status.is_some())
+                    + usize::from(self.inputs.nightshift.is_some());
+                if sources * crate::inputs::INPUT_CAUSES.len() > crate::recurrence::MAX_ENTRIES {
+                    return Err("too many inputs for bounded notice recurrence memory".into());
+                }
+            }
+            _ => return Err("v1 config forbids notice_recurrence; v2 requires an explicit notice_recurrence policy".into()),
         }
         validate_token("site", &self.site, 64)?;
         absolute("state_path", &self.state_path)?;

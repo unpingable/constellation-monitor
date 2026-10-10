@@ -14,6 +14,7 @@ use crate::config::{Config, EffectiveRule};
 use crate::inputs::{self, Context, INPUT_CAUSES, InputReport, InputStatus, Observation, Observed};
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
+use crate::recurrence;
 use crate::registry::{
     Class, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS,
     UNKNOWN_GAP_SECONDS,
@@ -23,6 +24,7 @@ use crate::state::{ConditionState, LastIntent, State};
 use crate::util::{format_seconds, read_bounded, write_atomic};
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
+pub const RECURRENCE_REPORT_SCHEMA: &str = "constellation.attention_report.v2";
 const INPUT_UNAVAILABLE: &str = "evaluator-input-unavailable";
 
 pub struct PassOptions {
@@ -247,7 +249,7 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 )]
 pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let rules = config.effective_rules();
-    let digest = intent::policy_digest(&rules, &config.remediation.targets);
+    let digest = intent::config_policy_digest(config, &rules);
     let state_dir = config.state_dir();
     let output_dir = if options.dry_run {
         state_dir.join("dry-run")
@@ -256,6 +258,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     };
     let _lock = lock(config, options.dry_run)?;
     let mut state = State::load(&config.state_path, &config.site)?;
+    state.configure_recurrence(config)?;
     let now = options.now;
     if now < state.updated_at {
         // Event identities carry the decision time; a pass earlier than the
@@ -423,19 +426,34 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .keys()
         .cloned()
         .chain(state.conditions.keys().cloned())
+        .chain(
+            state
+                .notice_recurrence
+                .iter()
+                .flat_map(|memory| memory.entries.keys().cloned()),
+        )
         .collect();
     let mut transitions: Vec<(String, Action, ResolveReason)> = Vec::new();
     // Conditions whose deferred page is due this pass (page route only).
     let mut deferred_pages: BTreeSet<String> = BTreeSet::new();
     let mut condition_reports = Vec::new();
+    let mut notice_decisions = BTreeMap::new();
     for id in &ids {
         let item = observed.get(id);
+        let remembered = state
+            .notice_recurrence
+            .as_ref()
+            .and_then(|memory| memory.entries.get(id));
+        let remembered_key = remembered.map(|entry| (entry.key.clone(), entry.input_label.clone()));
         let condition = state.conditions.entry(id.clone()).or_insert_with(|| {
-            let item = item.expect("new conditions come from observations");
+            let (key, label) = item
+                .map(|item| (item.key.clone(), item.input_label.clone()))
+                .or(remembered_key)
+                .expect("condition comes from observation or notice history");
             ConditionState {
-                key: item.key.clone(),
-                rule_version: crate::registry::rule(item.rule).map_or(0, |rule| rule.version),
-                input_label: item.input_label.clone(),
+                rule_version: crate::registry::rule(&key.rule).map_or(0, |rule| rule.version),
+                key,
+                input_label: label,
                 first_seen: None,
                 last_seen: None,
                 clear_since: None,
@@ -533,6 +551,24 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             condition.page_deferred = false;
             deferred_pages.insert(id.clone());
         }
+        if condition.key.rule == INPUT_UNAVAILABLE
+            && let Some(memory) = &mut state.notice_recurrence
+        {
+            if !rule.is_some_and(|rule| rule.class == Class::Notice) {
+                return Err("notice recurrence cannot select page or unknown rules".into());
+            }
+            if let Some(decision) = memory.step(
+                &condition.key,
+                &condition.input_label,
+                observation,
+                transition,
+                condition.active,
+                recurrence::may_replace(condition.last_intent.get("notice")),
+                now,
+            )? {
+                notice_decisions.insert(id.clone(), decision);
+            }
+        }
         condition_reports.push(json!({
             "id": id,
             "rule": condition.key.rule,
@@ -551,11 +587,33 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         }));
     }
 
+    // Raw transitions above remain in reports. Only notice planning is coalesced.
+    if state.notice_recurrence.is_some() {
+        transitions.retain(|(id, _, _)| state.conditions[id].key.rule != INPUT_UNAVAILABLE);
+        for (id, decision) in &notice_decisions {
+            let removed = decision
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.kind == "removed")
+                || !observed.contains_key(id);
+            transitions.push((
+                id.clone(),
+                decision.action,
+                if removed {
+                    ResolveReason::NoLongerEvaluated
+                } else {
+                    ResolveReason::Recovered
+                },
+            ));
+        }
+    }
+
     // Plan: one intent per condition and route per pass.
     let intents_dir = output_dir.join("intents");
     ensure_dir(&intents_dir)?;
     let mut plan: Vec<Planned> = Vec::new();
     let mut superseded: Vec<Value> = Vec::new();
+    let mut superseded_notices: Vec<Value> = Vec::new();
     let notice_route = config.routes.notice_route.clone();
     let work: Vec<(String, Action, ResolveReason, bool)> = transitions
         .iter()
@@ -603,7 +661,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 }
             }
         }
-        let stable_event_id = intent::event_id(&condition.key, action, now);
+        let stable_event_id = if condition.key.rule == INPUT_UNAVAILABLE
+            && let Some(memory) = &mut state.notice_recurrence
+        {
+            memory.event_id(action, now)?
+        } else {
+            intent::event_id(&condition.key, action, now)
+        };
         let transition_id = if *page_only {
             intent::event_id(
                 &condition.key,
@@ -632,7 +696,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         };
         let mut written = Vec::new();
         for (role, route) in roles {
-            let (value, schema) = if role == "page" {
+            let (mut value, schema) = if role == "page" {
                 (intent::v2(&input, &route), INTENT_V2)
             } else {
                 (
@@ -644,6 +708,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     INTENT_V1,
                 )
             };
+            if role == "notice"
+                && let Some(snapshot) = notice_decisions
+                    .get(id)
+                    .and_then(|decision| decision.snapshot.as_ref())
+            {
+                value["summary"] = json!(recurrence::summary(
+                    &condition.key,
+                    &condition.input_label,
+                    snapshot
+                )?);
+            }
             let file = format!("{stable_event_id}.{role}.json");
             write_atomic(&intents_dir.join(&file), &intent::canonical(&value)?)?;
             written.push((
@@ -674,6 +749,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 continue;
             };
             if previous.action != Action::Trigger.as_str() {
+                if notice_decisions.contains_key(id) && recurrence::unsettled(&previous) {
+                    superseded_notices.push(json!({"condition_id": id, "route_role": role,
+                        "stable_event_id": previous.stable_event_id, "notification_id": previous.notification_id,
+                        "outcome": previous.outcome, "reason": if recurrence::may_replace(Some(&previous)) {
+                            "definite nondelivery superseded by current notice"
+                        } else { "ordinary lifecycle transition replaced unresolved prior notice" }}));
+                }
                 continue;
             }
             if previous.notification_id.is_none() {
@@ -692,7 +774,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     "stable_event_id": previous.stable_event_id,
                     "notification_id": previous.notification_id,
                     "outcome": previous.outcome,
-                    "error": "superseded by a resolve before it was accepted",
+                    "error": "superseded by a newer notice before acceptance",
                 }));
             }
         }
@@ -708,7 +790,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         if transitioned.contains(id) {
             continue;
         }
-        let snapshot = condition.clone();
+        let snapshot = recurrence::delivery_snapshot(condition, state.notice_recurrence.as_ref());
         for (role, last) in &mut condition.last_intent {
             let Some((operation, waits)) = follow_up(last, &snapshot, config) else {
                 continue;
@@ -808,7 +890,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                         continue;
                     }
                 };
-                let stable_event_id = intent::event_id(&snapshot.key, action, now);
+                let stable_event_id = if snapshot.key.rule == INPUT_UNAVAILABLE
+                    && let Some(memory) = &mut state.notice_recurrence
+                {
+                    memory.event_id(action, now)?
+                } else {
+                    intent::event_id(&snapshot.key, action, now)
+                };
                 retry_of = last.notification_id.clone();
                 if let Some(prior) = prior {
                     let file = format!("{stable_event_id}.{role}.json");
@@ -877,6 +965,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Persist the decisions and written intents before any submission, so a
     // crash leaves `unknown` records that the next pass submits again.
     if !options.dry_run {
+        if let Some(memory) = &mut state.notice_recurrence {
+            memory.refresh_delivery(&state.conditions);
+        }
         state.updated_at = now;
         state.save(&config.state_path)?;
     }
@@ -945,6 +1036,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             }
         }
         if !options.dry_run {
+            if let Some(memory) = &mut state.notice_recurrence {
+                memory.refresh_delivery(&state.conditions);
+            }
             state.save(&config.state_path)?;
         }
         // A refusal of a submission made without --enable-network is the
@@ -977,14 +1071,32 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     }
 
     if !options.dry_run {
+        if let Some(memory) = &mut state.notice_recurrence {
+            memory.refresh_delivery(&state.conditions);
+            memory.prune(&state.conditions, now);
+        }
         // Forget settled, inactive conditions and unreferenced intent files.
-        state.conditions.retain(|_, condition| {
+        state.conditions.retain(|id, condition| {
+            let snapshot =
+                recurrence::delivery_snapshot(condition, state.notice_recurrence.as_ref());
             condition.active
                 || condition.first_seen.is_some()
+                || state
+                    .notice_recurrence
+                    .as_ref()
+                    .and_then(|memory| memory.entries.get(id))
+                    .is_some_and(|entry| {
+                        entry.opened_at.is_some()
+                            || entry.notice_active
+                            || condition
+                                .last_intent
+                                .get("notice")
+                                .is_some_and(recurrence::unsettled)
+                    })
                 || condition
                     .last_intent
                     .values()
-                    .any(|last| follow_up(last, condition, config).is_some())
+                    .any(|last| follow_up(last, &snapshot, config).is_some())
                 || !condition.pending_trigger.is_empty()
         });
         state.updated_at = now;
@@ -1025,8 +1137,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .reports
         .iter()
         .any(|report| report.status != InputStatus::Ok);
-    let report = json!({
-        "schema": REPORT_SCHEMA,
+    let mut report = json!({
+        "schema": if state.notice_recurrence.is_some() { RECURRENCE_REPORT_SCHEMA } else { REPORT_SCHEMA },
         "site": config.site,
         "evaluated_at": format_seconds(now),
         "dry_run": options.dry_run,
@@ -1040,6 +1152,11 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "unresolved_deliveries": unresolved,
         "dropped_triggers": dropped_triggers,
     });
+    if let Some(memory) = &state.notice_recurrence {
+        report["notice_recurrence"] =
+            serde_json::to_value(memory).map_err(|error| error.to_string())?;
+        report["superseded_notices"] = json!(superseded_notices);
+    }
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;
@@ -1104,6 +1221,9 @@ pub fn rules_report(rules: &[EffectiveRule], config: &Config) -> Vec<Value> {
 pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
     let _lock = lock(config, false)?;
     let mut state = State::load(&config.state_path, &config.site)?;
+    if let Some(memory) = &state.notice_recurrence {
+        memory.check_binding(config)?;
+    }
     let previous = state.updated_at;
     let clamped = state.reset_clock(now);
     if clamped > 0 {
@@ -1114,6 +1234,32 @@ pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
         "previous_updated_at": format_seconds(previous),
         "clamped_timestamps": clamped,
     }))
+}
+
+/// Explicit downgrade boundary. No history/custody is silently discarded.
+pub fn retire_recurrence(config: &Config) -> Result<Value, String> {
+    let _lock = lock(config, false)?;
+    let mut state = State::load(&config.state_path, &config.site)?;
+    let memory = state
+        .notice_recurrence
+        .as_ref()
+        .ok_or("no v2 recurrence state to retire")?;
+    memory.check_binding(config)?;
+    if !memory.entries.is_empty()
+        || state.conditions.values().any(|condition| {
+            condition.key.rule == INPUT_UNAVAILABLE
+                && (condition.active
+                    || !condition.pending_trigger.is_empty()
+                    || condition.last_intent.values().any(recurrence::unsettled))
+        })
+    {
+        return Err("cannot retire recurrence: history or input-notice custody remains; finish/reconcile it first".into());
+    }
+    state.notice_recurrence = None;
+    state.schema = crate::state::STATE_SCHEMA.into();
+    state.save(&config.state_path)?;
+    Ok(json!({"schema": state.schema, "retired": true,
+        "next": "restore v1 configuration before the next evaluation; re-enrollment creates a fresh issuance epoch"}))
 }
 
 /// The state file path, for the `state` subcommand.

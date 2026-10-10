@@ -77,6 +77,7 @@ struct Harness {
     page_route: bool,
     network: bool,
     notice_transport: &'static str,
+    recurrence_policy: Option<(i64, i64)>,
 }
 
 impl Harness {
@@ -90,6 +91,7 @@ impl Harness {
             page_route: true,
             network: true,
             notice_transport: "slack",
+            recurrence_policy: None,
         }
     }
 
@@ -124,7 +126,7 @@ impl Harness {
             ""
         };
         let text = format!(
-            "schema = \"constellation.attention_config.v1\"\n\
+            "schema = \"{schema}\"\n\
              site = \"reference\"\n\
              state_path = \"{state}\"\n\
              [runbooks]\n\
@@ -137,7 +139,12 @@ impl Harness {
              notice_transport = \"{transport}\"\n\
              {page}\
              network_enabled = {network}\n\
-             {extra}\n",
+             {extra}\n{recurrence}",
+            schema = if self.recurrence_policy.is_some() { "constellation.attention_config.v2" }
+                else { "constellation.attention_config.v1" },
+            recurrence = self.recurrence_policy.map_or_else(String::new, |(horizon, interval)| {
+                format!("\n[notice_recurrence]\nrecurrence_horizon_seconds = {horizon}\nsummary_interval_seconds = {interval}\n")
+            }),
             state = self.path("state/state.json").display(),
             nq = Path::new(FIXTURES).join("fake-nq.sh").display(),
             network = self.network,
@@ -3768,4 +3775,440 @@ fn held_page_with_stale_input_pages_at_window_expiry() {
             .any(|call| call.contains("pagerduty") && call.contains("-resolve-")),
         "{calls:?}"
     );
+}
+
+fn recurrence_harness() -> (Harness, PathBuf) {
+    let (mut harness, status) = nq_status_harness();
+    harness.recurrence_policy = Some((1800, 600));
+    (harness, status)
+}
+
+fn recurrence_baseline(harness: &Harness, status: &Path) {
+    input_staleness(harness, status, T0, true);
+    input_staleness(harness, status, T0 + 301, true);
+    input_staleness(harness, status, T0 + 360, false);
+    input_staleness(harness, status, T0 + 480, false);
+}
+
+fn recurrence_open(harness: &Harness, status: &Path) -> Value {
+    recurrence_baseline(harness, status);
+    input_staleness(harness, status, T0 + 539, true);
+    input_staleness(harness, status, T0 + 840, true)
+}
+
+fn episode(report: &Value) -> &Value {
+    &report["notice_recurrence"]["entries"][STALE_NQD]
+}
+
+fn stale_notices(report: &Value) -> Vec<&Value> {
+    report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|intent| intent["condition_id"] == STALE_NQD)
+        .collect()
+}
+
+#[test]
+fn recurrence_candidate_coalesces_but_preserves_raw_clear_and_final_quiet() {
+    let (harness, status) = recurrence_harness();
+    let report = recurrence_open(&harness, &status);
+    assert_eq!(report["schema"], "constellation.attention_report.v2");
+    assert_eq!(
+        harness.state()["schema"],
+        "constellation.attention_state.v2"
+    );
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    assert_eq!(
+        episode(&report)["last_summary"]["kind"],
+        "recurrence_started"
+    );
+    assert_eq!(episode(&report)["raw_transitions"], 1);
+    input_staleness(&harness, &status, T0 + 900, false);
+    let report = input_staleness(&harness, &status, T0 + 1020, false);
+    assert!(intents(&report).is_empty());
+    assert_eq!(stale_input_row(&report)["transition"], "resolve");
+    assert_eq!(stale_input_row(&report)["active"], false);
+    assert_eq!(episode(&report)["notice_active"], true);
+    assert_eq!(episode(&report)["pending_transitions"], 1);
+    input_staleness(&harness, &status, T0 + 1080, true);
+    let report = input_staleness(&harness, &status, T0 + 1381, true);
+    assert!(intents(&report).is_empty());
+    assert_eq!(stale_input_row(&report)["transition"], "trigger");
+    let report = input_staleness(&harness, &status, T0 + 1440, true);
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    assert_eq!(episode(&report)["last_summary"]["pending_transitions"], 2);
+    assert_eq!(episode(&report)["coalesced_transitions"], 2);
+    input_staleness(&harness, &status, T0 + 1500, false);
+    assert!(intents(&input_staleness(&harness, &status, T0 + 1620, false)).is_empty());
+    let report = input_staleness(&harness, &status, T0 + 2100, false);
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    assert_eq!(episode(&report)["last_summary"]["observation"], "clear");
+    assert_eq!(stale_input_row(&report)["active"], false);
+    assert!(intents(&input_staleness(&harness, &status, T0 + 3299, false)).is_empty());
+    let report = input_staleness(&harness, &status, T0 + 3300, false);
+    assert_eq!(intents(&report), stale_transition("resolve"));
+    assert_eq!(episode(&report)["last_summary"]["kind"], "quiet_recovery");
+    assert_eq!(episode(&report)["notice_active"], false);
+    assert!(harness.state()["conditions"].get(STALE_NQD).is_none());
+    assert_eq!(harness.calls().len(), 6);
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n6")).unwrap();
+    let summary = intent["summary"].as_str().unwrap();
+    assert!(summary.contains("monitoring evidence restored"));
+    assert!(summary.contains("service recovery not established"));
+    assert!(summary.contains(STALE_NQD));
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .all(|call| call.starts_with("submit operations "))
+    );
+}
+
+#[test]
+fn recurrence_candidate_horizon_boundary_is_inclusive() {
+    for (delay, recurrent) in [(1800, true), (1801, false)] {
+        let (harness, status) = recurrence_harness();
+        recurrence_baseline(&harness, &status);
+        input_staleness(&harness, &status, T0 + 480 + delay - 301, true);
+        let report = input_staleness(&harness, &status, T0 + 480 + delay, true);
+        assert_eq!(intents(&report), stale_transition("trigger"));
+        assert_eq!(episode(&report)["opened_at"].is_i64(), recurrent);
+        assert_eq!(episode(&report)["last_summary"].is_object(), recurrent);
+    }
+}
+
+#[test]
+fn recurrence_candidate_unknown_cannot_close_and_new_fault_stays_visible() {
+    let (harness, status) = recurrence_harness();
+    recurrence_open(&harness, &status);
+    input_staleness(&harness, &status, T0 + 900, false);
+    input_staleness(&harness, &status, T0 + 1020, false);
+    fs::write(&status, b"").unwrap();
+    for offset in [1500, 1560, 1620, 2700] {
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(stale_input_row(&report)["observation"], "unknown");
+        assert_eq!(episode(&report)["notice_active"], true);
+        assert!(
+            stale_notices(&report)
+                .iter()
+                .all(|intent| intent["action"] == "trigger")
+        );
+    }
+    assert!(harness.calls().iter().any(|call| {
+        let id = call.split_whitespace().nth(3).unwrap();
+        let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+        intent["summary"]
+            .as_str()
+            .unwrap()
+            .contains("nqd.unreadable")
+    }));
+    let report = input_staleness(&harness, &status, T0 + 2800, false);
+    assert_eq!(episode(&report)["quiet_since"], T0 + 2200);
+    assert!(stale_notices(&report).is_empty());
+    input_staleness(&harness, &status, T0 + 2920, false);
+    assert!(stale_notices(&input_staleness(&harness, &status, T0 + 3999, false)).is_empty());
+    let report = input_staleness(&harness, &status, T0 + 4000, false);
+    assert_eq!(stale_notices(&report)[0]["action"], "resolve");
+}
+
+#[test]
+fn recurrence_candidate_uncertain_resolve_blocks_without_losing_custody() {
+    let (mut harness, status) = recurrence_harness();
+    input_staleness(&harness, &status, T0, true);
+    input_staleness(&harness, &status, T0 + 301, true);
+    input_staleness(&harness, &status, T0 + 360, false);
+    harness.fake("next_state", "unknown");
+    input_staleness(&harness, &status, T0 + 480, false);
+    let original = harness.submitted_intent("n2");
+    input_staleness(&harness, &status, T0 + 539, true);
+    for offset in [840, 1500, 3000] {
+        let report = input_staleness(&harness, &status, T0 + offset, true);
+        assert!(intents(&report).is_empty());
+        assert_eq!(episode(&report)["blocked_custody"], true);
+        assert_eq!(episode(&report)["announcement_pending"], true);
+        assert_eq!(episode(&report)["last_notification_id"], "n2");
+        assert!(
+            !report["unresolved_deliveries"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(harness.submitted_intent("n2"), original);
+    }
+    assert_eq!(harness.calls().len(), 2);
+    harness.extra_config.clear();
+    let report = harness.evaluate(T0 + 3100);
+    assert_eq!(stale_input_row(&report)["observation"], "removed");
+    assert_eq!(stale_input_row(&report)["active"], false);
+    assert_eq!(episode(&report)["removed"], true);
+    assert_eq!(episode(&report)["blocked_custody"], true);
+    assert_eq!(harness.calls().len(), 2);
+    let config = harness.config_path();
+    assert_eq!(
+        harness
+            .command(&["retire-recurrence", "--config", config.to_str().unwrap()])
+            .status
+            .code(),
+        Some(1)
+    );
+}
+
+#[test]
+fn recurrence_candidate_failed_resolve_has_explicit_supersession() {
+    let (harness, status) = recurrence_harness();
+    input_staleness(&harness, &status, T0, true);
+    input_staleness(&harness, &status, T0 + 301, true);
+    input_staleness(&harness, &status, T0 + 360, false);
+    harness.fake("next_state", "failed");
+    input_staleness(&harness, &status, T0 + 480, false);
+    harness.fake("next_state", "accepted");
+    input_staleness(&harness, &status, T0 + 539, true);
+    let report = input_staleness(&harness, &status, T0 + 840, true);
+    assert_eq!(intents(&report), stale_transition("trigger"));
+    assert_eq!(report["superseded_notices"][0]["notification_id"], "n2");
+    assert_eq!(report["superseded_notices"][0]["outcome"], "failed");
+}
+
+#[test]
+fn recurrence_candidate_crash_restart_and_clock_reset_keep_exact_event() {
+    let (harness, status) = recurrence_harness();
+    recurrence_baseline(&harness, &status);
+    input_staleness(&harness, &status, T0 + 539, true);
+    harness.fake("crash_after", "");
+    let value = retimed("healthy.json", T0 + 840, |value| {
+        for component in value["components"].as_array_mut().unwrap() {
+            if component["kind"] == "instance" {
+                component["observed_at"] = json!(rfc3339(T0 + 440));
+            }
+        }
+    });
+    write_status(&status, &value);
+    assert_eq!(harness.evaluate_at(T0 + 840, &[]).status.code(), None);
+    let before = harness.state();
+    let epoch = before["notice_recurrence"]["issuance_epoch"].clone();
+    let original = harness.submitted_intent("n3");
+    let config = harness.config_path();
+    let reset = harness.command(&[
+        "reset-clock",
+        "--config",
+        config.to_str().unwrap(),
+        "--now",
+        &rfc3339(T0 + 600),
+    ]);
+    assert_eq!(reset.status.code(), Some(0));
+    let report = input_staleness(&harness, &status, T0 + 650, true);
+    assert_eq!(report["intents"][0]["operation"], "submit_again");
+    assert_eq!(harness.submitted_intent("n3"), original);
+    assert_eq!(
+        harness.state()["notice_recurrence"]["issuance_epoch"],
+        epoch
+    );
+    assert_eq!(harness.state()["notice_recurrence"]["next_sequence"], 3);
+    assert_eq!(episode(&report)["last_summary"]["decided_at"], T0 + 840);
+    assert!(harness.calls().last().unwrap().ends_with(" existing"));
+}
+
+#[test]
+fn recurrence_candidate_removal_resolves_without_claiming_recovery() {
+    let (mut harness, status) = recurrence_harness();
+    recurrence_open(&harness, &status);
+    harness.extra_config.clear();
+    let report = harness.evaluate(T0 + 900);
+    assert_eq!(intents(&report), stale_transition("resolve"));
+    let value: Value = serde_json::from_slice(&harness.submitted_intent("n4")).unwrap();
+    assert!(
+        value["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Recovery was not observed")
+    );
+    assert!(
+        harness.state()["notice_recurrence"]["entries"]
+            .get(STALE_NQD)
+            .is_none()
+    );
+    assert!(intents(&harness.evaluate(T0 + 1500)).is_empty());
+}
+
+#[test]
+fn recurrence_candidate_raw_lifecycle_matches_disabled_policy() {
+    let (legacy, legacy_status) = nq_status_harness();
+    let (candidate, candidate_status) = recurrence_harness();
+    let fields = [
+        "observation",
+        "first_seen",
+        "unknown_since",
+        "persisted_seconds",
+        "persistence_bound_seconds",
+        "active",
+        "transition",
+        "response_policy",
+        "remediation_window_until",
+        "page_deferred",
+    ];
+    for (offset, stale) in [
+        (0, true),
+        (300, true),
+        (301, true),
+        (360, false),
+        (479, false),
+        (480, false),
+        (539, true),
+        (840, true),
+        (900, false),
+        (1020, false),
+        (1080, true),
+        (1381, true),
+        (1440, true),
+        (1500, false),
+        (1620, false),
+        (3300, false),
+    ] {
+        let old = input_staleness(&legacy, &legacy_status, T0 + offset, stale);
+        let new = input_staleness(&candidate, &candidate_status, T0 + offset, stale);
+        for field in fields {
+            assert_eq!(
+                stale_input_row(&old)[field],
+                stale_input_row(&new)[field],
+                "{field} at {offset}"
+            );
+        }
+    }
+    assert!(candidate.calls().len() < legacy.calls().len());
+}
+
+#[test]
+fn recurrence_candidate_migration_retirement_and_reenrollment_preserve_identity() {
+    let (mut harness, status) = nq_status_harness();
+    input_staleness(&harness, &status, T0, false);
+    assert_eq!(
+        harness.state()["schema"],
+        "constellation.attention_state.v1"
+    );
+    harness.recurrence_policy = Some((1800, 600));
+    recurrence_baseline(&harness, &status);
+    let epoch = harness.state()["notice_recurrence"]["issuance_epoch"].clone();
+    let first: Value = serde_json::from_slice(&harness.submitted_intent("n1")).unwrap();
+    let before = fs::read(harness.path("state/state.json")).unwrap();
+    harness.recurrence_policy = None;
+    assert_eq!(harness.evaluate_at(T0 + 481, &[]).status.code(), Some(1));
+    assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), before);
+    harness.recurrence_policy = Some((1800, 600));
+    input_staleness(&harness, &status, T0 + 2281, false);
+    assert_eq!(
+        harness.state()["notice_recurrence"]["entries"]
+            .as_object()
+            .unwrap()
+            .len(),
+        0
+    );
+    let config = harness.config_path();
+    assert_eq!(
+        harness
+            .command(&["retire-recurrence", "--config", config.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0)
+    );
+    harness.recurrence_policy = None;
+    input_staleness(&harness, &status, T0 + 2281, false);
+    let config = harness.config_path();
+    assert_eq!(
+        harness
+            .command(&[
+                "reset-clock",
+                "--config",
+                config.to_str().unwrap(),
+                "--now",
+                &rfc3339(T0)
+            ])
+            .status
+            .code(),
+        Some(0)
+    );
+    harness.recurrence_policy = Some((1800, 600));
+    input_staleness(&harness, &status, T0, true);
+    input_staleness(&harness, &status, T0 + 301, true);
+    assert_ne!(
+        harness.state()["notice_recurrence"]["issuance_epoch"],
+        epoch
+    );
+    let second: Value = serde_json::from_slice(&harness.submitted_intent("n3")).unwrap();
+    assert_ne!(first["stable_event_id"], second["stable_event_id"]);
+}
+
+#[test]
+fn recurrence_candidate_dry_run_and_binding_refusal_do_not_mutate_real_state() {
+    let (mut harness, status) = recurrence_harness();
+    recurrence_open(&harness, &status);
+    input_staleness(&harness, &status, T0 + 900, false);
+    input_staleness(&harness, &status, T0 + 1020, false);
+    let before = fs::read(harness.path("state/state.json")).unwrap();
+    let calls = harness.calls();
+    let value = retimed("healthy.json", T0 + 1440, |_| {});
+    write_status(&status, &value);
+    assert_eq!(
+        harness.evaluate_at(T0 + 1440, &["--dry-run"]).status.code(),
+        Some(0)
+    );
+    assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), before);
+    assert_eq!(harness.calls(), calls);
+    harness.recurrence_policy = Some((1800, 601));
+    assert_eq!(harness.evaluate_at(T0 + 1440, &[]).status.code(), Some(1));
+    assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), before);
+    harness.recurrence_policy = Some((1800, 600));
+    harness.notice_transport = "discord";
+    assert_eq!(harness.evaluate_at(T0 + 1440, &[]).status.code(), Some(1));
+    assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), before);
+}
+
+#[test]
+fn recurrence_candidate_leaves_pagerduty_rules_unchanged() {
+    let mut harness = Harness::new();
+    harness.recurrence_policy = Some((1800, 600));
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+    let report = harness.evaluate(T0 + 660);
+    assert_eq!(intents(&report).len(), 2);
+    assert_eq!(report["intents"][1]["route_role"], "page");
+    assert_eq!(
+        report["intents"][1]["stable_event_id"],
+        "reference-host-posture-unknown-root-trigger-1790943060"
+    );
+    assert!(
+        report["notice_recurrence"]["entries"]
+            .as_object()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn recurrence_candidate_restoration_refuses_until_removed_custody_is_reconciled() {
+    let (mut harness, status) = recurrence_harness();
+    recurrence_open(&harness, &status);
+    // Unknown retained recurrence announcement cannot be replaced or resent.
+    let mut state = harness.state();
+    state["conditions"][STALE_NQD]["last_intent"]["notice"]["outcome"] = json!("unknown");
+    fs::write(
+        harness.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    let configured = harness.extra_config.clone();
+    harness.extra_config.clear();
+    let removed = harness.evaluate(T0 + 900);
+    assert_eq!(episode(&removed)["removed"], true);
+    let bytes = fs::read(harness.path("state/state.json")).unwrap();
+    let calls = harness.calls();
+    harness.extra_config = configured;
+    write_status(&status, &retimed("cron-down.json", T0 + 1000, |_| {}));
+    let refused = harness.evaluate_at(T0 + 1003, &[]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("reconcile removal"));
+    assert_eq!(fs::read(harness.path("state/state.json")).unwrap(), bytes);
+    assert_eq!(harness.calls(), calls);
 }

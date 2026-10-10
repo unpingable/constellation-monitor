@@ -9,6 +9,7 @@ use crate::condition::ConditionKey;
 use crate::util::{read_bounded, write_atomic};
 
 pub const STATE_SCHEMA: &str = "constellation.attention_state.v1";
+pub const RECURRENCE_STATE_SCHEMA: &str = "constellation.attention_state.v2";
 const MAX_STATE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -25,6 +26,8 @@ pub struct State {
     /// operator lists it in `retired_instances`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nq_watchers: BTreeMap<String, BTreeMap<String, i64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice_recurrence: Option<crate::recurrence::Memory>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -92,6 +95,7 @@ impl State {
             updated_at: 0,
             conditions: BTreeMap::new(),
             nq_watchers: BTreeMap::new(),
+            notice_recurrence: None,
         }
     }
 
@@ -104,8 +108,10 @@ impl State {
         let bytes = read_bounded(path, MAX_STATE_BYTES)?;
         let state: Self = serde_json::from_slice(&bytes)
             .map_err(|error| format!("state file {} is malformed: {error}", path.display()))?;
-        if state.schema != STATE_SCHEMA {
-            return Err(format!("state file schema is not {STATE_SCHEMA}"));
+        match (state.schema.as_str(), &state.notice_recurrence) {
+            (STATE_SCHEMA, None) => {}
+            (RECURRENCE_STATE_SCHEMA, Some(memory)) => memory.validate(site)?,
+            _ => return Err("invalid attention state schema/recurrence combination".into()),
         }
         if state.site != site {
             return Err(format!(
@@ -155,7 +161,25 @@ impl State {
                 clamp(&mut last.at);
             }
         }
+        if let Some(memory) = &mut self.notice_recurrence {
+            clamped += memory.reset_clock(now);
+        }
         clamped
+    }
+
+    /// Explicit v2 configuration admits migration; v1 never silently ignores v2 state.
+    pub fn configure_recurrence(&mut self, config: &crate::config::Config) -> Result<(), String> {
+        if config.notice_recurrence.is_some() {
+            if let Some(memory) = &self.notice_recurrence {
+                memory.check_binding(config)?;
+            } else {
+                self.notice_recurrence = Some(crate::recurrence::Memory::new(config)?);
+                self.schema = RECURRENCE_STATE_SCHEMA.into();
+            }
+        } else if self.notice_recurrence.is_some() {
+            return Err("v2 recurrence state requires v2 config; retire settled recurrence state explicitly before downgrade".into());
+        }
+        Ok(())
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
