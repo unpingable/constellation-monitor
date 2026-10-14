@@ -364,7 +364,7 @@ def list_view(store, include_recent=True, now=None):
         out.append("")
         out.append("RESOLVED IN THE LAST 24 H (%d)" % len(recent))
         for i in recent:
-            out.append("  %-14s %-34s %s -> %s  (tried: %s; %s)" % (i["id"], "%s %s" % (i["rule"], i["subject"]), i["opened_at"], i["resolved_at"],
+            out.append("  %-14s %-34s %s -> %s  (tried: %s; %s)" % (i["id"], "%s %s" % (i["rule"], i["subject"]), since(i), i["resolved_at"],
                        summary_line(store, i), i["resolution"]))
     return "\n".join(out)
 

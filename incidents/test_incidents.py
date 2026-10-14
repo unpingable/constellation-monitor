@@ -209,3 +209,13 @@ def test_led_to_action_metrics_per_rule(tmp_path):
     text = out.read_text()
     for o, n in (("incidents", 1), ("remediated", 1), ("remediation_verified", 1), ("needed_operator", 0), ("resolved_verified", 1)):
         assert 'constellation_incidents_by_rule{rule="service-down",outcome="%s"} %d' % (o, n) in text, text
+
+
+def test_a_resolved_row_starts_where_the_open_row_did(store):
+    """One incident, one start time: the condition's first_seen in both views (found by cartography #94)."""
+    inc.sync(store, report("present", True), {}, None, RULES, T0)
+    assert "failing since 2026-10-14T18:45:03Z" in inc.list_view(store, now=T0)
+    inc.sync(store, report("clear", False), {}, None, RULES, T0 + 60)
+    inc.sync(store, {"conditions": []}, {}, None, RULES, T0 + 61 + inc.CONFIRM_SECONDS)
+    assert store.incidents() == []
+    assert "attention-canary.service 2026-10-14T18:45:03Z -> " in inc.list_view(store, now=T0 + 62 + inc.CONFIRM_SECONDS)
