@@ -448,6 +448,87 @@ continues from the saved state; on a fresh install there is none, so it
 shows no intents until a condition has persisted past its bound across real
 passes.
 
+## Estate: services doing their jobs
+
+`[inputs.estate] path = "/var/lib/constellation-estate/estate.json"` (and an
+optional `max_age_seconds`, default 600) reads the estate collector's
+`constellation.estate/v1` document. See `estate/README.md`. Each service is
+one condition, `service:service-not-doing-its-job:<name>`:
+
+- `DOWN` or `DEGRADED` is present. After 600 s a notice is sent, and its text
+  ends with the service's own reason (for example `Now: stream_coverage
+  STALE; cursor_continuity STALE`).
+- `OK`, and a declared `PAUSED`, are clear. A pause never alerts. The daily
+  digest lists it under "Declared paused" with its start date.
+- `UNKNOWN`, or a document older than `max_age_seconds`, changes nothing.
+  The input is reported `not_current`.
+
+The rule is notice-only. Slack is the operator's channel, and the rule is not
+in NQ's page anchor set.
+
+### service-not-doing-its-job
+
+Open the estate dashboard row or `estate.json` for the named service:
+
+- **DOWN** names the unit or container that is not running.
+- **DEGRADED** names the required concerns of the project's own status
+  contract that are not `PRESENT`.
+
+Fix the service. If the outage is deliberate, declare it paused in the
+registry, with a reason, rather than letting it alert.
+
+## Suspensions
+
+```toml
+[[suspensions]]
+rule = "sqlite-health"
+target = "sqlite.freelist-labeler"   # optional; absent = every target of the rule
+owner = "constellation-operator"
+reason = "Driftwatch is declared paused; its store is frozen"
+resume_when = "Driftwatch resumes ingest"
+since = "2026-10-14"
+```
+
+A suspension is a declared, owned decision not to evaluate one definition for
+now. **Suspended is not healthy.** The condition is held exactly as it is: an
+open condition stays open, and no recovery is claimed, so nothing resolves.
+Nothing triggers while suspended. Each pass reports the condition with
+`"suspended": {owner, reason, resume_when, since}`. The daily digest lists it
+under "Suspended", apart from the active conditions. Removing the stanza
+resumes normal evaluation, and a condition that has recovered by then
+resolves as recovered. `check-config` refuses a suspension of an unknown rule,
+or one without an owner, reason, resume condition or start date.
+
+## Intent log
+
+Every delivery outcome of a pass (trigger or resolve, notice or page, accepted
+or not) is also appended to `intents.jsonl` beside the state, stamped with the
+pass time. The newest 1 MiB is kept, with one rotated `.1` file. A condition
+that settles is forgotten in the same pass that sends its resolve. The log is
+how a consumer, such as constellation-incidents, still sees that resolve. A
+failed append is a delivery problem: the pass exits 3 with
+`intent_log_unwritable`.
+
+## Daily digest
+
+Each trigger is notified once and an accepted notice is never resent, so
+a condition that stays active is silent after its first message. With
+
+```toml
+[digest]
+at_utc = "00:40"
+```
+
+the first pass after that UTC time each day sends one notice on
+`notice_route`. It lists every active condition (pages first, then oldest
+first, with how long each has been present) and every input that is not
+current, or says that nothing is active. A failed or refused digest is
+retried after 900 s; an accepted one is not repeated that day. The attempt
+is recorded in `digest.json` beside the state file, not in `state.json`, and
+appears as `digest` in that pass's report. A missing digest means the
+evaluator or its delivery is not working. Without `[digest]` nothing is
+sent.
+
 ## Runbook anchors owned here
 
 ### memory-pressure
@@ -512,7 +593,8 @@ key format (`{label}` alone) is resolved once as "no longer evaluated".
 
 These are operator acceptance items.
 
-- **Nothing watches the evaluator.** A pass that cannot run (a malformed
+- **Nothing watches the evaluator** except, when `[digest]` is configured,
+  the operator noticing a missing daily digest. A pass that cannot run (a malformed
   `state.json`, which is never replaced; the lock; a clock that moved
   backwards) exits 1 with no report and no notification, every minute,
   indefinitely; exit 3 is likewise only a failed oneshot unit. An NQ
@@ -527,9 +609,11 @@ These are operator acceptance items.
   recovery. Restoring the configuration re-pages as a new incident after the
   bound.
 - A removed or renamed NQ watcher holds its page open (unknown), keeps the
-  NQ input `not_current` (`unreported`) and every pass exits 3 until the
-  watcher returns. Disabling `service-down` clears it but resolves every
-  service-down page. Below-bound conditions of a removed watcher stay in the
+  NQ input `not_current` (`unreported`) and every pass exits 3, until either
+  the watcher returns or the operator lists its target in
+  `[inputs.nq_status] retired_targets = ["unit.service"]` (with the watcher id
+  in `retired_instances`). A retired target's open condition then resolves as
+  "no longer evaluated; recovery not observed". Below-bound conditions of a removed watcher stay in the
   state (unknown, harmless) until the watcher returns.
 - Watching a unit with no bounded target class (templated, escaped or long
   names) keeps the NQ input `not_current` (`untargetable`) permanently. It

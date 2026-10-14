@@ -959,12 +959,13 @@ fn rules_lists_the_closed_registry() {
             "memory-pressure",
             "nightshift-recurrence-missing",
             "sqlite-health",
+            "service-not-doing-its-job",
             "evaluator-input-unavailable",
             "docket-unsettled",
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][8]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][9]["disabled"], "input not deployed");
 }
 
 #[test]
@@ -3588,5 +3589,459 @@ fn held_page_with_stale_input_pages_at_window_expiry() {
             .iter()
             .any(|call| call.contains("pagerduty") && call.contains("-resolve-")),
         "{calls:?}"
+    );
+}
+
+/// A condition that stays active is restated once a day after `at_utc`;
+/// a failed digest is retried after the resend interval, an accepted one is not.
+#[test]
+fn daily_digest_restates_active_conditions_once_a_day() {
+    let mut harness = Harness::new();
+    harness
+        .host_posture("root")
+        .raw("[digest]\nat_utc = \"00:40\"\n");
+    let midnight = T0 - T0.rem_euclid(86_400) + 86_400;
+    let mut at = midnight;
+    // Unknown persists past the 600 s bound before the digest time.
+    while at < midnight + 2400 {
+        set(&harness, "root", ProjectedStateV1::Unknown, at);
+        let report = harness.evaluate(at);
+        assert!(report.get("digest").is_none(), "no digest before 00:40Z");
+        at += 300;
+    }
+    harness.fake("next_state", "failed");
+    set(&harness, "root", ProjectedStateV1::Unknown, at);
+    let report = harness.evaluate(at);
+    let summary = report["digest"]["summary"].as_str().unwrap();
+    assert!(summary.starts_with("DIGEST labelwatch "), "{summary}");
+    assert!(
+        summary.contains("page host-posture-unknown/root for "),
+        "{summary}"
+    );
+    assert!(summary.ends_with(". All inputs current."), "{summary}");
+    assert_eq!(report["digest"]["settled"], false);
+    let digests = |h: &Harness| {
+        h.calls()
+            .iter()
+            .filter(|c| c.contains("attention-digest"))
+            .count()
+    };
+    // Retried no sooner than the resend interval.
+    set(&harness, "root", ProjectedStateV1::Unknown, at + 300);
+    assert!(harness.evaluate(at + 300).get("digest").is_none());
+    harness.fake("next_state", "accepted");
+    set(&harness, "root", ProjectedStateV1::Unknown, at + 900);
+    assert_eq!(harness.evaluate(at + 900)["digest"]["settled"], true);
+    set(&harness, "root", ProjectedStateV1::Unknown, at + 3600);
+    assert!(
+        harness.evaluate(at + 3600).get("digest").is_none(),
+        "one accepted digest a day"
+    );
+    assert_eq!(digests(&harness), 2);
+    set(
+        &harness,
+        "root",
+        ProjectedStateV1::Unknown,
+        midnight + 86_400 + 2400,
+    );
+    assert!(
+        harness
+            .evaluate(midnight + 86_400 + 2400)
+            .get("digest")
+            .is_some(),
+        "next day"
+    );
+}
+
+fn write_estate(harness: &Harness, at: i64, services: &[(&str, &str, &str)]) {
+    let services: Vec<Value> = services
+        .iter()
+        .map(|(name, verdict, reason)| {
+            let mut s = serde_json::json!({"name": name, "verdict": verdict, "reason": reason, "since": rfc3339(T0)});
+            if *verdict == "PAUSED" {
+                s["declared"] = serde_json::json!({"state": "paused", "since": "2026-09-13", "reason": "operator pause"});
+            }
+            s
+        })
+        .collect();
+    let doc = serde_json::json!({"schema": "constellation.estate/v1", "site": "labelwatch",
+        "generated_at": rfc3339(at), "services": services});
+    fs::write(
+        harness.path("estate.json"),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+}
+
+fn estate_harness() -> Harness {
+    let mut harness = Harness::new();
+    let path = harness.path("estate.json");
+    harness.raw(&format!("[inputs.estate]\npath = \"{}\"\n", path.display()));
+    harness
+}
+
+/// A service that is running but not doing its job is noticed after the
+/// persistence bound, and the notice says why; a declared pause never is.
+#[test]
+fn estate_degraded_service_triggers_with_reason_and_pause_stays_quiet() {
+    let harness = estate_harness();
+    let rows = [
+        (
+            "driftwatch",
+            "PAUSED",
+            "declared paused since 2026-09-13: operator pause",
+        ),
+        ("weatherwatch", "DEGRADED", "observation.loss DEGRADED"),
+        ("factsapi", "OK", "running"),
+    ];
+    for offset in [0, 300] {
+        write_estate(&harness, T0 + offset, &rows);
+        assert!(
+            intents(&harness.evaluate(T0 + offset)).is_empty(),
+            "below the 600 s bound"
+        );
+    }
+    write_estate(&harness, T0 + 660, &rows);
+    let report = harness.evaluate(T0 + 660);
+    let fired = intents(&report);
+    let id = "constellation:labelwatch:service:service-not-doing-its-job:weatherwatch";
+    assert_eq!(
+        fired,
+        vec![(id.to_owned(), "notice".to_owned(), "trigger".to_owned())]
+    );
+    let record = report["intents"][0]["notification_id"].as_str().unwrap();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("Now: observation.loss DEGRADED. Incident: inc-"),
+        "{summary}"
+    );
+    let quiet = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| !c["id"].as_str().unwrap().ends_with(":driftwatch") || c["active"] == false);
+    assert!(quiet, "a declared pause never triggers");
+    // Recovery resolves after the confirmation window.
+    let healthy = [rows[0], ("weatherwatch", "OK", "running"), rows[2]];
+    for offset in [720, 900] {
+        write_estate(&harness, T0 + offset, &healthy);
+        harness.evaluate(T0 + offset);
+    }
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(id)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+}
+
+/// A stale estate document changes no condition and marks the input not current.
+#[test]
+fn stale_estate_is_unknown_not_clear() {
+    let harness = estate_harness();
+    write_estate(&harness, T0, &[("pds", "DOWN", "docker pds is exited")]);
+    let report = harness.evaluate(T0 + 601);
+    assert!(intents(&report).is_empty());
+    let input = report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "estate")
+        .unwrap()
+        .clone();
+    assert_eq!(input["status"], "not_current", "{input}");
+    assert!(
+        input["causes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "stale")
+    );
+}
+
+/// The digest lists declared-paused services so a pause is never invisible.
+#[test]
+fn digest_lists_declared_paused_services() {
+    let mut harness = estate_harness();
+    harness.raw("[digest]\nat_utc = \"00:00\"\n");
+    write_estate(
+        &harness,
+        T0,
+        &[
+            ("driftwatch", "PAUSED", "declared paused"),
+            ("pds", "OK", "running"),
+        ],
+    );
+    let report = harness.evaluate(T0);
+    let summary = report["digest"]["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("Declared paused: driftwatch since 2026-09-13"),
+        "{summary}"
+    );
+}
+
+/// A removed watcher's open page closes once the operator retires its target:
+/// resolved as "no longer evaluated" (never as recovery), and the NQ input is
+/// current again so passes stop exiting 3.
+#[test]
+fn retired_target_resolves_a_removed_watchers_page() {
+    let (mut harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let gone = |offset: i64| {
+        retimed("cron-down.json", t + offset, |value| {
+            value["components"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|component| {
+                    component["id"] != "unit-cron"
+                        && component["detail"]["result"]["context"]["instance_id"] != "unit-cron"
+                });
+        })
+    };
+    write_status(&status, &gone(60));
+    assert_eq!(
+        harness.evaluate_at(t + 63, &[]).status.code(),
+        Some(3),
+        "held open while unretired"
+    );
+    harness
+        .extra_config
+        .push_str("retired_instances = [\"unit-cron\"]\nretired_targets = [\"cron.service\"]\n");
+    write_status(&status, &gone(120));
+    let output = harness.evaluate_at(t + 123, &[]);
+    let report = harness.report();
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(CRON)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+    let resolves: Vec<String> = cron_calls(&harness)
+        .into_iter()
+        .filter(|call| call.contains("-resolve-"))
+        .collect();
+    assert!(!resolves.is_empty(), "{:?}", harness.calls());
+    let record = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == CRON && i["route_role"] == "notice")
+        .unwrap()["notification_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(&record)).unwrap();
+    assert!(
+        sent["summary"]
+            .as_str()
+            .unwrap()
+            .contains("no longer evaluated; recovery not observed"),
+        "{sent}"
+    );
+    let nq = report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["label"] == "nqd")
+        .unwrap()
+        .clone();
+    assert_eq!(nq["status"], "ok", "{nq}");
+    assert_eq!(output.status.code(), Some(0));
+}
+
+fn saved_check_harness(outcome_file: &str) -> Harness {
+    let mut harness = Harness::new();
+    let result = harness.path("labeler.json");
+    fs::copy(Path::new(FIXTURES).join(outcome_file), &result).unwrap();
+    harness.raw(&format!(
+        "[[inputs.saved_checks]]\nreference = \"sqlite.freelist-labeler\"\npath = \"{}\"\nmax_age_seconds = 3600\n",
+        result.display()
+    ));
+    harness
+}
+
+/// A declared suspension holds the condition as it is: an open one stays open
+/// (no resolve is claimed), nothing triggers while suspended, the report and
+/// digest say so, and lifting it resumes normal evaluation.
+#[test]
+fn suspension_holds_an_open_condition_without_resolving_or_triggering() {
+    let mut harness = saved_check_harness("saved-check-result-failed.json");
+    let read_at = |h: &Harness| {
+        let v: Value = serde_json::from_slice(&fs::read(h.path("labeler.json")).unwrap()).unwrap();
+        at(v["detail"]["read_attempted_at"].as_str().unwrap())
+    };
+    let t = read_at(&harness);
+    for offset in [0, 300, 660] {
+        harness.evaluate(t + offset);
+    }
+    let id = "constellation:labelwatch:nq:sqlite-health:sqlite.freelist-labeler";
+    assert_eq!(
+        harness.state()["conditions"][id]["active"],
+        true,
+        "open before the suspension"
+    );
+    let calls_before = harness.calls().len();
+    harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\ntarget = \"sqlite.freelist-labeler\"\nowner = \"operator\"\nreason = \"Driftwatch paused; store frozen\"\nresume_when = \"Driftwatch resumes ingest\"\nsince = \"2026-10-14\"\n[digest]\nat_utc = \"00:00\"\n");
+    // Even with the check now passing, a suspended condition is not resolved.
+    fs::copy(
+        Path::new(FIXTURES).join("saved-check-result-passed.json"),
+        harness.path("labeler.json"),
+    )
+    .unwrap();
+    let first = harness.evaluate(t + 720);
+    let digest = first["digest"]["summary"].as_str().unwrap().to_owned();
+    for offset in [900, 1200] {
+        harness.evaluate(t + offset);
+    }
+    let report = harness.report();
+    let condition = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        condition["active"], true,
+        "suspended is not healthy: {condition}"
+    );
+    assert_eq!(condition["suspended"]["owner"], "operator");
+    assert_eq!(
+        harness
+            .calls()
+            .iter()
+            .filter(|c| c.contains("sqlite-health"))
+            .count(),
+        harness.calls()[..calls_before]
+            .iter()
+            .filter(|c| c.contains("sqlite-health"))
+            .count(),
+        "no intent while suspended: {:?}",
+        harness.calls()
+    );
+    assert!(
+        !digest.contains("1 active"),
+        "a suspended condition is not listed as active: {digest}"
+    );
+    assert!(
+        digest.contains("sqlite-health/sqlite.freelist-labeler (owner operator"),
+        "{digest}"
+    );
+    // Lifting the suspension resumes evaluation: the passing check now resolves it.
+    harness.extra_config = harness
+        .extra_config
+        .split("[[suspensions]]")
+        .next()
+        .unwrap()
+        .to_owned();
+    for offset in [1260, 1500] {
+        harness.evaluate(t + offset);
+    }
+    assert!(
+        harness.calls()[calls_before..]
+            .iter()
+            .any(|c| c.contains("sqlite-health") && c.contains("-resolve-")),
+        "{:?}",
+        harness.calls()
+    );
+}
+
+/// A suspension must name an owner, a reason, a resume condition and a rule that exists.
+#[test]
+fn suspension_without_owner_or_known_rule_is_refused() {
+    let mut harness = Harness::new();
+    harness.raw("[[suspensions]]\nrule = \"no-such-rule\"\nowner = \"o\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
+    assert_eq!(
+        harness
+            .command(&[
+                "check-config",
+                "--config",
+                harness.config_path().to_str().unwrap()
+            ])
+            .status
+            .code(),
+        Some(2)
+    );
+    let mut harness = Harness::new();
+    harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\nowner = \"\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
+    assert_eq!(
+        harness
+            .command(&[
+                "check-config",
+                "--config",
+                harness.config_path().to_str().unwrap()
+            ])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+/// A suspension is policy: adding one changes the attention policy digest, so
+/// the declared-versus-deployed check sees it; with none the digest is unchanged.
+#[test]
+fn suspension_changes_the_policy_digest() {
+    let digest = |h: &Harness| -> String {
+        let out = h.command(&[
+            "check-config",
+            "--config",
+            h.config_path().to_str().unwrap(),
+        ]);
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["attention_policy_digest"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let mut harness = Harness::new();
+    let plain = digest(&harness);
+    harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\nowner = \"o\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
+    assert_ne!(digest(&harness), plain);
+}
+
+/// Every delivery outcome is appended to intents.jsonl, so the resolve of a
+/// condition the evaluator forgets in the same pass is still visible to
+/// consumers such as constellation-incidents.
+#[test]
+fn intent_log_keeps_the_resolve_of_a_forgotten_condition() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 300, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [720, 780, 900] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert!(
+        harness.state()["conditions"].get(UNKNOWN_ROOT).is_none(),
+        "forgotten once settled"
+    );
+    let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+    let lines: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let actions: Vec<(&str, &str)> = lines
+        .iter()
+        .filter(|l| l["condition_id"] == UNKNOWN_ROOT)
+        .map(|l| {
+            (
+                l["action"].as_str().unwrap(),
+                l["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        actions.contains(&("trigger", "accepted")) && actions.contains(&("resolve", "accepted")),
+        "{actions:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|l| l["at"].is_string() && l["stable_event_id"].is_string())
     );
 }

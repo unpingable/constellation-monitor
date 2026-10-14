@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use constellation_attention::build_info;
 use constellation_attention::config::Config;
 use constellation_attention::engine::{self, PassOptions};
-use constellation_attention::intent::policy_digest;
+use constellation_attention::intent::policy_digest_with;
 use constellation_attention::registry::{
     PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, RULES,
     UNKNOWN_GAP_SECONDS,
@@ -140,7 +140,7 @@ fn run() -> Result<u8, (u8, String)> {
                 "valid": true,
                 "site": config.site,
                 "registry": REGISTRY_VERSION,
-                "attention_policy_digest": policy_digest(&rules, &config.remediation.targets),
+                "attention_policy_digest": policy_digest_with(&rules, &config.remediation.targets, &config.suspensions),
                 "rules": engine::rules_report(&rules, &config),
             }));
             Ok(0)

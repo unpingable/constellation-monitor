@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::condition::{ConditionKey, validate_token};
 use crate::config::{
-    Config, EffectiveRule, HostPostureInput, NightshiftInput, NqStatusInput, NqStatusSource,
-    SavedCheckInput,
+    Config, EffectiveRule, EstateInput, HostPostureInput, NightshiftInput, NqStatusInput,
+    NqStatusSource, SavedCheckInput,
 };
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
@@ -177,6 +177,9 @@ pub fn read_all(context: &Context<'_>) -> InputsRead {
     }
     for input in &context.config.inputs.saved_checks {
         saved_check(context, input, &mut read);
+    }
+    if let Some(input) = &context.config.inputs.estate {
+        estate(context, input, &mut read);
     }
     for report in &mut read.reports {
         if report.causes.is_empty() {
@@ -1175,4 +1178,119 @@ fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut Inputs
         &identity,
         note,
     );
+}
+
+const ESTATE_LIMIT: usize = 4 * 1024 * 1024;
+pub const ESTATE_LABEL: &str = "estate";
+
+/// `constellation.estate/v1`: one verdict per service. DOWN and DEGRADED are
+/// present; OK and a declared PAUSED are clear; UNKNOWN changes nothing. A
+/// stale document makes every service unknown.
+fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
+    let mut report = InputReport {
+        causes: Vec::new(),
+        label: ESTATE_LABEL.to_owned(),
+        kind: "estate",
+        component: "estate",
+        source: input.path.display().to_string(),
+        status: InputStatus::Unavailable,
+        error: None,
+        identity: Value::Null,
+    };
+    let document = match load_json(context, None, Some(&input.path), ESTATE_LIMIT) {
+        Ok((_, value)) => value,
+        Err(error) => {
+            report.error = Some(error);
+            read.reports.push(report);
+            return;
+        }
+    };
+    if document.get("schema").and_then(Value::as_str) != Some("constellation.estate/v1") {
+        report.fault(
+            "unrecognised",
+            InputStatus::NotCurrent,
+            "not constellation.estate/v1",
+        );
+        read.reports.push(report);
+        return;
+    }
+    let generated = document
+        .get("generated_at")
+        .and_then(Value::as_str)
+        .map(rfc3339_seconds);
+    let services = document
+        .get("services")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let paused: Vec<Value> = services
+        .iter()
+        .filter(|s| s.get("verdict").and_then(Value::as_str) == Some("PAUSED"))
+        .map(|s| {
+            json!({
+                "name": s.get("name"),
+                "since": s.pointer("/declared/since"),
+                "reason": s.pointer("/declared/reason").and_then(Value::as_str).map(|r| truncate(r, 160)),
+            })
+        })
+        .collect();
+    report.identity = json!({
+        "generated_at": document.get("generated_at"),
+        "counts": document.get("counts"),
+        "paused": paused,
+    });
+    report.status = InputStatus::Ok;
+    let stale = match generated {
+        Some(Ok(at)) if context.now - at <= input.max_age_seconds => None,
+        Some(Ok(at)) => Some(format!("estate document is {} s old", context.now - at)),
+        _ => Some("estate document has no valid generated_at".to_owned()),
+    };
+    if let Some(note) = &stale {
+        report.fault("stale", InputStatus::NotCurrent, note);
+    }
+    if services.is_empty() {
+        report.fault(
+            "empty",
+            InputStatus::NotCurrent,
+            "estate document lists no services",
+        );
+    }
+    read.reports.push(report);
+    for service in &services {
+        let Some(name) = service.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let verdict = service
+            .get("verdict")
+            .and_then(Value::as_str)
+            .unwrap_or("UNKNOWN");
+        let reason = service
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let observation = match (stale.is_some(), verdict) {
+            (true, _) => Observation::Unknown,
+            (false, "DOWN" | "DEGRADED") => Observation::Present,
+            (false, "OK" | "PAUSED") => Observation::Clear,
+            _ => Observation::Unknown,
+        };
+        let reference = json!({
+            "service": name,
+            "verdict": verdict,
+            "since": service.get("since"),
+            "reason": truncate(reason, 200),
+            "generated_at": document.get("generated_at"),
+        });
+        push(
+            context,
+            read,
+            "service-not-doing-its-job",
+            "service",
+            Some(name),
+            ESTATE_LABEL,
+            observation,
+            &reference,
+            format!("{verdict}: {}", truncate(reason, 200)),
+        );
+    }
 }

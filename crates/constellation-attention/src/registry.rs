@@ -100,6 +100,8 @@ pub enum InputKind {
     HostPostureOrNqStatus,
     Nightshift,
     SavedCheck,
+    /// The estate collector's per-service verdicts.
+    Estate,
     /// The evaluator's own view of whether its configured inputs are readable.
     Evaluator,
     /// Not deployed; the rule exists so the registry matches Cartography.
@@ -191,7 +193,7 @@ pub struct Rule {
 const CARTOGRAPHY: &str = "cartography:architecture/beta-observability/docs/RUNBOOKS.md";
 const MONITOR: &str = "constellation-monitor:docs/ATTENTION.md";
 
-pub const RULES: [Rule; 10] = [
+pub const RULES: [Rule; 11] = [
     Rule {
         id: "host-posture-unknown",
         version: 1,
@@ -337,6 +339,27 @@ pub const RULES: [Rule; 10] = [
         runbook_document: MONITOR,
         operator_response: "Inspect the saved check's retained result (nq saved-check result) and the named SQLite file; do not edit the store.",
         condition: "The newest retained NQ saved-check result for this reference failed.",
+        disabled: None,
+    },
+    Rule {
+        id: "service-not-doing-its-job",
+        version: 1,
+        default_class: Class::Notice,
+        page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
+        severity: "warning",
+        component: Some("service"),
+        input: InputKind::Estate,
+        threshold_meaning: ThresholdMeaning::Persistence,
+        default_threshold_seconds: 600,
+        fixed_persistence_seconds: 0,
+        runbook_anchor: "service-not-doing-its-job",
+        runbook_document: MONITOR,
+        operator_response: "Read the service's row in the estate dashboard or /var/lib/constellation-estate/estate.json: DOWN names the unit or container; DEGRADED names the required concerns of the project's own status contract that are not present.",
+        condition: "An estate service is down, or running but a required concern of its own status contract is not present.",
         disabled: None,
     },
     Rule {

@@ -247,7 +247,8 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 )]
 pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let rules = config.effective_rules();
-    let digest = intent::policy_digest(&rules, &config.remediation.targets);
+    let digest =
+        intent::policy_digest_with(&rules, &config.remediation.targets, &config.suspensions);
     let state_dir = config.state_dir();
     let output_dir = if options.dry_run {
         state_dir.join("dry-run")
@@ -346,6 +347,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             || observed.contains_key(id)
             || condition.key.rule == INPUT_UNAVAILABLE
             || !current_labels.contains(&condition.input_label)
+            || retired_target(config, condition)
         {
             continue;
         }
@@ -454,6 +456,11 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         let rule = rule_for(&rules, &condition.key.rule);
         let (observation, note) = if let Some(item) = item {
             (item.observation, item.note.clone())
+        } else if retired_target(config, condition) {
+            (
+                Observation::Removed,
+                "target retired from supervision by the operator".into(),
+            )
         } else if condition.key.rule == INPUT_UNAVAILABLE {
             // Every configured input reports every fault class, so an
             // unreported one names a removed input or an older key format.
@@ -492,6 +499,16 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     "rule disabled or its input kind not configured".into(),
                 ),
             }
+        };
+        // A suspended definition is held, never evaluated: an open condition stays
+        // open (no recovery is claimed) and nothing triggers.
+        let suspension = config.suspensions.iter().find(|s| s.covers(&condition.key));
+        let (observation, note) = match suspension {
+            Some(s) => (
+                Observation::Unknown,
+                format!("suspended by {}: {}", s.owner, s.reason),
+            ),
+            None => (observation, note),
         };
         let persistence = rule.map_or(0, EffectiveRule::persistence_seconds);
         // A resolve clears first_seen and clear_since: keep when the window
@@ -548,6 +565,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             "response_policy": policy.as_str(),
             "remediation_window_until": window_until,
             "page_deferred": condition.page_deferred,
+            "suspended": suspension,
         }));
     }
 
@@ -1021,6 +1039,15 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             .collect()
     };
     delivery_problem |= !unresolved.is_empty();
+    // After the state is saved: a failed digest never holds a transition back.
+    let digest_attempt = if options.dry_run {
+        None
+    } else {
+        crate::digest::send_if_due(config, &state, &rules, &read.reports, &digest, now)?
+    };
+    if let Some(attempt) = &digest_attempt {
+        delivery_problem |= !attempt["settled"].as_bool().unwrap_or(false);
+    }
     let input_problem = read
         .reports
         .iter()
@@ -1040,10 +1067,25 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "unresolved_deliveries": unresolved,
         "dropped_triggers": dropped_triggers,
     });
+    let mut report = report;
+    if let Some(attempt) = digest_attempt {
+        report["digest"] = attempt;
+    }
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;
     write_atomic(&output_dir.join("report.json"), &bytes)?;
+    // Every delivery outcome is also appended to a bounded log beside the state,
+    // so a consumer (constellation-incidents) sees a resolve even when the
+    // condition is forgotten in the same pass. A failed append is a delivery
+    // problem: the pass exits 3 and says so.
+    if !options.dry_run
+        && !intent_reports.is_empty()
+        && let Err(error) = append_intent_log(&state_dir, &format_seconds(now), &intent_reports)
+    {
+        eprintln!("intent_log_unwritable {error}");
+        delivery_problem = true;
+    }
     Ok(PassResult {
         report,
         exit_code: if input_problem || delivery_problem {
@@ -1052,6 +1094,45 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             0
         },
     })
+}
+
+/// An NQ-status condition whose target the operator listed in
+/// `[inputs.nq_status] retired_targets`.
+fn retired_target(config: &Config, condition: &ConditionState) -> bool {
+    config.inputs.nq_status.as_ref().is_some_and(|input| {
+        condition.input_label == input.label
+            && condition
+                .key
+                .target_class
+                .as_ref()
+                .is_some_and(|target| input.retired_targets.contains(target))
+    })
+}
+
+/// The newest 1 MiB of delivery outcomes, with one rotated predecessor.
+const INTENT_LOG_MAX: u64 = 1024 * 1024;
+
+fn append_intent_log(state_dir: &Path, at: &str, reports: &[IntentReport]) -> Result<(), String> {
+    use std::io::Write as _;
+    let path = state_dir.join("intents.jsonl");
+    if fs::metadata(&path).is_ok_and(|meta| meta.len() > INTENT_LOG_MAX) {
+        fs::rename(&path, state_dir.join("intents.jsonl.1")).map_err(|error| error.to_string())?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut lines = String::new();
+    for report in reports {
+        let mut value = serde_json::to_value(report).map_err(|error| error.to_string())?;
+        value["at"] = json!(at);
+        lines.push_str(&serde_json::to_string(&value).map_err(|error| error.to_string())?);
+        lines.push('\n');
+    }
+    file.write_all(lines.as_bytes())
+        .map_err(|error| error.to_string())
 }
 
 fn prune_intents(dir: &Path, state: &State) {

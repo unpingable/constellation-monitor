@@ -46,6 +46,18 @@ impl Action {
 /// class and threshold. It names the policy that decided the intent.
 #[must_use]
 pub fn policy_digest(rules: &[EffectiveRule], remediation: &[RemediationTarget]) -> String {
+    policy_digest_with(rules, remediation, &[])
+}
+
+/// The policy digest including declared suspensions. A suspension changes
+/// what is evaluated, so it is part of the policy; with none, the digest is
+/// exactly [`policy_digest`]'s.
+#[must_use]
+pub fn policy_digest_with(
+    rules: &[EffectiveRule],
+    remediation: &[RemediationTarget],
+    suspensions: &[crate::config::Suspension],
+) -> String {
     let rules: Vec<Value> = rules
         .iter()
         .map(|rule| {
@@ -60,11 +72,21 @@ pub fn policy_digest(rules: &[EffectiveRule], remediation: &[RemediationTarget])
             })
         })
         .collect();
-    let bytes = serde_jcs::to_vec(
-        &json!({"registry": REGISTRY_VERSION, "rules": rules, "remediation": remediation}),
-    )
-    .unwrap_or_default();
+    let mut policy =
+        json!({"registry": REGISTRY_VERSION, "rules": rules, "remediation": remediation});
+    if !suspensions.is_empty() {
+        policy["suspensions"] = json!(suspensions);
+    }
+    let bytes = serde_jcs::to_vec(&policy).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+/// `inc-` and the first 8 hex digits of sha256(condition id): the stable reference of
+/// the incident a condition belongs to, independent of any definition revision.
+#[must_use]
+pub fn incident_ref(condition_id: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(condition_id.as_bytes()));
+    format!("inc-{}", &digest[..8])
 }
 
 /// `{site}-{rule}[-{target_class}]-{action}-{unix_seconds}`.
@@ -103,13 +125,29 @@ pub struct IntentInput<'a> {
 fn summary(input: &IntentInput<'_>) -> String {
     let id = input.key.id();
     match input.action {
-        Action::Trigger => format!(
-            "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
-            input.rule.class.as_str(),
-            input.rule.rule.condition,
-            input.persisted_seconds,
-            input.rule.persistence_seconds(),
-        ),
+        Action::Trigger => {
+            let mut text = format!(
+                "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
+                input.rule.class.as_str(),
+                input.rule.rule.condition,
+                input.persisted_seconds,
+                input.rule.persistence_seconds(),
+            );
+            // An estate verdict carries the service's own reason (unit state or the
+            // required concerns that are not present); say it, not just the rule.
+            if input.rule.rule.id == "service-not-doing-its-job"
+                && let Some(reason) = input.reference.get("reason").and_then(Value::as_str)
+                && !reason.is_empty()
+            {
+                text.push_str(" Now: ");
+                text.push_str(reason.trim_end_matches('.'));
+                text.push('.');
+            }
+            // The incident this condition belongs to (constellation-incidents derives the
+            // same id from the condition key): `constellation-incidents show <id>`.
+            text.push_str(&format!(" Incident: {}.", incident_ref(&id)));
+            text
+        }
         Action::Resolve => match input.resolve_reason {
             ResolveReason::Recovered => format!(
                 "RESOLVE {id} [{}]: underlying state clear for at least {} s.",
@@ -271,6 +309,15 @@ pub fn with_event_id(intent: &Value, stable_event_id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same id constellation-incidents derives (incidents/test_incidents.py pins it too).
+    #[test]
+    fn incident_ref_matches_the_incident_store() {
+        assert_eq!(
+            incident_ref("constellation:labelwatch:service:service-down:attention-canary.service"),
+            "inc-e048fb3e"
+        );
+    }
     use crate::condition::ConditionKey;
     use crate::config::Config;
 

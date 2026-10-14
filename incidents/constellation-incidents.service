@@ -1,0 +1,12 @@
+[Unit]
+Description=Constellation incident continuity sync (one pass)
+Documentation=file:///usr/local/lib/constellation-incidents/README.md
+After=constellation-attention.service
+
+[Service]
+Type=oneshot
+# Root: reads the attention evaluator's state (nq, 0600) and the remediation consumer's state (root, 0700).
+ExecStart=/usr/bin/python3 -I /usr/local/lib/constellation-incidents/constellation-incidents.py sync
+StateDirectory=constellation-incidents
+StateDirectoryMode=0755
+TimeoutStartSec=120

@@ -1,0 +1,14 @@
+[Unit]
+Description=Constellation estate collector (is every service up and doing its job?)
+Documentation=file:///usr/share/doc/constellation-attention/ATTENTION.md
+After=docker.service
+
+[Service]
+Type=oneshot
+# Root: reads systemd and Docker state and runs each project's own status producer
+# (as that project's user where the registry says so). Writes one JSON document.
+ExecStart=/usr/bin/python3 -I /usr/local/lib/constellation-estate/constellation-estate-collect.py --registry /etc/constellation-estate/estate.json --output /var/lib/constellation-estate/estate.json
+StateDirectory=constellation-estate
+StateDirectoryMode=0755
+TimeoutStartSec=300
+Nice=10

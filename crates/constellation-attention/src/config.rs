@@ -40,6 +40,68 @@ pub struct Config {
     pub rules: BTreeMap<String, RuleOverride>,
     #[serde(default)]
     pub remediation: Remediation,
+    /// `[digest]`: one notice a day listing every active condition and every
+    /// input that is not current. Absent, no digest is sent.
+    pub digest: Option<Digest>,
+    /// `[[suspensions]]`: definitions the owner has deliberately suspended.
+    #[serde(default)]
+    pub suspensions: Vec<Suspension>,
+}
+
+/// A declared, owned suspension of one rule, or of one rule on one target.
+/// Suspended is not healthy: the condition is held as it is (an open one stays
+/// open, nothing triggers or resolves), reported as suspended with its reason,
+/// and listed apart in the daily digest.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Suspension {
+    pub rule: String,
+    /// Target class (unit, saved-check reference, service); absent = every target.
+    pub target: Option<String>,
+    pub owner: String,
+    pub reason: String,
+    /// The condition under which the suspension must be lifted.
+    pub resume_when: String,
+    /// When it was declared (RFC 3339 date or time).
+    pub since: String,
+}
+
+impl Suspension {
+    #[must_use]
+    pub fn covers(&self, key: &crate::condition::ConditionKey) -> bool {
+        self.rule == key.rule
+            && self
+                .target
+                .as_ref()
+                .is_none_or(|target| key.target_class.as_ref() == Some(target))
+    }
+}
+
+/// A trigger is notified once; a condition that stays active is otherwise
+/// silent. The digest restates what is still open, and its absence shows a
+/// silent evaluator.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Digest {
+    /// UTC time of day, `HH:MM`, after which the day's digest is due.
+    pub at_utc: String,
+}
+
+impl Digest {
+    /// Seconds after UTC midnight.
+    pub fn offset_seconds(&self) -> Result<i64, String> {
+        let invalid = || "digest.at_utc must be HH:MM (UTC)".to_owned();
+        let (hours, minutes) = self.at_utc.split_once(':').ok_or_else(invalid)?;
+        if hours.len() != 2 || minutes.len() != 2 {
+            return Err(invalid());
+        }
+        let hours: i64 = hours.parse().map_err(|_| invalid())?;
+        let minutes: i64 = minutes.parse().map_err(|_| invalid())?;
+        if !(0..24).contains(&hours) || !(0..60).contains(&minutes) {
+            return Err(invalid());
+        }
+        Ok(hours * 3600 + minutes * 60)
+    }
 }
 
 /// `[remediation]`: per-target `response_policy` (cartography #55).
@@ -156,6 +218,24 @@ pub struct Inputs {
     pub nightshift: Option<NightshiftInput>,
     #[serde(default)]
     pub saved_checks: Vec<SavedCheckInput>,
+    /// The estate collector's per-service verdicts (`constellation.estate/v1`).
+    pub estate: Option<EstateInput>,
+}
+
+/// `[inputs.estate]`: every service the site is responsible for, with whether it
+/// is running and doing its job by its own status contract.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EstateInput {
+    /// JSON file written by `constellation-estate-collect`.
+    pub path: PathBuf,
+    /// The document's `generated_at` must be at most this old.
+    #[serde(default = "default_estate_age")]
+    pub max_age_seconds: i64,
+}
+
+const fn default_estate_age() -> i64 {
+    600
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -196,6 +276,12 @@ pub struct NqStatusInput {
     /// it stops evaluating, even after it leaves the window.
     #[serde(default)]
     pub retired_instances: Vec<String>,
+    /// Targets (unit names, filesystem targets) the operator has retired from
+    /// supervision. An open condition on a retired target that NQ no longer
+    /// reports resolves as "no longer evaluated" instead of being held open,
+    /// unknown, for ever.
+    #[serde(default)]
+    pub retired_targets: Vec<String>,
     /// argv printing `nq.status_snapshot.v3` JSON, e.g.
     /// `["/usr/bin/nq","--config","/etc/nq/nqd-ops.toml","--json","status","export"]`.
     pub command: Option<Vec<String>>,
@@ -337,6 +423,30 @@ impl Config {
                 );
             }
         }
+        if let Some(digest) = &self.digest {
+            digest.offset_seconds()?;
+        }
+        for suspension in &self.suspensions {
+            if crate::registry::rule(&suspension.rule).is_none() {
+                return Err(format!(
+                    "suspension names unknown rule {:?}",
+                    suspension.rule
+                ));
+            }
+            for (field, value) in [
+                ("owner", &suspension.owner),
+                ("reason", &suspension.reason),
+                ("resume_when", &suspension.resume_when),
+                ("since", &suspension.since),
+            ] {
+                if value.trim().is_empty() || value.len() > 300 {
+                    return Err(format!(
+                        "suspension of {} needs a {field} (1..=300 bytes)",
+                        suspension.rule
+                    ));
+                }
+            }
+        }
         absolute("nq.program", &self.nq.program)?;
         absolute("nq.config", &self.nq.config)?;
         route_reference("routes.notice_route", &self.routes.notice_route)?;
@@ -388,6 +498,10 @@ impl Config {
         if let Some(input) = &self.inputs.nightshift {
             label(&input.label)?;
             absolute("nightshift.store_path", &input.store_path)?;
+        }
+        if let Some(input) = &self.inputs.estate {
+            absolute("inputs.estate.path", &input.path)?;
+            age("inputs.estate.max_age_seconds", input.max_age_seconds)?;
         }
         for input in &self.inputs.saved_checks {
             label(&input.reference)?;
@@ -524,6 +638,7 @@ impl Config {
             }
             InputKind::Nightshift => self.inputs.nightshift.is_some(),
             InputKind::SavedCheck => !self.inputs.saved_checks.is_empty(),
+            InputKind::Estate => self.inputs.estate.is_some(),
             InputKind::Evaluator => true,
             InputKind::NotDeployed => false,
         }
