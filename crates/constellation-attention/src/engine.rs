@@ -247,7 +247,8 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
 )]
 pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let rules = config.effective_rules();
-    let digest = intent::policy_digest(&rules, &config.remediation.targets);
+    let digest =
+        intent::policy_digest_with(&rules, &config.remediation.targets, &config.suspensions);
     let state_dir = config.state_dir();
     let output_dir = if options.dry_run {
         state_dir.join("dry-run")

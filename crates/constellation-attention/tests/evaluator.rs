@@ -3979,3 +3979,24 @@ fn suspension_without_owner_or_known_rule_is_refused() {
         Some(2)
     );
 }
+
+/// A suspension is policy: adding one changes the attention policy digest, so
+/// the declared-versus-deployed check sees it; with none the digest is unchanged.
+#[test]
+fn suspension_changes_the_policy_digest() {
+    let digest = |h: &Harness| -> String {
+        let out = h.command(&[
+            "check-config",
+            "--config",
+            h.config_path().to_str().unwrap(),
+        ]);
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["attention_policy_digest"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let mut harness = Harness::new();
+    let plain = digest(&harness);
+    harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\nowner = \"o\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
+    assert_ne!(digest(&harness), plain);
+}

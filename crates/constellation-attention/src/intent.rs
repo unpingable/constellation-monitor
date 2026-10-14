@@ -46,6 +46,18 @@ impl Action {
 /// class and threshold. It names the policy that decided the intent.
 #[must_use]
 pub fn policy_digest(rules: &[EffectiveRule], remediation: &[RemediationTarget]) -> String {
+    policy_digest_with(rules, remediation, &[])
+}
+
+/// The policy digest including declared suspensions. A suspension changes
+/// what is evaluated, so it is part of the policy; with none, the digest is
+/// exactly [`policy_digest`]'s.
+#[must_use]
+pub fn policy_digest_with(
+    rules: &[EffectiveRule],
+    remediation: &[RemediationTarget],
+    suspensions: &[crate::config::Suspension],
+) -> String {
     let rules: Vec<Value> = rules
         .iter()
         .map(|rule| {
@@ -60,10 +72,12 @@ pub fn policy_digest(rules: &[EffectiveRule], remediation: &[RemediationTarget])
             })
         })
         .collect();
-    let bytes = serde_jcs::to_vec(
-        &json!({"registry": REGISTRY_VERSION, "rules": rules, "remediation": remediation}),
-    )
-    .unwrap_or_default();
+    let mut policy =
+        json!({"registry": REGISTRY_VERSION, "rules": rules, "remediation": remediation});
+    if !suspensions.is_empty() {
+        policy["suspensions"] = json!(suspensions);
+    }
+    let bytes = serde_jcs::to_vec(&policy).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
