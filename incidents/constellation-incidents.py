@@ -370,7 +370,7 @@ def main(argv=None):
     s.add_argument("--state", default="/var/lib/constellation-attention/state.json")
     s.add_argument("--consumer", default="/var/lib/constellation-remediation/consumer/state.json")
     s.add_argument("--rules", default="/usr/bin/constellation-attention")
-    s.add_argument("--metrics", default="/var/lib/constellation-telemetry/incidents.prom")
+    s.add_argument("--metrics", default="/var/lib/prometheus/node-exporter/constellation-incidents.prom")
     sub.add_parser("list")
     sh = sub.add_parser("show"); sh.add_argument("ref")
     ak = sub.add_parser("ack"); ak.add_argument("ref"); ak.add_argument("--by", required=True); ak.add_argument("--note", default="")
