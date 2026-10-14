@@ -260,6 +260,40 @@ def coverage(reg, timeout):
     return unregistered
 
 
+def deployed_digest(d, timeout):
+    """The deployed identity of one definition, as its own subsystem computes it."""
+    kind = d["kind"]
+    if kind == "file":
+        with open(d["path"], "rb") as fh:
+            return "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+    if kind == "attention-policy":
+        rc, out, err = run(["/usr/bin/constellation-attention", "check-config", "--config", d["config"]], timeout, user="nq")
+        if rc != 0:
+            raise RuntimeError("check-config refused the deployed config: %s" % err.strip()[-200:])
+        return json.loads(out)["attention_policy_digest"]
+    if kind == "nq-saved-check":
+        rc, out, err = run(["/usr/bin/nq", "--config", d["nq_config"], "--json", "saved-check", "inspect", d["reference"]], timeout, user="nq")
+        if rc != 0:
+            raise RuntimeError("saved check %s is not installed: %s" % (d["reference"], err.strip()[-200:]))
+        return json.loads(out)["definition_digest"]
+    raise ValueError("unknown definition kind %r" % kind)
+
+
+def definitions(reg, timeout):
+    """Declared versus deployed: every pinned definition must be deployed exactly as declared."""
+    concerns = []
+    for d in reg.get("definitions", []):
+        try:
+            got = deployed_digest(d, timeout)
+            state = "PRESENT" if got == d["digest"] else "DEGRADED"
+            reason = "deployed as declared" if state == "PRESENT" else "drift: deployed %s, declared %s" % (got[:19], d["digest"][:19])
+        except Exception as e:  # noqa: BLE001 - a definition that cannot be read is not "as declared"
+            state, reason = "UNKNOWN", "%s: %s" % (type(e).__name__, str(e)[:200])
+        concerns.append({"id": "definition." + d["id"], "required": True, "state": state, "reason": reason,
+                         "owner": d.get("owner", "")})
+    return concerns
+
+
 def validate(reg):
     if reg.get("schema") != REGISTRY_SCHEMA:
         raise ValueError("registry schema must be " + REGISTRY_SCHEMA)
@@ -320,6 +354,17 @@ def main(argv=None):
                    concerns=[{"id": "estate.coverage.complete", "required": True, "state": state, "reason": ""}])
     except Exception as e:  # noqa: BLE001 - an unknown inventory is never "complete"
         cov.update(verdict="UNKNOWN", reason="inventory failed: %s" % str(e)[:200], failing=[], concerns=[])
+    defs = definitions(reg, a.timeout)
+    if defs:
+        bad = [x for x in defs if x["state"] != "PRESENT"]
+        services.append({"name": "estate-definitions", "role": "alert and policy definitions deployed exactly as declared",
+                         "runtime": {"kind": "registry", "up": True, "state": "checked"}, "concerns": defs,
+                         "verdict": "DEGRADED" if any(x["state"] == "DEGRADED" for x in bad) else "UNKNOWN" if bad else "OK",
+                         "reason": ("; ".join("%s %s" % (x["id"][len("definition."):], x["reason"]) for x in bad)[:400]
+                                    if bad else "%d definitions deployed as declared" % len(defs)),
+                         "failing": [x["id"] for x in bad]})
+        prev = previous.get("estate-definitions")
+        services[-1]["since"] = prev["since"] if prev and prev.get("verdict") == services[-1]["verdict"] and prev.get("since") else now_iso(started)
     prev = previous.get(cov["name"])
     cov["since"] = prev["since"] if prev and prev.get("verdict") == cov["verdict"] and prev.get("since") else now_iso(started)
     services.append(cov)

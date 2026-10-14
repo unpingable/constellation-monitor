@@ -21,10 +21,24 @@ A deliberate pause is declared in the registry (`"declared": {"state":
 "paused", "since", "reason"}`). The service then shows as `PAUSED`: never an
 alert, always visible on the dashboard and in the digest.
 
+Host registries are deployment data, not code: they name units, paths and
+contracts of a real host, so they live in the private deployment repository
+(for labelwatch-host: cartography
+`architecture/beta-observability/mvp/labelwatch-host/`), with the vendored
+contracts, the declared definition snapshot and the crosswalk.
+
+The registry's `definitions` pin every alert and policy definition to the
+identity its own subsystem computes: a file sha256, the attention
+`attention_policy_digest` from `check-config`, or NQ's saved-check
+`definition_digest`. Each pass compares the deployed side, and any mismatch
+makes `estate-definitions` DEGRADED, naming the definition. The repository
+side, where every pin must equal the committed declared copy, is a test next
+to the registry.
+
 Install on the host:
 
     install -D -m 0755 constellation-estate-collect.py /usr/local/lib/constellation-estate/constellation-estate-collect.py
-    install -D -m 0644 estate.labelwatch-host.json /etc/constellation-estate/estate.json
+    install -D -m 0644 <registry from the deployment repo> /etc/constellation-estate/estate.json
     install -m 0644 constellation-estate-collect.{service,timer} /etc/systemd/system/
     systemctl daemon-reload && systemctl enable --now constellation-estate-collect.timer
     # attention.toml:  [inputs.estate]  path = "/var/lib/constellation-estate/estate.json"

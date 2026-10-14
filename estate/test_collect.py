@@ -106,3 +106,26 @@ def test_contract_drift_against_the_pinned_digest_degrades(tmp_path, monkeypatch
     p.write_text(CONCERNS + "\n# edited on the host\n")
     out = c.evaluate(svc, 10)
     assert out["verdict"] == "DEGRADED" and "contract.revision" in out["failing"], out
+
+
+def test_definition_drift_is_detected_per_kind(tmp_path, monkeypatch):
+    import hashlib
+    f = tmp_path / "attention.toml"; f.write_text("x = 1\n")
+    good = "sha256:" + hashlib.sha256(b"x = 1\n").hexdigest()
+    monkeypatch.setattr(c, "run", fake_run({
+        "/usr/bin/constellation-attention check-config": (0, json.dumps({"attention_policy_digest": "sha256:" + "a" * 64})),
+        "/usr/bin/nq --config /etc/nq/ops.toml --json saved-check inspect sc.one": (0, json.dumps({"definition_digest": "sha256:" + "b" * 64})),
+        "/usr/bin/nq --config /etc/nq/ops.toml --json saved-check inspect sc.gone": (1, "")}))
+    reg = {"definitions": [
+        {"id": "cfg", "kind": "file", "path": str(f), "digest": good, "owner": "constellation"},
+        {"id": "policy", "kind": "attention-policy", "config": str(f), "digest": "sha256:" + "a" * 64},
+        {"id": "sc.one", "kind": "nq-saved-check", "nq_config": "/etc/nq/ops.toml", "reference": "sc.one", "digest": "sha256:" + "b" * 64},
+        {"id": "sc.gone", "kind": "nq-saved-check", "nq_config": "/etc/nq/ops.toml", "reference": "sc.gone", "digest": "sha256:" + "c" * 64}]}
+    states = {x["id"]: x["state"] for x in c.definitions(reg, 10)}
+    assert states == {"definition.cfg": "PRESENT", "definition.policy": "PRESENT",
+                      "definition.sc.one": "PRESENT", "definition.sc.gone": "UNKNOWN"}
+    f.write_text("x = 2\n")   # edited on the host, outside review
+    reg["definitions"][1]["digest"] = "sha256:" + "f" * 64   # a policy that is not the one deployed
+    out = {x["id"]: x for x in c.definitions(reg, 10)}
+    assert out["definition.cfg"]["state"] == "DEGRADED" and "drift" in out["definition.cfg"]["reason"]
+    assert out["definition.policy"]["state"] == "DEGRADED"
