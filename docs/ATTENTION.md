@@ -499,6 +499,16 @@ resumes normal evaluation, and a condition that has recovered by then
 resolves as recovered. `check-config` refuses a suspension of an unknown rule,
 or one without an owner, reason, resume condition or start date.
 
+## Intent log
+
+Every delivery outcome of a pass (trigger or resolve, notice or page, accepted
+or not) is also appended to `intents.jsonl` beside the state, stamped with the
+pass time. The newest 1 MiB is kept, with one rotated `.1` file. A condition
+that settles is forgotten in the same pass that sends its resolve. The log is
+how a consumer, such as constellation-incidents, still sees that resolve. A
+failed append is a delivery problem: the pass exits 3 with
+`intent_log_unwritable`.
+
 ## Daily digest
 
 Each trigger is notified once and an accepted notice is never resent, so

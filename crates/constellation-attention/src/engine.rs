@@ -1075,6 +1075,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;
     write_atomic(&output_dir.join("report.json"), &bytes)?;
+    // Every delivery outcome is also appended to a bounded log beside the state,
+    // so a consumer (constellation-incidents) sees a resolve even when the
+    // condition is forgotten in the same pass. A failed append is a delivery
+    // problem: the pass exits 3 and says so.
+    if !options.dry_run
+        && !intent_reports.is_empty()
+        && let Err(error) = append_intent_log(&state_dir, &format_seconds(now), &intent_reports)
+    {
+        eprintln!("intent_log_unwritable {error}");
+        delivery_problem = true;
+    }
     Ok(PassResult {
         report,
         exit_code: if input_problem || delivery_problem {
@@ -1096,6 +1107,32 @@ fn retired_target(config: &Config, condition: &ConditionState) -> bool {
                 .as_ref()
                 .is_some_and(|target| input.retired_targets.contains(target))
     })
+}
+
+/// The newest 1 MiB of delivery outcomes, with one rotated predecessor.
+const INTENT_LOG_MAX: u64 = 1024 * 1024;
+
+fn append_intent_log(state_dir: &Path, at: &str, reports: &[IntentReport]) -> Result<(), String> {
+    use std::io::Write as _;
+    let path = state_dir.join("intents.jsonl");
+    if fs::metadata(&path).is_ok_and(|meta| meta.len() > INTENT_LOG_MAX) {
+        fs::rename(&path, state_dir.join("intents.jsonl.1")).map_err(|error| error.to_string())?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut lines = String::new();
+    for report in reports {
+        let mut value = serde_json::to_value(report).map_err(|error| error.to_string())?;
+        value["at"] = json!(at);
+        lines.push_str(&serde_json::to_string(&value).map_err(|error| error.to_string())?);
+        lines.push('\n');
+    }
+    file.write_all(lines.as_bytes())
+        .map_err(|error| error.to_string())
 }
 
 fn prune_intents(dir: &Path, state: &State) {

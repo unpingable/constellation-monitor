@@ -182,3 +182,30 @@ def test_a_suspended_incident_is_listed_apart_from_what_needs_the_operator(tmp_p
     inc.sync(s, report("unknown", True, suspended=susp), {}, None, RULES, T0)
     text = inc.list_view(s, now=T0)
     assert "NEEDS YOU (0)" in text and "SUSPENDED BY DECISION, STILL OPEN (1)" in text and "failing since 2026-10-14T18:45:03Z" in text
+
+
+def test_a_resolve_logged_after_the_condition_is_forgotten_lands_in_the_timeline(store):
+    log = [{"condition_id": KEY, "stable_event_id": "ev-trigger", "action": "trigger", "outcome": "accepted",
+            "route": "operations", "route_role": "notice", "at": inc.iso(T0)}]
+    inc.sync(store, report("present", True), {}, None, RULES, T0, log)
+    iid = store.incidents()[0]["id"]
+    inc.sync(store, report("clear", False), {}, None, RULES, T0 + 60, log)
+    log.append({"condition_id": KEY, "stable_event_id": "ev-resolve", "action": "resolve", "outcome": "accepted",
+                "route": "operations", "route_role": "notice", "at": inc.iso(T0 + 120)})
+    inc.sync(store, {"conditions": []}, {}, None, RULES, T0 + 60 + inc.CONFIRM_SECONDS, log)
+    inc.attach_late_notifications(store, log, inc.iso(T0 + 400))
+    inc.attach_late_notifications(store, log, inc.iso(T0 + 460))     # idempotent
+    notified = [json.loads(e["detail"]) for e in store.events(iid) if e["kind"] == "notified"]
+    assert [n["action"] for n in notified] == ["trigger", "resolve"], notified
+
+
+def test_led_to_action_metrics_per_rule(tmp_path):
+    s = inc.SqliteStore(str(tmp_path / "i.sqlite"))
+    inc.sync(s, report("present", True), {}, {"active": None, "closed": [episode("sha256:dd", "completed")]}, RULES, T0)
+    inc.sync(s, report("clear", False), {}, {"active": None, "closed": [episode("sha256:dd", "completed")]}, RULES, T0 + 60)
+    inc.sync(s, {"conditions": []}, {}, {"active": None, "closed": [episode("sha256:dd", "completed")]}, RULES, T0 + 60 + inc.CONFIRM_SECONDS)
+    out = tmp_path / "m.prom"
+    inc.write_metrics(s, str(out), T0)
+    text = out.read_text()
+    for o, n in (("incidents", 1), ("remediated", 1), ("remediation_verified", 1), ("needed_operator", 0), ("resolved_verified", 1)):
+        assert 'constellation_incidents_by_rule{rule="service-down",outcome="%s"} %d' % (o, n) in text, text

@@ -180,8 +180,10 @@ def needs_text(rule, rules, policy):
     return action
 
 
-def sync(store, report, state, consumer, rules, now):
-    """One idempotent pass. report/state: attention JSON; consumer: remediation consumer state JSON (or None)."""
+def sync(store, report, state, consumer, rules, now, intent_log=()):
+    """One idempotent pass. report/state: attention JSON; consumer: remediation consumer state JSON (or None);
+    intent_log: the evaluator's intents.jsonl records (every delivery outcome, including resolves of conditions it
+    has already forgotten)."""
     at = iso(now)
     conditions = {c["id"]: c for c in report.get("conditions", []) if c.get("observation") != "absent" or c.get("active")}
     last_intents = {k: v.get("last_intent", {}) for k, v in (state or {}).get("conditions", {}).items()}
@@ -209,6 +211,11 @@ def sync(store, report, state, consumer, rules, now):
         if live is None:
             continue
         inc_id = live["id"]
+        for li in intent_log:
+            if li.get("condition_id") == key and li.get("stable_event_id") and (li.get("at") or "") >= live["opened_at"][:10]:
+                store.event(inc_id, li.get("at") or at, "notified", {"route": li.get("route"), "role": li.get("route_role"),
+                            "action": li.get("action"), "outcome": li.get("outcome"), "event": li.get("stable_event_id")},
+                            dedup="notified:%s:%s" % (li.get("stable_event_id"), li.get("outcome")))
         # episodes are keyed by the condition's first_seen, as the remediation consumer keys them
         since = parse_ts(live.get("first_seen")) or parse_ts(live["opened_at"]) or 0
         # notifications sent for this condition (escalation to the operator)
@@ -229,7 +236,13 @@ def sync(store, report, state, consumer, rules, now):
                 store.event(inc_id, at, "remediation", {"episode": e["episode"][:19], "outcome": e.get("outcome") or "in flight",
                             "phase": e.get("phase"), "plan": os.path.basename(e.get("plan") or ""), "verified": verified})
         in_flight = any(not e.get("outcome") for e in mine)
-        failed = [e for e in mine if e.get("outcome") in FAILED_OUTCOMES]
+        latest = max(mine, key=lambda e: e.get("opened_at_unix_ms") or 0) if mine else None
+        failed = [latest] if latest and latest.get("outcome") in FAILED_OUTCOMES else []
+        verified_fix = bool(latest and latest.get("outcome") == "completed")
+        # after a verified remediation the evaluator decides: only a page sent after it settled means "still broken"
+        paged_after = verified_fix and any(
+            json.loads(e["detail"]).get("role") == "page" and e["at"] >= iso((latest.get("settled_at_unix_ms") or 0) / 1000)
+            for e in store.events(inc_id) if e["kind"] == "notified")
         # what the evaluator says now
         if c is None:
             if live["state"] == "recovering":
@@ -263,6 +276,8 @@ def sync(store, report, state, consumer, rules, now):
             need = "remediation failed (%s): %s" % (failed[-1].get("outcome"), needs_text(live["rule"], rules, policy))
         elif in_flight:
             need = None
+        elif verified_fix and not paged_after:
+            need = None   # remediated and verified; waiting for the evaluator's recovery confirmation
         elif c is not None and c.get("suspended"):
             need = "suspended by %s until: %s" % (c["suspended"].get("owner"), c["suspended"].get("resume_when"))
         elif live["state"] == "recovering":
@@ -275,6 +290,37 @@ def sync(store, report, state, consumer, rules, now):
             store.update(inc_id, needs_operator=need)
             if need:
                 store.event(inc_id, at, "needs-operator", {"action": need})
+
+
+def attach_late_notifications(store, intent_log, at):
+    """A resolve is usually logged after the incident has gone to recovering or resolved: attach it to the newest
+    incident for its condition, deduplicated by event id."""
+    for li in intent_log:
+        key, ev = li.get("condition_id"), li.get("stable_event_id")
+        if not key or not ev:
+            continue
+        cur = store.current(key)
+        if cur and (li.get("at") or "") >= cur["opened_at"]:
+            store.event(cur["id"], li.get("at") or at, "notified", {"route": li.get("route"), "role": li.get("route_role"),
+                        "action": li.get("action"), "outcome": li.get("outcome"), "event": ev},
+                        dedup="notified:%s:%s" % (ev, li.get("outcome")))
+
+
+def read_intent_log(path, keep_seconds, now):
+    out = []
+    for p in (path + ".1", path):
+        try:
+            with open(p) as fh:
+                for line in fh:
+                    try:
+                        d = json.loads(line)
+                    except ValueError:
+                        continue
+                    if (parse_ts(d.get("at")) or 0) >= now - keep_seconds:
+                        out.append(d)
+        except FileNotFoundError:
+            continue
+    return out
 
 
 # ------------------------------------------------------------------ operator views
@@ -352,9 +398,24 @@ def show_view(store, ref):
 
 def write_metrics(store, path, now):
     open_ = store.incidents(unresolved_only=True)
+    led = {}
+    for i in store.incidents(unresolved_only=False):
+        r = led.setdefault(i["rule"], {"incidents": 0, "remediated": 0, "remediation_verified": 0, "needed_operator": 0, "resolved_verified": 0})
+        r["incidents"] += 1
+        atts = store.attempts(i["id"])
+        r["remediated"] += 1 if atts else 0
+        r["remediation_verified"] += 1 if any(a.get("verified") for a in atts) else 0
+        kinds = [e["kind"] for e in store.events(i["id"])]
+        r["needed_operator"] += 1 if "needs-operator" in kinds else 0
+        r["resolved_verified"] += 1 if i["state"] == "resolved" and (i.get("resolution") or "").startswith("verified recovery") else 0
     lines = ["# TYPE constellation_incidents_open gauge", "constellation_incidents_open %d" % len(open_),
              "# TYPE constellation_incidents_needs_operator gauge", "constellation_incidents_needs_operator %d" % sum(1 for i in open_ if i.get("needs_operator")),
-             "# TYPE constellation_incidents_last_sync_timestamp_seconds gauge", "constellation_incidents_last_sync_timestamp_seconds %d" % int(now)]
+             "# TYPE constellation_incidents_last_sync_timestamp_seconds gauge", "constellation_incidents_last_sync_timestamp_seconds %d" % int(now),
+             "# HELP constellation_incidents_by_rule Retained incidents per rule (30 d) and what they led to: remediated, remediation verified, needed the operator, resolved by verified recovery.",
+             "# TYPE constellation_incidents_by_rule gauge"]
+    for rule, counts in sorted(led.items()):
+        for outcome, n in counts.items():
+            lines.append('constellation_incidents_by_rule{rule="%s",outcome="%s"} %d' % (rule, outcome, n))
     d = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".incidents-")
     with os.fdopen(fd, "w") as fh:
@@ -375,6 +436,7 @@ def main(argv=None):
     s.add_argument("--report", default="/var/lib/constellation-attention/report.json")
     s.add_argument("--state", default="/var/lib/constellation-attention/state.json")
     s.add_argument("--consumer", default="/var/lib/constellation-remediation/consumer/state.json")
+    s.add_argument("--intent-log", default="/var/lib/constellation-attention/intents.jsonl")
     s.add_argument("--rules", default="/usr/bin/constellation-attention")
     s.add_argument("--metrics", default="/var/lib/prometheus/node-exporter/constellation-incidents.prom")
     sub.add_parser("list")
@@ -397,8 +459,10 @@ def main(argv=None):
                 report = load(a.report)
                 state = load(a.state)
                 consumer = load(a.consumer) if os.path.exists(a.consumer) else None
+                intent_log = read_intent_log(a.intent_log, 2 * 86400, now)
                 with store.transaction():
-                    sync(store, report, state, consumer, rules, now)
+                    sync(store, report, state, consumer, rules, now, intent_log)
+                    attach_late_notifications(store, intent_log, iso(now))
                     store.prune(now)
                     store.heartbeat(iso(now), True, "report %s" % report.get("evaluated_at"))
             except StoreUnavailable:

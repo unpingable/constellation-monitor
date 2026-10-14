@@ -4000,3 +4000,48 @@ fn suspension_changes_the_policy_digest() {
     harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\nowner = \"o\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
     assert_ne!(digest(&harness), plain);
 }
+
+/// Every delivery outcome is appended to intents.jsonl, so the resolve of a
+/// condition the evaluator forgets in the same pass is still visible to
+/// consumers such as constellation-incidents.
+#[test]
+fn intent_log_keeps_the_resolve_of_a_forgotten_condition() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 300, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    for offset in [720, 780, 900] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert!(
+        harness.state()["conditions"].get(UNKNOWN_ROOT).is_none(),
+        "forgotten once settled"
+    );
+    let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+    let lines: Vec<Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let actions: Vec<(&str, &str)> = lines
+        .iter()
+        .filter(|l| l["condition_id"] == UNKNOWN_ROOT)
+        .map(|l| {
+            (
+                l["action"].as_str().unwrap(),
+                l["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        actions.contains(&("trigger", "accepted")) && actions.contains(&("resolve", "accepted")),
+        "{actions:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|l| l["at"].is_string() && l["stable_event_id"].is_string())
+    );
+}
