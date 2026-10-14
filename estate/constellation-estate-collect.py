@@ -16,7 +16,7 @@ the telemetry exporter and the dashboard read. Verdicts:
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
-import argparse, fnmatch, hashlib, json, os, subprocess, sys, tempfile, time, urllib.request
+import argparse, fnmatch, hashlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
 
 REGISTRY_SCHEMA = "constellation.estate_registry/v1"
@@ -239,10 +239,12 @@ def coverage(reg, timeout):
         if rc != 0:
             raise RuntimeError("systemctl %s failed" % args[0])
         found["systemd"].update(line.split()[0] for line in out.decode().splitlines() if line.strip())
-    rc, out, err = run(["docker", "ps", "--format", "{{.Names}}"], timeout)
-    if rc != 0:
-        raise RuntimeError("docker ps failed")
-    found["docker"].update(out.decode().split())
+    # A host without Docker runs no containers; only a registry that declares containers needs it to answer.
+    if targets["docker"] or shutil.which("docker", path="/usr/local/bin:/usr/bin:/bin"):
+        rc, out, err = run(["docker", "ps", "--format", "{{.Names}}"], timeout)
+        if rc != 0:
+            raise RuntimeError("docker ps failed")
+        found["docker"].update(out.decode().split())
     unregistered = []
     # A supervised unit whose working directory declares an .ops contract must acquire it (or waive it with a reason).
     for s in reg["services"]:

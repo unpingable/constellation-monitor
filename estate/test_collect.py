@@ -129,3 +129,22 @@ def test_definition_drift_is_detected_per_kind(tmp_path, monkeypatch):
     out = {x["id"]: x for x in c.definitions(reg, 10)}
     assert out["definition.cfg"]["state"] == "DEGRADED" and "drift" in out["definition.cfg"]["reason"]
     assert out["definition.policy"]["state"] == "DEGRADED"
+
+
+def test_coverage_on_a_host_without_docker(monkeypatch):
+    """No Docker and no declared containers means no containers, not a failed inventory (found by cartography #94)."""
+    monkeypatch.setattr(c.shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(c, "run", fake_run({
+        "systemctl list-units --type=timer": (0, ""),
+        "systemctl list-unit-files": (0, "demo.service enabled enabled\n"),
+        "systemctl list-units --type=service": (0, ""),
+        "systemctl show demo.service -p WorkingDirectory": (0, "WorkingDirectory=/\n")}))
+    reg = {"services": [{"name": "demo", "runtime": {"systemd": "demo.service"}}], "unsupervised": {}}
+    assert c.coverage(reg, 10) == []
+    reg["services"].append({"name": "box", "runtime": {"docker": "box"}})
+    try:
+        c.coverage(reg, 10)
+    except AssertionError as e:  # a declared container still requires `docker ps` to answer
+        assert "docker ps" in str(e)
+    else:
+        raise AssertionError("coverage ignored a declared container on a host without docker")
