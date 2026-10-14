@@ -16,7 +16,7 @@ the telemetry exporter and the dashboard read. Verdicts:
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
-import argparse, json, os, subprocess, sys, tempfile, time, urllib.request
+import argparse, fnmatch, json, os, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
 
 REGISTRY_SCHEMA = "constellation.estate_registry/v1"
@@ -154,6 +154,35 @@ def evaluate(svc, timeout):
     return out
 
 
+def coverage(reg, timeout):
+    """Deterministic completeness: every enabled or running service unit and every running container is either
+    supervised (a registry runtime target) or explicitly unsupervised (an `unsupervised` glob with a reason).
+    Anything else is reported, so an unregistered workload is a visible failure, not a silent gap."""
+    targets = {"systemd": set(), "docker": set()}
+    for s in reg["services"]:
+        for kind in targets:
+            if kind in s["runtime"]:
+                targets[kind].add(s["runtime"][kind])
+    excluded = reg.get("unsupervised") or {}
+    found = {"systemd": set(), "docker": set()}
+    for args in (["list-unit-files", "--type=service", "--state=enabled"], ["list-units", "--type=service", "--state=running"]):
+        rc, out, err = run(["systemctl"] + args + ["--no-legend", "--plain"], timeout)
+        if rc != 0:
+            raise RuntimeError("systemctl %s failed" % args[0])
+        found["systemd"].update(line.split()[0] for line in out.decode().splitlines() if line.strip())
+    rc, out, err = run(["docker", "ps", "--format", "{{.Names}}"], timeout)
+    if rc != 0:
+        raise RuntimeError("docker ps failed")
+    found["docker"].update(out.decode().split())
+    unregistered = []
+    for kind in ("systemd", "docker"):
+        globs = [e["match"] for e in excluded.get(kind, [])]
+        for name in sorted(found[kind] - targets[kind]):
+            if not any(fnmatch.fnmatchcase(name, g) for g in globs):
+                unregistered.append("%s:%s" % (kind, name))
+    return unregistered
+
+
 def validate(reg):
     if reg.get("schema") != REGISTRY_SCHEMA:
         raise ValueError("registry schema must be " + REGISTRY_SCHEMA)
@@ -201,6 +230,22 @@ def main(argv=None):
         prev = previous.get(s["name"])
         s["since"] = prev["since"] if prev and prev.get("verdict") == s["verdict"] and prev.get("since") else now_iso(started)
         services.append(s)
+    # The registry's own completeness is a supervised service like any other.
+    cov = {"name": "estate-coverage", "role": "every workload supervised or explicitly excluded",
+           "runtime": {"kind": "registry", "up": True, "state": "checked"}}
+    try:
+        unregistered = coverage(reg, a.timeout)
+        state = "DEGRADED" if unregistered else "PRESENT"
+        cov.update(verdict="DEGRADED" if unregistered else "OK",
+                   reason=("unsupervised and not excluded: " + ", ".join(unregistered))[:400] if unregistered
+                   else "every enabled/running service and container is supervised or explicitly excluded",
+                   unregistered=unregistered, failing=["estate.coverage.complete"] if unregistered else [],
+                   concerns=[{"id": "estate.coverage.complete", "required": True, "state": state, "reason": ""}])
+    except Exception as e:  # noqa: BLE001 - an unknown inventory is never "complete"
+        cov.update(verdict="UNKNOWN", reason="inventory failed: %s" % str(e)[:200], failing=[], concerns=[])
+    prev = previous.get(cov["name"])
+    cov["since"] = prev["since"] if prev and prev.get("verdict") == cov["verdict"] and prev.get("since") else now_iso(started)
+    services.append(cov)
     doc = {"schema": OUTPUT_SCHEMA, "site": reg.get("site", ""), "generated_at": now_iso(),
            "duration_seconds": round(time.time() - started, 3), "services": services,
            "counts": {v: sum(1 for s in services if s["verdict"] == v) for v in ("OK", "DEGRADED", "DOWN", "PAUSED", "UNKNOWN")}}

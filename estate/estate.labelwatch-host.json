@@ -256,6 +256,195 @@
    "runtime": {
     "systemd": "prometheus-node-exporter.service"
    }
+  },
+  {
+   "name": "attention-canary",
+   "role": "constellation: remediation canary (auto_remediate_then_page)",
+   "runtime": {
+    "systemd": "attention-canary.service"
+   }
   }
- ]
+ ],
+ "unsupervised": {
+  "systemd": [
+   {
+    "match": "phlogiston-pds.service",
+    "reason": "wrapper of the phlogiston-pds container, which is supervised"
+   },
+   {
+    "match": "postgresql.service",
+    "reason": "umbrella unit; postgresql@15-main and @17-main are supervised"
+   },
+   {
+    "match": "containerd.service",
+    "reason": "runtime under docker.service, which is supervised"
+   },
+   {
+    "match": "ssh.service",
+    "reason": "supervised from outside: crow's SSH forward fails and LinodeNodeTargetDown alerts"
+   },
+   {
+    "match": "constellation-estate-collect.service",
+    "reason": "the collector itself; crow alerts EstateCollectorStale"
+   },
+   {
+    "match": "labelwatch-recent-watch.service",
+    "reason": "Labelwatch's obligation watcher; its report is the labelwatch service's status"
+   },
+   {
+    "match": "systemd-*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "snapd*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "cloud-*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "getty@*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "serial-getty@*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "user@*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "grub-*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "ModemManager.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "apparmor.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "blk-availability.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "console-setup.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "cron.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "dbus.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "dmesg.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "e2scrub_reap.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "finalrd.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "fwupd.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "haveged.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "keyboard-setup.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "lvm2-monitor.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "lxd-agent.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "netfilter-persistent.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "networkd-dispatcher.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "packagekit.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "polkit.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "pollinate.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "rsyslog.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "secureboot-db.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "setvtrgb.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "smartmontools.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "thermald.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "ua-reboot-cmds.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "ubuntu-advantage.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "udisks2.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "unattended-upgrades.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "upower.service",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "vgauth.service",
+    "reason": "Ubuntu base system"
+   }
+  ],
+  "docker": [
+   {
+    "match": "caddy",
+    "reason": "runtime of caddy-proxy.service, which is supervised (admin API probe)"
+   }
+  ]
+ }
 }
