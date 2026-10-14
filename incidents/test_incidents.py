@@ -174,3 +174,11 @@ def test_no_remediation_attempt_by_the_end_of_the_window_needs_the_operator(stor
 def test_incident_id_matches_the_attention_notice_reference():
     # constellation-attention intent::incident_ref pins the same value for the same key.
     assert "inc-" + inc.key_hash(KEY) == "inc-e048fb3e"
+
+
+def test_a_suspended_incident_is_listed_apart_from_what_needs_the_operator(tmp_path):
+    s = inc.SqliteStore(str(tmp_path / "i.sqlite"))
+    susp = {"owner": "op", "reason": "paused", "resume_when": "it resumes", "since": "2026-10-14"}
+    inc.sync(s, report("unknown", True, suspended=susp), {}, None, RULES, T0)
+    text = inc.list_view(s, now=T0)
+    assert "NEEDS YOU (0)" in text and "SUSPENDED BY DECISION, STILL OPEN (1)" in text and "failing since 2026-10-14T18:45:03Z" in text
