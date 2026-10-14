@@ -3590,3 +3590,64 @@ fn held_page_with_stale_input_pages_at_window_expiry() {
         "{calls:?}"
     );
 }
+
+/// A condition that stays active is restated once a day after `at_utc`;
+/// a failed digest is retried after the resend interval, an accepted one is not.
+#[test]
+fn daily_digest_restates_active_conditions_once_a_day() {
+    let mut harness = Harness::new();
+    harness
+        .host_posture("root")
+        .raw("[digest]\nat_utc = \"00:40\"\n");
+    let midnight = T0 - T0.rem_euclid(86_400) + 86_400;
+    let mut at = midnight;
+    // Unknown persists past the 600 s bound before the digest time.
+    while at < midnight + 2400 {
+        set(&harness, "root", ProjectedStateV1::Unknown, at);
+        let report = harness.evaluate(at);
+        assert!(report.get("digest").is_none(), "no digest before 00:40Z");
+        at += 300;
+    }
+    harness.fake("next_state", "failed");
+    set(&harness, "root", ProjectedStateV1::Unknown, at);
+    let report = harness.evaluate(at);
+    let summary = report["digest"]["summary"].as_str().unwrap();
+    assert!(summary.starts_with("DIGEST labelwatch "), "{summary}");
+    assert!(
+        summary.contains("page host-posture-unknown/root for "),
+        "{summary}"
+    );
+    assert!(summary.ends_with(". All inputs current."), "{summary}");
+    assert_eq!(report["digest"]["settled"], false);
+    let digests = |h: &Harness| {
+        h.calls()
+            .iter()
+            .filter(|c| c.contains("attention-digest"))
+            .count()
+    };
+    // Retried no sooner than the resend interval.
+    set(&harness, "root", ProjectedStateV1::Unknown, at + 300);
+    assert!(harness.evaluate(at + 300).get("digest").is_none());
+    harness.fake("next_state", "accepted");
+    set(&harness, "root", ProjectedStateV1::Unknown, at + 900);
+    assert_eq!(harness.evaluate(at + 900)["digest"]["settled"], true);
+    set(&harness, "root", ProjectedStateV1::Unknown, at + 3600);
+    assert!(
+        harness.evaluate(at + 3600).get("digest").is_none(),
+        "one accepted digest a day"
+    );
+    assert_eq!(digests(&harness), 2);
+    set(
+        &harness,
+        "root",
+        ProjectedStateV1::Unknown,
+        midnight + 86_400 + 2400,
+    );
+    assert!(
+        harness
+            .evaluate(midnight + 86_400 + 2400)
+            .get("digest")
+            .is_some(),
+        "next day"
+    );
+}

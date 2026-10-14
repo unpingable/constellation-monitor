@@ -448,6 +448,26 @@ continues from the saved state; on a fresh install there is none, so it
 shows no intents until a condition has persisted past its bound across real
 passes.
 
+## Daily digest
+
+Each trigger is notified once and an accepted notice is never resent, so
+a condition that stays active is silent after its first message. With
+
+```toml
+[digest]
+at_utc = "00:40"
+```
+
+the first pass after that UTC time each day sends one notice on
+`notice_route`. It lists every active condition (pages first, then oldest
+first, with how long each has been present) and every input that is not
+current, or says that nothing is active. A failed or refused digest is
+retried after 900 s; an accepted one is not repeated that day. The attempt
+is recorded in `digest.json` beside the state file, not in `state.json`, and
+appears as `digest` in that pass's report. A missing digest means the
+evaluator or its delivery is not working. Without `[digest]` nothing is
+sent.
+
 ## Runbook anchors owned here
 
 ### memory-pressure
@@ -512,7 +532,8 @@ key format (`{label}` alone) is resolved once as "no longer evaluated".
 
 These are operator acceptance items.
 
-- **Nothing watches the evaluator.** A pass that cannot run (a malformed
+- **Nothing watches the evaluator** except, when `[digest]` is configured,
+  the operator noticing a missing daily digest. A pass that cannot run (a malformed
   `state.json`, which is never replaced; the lock; a clock that moved
   backwards) exits 1 with no report and no notification, every minute,
   indefinitely; exit 3 is likewise only a failed oneshot unit. An NQ

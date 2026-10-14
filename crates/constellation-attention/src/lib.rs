@@ -12,6 +12,7 @@
 pub mod build_info;
 pub mod condition;
 pub mod config;
+pub mod digest;
 pub mod engine;
 pub mod inputs;
 pub mod intent;

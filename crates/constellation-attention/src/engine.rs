@@ -1021,6 +1021,15 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             .collect()
     };
     delivery_problem |= !unresolved.is_empty();
+    // After the state is saved: a failed digest never holds a transition back.
+    let digest_attempt = if options.dry_run {
+        None
+    } else {
+        crate::digest::send_if_due(config, &state, &rules, &read.reports, &digest, now)?
+    };
+    if let Some(attempt) = &digest_attempt {
+        delivery_problem |= !attempt["settled"].as_bool().unwrap_or(false);
+    }
     let input_problem = read
         .reports
         .iter()
@@ -1040,6 +1049,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "unresolved_deliveries": unresolved,
         "dropped_triggers": dropped_triggers,
     });
+    let mut report = report;
+    if let Some(attempt) = digest_attempt {
+        report["digest"] = attempt;
+    }
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;

@@ -40,6 +40,36 @@ pub struct Config {
     pub rules: BTreeMap<String, RuleOverride>,
     #[serde(default)]
     pub remediation: Remediation,
+    /// `[digest]`: one notice a day listing every active condition and every
+    /// input that is not current. Absent, no digest is sent.
+    pub digest: Option<Digest>,
+}
+
+/// A trigger is notified once; a condition that stays active is otherwise
+/// silent. The digest restates what is still open, and its absence shows a
+/// silent evaluator.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Digest {
+    /// UTC time of day, `HH:MM`, after which the day's digest is due.
+    pub at_utc: String,
+}
+
+impl Digest {
+    /// Seconds after UTC midnight.
+    pub fn offset_seconds(&self) -> Result<i64, String> {
+        let invalid = || "digest.at_utc must be HH:MM (UTC)".to_owned();
+        let (hours, minutes) = self.at_utc.split_once(':').ok_or_else(invalid)?;
+        if hours.len() != 2 || minutes.len() != 2 {
+            return Err(invalid());
+        }
+        let hours: i64 = hours.parse().map_err(|_| invalid())?;
+        let minutes: i64 = minutes.parse().map_err(|_| invalid())?;
+        if !(0..24).contains(&hours) || !(0..60).contains(&minutes) {
+            return Err(invalid());
+        }
+        Ok(hours * 3600 + minutes * 60)
+    }
 }
 
 /// `[remediation]`: per-target `response_policy` (cartography #55).
@@ -336,6 +366,9 @@ impl Config {
                     "runbook URLs must be https, without a fragment, at most 900 bytes".into(),
                 );
             }
+        }
+        if let Some(digest) = &self.digest {
+            digest.offset_seconds()?;
         }
         absolute("nq.program", &self.nq.program)?;
         absolute("nq.config", &self.nq.config)?;
