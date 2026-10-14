@@ -3713,7 +3713,7 @@ fn estate_degraded_service_triggers_with_reason_and_pause_stays_quiet() {
     let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
     let summary = sent["summary"].as_str().unwrap();
     assert!(
-        summary.ends_with("Now: observation.loss DEGRADED"),
+        summary.contains("Now: observation.loss DEGRADED. Incident: inc-"),
         "{summary}"
     );
     let quiet = report["conditions"]

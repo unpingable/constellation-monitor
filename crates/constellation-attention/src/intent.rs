@@ -81,6 +81,14 @@ pub fn policy_digest_with(
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
+/// `inc-` and the first 8 hex digits of sha256(condition id): the stable reference of
+/// the incident a condition belongs to, independent of any definition revision.
+#[must_use]
+pub fn incident_ref(condition_id: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(condition_id.as_bytes()));
+    format!("inc-{}", &digest[..8])
+}
+
 /// `{site}-{rule}[-{target_class}]-{action}-{unix_seconds}`.
 #[must_use]
 pub fn event_id(key: &ConditionKey, action: Action, at: i64) -> String {
@@ -132,8 +140,12 @@ fn summary(input: &IntentInput<'_>) -> String {
                 && !reason.is_empty()
             {
                 text.push_str(" Now: ");
-                text.push_str(reason);
+                text.push_str(reason.trim_end_matches('.'));
+                text.push('.');
             }
+            // The incident this condition belongs to (constellation-incidents derives the
+            // same id from the condition key): `constellation-incidents show <id>`.
+            text.push_str(&format!(" Incident: {}.", incident_ref(&id)));
             text
         }
         Action::Resolve => match input.resolve_reason {
@@ -297,6 +309,15 @@ pub fn with_event_id(intent: &Value, stable_event_id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same id constellation-incidents derives (incidents/test_incidents.py pins it too).
+    #[test]
+    fn incident_ref_matches_the_incident_store() {
+        assert_eq!(
+            incident_ref("constellation:labelwatch:service:service-down:attention-canary.service"),
+            "inc-e048fb3e"
+        );
+    }
     use crate::condition::ConditionKey;
     use crate::config::Config;
 
