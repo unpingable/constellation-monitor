@@ -1,6 +1,6 @@
 [package]
 name = "constellation-attention"
-version.workspace = true
+version = "0.1.1"
 edition.workspace = true
 # `std::fs::File::try_lock` keeps one evaluator pass per state file, as in
 # constellation-host-posture. Older workspace crates keep the workspace MSRV.
