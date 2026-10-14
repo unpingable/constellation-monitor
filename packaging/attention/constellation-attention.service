@@ -76,7 +76,7 @@ ReadOnlyPaths=-/etc/constellation-attention -/etc/nq
 #   ReadWritePaths=/var/lib/nq-ops-attention-test-inbox
 # An [inputs.nq_status] path= file must be readable by nq and outside
 # ProtectHome paths: /root and /home are invisible to this unit.
-ReadWritePaths=/var/lib/constellation-attention /var/lib/nq-ops
+ReadWritePaths=/var/lib/constellation-attention -/var/lib/nq-ops
 ReadWritePaths=-/var/lib/nq
 ReadWritePaths=-/var/lib/constellation-nightshift-observation
 LimitCORE=0
