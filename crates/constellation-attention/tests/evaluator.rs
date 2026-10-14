@@ -3851,3 +3851,131 @@ fn retired_target_resolves_a_removed_watchers_page() {
     assert_eq!(nq["status"], "ok", "{nq}");
     assert_eq!(output.status.code(), Some(0));
 }
+
+fn saved_check_harness(outcome_file: &str) -> Harness {
+    let mut harness = Harness::new();
+    let result = harness.path("labeler.json");
+    fs::copy(Path::new(FIXTURES).join(outcome_file), &result).unwrap();
+    harness.raw(&format!(
+        "[[inputs.saved_checks]]\nreference = \"sqlite.freelist-labeler\"\npath = \"{}\"\nmax_age_seconds = 3600\n",
+        result.display()
+    ));
+    harness
+}
+
+/// A declared suspension holds the condition as it is: an open one stays open
+/// (no resolve is claimed), nothing triggers while suspended, the report and
+/// digest say so, and lifting it resumes normal evaluation.
+#[test]
+fn suspension_holds_an_open_condition_without_resolving_or_triggering() {
+    let mut harness = saved_check_harness("saved-check-result-failed.json");
+    let read_at = |h: &Harness| {
+        let v: Value = serde_json::from_slice(&fs::read(h.path("labeler.json")).unwrap()).unwrap();
+        at(v["detail"]["read_attempted_at"].as_str().unwrap())
+    };
+    let t = read_at(&harness);
+    for offset in [0, 300, 660] {
+        harness.evaluate(t + offset);
+    }
+    let id = "constellation:labelwatch:nq:sqlite-health:sqlite.freelist-labeler";
+    assert_eq!(
+        harness.state()["conditions"][id]["active"],
+        true,
+        "open before the suspension"
+    );
+    let calls_before = harness.calls().len();
+    harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\ntarget = \"sqlite.freelist-labeler\"\nowner = \"operator\"\nreason = \"Driftwatch paused; store frozen\"\nresume_when = \"Driftwatch resumes ingest\"\nsince = \"2026-10-14\"\n[digest]\nat_utc = \"00:00\"\n");
+    // Even with the check now passing, a suspended condition is not resolved.
+    fs::copy(
+        Path::new(FIXTURES).join("saved-check-result-passed.json"),
+        harness.path("labeler.json"),
+    )
+    .unwrap();
+    let first = harness.evaluate(t + 720);
+    let digest = first["digest"]["summary"].as_str().unwrap().to_owned();
+    for offset in [900, 1200] {
+        harness.evaluate(t + offset);
+    }
+    let report = harness.report();
+    let condition = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        condition["active"], true,
+        "suspended is not healthy: {condition}"
+    );
+    assert_eq!(condition["suspended"]["owner"], "operator");
+    assert_eq!(
+        harness
+            .calls()
+            .iter()
+            .filter(|c| c.contains("sqlite-health"))
+            .count(),
+        harness.calls()[..calls_before]
+            .iter()
+            .filter(|c| c.contains("sqlite-health"))
+            .count(),
+        "no intent while suspended: {:?}",
+        harness.calls()
+    );
+    assert!(
+        !digest.contains("1 active"),
+        "a suspended condition is not listed as active: {digest}"
+    );
+    assert!(
+        digest.contains("sqlite-health/sqlite.freelist-labeler (owner operator"),
+        "{digest}"
+    );
+    // Lifting the suspension resumes evaluation: the passing check now resolves it.
+    harness.extra_config = harness
+        .extra_config
+        .split("[[suspensions]]")
+        .next()
+        .unwrap()
+        .to_owned();
+    for offset in [1260, 1500] {
+        harness.evaluate(t + offset);
+    }
+    assert!(
+        harness.calls()[calls_before..]
+            .iter()
+            .any(|c| c.contains("sqlite-health") && c.contains("-resolve-")),
+        "{:?}",
+        harness.calls()
+    );
+}
+
+/// A suspension must name an owner, a reason, a resume condition and a rule that exists.
+#[test]
+fn suspension_without_owner_or_known_rule_is_refused() {
+    let mut harness = Harness::new();
+    harness.raw("[[suspensions]]\nrule = \"no-such-rule\"\nowner = \"o\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
+    assert_eq!(
+        harness
+            .command(&[
+                "check-config",
+                "--config",
+                harness.config_path().to_str().unwrap()
+            ])
+            .status
+            .code(),
+        Some(2)
+    );
+    let mut harness = Harness::new();
+    harness.raw("[[suspensions]]\nrule = \"sqlite-health\"\nowner = \"\"\nreason = \"r\"\nresume_when = \"w\"\nsince = \"2026-10-14\"\n");
+    assert_eq!(
+        harness
+            .command(&[
+                "check-config",
+                "--config",
+                harness.config_path().to_str().unwrap()
+            ])
+            .status
+            .code(),
+        Some(2)
+    );
+}

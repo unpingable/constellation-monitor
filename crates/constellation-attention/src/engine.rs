@@ -499,6 +499,16 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 ),
             }
         };
+        // A suspended definition is held, never evaluated: an open condition stays
+        // open (no recovery is claimed) and nothing triggers.
+        let suspension = config.suspensions.iter().find(|s| s.covers(&condition.key));
+        let (observation, note) = match suspension {
+            Some(s) => (
+                Observation::Unknown,
+                format!("suspended by {}: {}", s.owner, s.reason),
+            ),
+            None => (observation, note),
+        };
         let persistence = rule.map_or(0, EffectiveRule::persistence_seconds);
         // A resolve clears first_seen and clear_since: keep when the window
         // ended and when the clear began, to name the resolve reason.
@@ -554,6 +564,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             "response_policy": policy.as_str(),
             "remediation_window_until": window_until,
             "page_deferred": condition.page_deferred,
+            "suspended": suspension,
         }));
     }
 

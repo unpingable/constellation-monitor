@@ -477,6 +477,28 @@ Open the estate dashboard row or `estate.json` for the named service:
 Fix the service. If the outage is deliberate, declare it paused in the
 registry, with a reason, rather than letting it alert.
 
+## Suspensions
+
+```toml
+[[suspensions]]
+rule = "sqlite-health"
+target = "sqlite.freelist-labeler"   # optional; absent = every target of the rule
+owner = "constellation-operator"
+reason = "Driftwatch is declared paused; its store is frozen"
+resume_when = "Driftwatch resumes ingest"
+since = "2026-10-14"
+```
+
+A suspension is a declared, owned decision not to evaluate one definition for
+now. **Suspended is not healthy.** The condition is held exactly as it is: an
+open condition stays open, and no recovery is claimed, so nothing resolves.
+Nothing triggers while suspended. Each pass reports the condition with
+`"suspended": {owner, reason, resume_when, since}`. The daily digest lists it
+under "Suspended", apart from the active conditions. Removing the stanza
+resumes normal evaluation, and a condition that has recovered by then
+resolves as recovered. `check-config` refuses a suspension of an unknown rule,
+or one without an owner, reason, resume condition or start date.
+
 ## Daily digest
 
 Each trigger is notified once and an accepted notice is never resent, so

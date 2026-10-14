@@ -82,12 +82,31 @@ pub fn summary(
     state: &State,
     rules: &[EffectiveRule],
     inputs: &[InputReport],
+    suspensions: &[crate::config::Suspension],
     now: i64,
 ) -> String {
+    let suspended: Vec<String> = suspensions
+        .iter()
+        .map(|s| {
+            // Short: the 512-byte summary must still reach the inputs line. The
+            // reason and resume condition are in the report and on the dashboard.
+            format!(
+                "{}{} (owner {}, since {})",
+                s.rule,
+                s.target
+                    .as_deref()
+                    .map_or_else(String::new, |t| format!("/{t}")),
+                s.owner,
+                s.since
+            )
+        })
+        .collect();
     let mut active: Vec<(bool, i64, String)> = state
         .conditions
         .values()
-        .filter(|condition| condition.active)
+        .filter(|condition| {
+            condition.active && !suspensions.iter().any(|s| s.covers(&condition.key))
+        })
         .map(|condition| {
             let class = rules
                 .iter()
@@ -132,6 +151,10 @@ pub fn summary(
                 .collect::<Vec<_>>()
                 .join("; "),
         );
+    }
+    if !suspended.is_empty() {
+        text.push_str(". Suspended: ");
+        text.push_str(&suspended.join("; "));
     }
     let paused: Vec<String> = inputs
         .iter()
@@ -203,7 +226,7 @@ pub fn send_if_due(
         "transition_id": stable_event_id,
         "route_reference": route,
         "destination_identity": format!("{label}:{route}"),
-        "summary": summary(&config.site, state, rules, inputs, now),
+        "summary": summary(&config.site, state, rules, inputs, &config.suspensions, now),
         "inspection_reference": truncate(&inspection_reference, 1024),
         "response_class": "attention",
     });

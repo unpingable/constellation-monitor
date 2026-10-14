@@ -54,9 +54,9 @@ docker run --rm --network none -v "$src":/work -w /work \
   -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$commit")" \
   jammy-packager:1 bash -c '
     cargo build --release --locked --offline -p constellation-attention &&
-    packaging/attention/build-deb.sh 0.1.2 amd64 target/release dist;
+    packaging/attention/build-deb.sh 0.1.3 amd64 target/release dist;
     rc=$?; chown -R '"$(id -u):$(id -g)"' /work; exit $rc'
-ls "$src/dist"   # constellation-attention_0.1.2_amd64.deb and .sha256
+ls "$src/dist"   # constellation-attention_0.1.3_amd64.deb and .sha256
 ```
 
 `build-deb.sh VERSION ARCH BIN_DIR OUT_DIR` refuses a binary whose
@@ -70,7 +70,7 @@ The postinst only creates `/var/lib/constellation-attention` (0700 nq:nq)
 when the `nq` account exists and reloads systemd; it never writes
 configuration or secrets and never enables or starts the timer. Purge
 removes the state directory. Install with `sudo apt install
-./constellation-attention_0.1.2_amd64.deb`, then continue at "Qualify before
+./constellation-attention_0.1.3_amd64.deb`, then continue at "Qualify before
 enabling" (copy the example to `attention.toml` and create
 `nq-routes.env` as below).
 

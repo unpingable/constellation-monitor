@@ -43,6 +43,38 @@ pub struct Config {
     /// `[digest]`: one notice a day listing every active condition and every
     /// input that is not current. Absent, no digest is sent.
     pub digest: Option<Digest>,
+    /// `[[suspensions]]`: definitions the owner has deliberately suspended.
+    #[serde(default)]
+    pub suspensions: Vec<Suspension>,
+}
+
+/// A declared, owned suspension of one rule, or of one rule on one target.
+/// Suspended is not healthy: the condition is held as it is (an open one stays
+/// open, nothing triggers or resolves), reported as suspended with its reason,
+/// and listed apart in the daily digest.
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Suspension {
+    pub rule: String,
+    /// Target class (unit, saved-check reference, service); absent = every target.
+    pub target: Option<String>,
+    pub owner: String,
+    pub reason: String,
+    /// The condition under which the suspension must be lifted.
+    pub resume_when: String,
+    /// When it was declared (RFC 3339 date or time).
+    pub since: String,
+}
+
+impl Suspension {
+    #[must_use]
+    pub fn covers(&self, key: &crate::condition::ConditionKey) -> bool {
+        self.rule == key.rule
+            && self
+                .target
+                .as_ref()
+                .is_none_or(|target| key.target_class.as_ref() == Some(target))
+    }
 }
 
 /// A trigger is notified once; a condition that stays active is otherwise
@@ -393,6 +425,27 @@ impl Config {
         }
         if let Some(digest) = &self.digest {
             digest.offset_seconds()?;
+        }
+        for suspension in &self.suspensions {
+            if crate::registry::rule(&suspension.rule).is_none() {
+                return Err(format!(
+                    "suspension names unknown rule {:?}",
+                    suspension.rule
+                ));
+            }
+            for (field, value) in [
+                ("owner", &suspension.owner),
+                ("reason", &suspension.reason),
+                ("resume_when", &suspension.resume_when),
+                ("since", &suspension.since),
+            ] {
+                if value.trim().is_empty() || value.len() > 300 {
+                    return Err(format!(
+                        "suspension of {} needs a {field} (1..=300 bytes)",
+                        suspension.rule
+                    ));
+                }
+            }
         }
         absolute("nq.program", &self.nq.program)?;
         absolute("nq.config", &self.nq.config)?;
