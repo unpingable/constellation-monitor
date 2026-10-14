@@ -133,6 +133,27 @@ pub fn summary(
                 .join("; "),
         );
     }
+    let paused: Vec<String> = inputs
+        .iter()
+        .filter(|input| input.kind == "estate")
+        .flat_map(|input| {
+            input.identity["paused"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|service| {
+            format!(
+                "{} since {}",
+                service["name"].as_str().unwrap_or("?"),
+                service["since"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    if !paused.is_empty() {
+        text.push_str(". Declared paused: ");
+        text.push_str(&paused.join("; "));
+    }
     if not_current.is_empty() {
         text.push_str(". All inputs current.");
     } else {

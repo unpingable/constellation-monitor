@@ -959,12 +959,13 @@ fn rules_lists_the_closed_registry() {
             "memory-pressure",
             "nightshift-recurrence-missing",
             "sqlite-health",
+            "service-not-doing-its-job",
             "evaluator-input-unavailable",
             "docket-unsettled",
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][8]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][9]["disabled"], "input not deployed");
 }
 
 #[test]
@@ -3649,5 +3650,134 @@ fn daily_digest_restates_active_conditions_once_a_day() {
             .get("digest")
             .is_some(),
         "next day"
+    );
+}
+
+fn write_estate(harness: &Harness, at: i64, services: &[(&str, &str, &str)]) {
+    let services: Vec<Value> = services
+        .iter()
+        .map(|(name, verdict, reason)| {
+            let mut s = serde_json::json!({"name": name, "verdict": verdict, "reason": reason, "since": rfc3339(T0)});
+            if *verdict == "PAUSED" {
+                s["declared"] = serde_json::json!({"state": "paused", "since": "2026-09-13", "reason": "operator pause"});
+            }
+            s
+        })
+        .collect();
+    let doc = serde_json::json!({"schema": "constellation.estate/v1", "site": "labelwatch",
+        "generated_at": rfc3339(at), "services": services});
+    fs::write(
+        harness.path("estate.json"),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+}
+
+fn estate_harness() -> Harness {
+    let mut harness = Harness::new();
+    let path = harness.path("estate.json");
+    harness.raw(&format!("[inputs.estate]\npath = \"{}\"\n", path.display()));
+    harness
+}
+
+/// A service that is running but not doing its job is noticed after the
+/// persistence bound, and the notice says why; a declared pause never is.
+#[test]
+fn estate_degraded_service_triggers_with_reason_and_pause_stays_quiet() {
+    let harness = estate_harness();
+    let rows = [
+        (
+            "driftwatch",
+            "PAUSED",
+            "declared paused since 2026-09-13: operator pause",
+        ),
+        ("weatherwatch", "DEGRADED", "observation.loss DEGRADED"),
+        ("factsapi", "OK", "running"),
+    ];
+    for offset in [0, 300] {
+        write_estate(&harness, T0 + offset, &rows);
+        assert!(
+            intents(&harness.evaluate(T0 + offset)).is_empty(),
+            "below the 600 s bound"
+        );
+    }
+    write_estate(&harness, T0 + 660, &rows);
+    let report = harness.evaluate(T0 + 660);
+    let fired = intents(&report);
+    let id = "constellation:labelwatch:service:service-not-doing-its-job:weatherwatch";
+    assert_eq!(
+        fired,
+        vec![(id.to_owned(), "notice".to_owned(), "trigger".to_owned())]
+    );
+    let record = report["intents"][0]["notification_id"].as_str().unwrap();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(
+        summary.ends_with("Now: observation.loss DEGRADED"),
+        "{summary}"
+    );
+    let quiet = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|c| !c["id"].as_str().unwrap().ends_with(":driftwatch") || c["active"] == false);
+    assert!(quiet, "a declared pause never triggers");
+    // Recovery resolves after the confirmation window.
+    let healthy = [rows[0], ("weatherwatch", "OK", "running"), rows[2]];
+    for offset in [720, 900] {
+        write_estate(&harness, T0 + offset, &healthy);
+        harness.evaluate(T0 + offset);
+    }
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(id)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+}
+
+/// A stale estate document changes no condition and marks the input not current.
+#[test]
+fn stale_estate_is_unknown_not_clear() {
+    let harness = estate_harness();
+    write_estate(&harness, T0, &[("pds", "DOWN", "docker pds is exited")]);
+    let report = harness.evaluate(T0 + 601);
+    assert!(intents(&report).is_empty());
+    let input = report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "estate")
+        .unwrap()
+        .clone();
+    assert_eq!(input["status"], "not_current", "{input}");
+    assert!(
+        input["causes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "stale")
+    );
+}
+
+/// The digest lists declared-paused services so a pause is never invisible.
+#[test]
+fn digest_lists_declared_paused_services() {
+    let mut harness = estate_harness();
+    harness.raw("[digest]\nat_utc = \"00:00\"\n");
+    write_estate(
+        &harness,
+        T0,
+        &[
+            ("driftwatch", "PAUSED", "declared paused"),
+            ("pds", "OK", "running"),
+        ],
+    );
+    let report = harness.evaluate(T0);
+    let summary = report["digest"]["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("Declared paused: driftwatch since 2026-09-13"),
+        "{summary}"
     );
 }

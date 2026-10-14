@@ -186,6 +186,24 @@ pub struct Inputs {
     pub nightshift: Option<NightshiftInput>,
     #[serde(default)]
     pub saved_checks: Vec<SavedCheckInput>,
+    /// The estate collector's per-service verdicts (`constellation.estate/v1`).
+    pub estate: Option<EstateInput>,
+}
+
+/// `[inputs.estate]`: every service the site is responsible for, with whether it
+/// is running and doing its job by its own status contract.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EstateInput {
+    /// JSON file written by `constellation-estate-collect`.
+    pub path: PathBuf,
+    /// The document's `generated_at` must be at most this old.
+    #[serde(default = "default_estate_age")]
+    pub max_age_seconds: i64,
+}
+
+const fn default_estate_age() -> i64 {
+    600
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -422,6 +440,10 @@ impl Config {
             label(&input.label)?;
             absolute("nightshift.store_path", &input.store_path)?;
         }
+        if let Some(input) = &self.inputs.estate {
+            absolute("inputs.estate.path", &input.path)?;
+            age("inputs.estate.max_age_seconds", input.max_age_seconds)?;
+        }
         for input in &self.inputs.saved_checks {
             label(&input.reference)?;
             source("saved_checks", input.command.as_ref(), input.path.as_ref())?;
@@ -557,6 +579,7 @@ impl Config {
             }
             InputKind::Nightshift => self.inputs.nightshift.is_some(),
             InputKind::SavedCheck => !self.inputs.saved_checks.is_empty(),
+            InputKind::Estate => self.inputs.estate.is_some(),
             InputKind::Evaluator => true,
             InputKind::NotDeployed => false,
         }

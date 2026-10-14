@@ -103,13 +103,25 @@ pub struct IntentInput<'a> {
 fn summary(input: &IntentInput<'_>) -> String {
     let id = input.key.id();
     match input.action {
-        Action::Trigger => format!(
-            "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
-            input.rule.class.as_str(),
-            input.rule.rule.condition,
-            input.persisted_seconds,
-            input.rule.persistence_seconds(),
-        ),
+        Action::Trigger => {
+            let mut text = format!(
+                "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
+                input.rule.class.as_str(),
+                input.rule.rule.condition,
+                input.persisted_seconds,
+                input.rule.persistence_seconds(),
+            );
+            // An estate verdict carries the service's own reason (unit state or the
+            // required concerns that are not present); say it, not just the rule.
+            if input.rule.rule.id == "service-not-doing-its-job"
+                && let Some(reason) = input.reference.get("reason").and_then(Value::as_str)
+                && !reason.is_empty()
+            {
+                text.push_str(" Now: ");
+                text.push_str(reason);
+            }
+            text
+        }
         Action::Resolve => match input.resolve_reason {
             ResolveReason::Recovered => format!(
                 "RESOLVE {id} [{}]: underlying state clear for at least {} s.",

@@ -448,6 +448,35 @@ continues from the saved state; on a fresh install there is none, so it
 shows no intents until a condition has persisted past its bound across real
 passes.
 
+## Estate: services doing their jobs
+
+`[inputs.estate] path = "/var/lib/constellation-estate/estate.json"` (and an
+optional `max_age_seconds`, default 600) reads the estate collector's
+`constellation.estate/v1` document. See `estate/README.md`. Each service is
+one condition, `service:service-not-doing-its-job:<name>`:
+
+- `DOWN` or `DEGRADED` is present. After 600 s a notice is sent, and its text
+  ends with the service's own reason (for example `Now: stream_coverage
+  STALE; cursor_continuity STALE`).
+- `OK`, and a declared `PAUSED`, are clear. A pause never alerts. The daily
+  digest lists it under "Declared paused" with its start date.
+- `UNKNOWN`, or a document older than `max_age_seconds`, changes nothing.
+  The input is reported `not_current`.
+
+The rule is notice-only. Slack is the operator's channel, and the rule is not
+in NQ's page anchor set.
+
+### service-not-doing-its-job
+
+Open the estate dashboard row or `estate.json` for the named service:
+
+- **DOWN** names the unit or container that is not running.
+- **DEGRADED** names the required concerns of the project's own status
+  contract that are not `PRESENT`.
+
+Fix the service. If the outage is deliberate, declare it paused in the
+registry, with a reason, rather than letting it alert.
+
 ## Daily digest
 
 Each trigger is notified once and an accepted notice is never resent, so

@@ -1,0 +1,261 @@
+{
+ "schema": "constellation.estate_registry/v1",
+ "site": "labelwatch",
+ "note": "Every service Constellation is responsible for on labelwatch-host (192.46.223.21). Inventory taken 2026-10-14 from enabled units, containers and listeners. A service missing here is unsupervised: add it.",
+ "services": [
+  {
+   "name": "driftwatch",
+   "role": "atproto observatory",
+   "runtime": {
+    "docker": "driftwatch"
+   },
+   "status": {
+    "kind": "project-ops-status",
+    "timeout_seconds": 90,
+    "argv": [
+     "docker",
+     "exec",
+     "driftwatch",
+     "python3",
+     "-m",
+     "labeler.ops_status",
+     "--db",
+     "/app/data/labeler.sqlite",
+     "--data-dir",
+     "/app/data",
+     "--format",
+     "json"
+    ]
+   },
+   "declared": {
+    "state": "paused",
+    "since": "2026-09-13",
+    "reason": "operator pause (DRIFTWATCH_OPERATOR_PAUSED=1, facts export off); ingest and evaluator stopped by design"
+   }
+  },
+  {
+   "name": "weatherwatch",
+   "role": "atproto observatory",
+   "runtime": {
+    "systemd": "weatherwatch-collector.service"
+   },
+   "status": {
+    "kind": "project-ops-status",
+    "user": "weatherwatch",
+    "cwd": "/opt/weatherwatch/releases/d154848cef330c7a9749dd49a564c18489679906/source",
+    "environment": {
+     "PYTHONPATH": "src"
+    },
+    "argv": [
+     "/opt/weatherwatch/releases/d154848cef330c7a9749dd49a564c18489679906/venv/bin/python",
+     "-m",
+     "weatherwatch.visibility",
+     "--db",
+     "/var/lib/weatherwatch/weatherwatch.sqlite",
+     "--report-dir",
+     "/var/lib/weatherwatch/build/report",
+     "--format",
+     "json"
+    ]
+   }
+  },
+  {
+   "name": "labelwatch",
+   "role": "atproto observatory (recent epoch)",
+   "runtime": {
+    "systemd": "labelwatch-recent-product.service"
+   },
+   "status": {
+    "kind": "labelwatch-recent-watch",
+    "path": "/var/lib/labelwatch-recent-watch/report.json",
+    "max_age_seconds": 900,
+    "advisory": [
+     "L11"
+    ]
+   }
+  },
+  {
+   "name": "factsapi",
+   "role": "public facts API",
+   "runtime": {
+    "systemd": "factsapi.service"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:8425/atproto/health"
+   }
+  },
+  {
+   "name": "pds",
+   "role": "bluesky PDS",
+   "runtime": {
+    "docker": "pds"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:3000/xrpc/_health"
+   }
+  },
+  {
+   "name": "juniper-spaces-pds",
+   "role": "PDS (spaces alpha)",
+   "runtime": {
+    "docker": "juniper-spaces-pds-alpha"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:3001/xrpc/_health"
+   }
+  },
+  {
+   "name": "phlogiston-pds",
+   "role": "phlogiston PDS",
+   "runtime": {
+    "docker": "phlogiston-pds"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:3002/xrpc/_health"
+   }
+  },
+  {
+   "name": "phlogiston-app",
+   "role": "phlogiston web",
+   "runtime": {
+    "systemd": "community-live.service"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:3211/"
+   }
+  },
+  {
+   "name": "community-demo",
+   "role": "atproto community demo",
+   "runtime": {
+    "docker": "atproto-community-demo"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:8138/health"
+   }
+  },
+  {
+   "name": "receipts-feed",
+   "role": "feed generator",
+   "runtime": {
+    "systemd": "receipts-feed.service"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:8100/health"
+   }
+  },
+  {
+   "name": "atproto-acl",
+   "role": "atproto ACL web",
+   "runtime": {
+    "systemd": "atproto-acl-web.service"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:8426/"
+   }
+  },
+  {
+   "name": "atproto-acl-worker",
+   "role": "atproto ACL worker",
+   "runtime": {
+    "systemd": "atproto-acl-worker.service"
+   }
+  },
+  {
+   "name": "communityd",
+   "role": "community daemon",
+   "runtime": {
+    "systemd": "communityd.service"
+   }
+  },
+  {
+   "name": "communitywatch-index",
+   "role": "community observer",
+   "runtime": {
+    "systemd": "communitywatch-index.service"
+   }
+  },
+  {
+   "name": "communitywatch-web",
+   "role": "community observer web",
+   "runtime": {
+    "systemd": "communitywatch-web.service"
+   }
+  },
+  {
+   "name": "community-history-demo",
+   "role": "community demo",
+   "runtime": {
+    "systemd": "community-history-demo.service"
+   }
+  },
+  {
+   "name": "caddy",
+   "role": "TLS edge for every public site",
+   "runtime": {
+    "systemd": "caddy-proxy.service"
+   },
+   "status": {
+    "kind": "http",
+    "url": "http://127.0.0.1:2019/config/"
+   }
+  },
+  {
+   "name": "postgresql-15",
+   "role": "database",
+   "runtime": {
+    "systemd": "postgresql@15-main.service"
+   }
+  },
+  {
+   "name": "postgresql-17",
+   "role": "database",
+   "runtime": {
+    "systemd": "postgresql@17-main.service"
+   }
+  },
+  {
+   "name": "docker",
+   "role": "container runtime",
+   "runtime": {
+    "systemd": "docker.service"
+   }
+  },
+  {
+   "name": "nq-ops",
+   "role": "constellation: NQ ops store",
+   "runtime": {
+    "systemd": "nqd-ops.service"
+   }
+  },
+  {
+   "name": "host-posture",
+   "role": "constellation: filesystem observation",
+   "runtime": {
+    "systemd": "constellation-host-posture.service"
+   }
+  },
+  {
+   "name": "phlogiston-nq",
+   "role": "constellation: phlogiston NQ",
+   "runtime": {
+    "systemd": "constellation-phlogiston-nqd.service"
+   }
+  },
+  {
+   "name": "node-exporter",
+   "role": "metrics",
+   "runtime": {
+    "systemd": "prometheus-node-exporter.service"
+   }
+  }
+ ]
+}
