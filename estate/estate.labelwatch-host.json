@@ -31,6 +31,10 @@
     "state": "paused",
     "since": "2026-09-13",
     "reason": "operator pause (DRIFTWATCH_OPERATOR_PAUSED=1, facts export off); ingest and evaluator stopped by design"
+   },
+   "contract": {
+    "concerns": "/etc/constellation-estate/contracts/driftwatch/concerns.toml",
+    "revision": "atproto-driftwatch 15a5fdd"
    }
   },
   {
@@ -57,7 +61,16 @@
      "--format",
      "json"
     ]
-   }
+   },
+   "contract": {
+    "concerns": "/opt/weatherwatch/releases/d154848cef330c7a9749dd49a564c18489679906/source/.ops/concerns.toml",
+    "revision": "weatherwatch d154848"
+   },
+   "timers": [
+    "weatherwatch-field.timer",
+    "weatherwatch-publish.timer",
+    "weatherwatch-social-detect.timer"
+   ]
   },
   {
    "name": "labelwatch",
@@ -72,7 +85,16 @@
     "advisory": [
      "L11"
     ]
-   }
+   },
+   "contract": {
+    "waived": "the deployed release's .ops contract describes the retired labelwatch.db architecture; the recent-epoch product's obligations (L1-L11) are acquired through labelwatch-recent-watch. A recent-product .ops contract is owed by the ATProto lane (cartography #90)."
+   },
+   "timers": [
+    "labelwatch-recent-collect.timer",
+    "labelwatch-recent-maintain.timer",
+    "labelwatch-recent-overview.timer",
+    "labelwatch-recent-watch.timer"
+   ]
   },
   {
    "name": "factsapi",
@@ -234,14 +256,21 @@
    "role": "constellation: NQ ops store",
    "runtime": {
     "systemd": "nqd-ops.service"
-   }
+   },
+   "timers": [
+    "nq-ops-saved-checks.timer",
+    "nq-validate-full-ops.timer"
+   ]
   },
   {
    "name": "host-posture",
    "role": "constellation: filesystem observation",
    "runtime": {
     "systemd": "constellation-host-posture.service"
-   }
+   },
+   "timers": [
+    "nq-validate-full.timer"
+   ]
   },
   {
    "name": "phlogiston-nq",
@@ -255,7 +284,11 @@
    "role": "metrics",
    "runtime": {
     "systemd": "prometheus-node-exporter.service"
-   }
+   },
+   "timers": [
+    "prometheus-node-exporter-apt.timer",
+    "prometheus-node-exporter-smartmon.timer"
+   ]
   },
   {
    "name": "attention-canary",
@@ -263,6 +296,120 @@
    "runtime": {
     "systemd": "attention-canary.service"
    }
+  },
+  {
+   "name": "attention",
+   "role": "constellation: attention evaluator (exit 3 = an input not current; its own notice covers that)",
+   "runtime": {
+    "systemd": "constellation-attention.timer"
+   },
+   "timers": [
+    {
+     "unit": "constellation-attention.timer",
+     "ok_status": [
+      0,
+      3
+     ],
+     "check_result": true
+    }
+   ]
+  },
+  {
+   "name": "remediation-consumer",
+   "role": "constellation: bounded remediation consumer",
+   "runtime": {
+    "systemd": "constellation-remediation-consumer.timer"
+   },
+   "timers": [
+    {
+     "unit": "constellation-remediation-consumer.timer",
+     "ok_status": [
+      0
+     ],
+     "check_result": true
+    }
+   ]
+  },
+  {
+   "name": "phlogiston-attention",
+   "role": "constellation: Phlogiston attention evaluator",
+   "runtime": {
+    "systemd": "constellation-phlogiston-attention.timer"
+   },
+   "timers": [
+    {
+     "unit": "constellation-phlogiston-attention.timer",
+     "ok_status": [
+      0,
+      3
+     ],
+     "check_result": true
+    }
+   ]
+  },
+  {
+   "name": "phlogiston-remediation",
+   "role": "constellation: Phlogiston remediation consumer",
+   "runtime": {
+    "systemd": "constellation-phlogiston-remediation.timer"
+   },
+   "timers": [
+    {
+     "unit": "constellation-phlogiston-remediation.timer",
+     "ok_status": [
+      0
+     ],
+     "check_result": true
+    }
+   ]
+  },
+  {
+   "name": "telemetry-exporter",
+   "role": "constellation: telemetry textfile exporter",
+   "runtime": {
+    "systemd": "constellation-telemetry-exporter.timer"
+   },
+   "timers": [
+    {
+     "unit": "constellation-telemetry-exporter.timer",
+     "ok_status": [
+      0
+     ],
+     "check_result": true
+    }
+   ]
+  },
+  {
+   "name": "status-site",
+   "role": "constellation: status projection renderer (feeds the exporter)",
+   "runtime": {
+    "systemd": "constellation-status-site.timer"
+   },
+   "timers": [
+    {
+     "unit": "constellation-status-site.timer",
+     "ok_status": [
+      0
+     ],
+     "check_result": true
+    }
+   ]
+  },
+  {
+   "name": "nightshift",
+   "role": "constellation: Nightshift observation cycle (failures surface as nightshift-recurrence-missing; same-slot refusals are expected)",
+   "runtime": {
+    "systemd": "nightshift-observation-cycle.timer"
+   },
+   "timers": [
+    {
+     "unit": "nightshift-observation-cycle.timer",
+     "ok_status": [
+      0
+     ],
+     "check_result": false
+    }
+   ]
   }
  ],
  "unsupervised": {
@@ -444,6 +591,56 @@
    {
     "match": "caddy",
     "reason": "runtime of caddy-proxy.service, which is supervised (admin API probe)"
+   }
+  ],
+  "timer": [
+   {
+    "match": "constellation-estate-collect.timer",
+    "reason": "the collector itself; crow alerts EstateCollectorStale/Missing"
+   },
+   {
+    "match": "apt-daily*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "dpkg-db-backup.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "e2scrub_all.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "fstrim.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "logrotate.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "man-db.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "systemd-tmpfiles-clean.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "update-notifier-*",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "fwupd-refresh.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "motd-news.timer",
+    "reason": "Ubuntu base system"
+   },
+   {
+    "match": "apport-autoreport.timer",
+    "reason": "Ubuntu base system"
    }
   ]
  }

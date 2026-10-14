@@ -39,6 +39,48 @@ def run(argv, timeout, user=None, cwd=None, env=None, limit=1 << 20):
     return p.returncode, p.stdout[:limit], p.stderr[-2000:].decode("utf-8", "replace")
 
 
+def parse_concerns(path):
+    """Required concern ids of a project.concerns/v1 file. Minimal reader for the [[concerns]] id/required keys
+    (the host has Python 3.10, without tomllib); anything it cannot read is an error, never an empty contract."""
+    ids, current = [], None
+    with open(path) as fh:
+        for raw in fh:
+            line = raw.split("#", 1)[0].strip()
+            if line == "[[concerns]]":
+                current = {"required": True}; ids.append(current)
+            elif line.startswith("[") :
+                current = None
+            elif current is not None and "=" in line:
+                key, value = (x.strip() for x in line.split("=", 1))
+                if key == "id":
+                    current["id"] = value.strip('"')
+                elif key == "required":
+                    current["required"] = value == "true"
+    if not ids or any("id" not in c for c in ids):
+        raise ValueError("no readable [[concerns]] in %s" % path)
+    return [c["id"] for c in ids if c["required"]]
+
+
+def unit_props(unit, timeout, props):
+    rc, out, _ = run(["systemctl", "show", unit, "-p", ",".join(props)], timeout)
+    return dict(line.split("=", 1) for line in out.decode().splitlines() if "=" in line)
+
+
+def timer_concern(spec, timeout):
+    """A timer is part of its service's job: armed, and its last run did not fail (unless result checks are off)."""
+    spec = {"unit": spec} if isinstance(spec, str) else spec
+    t = unit_props(spec["unit"], timeout, ["ActiveState", "Unit", "LastTriggerUSec"])
+    svc = unit_props(t.get("Unit", ""), timeout, ["Result", "ExecMainStatus", "ActiveState"]) if t.get("Unit") else {}
+    ok_status = [str(x) for x in spec.get("ok_status", [0])]
+    if t.get("ActiveState") != "active":
+        state, reason = "DEGRADED", "timer %s is %s" % (spec["unit"], t.get("ActiveState", "?"))
+    elif spec.get("check_result", True) and svc.get("ActiveState") == "failed" and svc.get("ExecMainStatus") not in ok_status:
+        state, reason = "DEGRADED", "last run of %s failed (status %s)" % (t.get("Unit"), svc.get("ExecMainStatus"))
+    else:
+        state, reason = "PRESENT", "armed; last trigger %s" % (t.get("LastTriggerUSec") or "never")
+    return {"id": "timer." + spec["unit"], "required": True, "state": state, "reason": reason}
+
+
 def runtime_state(spec, timeout):
     if "systemd" in spec:
         unit = spec["systemd"]
@@ -134,6 +176,22 @@ def evaluate(svc, timeout):
         except Exception as e:  # noqa: BLE001
             error = "%s: %s" % (type(e).__name__, str(e)[:300])
     out["concerns"] = concerns or []
+    # Declared means acquired: every required concern of the service's contract must have been observed.
+    contract = svc.get("contract") or {}
+    if contract.get("concerns") and out["runtime"].get("up") and not error:
+        try:
+            acquired = {c["id"] for c in out["concerns"]}
+            for cid in parse_concerns(contract["concerns"]):
+                if cid not in acquired:
+                    out["concerns"].append({"id": cid, "required": True, "state": "MISSING_REQUIRED_OBSERVATION",
+                                            "reason": "declared in %s, not acquired" % contract["concerns"]})
+        except Exception as e:  # noqa: BLE001 - an unreadable contract is a failure, not an empty one
+            error = "contract unreadable: %s" % str(e)[:200]
+    for spec in svc.get("timers", []):
+        try:
+            out["concerns"].append(timer_concern(spec, timeout))
+        except Exception as e:  # noqa: BLE001
+            out["concerns"].append({"id": "timer." + str(spec), "required": True, "state": "UNKNOWN", "reason": str(e)[:200]})
     failing = [c for c in out["concerns"] if c["required"] and c["state"] not in OK_STATES]
     declared = (svc.get("declared") or {}).get("state")
     if declared == "paused":
@@ -158,13 +216,19 @@ def coverage(reg, timeout):
     """Deterministic completeness: every enabled or running service unit and every running container is either
     supervised (a registry runtime target) or explicitly unsupervised (an `unsupervised` glob with a reason).
     Anything else is reported, so an unregistered workload is a visible failure, not a silent gap."""
-    targets = {"systemd": set(), "docker": set()}
+    targets = {"systemd": set(), "docker": set(), "timer": set()}
     for s in reg["services"]:
-        for kind in targets:
+        for kind in ("systemd", "docker"):
             if kind in s["runtime"]:
                 targets[kind].add(s["runtime"][kind])
+        for spec in s.get("timers", []):
+            targets["timer"].add(spec if isinstance(spec, str) else spec["unit"])
     excluded = reg.get("unsupervised") or {}
-    found = {"systemd": set(), "docker": set()}
+    found = {"systemd": set(), "docker": set(), "timer": set()}
+    rc, out, err = run(["systemctl", "list-units", "--type=timer", "--state=active", "--no-legend", "--plain"], timeout)
+    if rc != 0:
+        raise RuntimeError("systemctl list-units --type=timer failed")
+    found["timer"].update(line.split()[0] for line in out.decode().splitlines() if line.strip())
     for args in (["list-unit-files", "--type=service", "--state=enabled"], ["list-units", "--type=service", "--state=running"]):
         rc, out, err = run(["systemctl"] + args + ["--no-legend", "--plain"], timeout)
         if rc != 0:
@@ -175,7 +239,15 @@ def coverage(reg, timeout):
         raise RuntimeError("docker ps failed")
     found["docker"].update(out.decode().split())
     unregistered = []
-    for kind in ("systemd", "docker"):
+    # A supervised unit whose working directory declares an .ops contract must acquire it (or waive it with a reason).
+    for s in reg["services"]:
+        unit = s["runtime"].get("systemd")
+        if not unit or (s.get("contract") or {}).get("concerns") or (s.get("contract") or {}).get("waived"):
+            continue
+        wd = unit_props(unit, timeout, ["WorkingDirectory"]).get("WorkingDirectory", "")
+        if wd and os.path.isfile(os.path.join(wd, ".ops", "concerns.toml")):
+            unregistered.append("contract:%s:%s/.ops" % (s["name"], wd))
+    for kind in ("systemd", "docker", "timer"):
         globs = [e["match"] for e in excluded.get(kind, [])]
         for name in sorted(found[kind] - targets[kind]):
             if not any(fnmatch.fnmatchcase(name, g) for g in globs):
