@@ -16,7 +16,7 @@ the telemetry exporter and the dashboard read. Verdicts:
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
-import argparse, fnmatch, json, os, subprocess, sys, tempfile, time, urllib.request
+import argparse, fnmatch, hashlib, json, os, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
 
 REGISTRY_SCHEMA = "constellation.estate_registry/v1"
@@ -180,6 +180,11 @@ def evaluate(svc, timeout):
     contract = svc.get("contract") or {}
     if contract.get("concerns") and out["runtime"].get("up") and not error:
         try:
+            with open(contract["concerns"], "rb") as fh:
+                digest = "sha256:" + hashlib.sha256(fh.read()).hexdigest()
+            if contract.get("sha256") and digest != contract["sha256"]:
+                out["concerns"].append({"id": "contract.revision", "required": True, "state": "DEGRADED",
+                                        "reason": "contract drift: %s is %s, registry pins %s" % (contract["concerns"], digest[:19], contract["sha256"][:19])})
             acquired = {c["id"] for c in out["concerns"]}
             for cid in parse_concerns(contract["concerns"]):
                 if cid not in acquired:

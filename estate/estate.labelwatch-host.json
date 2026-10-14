@@ -34,7 +34,8 @@
    },
    "contract": {
     "concerns": "/etc/constellation-estate/contracts/driftwatch/concerns.toml",
-    "revision": "atproto-driftwatch 15a5fdd"
+    "revision": "atproto-driftwatch 15a5fdd",
+    "sha256": "sha256:d1f31c6e1914b3ac943d0cc46a75aea854acf9c1f1683fdb75f50ed8e8bd9802"
    }
   },
   {
@@ -64,7 +65,8 @@
    },
    "contract": {
     "concerns": "/opt/weatherwatch/releases/d154848cef330c7a9749dd49a564c18489679906/source/.ops/concerns.toml",
-    "revision": "weatherwatch d154848"
+    "revision": "weatherwatch d154848",
+    "sha256": "sha256:7f098bedaa0646464104e90c6f727e804598c694a45d8c30df9961a818c336b6"
    },
    "timers": [
     "weatherwatch-field.timer",

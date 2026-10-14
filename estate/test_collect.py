@@ -88,3 +88,21 @@ def test_coverage_names_unregistered_timers_and_unacquired_contracts(tmp_path, m
     assert c.coverage(reg, 10) == ["contract:demo:%s/.ops" % tmp_path, "timer:stray.timer"]
     reg["services"][0]["contract"] = {"waived": "old architecture"}
     assert c.coverage(reg, 10) == ["timer:stray.timer"]
+
+
+def test_contract_drift_against_the_pinned_digest_degrades(tmp_path, monkeypatch):
+    import hashlib
+    p = tmp_path / "concerns.toml"; p.write_text(CONCERNS)
+    pinned = "sha256:" + hashlib.sha256(CONCERNS.encode()).hexdigest()
+    status = {"schema": "project.ops.status/v1", "concerns": [
+        {"id": cid, "required": True, "observation": {"local_state": "PRESENT", "reason": "ok"}}
+        for cid in ("demo.ingest.progress", "demo.output.fresh")]}
+    monkeypatch.setattr(c, "run", fake_run({
+        "systemctl show demo.service": (0, "ActiveState=active\nSubState=running\n"),
+        "producer": (0, json.dumps(status))}))
+    svc = {"name": "demo", "runtime": {"systemd": "demo.service"},
+           "status": {"kind": "project-ops-status", "argv": ["producer"]}, "contract": {"concerns": str(p), "sha256": pinned}}
+    assert c.evaluate(svc, 10)["verdict"] == "OK"
+    p.write_text(CONCERNS + "\n# edited on the host\n")
+    out = c.evaluate(svc, 10)
+    assert out["verdict"] == "DEGRADED" and "contract.revision" in out["failing"], out
