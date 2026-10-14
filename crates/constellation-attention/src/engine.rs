@@ -346,6 +346,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             || observed.contains_key(id)
             || condition.key.rule == INPUT_UNAVAILABLE
             || !current_labels.contains(&condition.input_label)
+            || retired_target(config, condition)
         {
             continue;
         }
@@ -454,6 +455,11 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         let rule = rule_for(&rules, &condition.key.rule);
         let (observation, note) = if let Some(item) = item {
             (item.observation, item.note.clone())
+        } else if retired_target(config, condition) {
+            (
+                Observation::Removed,
+                "target retired from supervision by the operator".into(),
+            )
         } else if condition.key.rule == INPUT_UNAVAILABLE {
             // Every configured input reports every fault class, so an
             // unreported one names a removed input or an older key format.
@@ -1064,6 +1070,19 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         } else {
             0
         },
+    })
+}
+
+/// An NQ-status condition whose target the operator listed in
+/// `[inputs.nq_status] retired_targets`.
+fn retired_target(config: &Config, condition: &ConditionState) -> bool {
+    config.inputs.nq_status.as_ref().is_some_and(|input| {
+        condition.input_label == input.label
+            && condition
+                .key
+                .target_class
+                .as_ref()
+                .is_some_and(|target| input.retired_targets.contains(target))
     })
 }
 

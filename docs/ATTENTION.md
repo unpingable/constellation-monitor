@@ -577,9 +577,11 @@ These are operator acceptance items.
   recovery. Restoring the configuration re-pages as a new incident after the
   bound.
 - A removed or renamed NQ watcher holds its page open (unknown), keeps the
-  NQ input `not_current` (`unreported`) and every pass exits 3 until the
-  watcher returns. Disabling `service-down` clears it but resolves every
-  service-down page. Below-bound conditions of a removed watcher stay in the
+  NQ input `not_current` (`unreported`) and every pass exits 3, until either
+  the watcher returns or the operator lists its target in
+  `[inputs.nq_status] retired_targets = ["unit.service"]` (with the watcher id
+  in `retired_instances`). A retired target's open condition then resolves as
+  "no longer evaluated; recovery not observed". Below-bound conditions of a removed watcher stay in the
   state (unknown, harmless) until the watcher returns.
 - Watching a unit with no bounded target class (templated, escaped or long
   names) keeps the NQ input `not_current` (`untargetable`) permanently. It

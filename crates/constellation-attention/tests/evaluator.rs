@@ -3781,3 +3781,73 @@ fn digest_lists_declared_paused_services() {
         "{summary}"
     );
 }
+
+/// A removed watcher's open page closes once the operator retires its target:
+/// resolved as "no longer evaluated" (never as recovery), and the NQ input is
+/// current again so passes stop exiting 3.
+#[test]
+fn retired_target_resolves_a_removed_watchers_page() {
+    let (mut harness, status) = nq_status_harness();
+    let t = trigger_cron(&harness, &status);
+    let gone = |offset: i64| {
+        retimed("cron-down.json", t + offset, |value| {
+            value["components"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|component| {
+                    component["id"] != "unit-cron"
+                        && component["detail"]["result"]["context"]["instance_id"] != "unit-cron"
+                });
+        })
+    };
+    write_status(&status, &gone(60));
+    assert_eq!(
+        harness.evaluate_at(t + 63, &[]).status.code(),
+        Some(3),
+        "held open while unretired"
+    );
+    harness
+        .extra_config
+        .push_str("retired_instances = [\"unit-cron\"]\nretired_targets = [\"cron.service\"]\n");
+    write_status(&status, &gone(120));
+    let output = harness.evaluate_at(t + 123, &[]);
+    let report = harness.report();
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(CRON)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+    let resolves: Vec<String> = cron_calls(&harness)
+        .into_iter()
+        .filter(|call| call.contains("-resolve-"))
+        .collect();
+    assert!(!resolves.is_empty(), "{:?}", harness.calls());
+    let record = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == CRON && i["route_role"] == "notice")
+        .unwrap()["notification_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(&record)).unwrap();
+    assert!(
+        sent["summary"]
+            .as_str()
+            .unwrap()
+            .contains("no longer evaluated; recovery not observed"),
+        "{sent}"
+    );
+    let nq = report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["label"] == "nqd")
+        .unwrap()
+        .clone();
+    assert_eq!(nq["status"], "ok", "{nq}");
+    assert_eq!(output.status.code(), Some(0));
+}

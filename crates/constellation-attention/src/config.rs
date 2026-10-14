@@ -244,6 +244,12 @@ pub struct NqStatusInput {
     /// it stops evaluating, even after it leaves the window.
     #[serde(default)]
     pub retired_instances: Vec<String>,
+    /// Targets (unit names, filesystem targets) the operator has retired from
+    /// supervision. An open condition on a retired target that NQ no longer
+    /// reports resolves as "no longer evaluated" instead of being held open,
+    /// unknown, for ever.
+    #[serde(default)]
+    pub retired_targets: Vec<String>,
     /// argv printing `nq.status_snapshot.v3` JSON, e.g.
     /// `["/usr/bin/nq","--config","/etc/nq/nqd-ops.toml","--json","status","export"]`.
     pub command: Option<Vec<String>>,
