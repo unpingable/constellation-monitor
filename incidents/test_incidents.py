@@ -244,6 +244,15 @@ def test_handover_carries_unresolved_incidents_to_a_replacement_host(tmp_path):
     assert inc.import_unresolved(b, doc, "host-b", T0 + 999)[0] == []
 
 
+def test_import_seeds_a_new_hosts_store_before_any_sync(tmp_path):
+    a = MemoryStore()
+    inc.sync(a, report("present", True), state(("notice", "ev-1", "trigger")), None, RULES, T0)
+    f = tmp_path / "handover.json"; f.write_text(json.dumps(inc.export_unresolved(a, "host-a", T0 + 10)))
+    db = str(tmp_path / "fresh" / "incidents.sqlite")                    # no state directory yet
+    assert inc.main(["--db", db, "import", str(f)]) == 0
+    assert inc.main(["--db", str(tmp_path / "other" / "i.sqlite"), "list"]) != 0   # readers still refuse a missing store
+
+
 def test_handover_does_not_inherit_recovery_or_close_what_the_new_host_never_sees():
     a, b = MemoryStore(), MemoryStore()
     inc.sync(a, report("present", True), {}, None, RULES, T0)

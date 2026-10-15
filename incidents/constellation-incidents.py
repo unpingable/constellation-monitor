@@ -516,6 +516,8 @@ def main(argv=None):
                     fh.write(doc + "\n")
             return 0
         if cmd == "import":
+            # seeding a new host's store is import's purpose: it may run before the first sync made the state directory
+            os.makedirs(os.path.dirname(a.db), mode=0o755, exist_ok=True)
             store = SqliteStore(a.db)
             with store.transaction():
                 adopted, skipped = import_unresolved(store, load(a.file), host, time.time())
