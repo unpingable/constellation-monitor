@@ -9,6 +9,7 @@ incident per supervised subject + failure condition, independent of the processe
   list    THE operator query: what is broken, what was tried, what worked, what failed, what still needs you
   show    one incident's full timeline (id like inc-1a2b3c4d or inc-1a2b3c4d-2, or a condition key)
   ack / note / resolve   operator actions, recorded as such
+  export / import        handover of unresolved incidents to a replacement host (below)
 
 Semantics (deliberately conservative):
   * identity is the condition key (site:component:rule:target), never a definition revision: changing a threshold
@@ -21,6 +22,14 @@ Semantics (deliberately conservative):
   * the store is its own SQLite file; list/show read it directly, so they work with the evaluator or NQ down. Every
     sync writes a heartbeat (and a textfile metric) so a dead sync is visible from outside.
 Retention is bounded: resolved incidents are kept RETAIN_DAYS, and events per incident are capped.
+
+Replacement (cartography #94): a rebuilt host starts with an empty store, so unresolved obligations would vanish.
+`export` writes the unresolved incidents (timeline and attempts) to a handover file kept off the host; `import` on
+the replacement restores each one under its own id (ids derive from the condition key, so they match the new host's
+notices) with an `inherited` event naming the predecessor. Nothing is claimed that this host did not observe: an
+incident that was recovering is reopened (recovery was not seen here), and from then on the ordinary rules apply:
+it closes only after this host's evaluator resolves the condition and it stays clear, and a condition this host never
+reports keeps it open for the operator. An unresolved incident already present for the same key is left alone.
 """
 import argparse, datetime, hashlib, json, os, sqlite3, subprocess, sys, tempfile, time
 
@@ -63,6 +72,7 @@ class Store:
     def attempts(self, inc_id): raise NotImplementedError
     def heartbeat(self, at, ok, note): raise NotImplementedError
     def meta(self): raise NotImplementedError
+    def adopt(self, row): raise NotImplementedError             # insert an incident under its existing id
 
 
 class SqliteStore(Store):
@@ -162,6 +172,11 @@ class SqliteStore(Store):
     def meta(self):
         return {r["k"]: r["v"] for r in self._x("SELECT k, v FROM meta")}
 
+    def adopt(self, row):
+        cols = ("id", "key", "rule", "subject", "state", "opened_at", "first_seen", "last_observed_at", "last_observation",
+                "recovering_since", "resolved_at", "resolution", "needs_operator", "ack_by", "ack_note", "severity")
+        self._x("INSERT INTO incident(%s) VALUES (%s)" % (",".join(cols), ",".join("?" * len(cols))), tuple(row.get(c) for c in cols))
+
     def prune(self, now):
         cutoff = iso(now - RETAIN_DAYS * 86400)
         old = [r[0] for r in self._x("SELECT id FROM incident WHERE state='resolved' AND resolved_at < ?", (cutoff,))]
@@ -171,6 +186,48 @@ class SqliteStore(Store):
         for (inc,) in self._x("SELECT incident FROM event GROUP BY incident HAVING COUNT(*) > ?", (MAX_EVENTS,)).fetchall():
             self._x("DELETE FROM event WHERE incident=? AND seq NOT IN (SELECT seq FROM event WHERE incident=? ORDER BY seq DESC LIMIT ?)",
                     (inc, inc, MAX_EVENTS))
+
+
+# ------------------------------------------------------------------ handover to a replacement host (backend-independent)
+HANDOVER = "constellation.incidents.handover/v1"
+
+
+def export_unresolved(store, host, now):
+    out = []
+    for i in store.incidents(unresolved_only=True):
+        out.append({"incident": i, "events": store.events(i["id"]), "attempts": store.attempts(i["id"])})
+    return {"schema": HANDOVER, "exported_at": iso(now), "host": host, "incidents": out}
+
+
+def import_unresolved(store, doc, host, now):
+    """Returns (adopted ids, skipped [(id, why)])."""
+    if doc.get("schema") != HANDOVER:
+        raise ValueError("not a %s document" % HANDOVER)
+    at, adopted, skipped = iso(now), [], []
+    for item in doc["incidents"]:
+        i = dict(item["incident"])
+        cur = store.current(i["key"])
+        if cur and cur["state"] != "resolved":
+            skipped.append((i["id"], "an unresolved incident for this condition already exists here (%s)" % cur["id"])); continue
+        if any(x["id"] == i["id"] for x in store.incidents(unresolved_only=False)):
+            skipped.append((i["id"], "this id is already in the store")); continue
+        was = i["state"]
+        if was == "recovering":
+            i.update(state="open", recovering_since=None)
+        i["last_observation"] = "inherited"
+        prior = i.get("needs_operator")
+        i["needs_operator"] = "inherited from %s: %s" % (doc.get("host"), prior or "confirm the condition on the replacement host")
+        store.adopt(i)
+        for e in item.get("events", []):
+            store.event(i["id"], e["at"], e["kind"], json.loads(e["detail"]) if isinstance(e["detail"], str) else e["detail"],
+                        dedup="inherited:%s:%s:%s:%s" % (i["id"], e["at"], e["kind"], hashlib.sha256(str(e["detail"]).encode()).hexdigest()[:12]))
+        for a in item.get("attempts", []):
+            store.attempt(i["id"], a["episode"], a)
+        store.event(i["id"], at, "inherited", {"from": doc.get("host"), "to": host, "exported_at": doc.get("exported_at"),
+                    "state_there": was, "note": "carried across host replacement; recovery on this host is observed afresh"},
+                    dedup="inherited:%s:%s" % (i["id"], doc.get("exported_at")))
+        adopted.append(i["id"])
+    return adopted, skipped
 
 
 # ------------------------------------------------------------------ sync: the lifecycle (backend-independent)
@@ -444,9 +501,29 @@ def main(argv=None):
     ak = sub.add_parser("ack"); ak.add_argument("ref"); ak.add_argument("--by", required=True); ak.add_argument("--note", default="")
     nt = sub.add_parser("note"); nt.add_argument("ref"); nt.add_argument("--by", required=True); nt.add_argument("text")
     rs = sub.add_parser("resolve"); rs.add_argument("ref"); rs.add_argument("--by", required=True); rs.add_argument("--note", required=True)
+    ex = sub.add_parser("export"); ex.add_argument("--out", default="-")
+    im = sub.add_parser("import"); im.add_argument("file")
     a = ap.parse_args(argv)
     cmd = a.cmd or "list"
     try:
+        host = open("/etc/machine-id").read().strip() if os.path.exists("/etc/machine-id") else "unknown"
+        if cmd == "export":
+            doc = json.dumps(export_unresolved(SqliteStore(a.db, readonly=True), host, time.time()), indent=1, sort_keys=True)
+            if a.out == "-":
+                print(doc)
+            else:
+                with open(a.out, "w") as fh:
+                    fh.write(doc + "\n")
+            return 0
+        if cmd == "import":
+            store = SqliteStore(a.db)
+            with store.transaction():
+                adopted, skipped = import_unresolved(store, load(a.file), host, time.time())
+            for iid in adopted:
+                print("adopted %s" % iid)
+            for iid, why in skipped:
+                print("skipped %s: %s" % (iid, why))
+            return 0
         if cmd in ("list", "show"):
             store = SqliteStore(a.db, readonly=True)
             print(list_view(store) if cmd == "list" else show_view(store, a.ref))

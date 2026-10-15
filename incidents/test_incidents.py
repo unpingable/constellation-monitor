@@ -43,6 +43,8 @@ class MemoryStore(inc.Store):
     def attempts(self, iid): return [dict(v, incident=k[0]) for k, v in self.att.items() if k[0] == iid]
     def heartbeat(self, at, ok, note): self.m.update(last_sync_at=at, last_sync_ok="1" if ok else "0", last_sync_note=note)
     def meta(self): return dict(self.m)
+    def adopt(self, row):
+        self.n += 1; self.inc[row["id"]] = dict(row, _n=self.n)
 
 
 @pytest.fixture(params=["sqlite", "memory"])
@@ -219,3 +221,45 @@ def test_a_resolved_row_starts_where_the_open_row_did(store):
     inc.sync(store, {"conditions": []}, {}, None, RULES, T0 + 61 + inc.CONFIRM_SECONDS)
     assert store.incidents() == []
     assert "attention-canary.service 2026-10-14T18:45:03Z -> " in inc.list_view(store, now=T0 + 62 + inc.CONFIRM_SECONDS)
+
+
+def test_handover_carries_unresolved_incidents_to_a_replacement_host(tmp_path):
+    """cartography #94: a rebuilt host must not silently drop obligations, nor claim recovery it did not observe."""
+    a, b = MemoryStore(), inc.SqliteStore(str(tmp_path / "b.sqlite"))
+    inc.sync(a, report("present", True), state(("notice", "ev-1", "trigger")), None, RULES, T0)
+    doc = json.loads(json.dumps(inc.export_unresolved(a, "host-a", T0 + 10)))   # through JSON, as the file is
+    adopted, skipped = inc.import_unresolved(b, doc, "host-b", T0 + 20)
+    iid = "inc-" + inc.key_hash(KEY)
+    assert adopted == [iid] and skipped == []
+    i = b.incidents()[0]
+    assert i["id"] == iid and i["needs_operator"].startswith("inherited from host-a")
+    kinds = [e["kind"] for e in b.events(iid)]
+    assert "detected" in kinds and "notified" in kinds and kinds[-1] == "inherited"
+    # the replacement's evaluator sees it clear: closure only after this host's own confirmation
+    inc.sync(b, report("clear", False), {}, None, RULES, T0 + 60)
+    assert b.incidents()[0]["state"] == "recovering"
+    inc.sync(b, {"conditions": []}, {}, None, RULES, T0 + 61 + inc.CONFIRM_SECONDS)
+    assert b.incidents() == []
+    # importing the same handover again does not resurrect it
+    assert inc.import_unresolved(b, doc, "host-b", T0 + 999)[0] == []
+
+
+def test_handover_does_not_inherit_recovery_or_close_what_the_new_host_never_sees():
+    a, b = MemoryStore(), MemoryStore()
+    inc.sync(a, report("present", True), {}, None, RULES, T0)
+    inc.sync(a, report("clear", False), {}, None, RULES, T0 + 60)
+    assert a.incidents()[0]["state"] == "recovering"
+    inc.import_unresolved(b, inc.export_unresolved(a, "host-a", T0 + 70), "host-b", T0 + 80)
+    assert b.incidents()[0]["state"] == "open"        # recovery was not observed here
+    for t in (T0 + 100, T0 + 100 + 2 * inc.CONFIRM_SECONDS):
+        inc.sync(b, {"conditions": []}, {}, None, RULES, t)
+    i = b.incidents()[0]
+    assert i["state"] == "open" and i["last_observation"] == "unreported" and i["needs_operator"]
+
+
+def test_handover_never_overwrites_an_incident_the_new_host_already_has():
+    a, b = MemoryStore(), MemoryStore()
+    inc.sync(a, report("present", True), {}, None, RULES, T0)
+    inc.sync(b, report("present", True), {}, None, RULES, T0 + 5)
+    adopted, skipped = inc.import_unresolved(b, inc.export_unresolved(a, "host-a", T0 + 10), "host-b", T0 + 20)
+    assert adopted == [] and "already exists here" in skipped[0][1]
