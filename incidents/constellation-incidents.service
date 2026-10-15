@@ -2,6 +2,9 @@
 Description=Constellation incident continuity sync (one pass)
 Documentation=file:///usr/local/lib/constellation-incidents/README.md
 After=constellation-attention.service
+# Nothing to sync before the evaluator's first pass (a fresh host): skip, don't fail. Once a report exists, losing it
+# fails the pass as before.
+ConditionPathExists=/var/lib/constellation-attention/report.json
 
 [Service]
 Type=oneshot
