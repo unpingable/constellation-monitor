@@ -45,6 +45,15 @@ def key_hash(key):
     return hashlib.sha256(key.encode()).hexdigest()[:8]
 
 
+def next_incident_id(key, existing):
+    """Episodes of one condition: inc-<hash>, then -2, -3, ... past the highest present. Not a count: adopted
+    incidents (cartography #94) and pruning both make the count disagree with the suffixes in use."""
+    base = "inc-%s" % key_hash(key)
+    used = [1 if i == base else int(i[len(base) + 1:]) for i in existing
+            if i == base or (i.startswith(base + "-") and i[len(base) + 1:].isdigit())]
+    return base if not used else "%s-%d" % (base, max(used) + 1)
+
+
 class StoreUnavailable(Exception):
     """The backend could not be read or written; nothing was claimed."""
 
@@ -111,8 +120,7 @@ class SqliteStore(Store):
 
     def open_incident(self, key, at, first_seen):
         rule, subject = key.split(":")[3], ":".join(key.split(":")[4:]) or key.split(":")[2]
-        n = self._x("SELECT COUNT(*) FROM incident WHERE key=?", (key,)).fetchone()[0]
-        inc = "inc-%s" % key_hash(key) + ("" if n == 0 else "-%d" % (n + 1))
+        inc = next_incident_id(key, [r[0] for r in self._x("SELECT id FROM incident WHERE id LIKE ?", ("inc-%s%%" % key_hash(key),))])
         self._x("INSERT INTO incident(id,key,rule,subject,state,opened_at,first_seen) VALUES (?,?,?,?, 'open', ?, ?)",
                 (inc, key, rule, subject, at, first_seen))
         return inc

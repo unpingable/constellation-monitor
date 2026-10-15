@@ -18,8 +18,7 @@ class MemoryStore(inc.Store):
     """Alternate backend: proves the lifecycle is not SQLite-specific."""
     def __init__(self): self.inc, self.ev, self.att, self.m, self.n = {}, [], {}, {}, 0
     def open_incident(self, key, at, first_seen):
-        n = sum(1 for i in self.inc.values() if i["key"] == key)
-        iid = "inc-%s" % inc.key_hash(key) + ("" if n == 0 else "-%d" % (n + 1))
+        iid = inc.next_incident_id(key, list(self.inc))
         self.n += 1
         self.inc[iid] = {"id": iid, "key": key, "rule": key.split(":")[3], "subject": ":".join(key.split(":")[4:]), "state": "open",
                          "opened_at": at, "first_seen": first_seen, "last_observed_at": None, "last_observation": None, "recovering_since": None,
@@ -209,3 +208,24 @@ def test_led_to_action_metrics_per_rule(tmp_path):
     text = out.read_text()
     for o, n in (("incidents", 1), ("remediated", 1), ("remediation_verified", 1), ("needed_operator", 0), ("resolved_verified", 1)):
         assert 'constellation_incidents_by_rule{rule="service-down",outcome="%s"} %d' % (o, n) in text, text
+
+
+def test_incident_ids_are_never_reused_by_count():
+    k = KEY; base = "inc-" + inc.key_hash(k)
+    assert inc.next_incident_id(k, []) == base
+    assert inc.next_incident_id(k, [base]) == base + "-2"
+    assert inc.next_incident_id(k, [base + "-3"]) == base + "-4"            # earlier episodes pruned
+    assert inc.next_incident_id(k, [base + "-2", base + "x-9"]) == base + "-3"
+
+
+def test_a_recurrence_after_pruning_does_not_reuse_a_live_id(tmp_path):
+    """The count-based id gave -2 again once the first episode was pruned while -2 remained: every sync then failed."""
+    s = inc.SqliteStore(str(tmp_path / "i.sqlite"))
+    for t in (T0, T0 + 1000):
+        inc.sync(s, report("present", True), {}, None, RULES, t)
+        inc.sync(s, report("clear", False), {}, None, RULES, t + 60)
+        inc.sync(s, {"conditions": []}, {}, None, RULES, t + 61 + inc.CONFIRM_SECONDS)
+    base = "inc-" + inc.key_hash(KEY)
+    s._x("DELETE FROM incident WHERE id=?", (base,))                       # the oldest episode aged out
+    inc.sync(s, report("present", True), {}, None, RULES, T0 + 3000)
+    assert [i["id"] for i in s.incidents()] == [base + "-3"]
