@@ -26,6 +26,9 @@
 //! `start_canary` with reason `current_down` continues, and then exactly as
 //! above, from the pinned plan; nothing the model returns becomes an argument.
 
+#[path = "../../../build-support/remediation/build_info.rs"]
+pub mod build_info;
+
 pub mod config;
 pub mod decider;
 pub mod external;
