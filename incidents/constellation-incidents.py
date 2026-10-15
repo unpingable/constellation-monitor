@@ -224,7 +224,11 @@ def import_unresolved(store, doc, host, now):
             i.update(state="open", recovering_since=None)
         i["last_observation"] = "inherited"
         prior = i.get("needs_operator")
-        i["needs_operator"] = "inherited from %s: %s" % (doc.get("host"), prior or "confirm the condition on the replacement host")
+        if (prior or "").startswith("suspended by "):
+            # a suspension is the operator's decision, not a fact of the old host: it carries over as a suspension
+            i["needs_operator"] = "%s (inherited from %s)" % (prior, doc.get("host"))
+        else:
+            i["needs_operator"] = "inherited from %s: %s" % (doc.get("host"), prior or "confirm the condition on the replacement host")
         store.adopt(i)
         for e in item.get("events", []):
             store.event(i["id"], e["at"], e["kind"], json.loads(e["detail"]) if isinstance(e["detail"], str) else e["detail"],

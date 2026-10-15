@@ -243,6 +243,19 @@ def test_handover_carries_unresolved_incidents_to_a_replacement_host(tmp_path):
     assert inc.import_unresolved(b, doc, "host-b", T0 + 999)[0] == []
 
 
+def test_a_suspension_carries_over_as_a_suspension(tmp_path):
+    """Found on production's first handover pull (2026-10-15): the inherited prefix moved a suspended incident under
+    NEEDS YOU, so an operator's decision on the old host would have demanded them again on the new one."""
+    a, b = MemoryStore(), inc.SqliteStore(str(tmp_path / "b.sqlite"))
+    inc.sync(a, report("present", True), state(("notice", "ev-1", "trigger")), None, RULES, T0)
+    doc = inc.export_unresolved(a, "host-a", T0 + 10)
+    doc["incidents"][0]["incident"]["needs_operator"] = "suspended by op until: the store is replaced"
+    inc.import_unresolved(b, doc, "host-b", T0 + 20)
+    view = inc.list_view(b, now=T0 + 30)
+    suspended = view[view.index("SUSPENDED BY DECISION"):view.index("OPEN, NOTHING NEEDED")]
+    assert "inc-" + inc.key_hash(KEY) in suspended and "inherited from host-a" in suspended
+
+
 def test_import_seeds_a_new_hosts_store_before_any_sync(tmp_path):
     a = MemoryStore()
     inc.sync(a, report("present", True), state(("notice", "ev-1", "trigger")), None, RULES, T0)
