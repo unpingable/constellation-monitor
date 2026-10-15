@@ -9,6 +9,13 @@
 //! their native semantics. The filesystem publication helper operates only on
 //! an already reduced and validated artifact.
 
+#[path = "../../../build-support/host-posture-helper/build_info.rs"]
+pub mod build_info;
+
+#[cfg(test)]
+#[path = "../../../build-support/host-posture-helper/build_identity_input.rs"]
+mod build_identity_input;
+
 mod adapter;
 mod model;
 mod projector;

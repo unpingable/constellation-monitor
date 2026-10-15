@@ -1,0 +1,9 @@
+#!/bin/sh
+# Creates layout only. Never renders configuration, enrolls, enables or starts.
+set -eu
+getent passwd nq >/dev/null 2>&1 || { echo "nq account missing; nq-ng must be installed first" >&2; exit 1; }
+install -d -o root -g nq -m 0750 /etc/constellation-host-posture
+install -d -o nq -g nq -m 0700 /var/lib/constellation-host-posture /var/lib/constellation-host-posture/status
+install -d -o root -g root -m 0755 /usr/lib/constellation-host-posture
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

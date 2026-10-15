@@ -7,6 +7,13 @@
 //! intake stamps receiver-owned boot-clock custody. The resolver only matches
 //! retained support to one deployment-pinned Nightshift query.
 
+#[path = "../../../build-support/host-posture-helper/build_info.rs"]
+pub mod build_info;
+
+#[cfg(test)]
+#[path = "../../../build-support/host-posture-helper/build_identity_input.rs"]
+mod build_identity_input;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};

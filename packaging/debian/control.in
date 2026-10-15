@@ -1,0 +1,15 @@
+Package: constellation-host-posture
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: @ARCH@
+Maintainer: Constellation contributors
+Depends: libc6, nq-ng (>= 0.2.0), adduser
+Description: installed filesystem-capacity host-posture observation profile
+ Runs the narrow constellation-host-posture composition over an installed
+ NQ-ng watcher and publishes a read-only status projection. Also ships the
+ exact NQ host-load-pressure support family (producer, receiver and the
+ pulse-support-resolver Nightshift consults). Installation
+ creates directories only; enrollment, qualification preparation, unit
+ enablement and start are explicit operator steps documented in
+ /usr/share/doc/constellation-host-posture/host-posture-runner.md.
