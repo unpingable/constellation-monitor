@@ -18,8 +18,7 @@ class MemoryStore(inc.Store):
     """Alternate backend: proves the lifecycle is not SQLite-specific."""
     def __init__(self): self.inc, self.ev, self.att, self.m, self.n = {}, [], {}, {}, 0
     def open_incident(self, key, at, first_seen):
-        n = sum(1 for i in self.inc.values() if i["key"] == key)
-        iid = "inc-%s" % inc.key_hash(key) + ("" if n == 0 else "-%d" % (n + 1))
+        iid = inc.next_incident_id(key, list(self.inc))
         self.n += 1
         self.inc[iid] = {"id": iid, "key": key, "rule": key.split(":")[3], "subject": ":".join(key.split(":")[4:]), "state": "open",
                          "opened_at": at, "first_seen": first_seen, "last_observed_at": None, "last_observation": None, "recovering_since": None,
@@ -251,6 +250,31 @@ def test_import_seeds_a_new_hosts_store_before_any_sync(tmp_path):
     db = str(tmp_path / "fresh" / "incidents.sqlite")                    # no state directory yet
     assert inc.main(["--db", db, "import", str(f)]) == 0
     assert inc.main(["--db", str(tmp_path / "other" / "i.sqlite"), "list"]) != 0   # readers still refuse a missing store
+
+
+def test_a_recurrence_after_an_inherited_episode_gets_a_fresh_id(tmp_path):
+    """cartography #94 (Linode): the replacement adopted inc-<h>-2, it closed, the condition recurred: the next
+    episode's id was a count (1 incident -> "-2") and every later sync failed on the unique id."""
+    a, b = MemoryStore(), inc.SqliteStore(str(tmp_path / "b.sqlite"))
+    for t in (T0, T0 + 1000):                                            # two episodes on the old host
+        inc.sync(a, report("present", True), state(("notice", "ev-%d" % t, "trigger")), None, RULES, t)
+        inc.sync(a, report("clear", False), {}, None, RULES, t + 60)
+        inc.sync(a, {"conditions": []}, {}, None, RULES, t + 61 + inc.CONFIRM_SECONDS)
+    inc.sync(a, report("present", True), state(("notice", "ev-3", "trigger")), None, RULES, T0 + 3000)
+    iid = "inc-" + inc.key_hash(KEY)
+    assert inc.import_unresolved(b, inc.export_unresolved(a, "host-a", T0 + 3010), "host-b", T0 + 3020)[0] == [iid + "-3"]
+    inc.sync(b, report("clear", False), {}, None, RULES, T0 + 3060)
+    inc.sync(b, {"conditions": []}, {}, None, RULES, T0 + 3061 + inc.CONFIRM_SECONDS)
+    inc.sync(b, report("present", True), state(("notice", "ev-4", "trigger")), None, RULES, T0 + 4000)
+    assert [i["id"] for i in b.incidents()] == [iid + "-4"]
+
+
+def test_incident_ids_are_never_reused_by_count():
+    k = KEY; base = "inc-" + inc.key_hash(k)
+    assert inc.next_incident_id(k, []) == base
+    assert inc.next_incident_id(k, [base]) == base + "-2"
+    assert inc.next_incident_id(k, [base + "-3"]) == base + "-4"            # earlier episodes pruned
+    assert inc.next_incident_id(k, [base + "-2", base + "x-9"]) == base + "-3"
 
 
 def test_handover_does_not_inherit_recovery_or_close_what_the_new_host_never_sees():
