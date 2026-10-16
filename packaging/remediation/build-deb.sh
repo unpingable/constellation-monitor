@@ -17,10 +17,6 @@ resolver=$bin_dir/constellation-nq-unit-resolver
 for bin in "$consumer" "$resolver"; do
   [[ -x "$bin" ]] || { echo "missing binary $bin" >&2; exit 2; }
 done
-# The package version starts with the crate version the binaries report.
-crate=$("$consumer" --version | awk '{print $2}')
-[[ "$version" == "$crate" || "$version" == "$crate"+* ]] || {
-  echo "package version $version does not extend the binary version $crate" >&2; exit 2; }
 mkdir -p "$out_dir"; stage=$(mktemp -d "$out_dir/.stage.XXXXXX"); trap 'rm -rf "$stage"' EXIT
 name=constellation-remediation_${version}_${arch}
 d=$stage/$name
@@ -28,6 +24,8 @@ doc=$d/usr/share/doc/constellation-remediation
 install -d -m 0755 "$d/DEBIAN" "$d/usr/bin" "$d/usr/libexec/constellation-remediation" \
   "$d/lib/systemd/system" "$d/etc/constellation-remediation" "$doc"
 install -m 0755 "$consumer" "$resolver" "$d/usr/bin/"
+python3 "$here/record-build-identity.py" "$d/usr/bin" "$version" "$arch" \
+  "$doc/build-identity.json"
 install -m 0755 "$here/nq-ops-as-nq" "$d/usr/libexec/constellation-remediation/"
 install -m 0644 "$here/constellation-remediation-consumer.service" \
   "$here/constellation-remediation-consumer.timer" "$d/lib/systemd/system/"
@@ -38,5 +36,6 @@ install -m 0644 "$here/debian/conffiles" "$d/DEBIAN/conffiles"
 for s in postinst postrm; do install -m 0755 "$here/debian/$s" "$d/DEBIAN/$s"; done
 find "$d" -exec touch -h -d "@${SOURCE_DATE_EPOCH:-0}" {} +
 dpkg-deb --root-owner-group --build "$d" "$out_dir/$name.deb" >/dev/null
+install -m 0644 "$doc/build-identity.json" "$out_dir/$name.build-identity.json"
 ( cd "$out_dir" && sha256sum "$name.deb" > "$name.deb.sha256" )
 echo "built $out_dir/$name.deb"

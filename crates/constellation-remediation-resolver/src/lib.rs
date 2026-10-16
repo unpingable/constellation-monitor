@@ -20,6 +20,9 @@
 //! oversize output, malformed or moving page) is an error, not a status: the
 //! process exits non-zero and AG refuses the boundary.
 
+#[path = "../../../build-support/remediation/build_info.rs"]
+pub mod build_info;
+
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -750,3 +753,7 @@ pub fn hash_domain(domain: &str, payload: &[u8]) -> String {
     }
     text
 }
+
+#[cfg(test)]
+#[path = "../../../build-support/remediation/build_identity_input.rs"]
+mod build_identity_input;

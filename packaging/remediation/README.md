@@ -17,6 +17,35 @@ exactly that unit), decided deterministically. The package carries:
 Installation is inert: no configuration, AG profile, catalog, plans, keys,
 Docket trust or grant, and the timer is neither enabled nor started.
 
+## Executable identity
+
+Both packaged binaries accept `--build-info`, `--version` and `-V` as a sole
+argument before configuration, stdin, state, external commands or any provider
+access. `--version` includes the declared source commit. `--build-info` emits
+`constellation.remediation.build_info.v1` JSON with version, source commit, build
+identity, compiler version, target triple and debug-assertion flag. Missing
+development declarations stay JSON null; they are not inferred from Git state.
+
+Export `MONITOR_SOURCE_COMMIT` as the full lowercase 40-digit commit and
+`MONITOR_BUILD_IDENTITY` as a unique build label (1..256 printable ASCII bytes
+without spaces) during compilation and package assembly. Malformed nonempty
+declarations fail compilation. The builder must verify the source export,
+lockfile and toolchain correspond to those declarations; reporting does not
+independently attest them.
+
+Assembly probes the staged copies of both executables and refuses missing or
+mixed source/build identity, inconsistent compiler/target/profile, an unexpected
+component/schema or a package version that does not extend the crate version.
+The receipt contains the metadata and exact staged SHA-256 hashes, embedded at
+`/usr/share/doc/constellation-remediation/build-identity.json` and copied beside
+the `.deb` as `.build-identity.json`. Compare both binaries' probes and hashes
+with that receipt and the package checksum when inspecting installed bytes.
+This AG-independent reporting format grants no authority and changes no
+remediation or observation semantics.
+
+Run the package correspondence/refusal fixtures with
+`python3 -B -m unittest discover -s packaging/remediation -p test_build_identity.py`.
+
 ## Model decider (v2, opt-in)
 
 `--decider model` (cartography `architecture/agentic-remediation-v2/DESIGN.md`
@@ -121,6 +150,7 @@ git archive "$commit" | tar -x -C "$src"
   CARGO_NET_OFFLINE=true cargo +1.94.0 vendor --locked vendor > .cargo/config.toml )
 docker run --rm --network none -v "$src":/work -w /work \
   -e MONITOR_SOURCE_COMMIT="$commit" \
+  -e MONITOR_BUILD_IDENTITY="remediation-$commit" \
   -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$commit")" \
   jammy-packager:1 bash -c '
     cargo build --release --locked --offline \

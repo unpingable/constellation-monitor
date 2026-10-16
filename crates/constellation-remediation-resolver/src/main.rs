@@ -16,9 +16,19 @@ use constellation_remediation_resolver::{
 const USAGE: &str = "usage: constellation-nq-unit-resolver --config NQ_CONFIG \
 --instance-id ID --unit UNIT --machine-id HEX32 --resolver-id ID \
 [--claim not-active|active] [--nq-program PATH] [--window-records N] [--max-age-ms MS] \
-[--max-page-bytes N] [--timeout-seconds S] [--print-basis] < request.json";
+[--max-page-bytes N] [--timeout-seconds S] [--print-basis] < request.json\n       constellation-nq-unit-resolver --build-info | --version | -V";
 
 fn main() {
+    match constellation_remediation_resolver::build_info::write_if_requested(
+        "constellation-nq-unit-resolver",
+    ) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("constellation-nq-unit-resolver: {error}");
+            std::process::exit(2);
+        }
+    }
     match run() {
         Ok(output) => {
             print!("{output}");

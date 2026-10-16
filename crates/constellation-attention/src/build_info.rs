@@ -4,6 +4,8 @@ use serde::Serialize;
 
 use crate::registry::REGISTRY_VERSION;
 
+include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
+
 /// The oldest NQ whose intent contract this build speaks (`response_class`).
 pub const MINIMUM_NQ: &str = "0.2.2";
 pub const BUILD_INFO_SCHEMA: &str = "constellation.attention_build_info.v1";
@@ -13,12 +15,14 @@ pub struct BuildInformation {
     pub schema: &'static str,
     pub name: &'static str,
     pub version: &'static str,
-    /// `MONITOR_SOURCE_COMMIT`, else `git rev-parse HEAD` at build time,
-    /// else `unavailable`.
+    /// Explicit `MONITOR_SOURCE_COMMIT`, else `unavailable`.
     pub source_commit: &'static str,
     pub registry: &'static str,
     pub minimum_nq: &'static str,
     pub rustc: &'static str,
+    pub build_id: Option<&'static str>,
+    pub target: &'static str,
+    pub debug_assertions: bool,
 }
 
 #[must_use]
@@ -27,10 +31,19 @@ pub const fn build_information() -> BuildInformation {
         schema: BUILD_INFO_SCHEMA,
         name: env!("CARGO_PKG_NAME"),
         version: env!("CARGO_PKG_VERSION"),
-        source_commit: env!("CONSTELLATION_ATTENTION_SOURCE_COMMIT"),
+        source_commit: match SOURCE_COMMIT {
+            Some(value) => value,
+            None => "unavailable",
+        },
         registry: REGISTRY_VERSION,
         minimum_nq: MINIMUM_NQ,
-        rustc: env!("CONSTELLATION_ATTENTION_RUSTC"),
+        rustc: match RUSTC {
+            Some(value) => value,
+            None => "unavailable",
+        },
+        build_id: BUILD_ID,
+        target: TARGET,
+        debug_assertions: cfg!(debug_assertions),
     }
 }
 

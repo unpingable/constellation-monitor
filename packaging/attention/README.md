@@ -50,7 +50,7 @@ git archive "$commit" | tar -x -C "$src"
 ( cd "$src" && mkdir -p .cargo && \
   CARGO_NET_OFFLINE=true cargo +1.94.0 vendor --locked vendor > .cargo/config.toml )
 docker run --rm --network none -v "$src":/work -w /work \
-  -e MONITOR_SOURCE_COMMIT="$commit" \
+  -e MONITOR_SOURCE_COMMIT="$commit" -e MONITOR_BUILD_IDENTITY="attention-$commit" \
   -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct "$commit")" \
   jammy-packager:1 bash -c '
     cargo build --release --locked --offline -p constellation-attention &&
@@ -202,3 +202,24 @@ notice keys).
 
 Remove: `systemctl disable --now constellation-attention.timer`. The state
 directory holds only condition state, the last report and intent files.
+
+## Executable identity receipt
+
+`--build-info` retains `constellation.attention_build_info.v1`, including
+`minimum_nq` and the registry identity, and adds the builder's `build_id`,
+compiler target and debug-assertions flag. Source and build identities come
+only from `MONITOR_SOURCE_COMMIT` (full lowercase commit) and
+`MONITOR_BUILD_IDENTITY` (1–256 printable ASCII bytes without spaces).
+Missing development declarations are reported as unavailable/null; malformed
+explicit declarations fail compilation. The compiler and target come from Cargo.
+These are declarations, not verification that a builder used the named source.
+
+Assembly probes the staged copy, checks the expected source/build, version,
+minimum NQ, compiler, profile and package architecture, and hashes that same
+copy before and after the probe. It embeds `build-identity.json` under the
+package documentation directory and emits the identical sidecar beside the
+Debian package and its checksum. The receipt schema is
+`constellation.attention.package_build_identity.v1`. A receipt proves which
+bytes the builder packaged under exclusive staging custody; it grants no
+runtime authority or qualification status. Existing operational schemas and
+the minimum NQ requirement are unchanged.

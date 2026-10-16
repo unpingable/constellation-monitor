@@ -11,7 +11,7 @@ use constellation_remediation_consumer::Config;
 use constellation_remediation_consumer::pass::{Decider, run_pass_with};
 
 const USAGE: &str = "usage: constellation-remediation-consumer --config PATH \
-[--decider deterministic|model] [--check-config]";
+[--decider deterministic|model] [--check-config]\n       constellation-remediation-consumer --build-info | --version | -V";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -22,6 +22,16 @@ fn now_ms() -> u64 {
 }
 
 fn main() {
+    match constellation_remediation_consumer::build_info::write_if_requested(
+        "constellation-remediation-consumer",
+    ) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("constellation-remediation-consumer: {error}");
+            std::process::exit(2);
+        }
+    }
     let mut config = None;
     let mut check_only = false;
     let mut decider = Decider::Deterministic;
@@ -44,7 +54,7 @@ fn main() {
             "--version" => {
                 println!(
                     "constellation-remediation-consumer {}",
-                    env!("CARGO_PKG_VERSION")
+                    constellation_remediation_consumer::build_info::VERSION_STRING
                 );
                 return;
             }
