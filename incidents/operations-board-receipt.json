@@ -1,0 +1,55 @@
+{
+  "schema": "constellation.operations-board.implementation/v1",
+  "run": "7b1b8315-ecda-4206-9ed0-54e1cb0b845b",
+  "owner": "Codex operations-board-102",
+  "host": "crow",
+  "working_directory": "/data/git/.worktrees/monitor-operations-board-102",
+  "base_revision": "b6f35f4f419ab7f98be8b4f76487ffcdd753e19d",
+  "started_at": "2026-10-16T17:29:44.567909+00:00",
+  "lane_registry": "/data/git/constellation/.lanes",
+  "completion_notice": "/data/git/constellation/.lanes/operations-board/7b1b8315-ecda-4206-9ed0-54e1cb0b845b/COMPLETE.json",
+  "source_contracts": [
+    "unpingable/cartography#102",
+    "unpingable/cartography#93",
+    "unpingable/cartography#94",
+    "unpingable/constellation-monitor#8"
+  ],
+  "storage_before": {
+    "/": {
+      "available_bytes": 361529913344,
+      "free_inodes": 57230281
+    },
+    "/data": {
+      "available_bytes": 1027977838592,
+      "free_inodes": 119871106
+    }
+  },
+  "allocation": "Two small source worktrees plus screenshots; aggregate expectation updated to under 40 MiB after owner directed Workbench placement. No builds, caches, VMs or keys generated.",
+  "artifacts": {
+    "worktree": "Retain through PR review; owner operator after handoff, remove when merged/declined and unique work is remote.",
+    "screenshots": "Retain as PR review evidence; review at PR disposition.",
+    "test_substrate": "Temporary directories owned by tests; retire immediately after checks."
+  },
+  "next_action": "Open companion PR against attention-evaluator-20261002, link Workbench PR and #102; no merge/deployment",
+  "implementation_home": "Constellation Workbench; Monitor owns only JSON inspection and conformance fixtures",
+  "source_files": {
+    "incidents/constellation-incidents.py": "d482525b797f8c4fca235032084e21b23a221c4627293b0bfbbe57104d09b065",
+    "incidents/generate_board_fixture.py": "2e975a8730e36d8bf537e839d1f4ed3ba4219454a3a9172677ed48f083d287e2",
+    "incidents/test_inspection.py": "27207edc94e5cb15558d2481eef58484ba63561906ab78a987f1f67c699be4dc",
+    "incidents/fixtures/inspection-v1-demo.json": "4367583c9c5f3fc7ebf23bc3ec3654e6b91f29a9546ab9639fb37bc38b9e4f9d"
+  },
+  "verification": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider incidents/test_inspection.py incidents/test_incidents.py",
+    "passed": 38,
+    "failed": 0,
+    "rust_checks": "not run: no Rust source, manifests or build behavior changed; isolated stdlib Python CLI checks cover this change"
+  },
+  "formalization": {
+    "decision_owner": "Codex implementation agent; independent PR acceptance pending",
+    "proposition": "read transaction preserves exact incident/attempt/event identity; failed bounded reads do not claim success or write incident state",
+    "scope": "inspection command over existing shim and SQLite read transaction, including concurrent writer; no external truth or lifecycle proof",
+    "chosen": "contract tests and cross-repository deterministic vectors",
+    "rationale": "bounded read-only transformation; no new transition semantics",
+    "limits": "source honesty, operating-system custody and recovery truth remain outside the projection"
+  }
+}
