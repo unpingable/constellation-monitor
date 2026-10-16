@@ -392,6 +392,83 @@ def read_intent_log(path, keep_seconds, now):
     return out
 
 
+# ------------------------------------------------------------------ bounded read-only machine inspection (cartography #102)
+INSPECTION = "constellation.incidents.inspection/v1"
+INSPECTION_MAX_BYTES = 16 * 1024 * 1024
+INSPECTION_MISSING = ["response_actor", "assignment", "authority_decision", "proposal_state", "dispatch_queue",
+                      "next_checkpoint", "service_health", "observation_acquired_at", "last_successful_sync_at",
+                      "detection_count", "unpersisted_detections"]
+
+
+def inspection(store, now, ref=None, source=None):
+    """An inspection, never a new lifecycle. Exact retained rows, no synthesized authority or health.
+    Call under a backend-consistent read transaction. A bounded refusal is not an empty success.
+    """
+    meta = store.meta()
+    if meta.get("schema") != SCHEMA:
+        raise ValueError("unsupported incident store schema")
+    rows = store.incidents(unresolved_only=False)
+    if ref is not None:
+        rows = [i for i in rows if i["id"] == ref]
+        if not rows:
+            raise ValueError("incident not retained: %s" % ref)
+    else:
+        rows = [i for i in rows if i["state"] != "resolved" or
+                (parse_ts(i.get("resolved_at")) or 0) >= now - 86400]
+    if len(rows) > 1000:
+        raise ValueError("inspection exceeds 1000 incidents; no partial result returned")
+    doc = {"schema": INSPECTION, "read_at": iso(now), "source": source or {"kind": "incident-store/v1"},
+           "meta": meta, "missing_fields": INSPECTION_MISSING,
+           "scope": {"resolved_window_seconds": 86400 if ref is None else None,
+                     "history": "source-retained append order; normally at most 300 events per incident"},
+           "incidents": [{"incident": i, "events": store.events(i["id"]), "attempts": store.attempts(i["id"])} for i in rows]}
+    return doc
+
+
+def inspect_readonly(path, now, ref=None):
+    from urllib.parse import quote
+    # URI-escape names so ?/#/% in an operator-configured path cannot change read mode.
+    store = SqliteStore(quote(os.path.abspath(path), safe="/"), readonly=True)
+    try:
+        store._x("PRAGMA query_only=ON")
+        store._x("BEGIN")
+        return inspection(store, now, ref, {"kind": "incident-store/v1", "locator": os.path.abspath(path),
+                          "implementation_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest()})
+    finally:
+        store.db.close()
+
+
+def inspect_handover(path, now, ref=None):
+    """Inspect an existing off-host export without importing or asserting current host state."""
+    with open(path, "rb") as source:
+        raw = source.read(INSPECTION_MAX_BYTES + 1)
+    if len(raw) > INSPECTION_MAX_BYTES:
+        raise ValueError("handover exceeds 16 MiB")
+    doc = json.loads(raw)
+    if doc.get("schema") != HANDOVER or not isinstance(doc.get("incidents"), list):
+        raise ValueError("unsupported handover schema")
+    entries = doc["incidents"]
+    if ref is not None:
+        entries = [e for e in entries if e["incident"]["id"] == ref]
+        if not entries:
+            raise ValueError("incident not in handover: %s" % ref)
+    if len(entries) > 1000:
+        raise ValueError("handover exceeds 1000 incidents")
+    return {"schema": INSPECTION, "read_at": iso(now), "meta": {}, "incidents": entries,
+            "missing_fields": INSPECTION_MISSING + ["sync_health", "recently_resolved"],
+            "source": {"kind": "off-host-handover/v1", "locator": os.path.abspath(path),
+                       "host": doc.get("host"), "exported_at": doc.get("exported_at"),
+                       "implementation_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest()},
+            "scope": {"resolved_window_seconds": None, "history": "retained unresolved export only; current state unknown"}}
+
+
+def inspection_json(doc):
+    raw = json.dumps(doc, sort_keys=True)
+    if len(raw.encode()) > INSPECTION_MAX_BYTES:
+        raise ValueError("inspection exceeds 16 MiB; no partial result returned")
+    return raw
+
+
 # ------------------------------------------------------------------ operator views
 def summary_line(store, inc):
     atts = store.attempts(inc["id"])
@@ -509,6 +586,9 @@ def main(argv=None):
     s.add_argument("--rules", default="/usr/bin/constellation-attention")
     s.add_argument("--metrics", default="/var/lib/prometheus/node-exporter/constellation-incidents.prom")
     sub.add_parser("list")
+    ins = sub.add_parser("inspect", help="bounded read-only JSON inspection (incident v1 rows and histories)")
+    ins.add_argument("--handover", help="inspect an existing off-host export without importing it; no current health claim")
+    ins.add_argument("--id", help="exact retained incident id; default includes open and last-24h resolved")
     sh = sub.add_parser("show"); sh.add_argument("ref")
     ak = sub.add_parser("ack"); ak.add_argument("ref"); ak.add_argument("--by", required=True); ak.add_argument("--note", default="")
     nt = sub.add_parser("note"); nt.add_argument("ref"); nt.add_argument("--by", required=True); nt.add_argument("text")
@@ -518,6 +598,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
     cmd = a.cmd or "list"
     try:
+        if cmd == "inspect":
+            try:
+                doc = inspect_handover(a.handover, time.time(), a.id) if a.handover else inspect_readonly(a.db, time.time(), a.id)
+                print(inspection_json(doc))
+                return 0
+            except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as e:
+                print("incident inspection refused: %s (no result claimed)" % e, file=sys.stderr)
+                return 3
         host = open("/etc/machine-id").read().strip() if os.path.exists("/etc/machine-id") else "unknown"
         if cmd == "export":
             doc = json.dumps(export_unresolved(SqliteStore(a.db, readonly=True), host, time.time()), indent=1, sort_keys=True)

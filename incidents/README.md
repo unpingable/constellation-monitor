@@ -35,3 +35,8 @@ operator can ask one question:
   small `Store` interface. `test_incidents.py` runs the whole lifecycle
   against SQLite and an in-memory stub. A failed write raises
   `StoreUnavailable`, and the CLI exits 3 having claimed nothing.
+
+The bounded machine interface for the Operations Board is
+[`inspect`](INSPECTION.md). It returns unresolved and recently resolved incidents,
+exact attempts, retained history, sync metadata and explicit missing fields.
+The UI lives in Constellation Workbench, separate from this lifecycle owner.
