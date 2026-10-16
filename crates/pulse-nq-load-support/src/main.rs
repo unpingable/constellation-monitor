@@ -21,6 +21,11 @@ fn run() -> Result<(), String> {
         .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
         .and_then(|value| value.to_str().map(str::to_owned))
         .ok_or_else(|| "cannot determine executable basename".to_owned())?;
+    if pulse_nq_load_support::build_info::write_if_requested(&executable)
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     match executable.as_str() {
         "pulse-load-pressure-producer" => role_command("produce", &args),

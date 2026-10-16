@@ -20,6 +20,11 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    if constellation_status_projection::build_info::write_if_requested("constellation-status")
+        .map_err(|error| error.to_string())?
+    {
+        return Ok(());
+    }
     let args = env::args().skip(1).collect::<Vec<_>>();
     match args.as_slice() {
         [command, artifact] if command == "validate" => {
