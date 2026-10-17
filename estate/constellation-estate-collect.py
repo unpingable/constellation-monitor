@@ -305,7 +305,7 @@ def deployed_digest(d, timeout):
         return json.loads(out)["definition_digest"]
     if kind == "nq-watcher-admission":
         rc, out, err = run([d.get("program", "/usr/bin/nq"), "--config", d["nq_config"], "--json",
-                            "watcher", "inspect", d["instance_id"]], timeout, user="nq")
+                            "watcher", "inspect", d["instance_id"]], timeout)
         if rc != 0:
             raise RuntimeError("watcher admission inspection unavailable: %s" % err.strip()[-200:])
         doc = json.loads(out)

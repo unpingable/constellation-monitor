@@ -56,6 +56,11 @@ must also be pinned by the site registry. Admission verification does not
 collect observations or assert service health. The shared
 `fixtures/watcher-inspection-v1.json` vector is also in NQ's CLI tests.
 New source and contract tests are not a deployment claim.
+Admission inspection runs in the collector's existing account. On the deployed
+Linux profile the startup-image identity checks require root's metadata access;
+dropping to the database account would make loader inspection unavailable.
+This operation still performs no collection, helper execution or store write.
+No account, filesystem permission or capability is changed to make a read pass.
 
 Install on the host:
 
