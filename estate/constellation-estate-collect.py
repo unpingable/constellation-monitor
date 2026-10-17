@@ -328,8 +328,9 @@ def main(argv=None):
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--print", action="store_true")
     a = ap.parse_args(argv)
-    with open(a.registry) as fh:
-        reg = json.load(fh)
+    with open(a.registry, "rb") as fh:
+        registry_bytes = fh.read()
+    reg = json.loads(registry_bytes)
     validate(reg)
     started = time.time()
     try:
@@ -371,6 +372,7 @@ def main(argv=None):
     cov["since"] = prev["since"] if prev and prev.get("verdict") == cov["verdict"] and prev.get("since") else now_iso(started)
     services.append(cov)
     doc = {"schema": OUTPUT_SCHEMA, "site": reg.get("site", ""), "generated_at": now_iso(),
+           "registry_sha256": hashlib.sha256(registry_bytes).hexdigest(),
            "duration_seconds": round(time.time() - started, 3), "services": services,
            "counts": {v: sum(1 for s in services if s["verdict"] == v) for v in ("OK", "DEGRADED", "DOWN", "PAUSED", "UNKNOWN")}}
     write_atomic(a.output, doc)

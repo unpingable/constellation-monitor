@@ -35,6 +35,15 @@ makes `estate-definitions` DEGRADED, naming the definition. The repository
 side, where every pin must equal the committed declared copy, is a test next
 to the registry.
 
+Each `constellation.estate/v1` document also carries `registry_sha256`, the
+lowercase SHA-256 of the exact registry bytes read for that pass. This additive
+field lets the existing release verifier distinguish a fresh observation of
+the intended declaration from an old or differently configured `OK` result.
+It is provenance, not authorization or an assertion of current service health.
+Older readers may ignore it; a verifier requiring it must report older reports
+as unsupported. The shared `fixtures/definition-release/` vector is consumed
+by Cartography's `architecture/day-two-release-lifecycle` release tests.
+
 Install on the host:
 
     install -D -m 0755 constellation-estate-collect.py /usr/local/lib/constellation-estate/constellation-estate-collect.py

@@ -1,0 +1,15 @@
+{
+  "definitions": [
+    {
+      "digest": "sha256:2687f86ed6784b8a5fca36e6c468e12aa44dc3c7e8137e3160d1a95079bdcd02",
+      "id": "config",
+      "kind": "file",
+      "owner": "fixture-owner",
+      "path": "/fixture/config",
+      "source": "definitions/config"
+    }
+  ],
+  "schema": "constellation.estate_registry/v1",
+  "services": [],
+  "site": "fixture"
+}

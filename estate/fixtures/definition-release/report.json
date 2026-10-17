@@ -1,0 +1,60 @@
+{
+ "counts": {
+  "DEGRADED": 0,
+  "DOWN": 0,
+  "OK": 2,
+  "PAUSED": 0,
+  "UNKNOWN": 0
+ },
+ "duration_seconds": 0,
+ "generated_at": "1970-01-01T00:16:42Z",
+ "registry_sha256": "baa4b432c1f5b3e749b6a0f312093edab41d4a6c7b6c41bb537be625a317c86c",
+ "schema": "constellation.estate/v1",
+ "services": [
+  {
+   "concerns": [
+    {
+     "id": "definition.config",
+     "owner": "fixture-owner",
+     "reason": "deployed as declared",
+     "required": true,
+     "state": "PRESENT"
+    }
+   ],
+   "failing": [],
+   "name": "estate-definitions",
+   "reason": "1 definitions deployed as declared",
+   "role": "alert and policy definitions deployed exactly as declared",
+   "runtime": {
+    "kind": "registry",
+    "state": "checked",
+    "up": true
+   },
+   "since": "1970-01-01T00:16:42Z",
+   "verdict": "OK"
+  },
+  {
+   "concerns": [
+    {
+     "id": "estate.coverage.complete",
+     "reason": "",
+     "required": true,
+     "state": "PRESENT"
+    }
+   ],
+   "failing": [],
+   "name": "estate-coverage",
+   "reason": "every enabled/running service and container is supervised or explicitly excluded",
+   "role": "every workload supervised or explicitly excluded",
+   "runtime": {
+    "kind": "registry",
+    "state": "checked",
+    "up": true
+   },
+   "since": "1970-01-01T00:16:42Z",
+   "unregistered": [],
+   "verdict": "OK"
+  }
+ ],
+ "site": "fixture"
+}

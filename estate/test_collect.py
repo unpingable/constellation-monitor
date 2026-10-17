@@ -148,3 +148,33 @@ def test_coverage_on_a_host_without_docker(monkeypatch):
         assert "docker ps" in str(e)
     else:
         raise AssertionError("coverage ignored a declared container on a host without docker")
+
+
+def test_report_pins_the_registry_bytes_actually_read(tmp_path, monkeypatch):
+    """A later pathname replacement must not re-label an earlier collection."""
+    import hashlib
+    registry = tmp_path / "registry.json"
+    report = tmp_path / "estate.json"
+    original = b'{"schema":"constellation.estate_registry/v1","site":"fixture","services":[]}'
+    registry.write_bytes(original)
+
+    def coverage(reg, timeout):
+        registry.write_bytes(original + b'\n')
+        return []
+
+    monkeypatch.setattr(c, "coverage", coverage)
+    assert c.main(["--registry", str(registry), "--output", str(report)]) == 0
+    doc = json.loads(report.read_bytes())
+    assert doc["registry_sha256"] == hashlib.sha256(original).hexdigest()
+    assert doc["registry_sha256"] != hashlib.sha256(registry.read_bytes()).hexdigest()
+
+
+def test_release_observation_golden(monkeypatch, tmp_path):
+    fixture = HERE / "fixtures" / "definition-release"
+    registry = fixture / "registry.json"
+    report = tmp_path / "estate.json"
+    monkeypatch.setattr(c.time, "time", lambda: 1002)
+    monkeypatch.setattr(c, "coverage", lambda *args: [])
+    monkeypatch.setattr(c, "deployed_digest", lambda d, timeout: d["digest"])
+    assert c.main(["--registry", str(registry), "--output", str(report)]) == 0
+    assert json.loads(report.read_bytes()) == json.loads((fixture / "report.json").read_bytes())
