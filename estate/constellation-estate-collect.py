@@ -262,6 +262,31 @@ def coverage(reg, timeout):
     return unregistered
 
 
+def vmalert_policy(document):
+    """Stable identity of actually loaded alert definitions, not firing state."""
+    if document.get("status") != "success":
+        raise ValueError("vmalert rule read unsuccessful")
+    groups, identities = [], set()
+    for group in document["data"]["groups"]:
+        identity = (os.path.basename(group["file"]), group["name"])
+        if identity in identities:
+            raise ValueError("duplicate vmalert group identity")
+        identities.add(identity)
+        rules, names = [], set()
+        for rule in group["rules"]:
+            if rule.get("type") != "alerting" or rule["name"] in names:
+                raise ValueError("unsupported or duplicate loaded rule")
+            names.add(rule["name"])
+            rules.append({"name": rule["name"], "query": rule["query"].strip(),
+                          "duration_seconds": rule["duration"], "keep_firing_for_seconds": rule.get("keep_firing_for", 0),
+                          "labels": rule.get("labels", {}), "annotations": rule.get("annotations", {})})
+        groups.append({"file": identity[0], "name": identity[1], "interval_seconds": group["interval"],
+                       "rules": sorted(rules, key=lambda r: r["name"])})
+    if not groups or not any(g["rules"] for g in groups):
+        raise ValueError("vmalert loaded no alert definitions")
+    return {"schema": "constellation.vmalert_policy/v1", "groups": sorted(groups, key=lambda g: (g["file"], g["name"]))}
+
+
 def deployed_digest(d, timeout):
     """The deployed identity of one definition, as its own subsystem computes it."""
     kind = d["kind"]
@@ -278,6 +303,25 @@ def deployed_digest(d, timeout):
         if rc != 0:
             raise RuntimeError("saved check %s is not installed: %s" % (d["reference"], err.strip()[-200:]))
         return json.loads(out)["definition_digest"]
+    if kind == "nq-watcher-admission":
+        rc, out, err = run([d.get("program", "/usr/bin/nq"), "--config", d["nq_config"], "--json",
+                            "watcher", "inspect", d["instance_id"]], timeout, user="nq")
+        if rc != 0:
+            raise RuntimeError("watcher admission inspection unavailable: %s" % err.strip()[-200:])
+        doc = json.loads(out)
+        digest = doc.get("binding_digest", "")
+        if (doc.get("schema") != "nq.watcher_inspection.v1" or doc.get("instance_id") != d["instance_id"] or
+                len(digest) != 71 or not digest.startswith("sha256:") or
+                any(c not in "0123456789abcdef" for c in digest[7:])):
+            raise ValueError("watcher admission inspection has wrong identity or digest")
+        return digest
+    if kind == "vmalert-policy":
+        with urllib.request.urlopen(d["url"], timeout=timeout) as response:
+            raw = response.read((1 << 20) + 1)
+        if len(raw) > 1 << 20:
+            raise ValueError("vmalert rule read exceeds 1 MiB")
+        policy = vmalert_policy(json.loads(raw))
+        return "sha256:" + hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
     raise ValueError("unknown definition kind %r" % kind)
 
 
@@ -294,6 +338,18 @@ def definitions(reg, timeout):
         concerns.append({"id": "definition." + d["id"], "required": True, "state": state, "reason": reason,
                          "owner": d.get("owner", "")})
     return concerns
+
+
+def definition_service(defs):
+    bad = [x for x in defs if x["state"] != "PRESENT"]
+    return {"name": "estate-definitions", "role": "alert and policy definitions deployed exactly as declared",
+            "runtime": {"kind": "registry", "up": True, "state": "checked"}, "concerns": defs,
+            # Unknown required verification is a known supervision failure;
+            # preserve the individual UNKNOWN and notify through the evaluator.
+            "verdict": "DEGRADED" if bad else "OK",
+            "reason": ("; ".join("%s %s" % (x["id"][len("definition."):], x["reason"]) for x in bad)[:400]
+                       if bad else "%d definitions deployed as declared" % len(defs)),
+            "failing": [x["id"] for x in bad]}
 
 
 def validate(reg):
@@ -327,12 +383,25 @@ def main(argv=None):
     ap.add_argument("--output", default="/var/lib/constellation-estate/estate.json")
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--print", action="store_true")
+    ap.add_argument("--definitions-only", action="store_true", help="inspect only declared definition pins; no workload or coverage claim")
     a = ap.parse_args(argv)
     with open(a.registry, "rb") as fh:
         registry_bytes = fh.read()
     reg = json.loads(registry_bytes)
     validate(reg)
     started = time.time()
+    if a.definitions_only:
+        defs = definitions(reg, a.timeout)
+        if not defs:
+            raise ValueError("definitions-only registry has no definitions")
+        service = definition_service(defs)
+        service["since"] = now_iso(started)
+        doc = {"schema": OUTPUT_SCHEMA, "site": reg.get("site", ""), "scope": "definitions-only",
+               "generated_at": now_iso(), "registry_sha256": hashlib.sha256(registry_bytes).hexdigest(),
+               "duration_seconds": round(time.time() - started, 3), "services": [service],
+               "counts": {v: int(service["verdict"] == v) for v in ("OK", "DEGRADED", "DOWN", "PAUSED", "UNKNOWN")}}
+        write_atomic(a.output, doc)
+        return 0
     try:
         with open(a.output) as fh:
             previous = {s["name"]: s for s in json.load(fh).get("services", [])}
@@ -359,13 +428,7 @@ def main(argv=None):
         cov.update(verdict="UNKNOWN", reason="inventory failed: %s" % str(e)[:200], failing=[], concerns=[])
     defs = definitions(reg, a.timeout)
     if defs:
-        bad = [x for x in defs if x["state"] != "PRESENT"]
-        services.append({"name": "estate-definitions", "role": "alert and policy definitions deployed exactly as declared",
-                         "runtime": {"kind": "registry", "up": True, "state": "checked"}, "concerns": defs,
-                         "verdict": "DEGRADED" if any(x["state"] == "DEGRADED" for x in bad) else "UNKNOWN" if bad else "OK",
-                         "reason": ("; ".join("%s %s" % (x["id"][len("definition."):], x["reason"]) for x in bad)[:400]
-                                    if bad else "%d definitions deployed as declared" % len(defs)),
-                         "failing": [x["id"] for x in bad]})
+        services.append(definition_service(defs))
         prev = previous.get("estate-definitions")
         services[-1]["since"] = prev["since"] if prev and prev.get("verdict") == services[-1]["verdict"] and prev.get("since") else now_iso(started)
     prev = previous.get(cov["name"])

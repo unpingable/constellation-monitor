@@ -177,6 +177,52 @@ def test_incident_id_matches_the_attention_notice_reference():
     assert "inc-" + inc.key_hash(KEY) == "inc-e048fb3e"
 
 
+def test_remediation_history_keeps_the_opening_rule_revision(store):
+    e = episode("sha256:rule-bound", "completed")
+    revision = json.loads((HERE.parent / "crates/constellation-remediation-consumer/tests/fixtures/rule-revision-v1.json").read_bytes())
+    e["rule_revision"] = revision
+    inc.sync(store, report("present", True), {}, {"active": None, "closed": [e]}, RULES, T0)
+    iid = store.incidents()[0]["id"]
+    # A later current rule cannot relabel a historical remediation attempt.
+    changed_rules = dict(RULES, **{"service-down": dict(RULES["service-down"], version=3)})
+    inc.sync(store, report("present", True), {}, {"active": None, "closed": [e]}, changed_rules, T0 + 60)
+    details = [json.loads(ev["detail"]) for ev in store.events(iid) if ev["kind"] == "remediation-definition"]
+    assert len(details) == 1 and details[0]["rule_revision"] == revision
+    assert len(store.attempts(iid)) == 1
+
+
+def test_opening_journal_provenance_is_bounded_and_does_not_relabel_legacy_state(tmp_path):
+    e = episode("sha256:bound", "completed")
+    revision = {"rule": "service-down", "version": 2, "attention_policy_digest": "sha256:" + "a" * 64}
+    state_path = tmp_path / "state.json"
+    raw = json.dumps({"active": None, "closed": [e]}).encode()
+    state_path.write_bytes(raw)
+    journal = tmp_path / "journal.jsonl"
+    record = {"schema": "constellation.remediation-consumer.journal/v1", "event": "episode_opened", "episode": e["episode"],
+              "detail": {"episode": e["episode"], "condition_id": KEY, "first_seen": e["first_seen"], "rule_revision": revision}}
+    line = json.dumps(record).encode() + b"\n"
+    journal.write_bytes(line)
+    assert inc.read_consumer(str(state_path))["closed"][0]["rule_revision"] == revision
+    assert state_path.read_bytes() == raw and journal.read_bytes() == line
+    for content in [line[:-1], b"{\n", b"x" * 1024 + b"\n", b"", line + line.replace(b'"version": 2', b'"version": 3')]:
+        journal.write_bytes(content)
+        assert "rule_revision" not in inc.read_consumer(str(state_path), journal_limit=1024)["closed"][0]
+    journal.unlink()
+    assert "rule_revision" not in inc.read_consumer(str(state_path))["closed"][0]
+
+
+def test_definition_binding_can_arrive_after_the_attempt_without_losing_history(store):
+    e = episode("sha256:late", "completed")
+    consumer = {"active": None, "closed": [e]}
+    inc.sync(store, report("present", True), {}, consumer, RULES, T0)
+    e["rule_revision"] = {"rule": "service-down", "version": 2, "attention_policy_digest": "sha256:" + "a" * 64}
+    inc.sync(store, report("present", True), {}, consumer, RULES, T0 + 60)
+    inc.sync(store, report("present", True), {}, consumer, RULES, T0 + 120)
+    iid = store.incidents()[0]["id"]
+    assert kinds(store, iid).count("remediation") == 1
+    assert kinds(store, iid).count("remediation-definition") == 1
+
+
 def test_a_suspended_incident_is_listed_apart_from_what_needs_the_operator(tmp_path):
     s = inc.SqliteStore(str(tmp_path / "i.sqlite"))
     susp = {"owner": "op", "reason": "paused", "resume_when": "it resumes", "since": "2026-10-14"}

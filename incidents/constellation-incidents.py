@@ -296,14 +296,19 @@ def sync(store, report, state, consumer, rules, now, intent_log=()):
         # remediation attempts (command outcome kept apart from verified recovery)
         mine = [e for e in episodes if e["condition_id"] == key and (parse_ts(e.get("first_seen")) or 0) >= since]
         for e in mine:
+            revision = e.get("rule_revision")
+            if isinstance(revision, dict) and revision.get("rule") == live["rule"]:
+                store.event(inc_id, at, "remediation-definition", {"episode": e["episode"], "rule_revision": revision},
+                            dedup="remediation-definition:%s:%s" % (inc_id, e["episode"]))
             verified = "postcondition current after dwell" if e.get("outcome") == "completed" else None
             settled = iso(e["settled_at_unix_ms"] / 1000) if e.get("settled_at_unix_ms") else None
             new, changed = store.attempt(inc_id, e["episode"], {"opened_at": iso(e["opened_at_unix_ms"] / 1000) if e.get("opened_at_unix_ms") else None,
                                          "settled_at": settled, "outcome": e.get("outcome"), "phase": e.get("phase"),
                                          "verified": verified, "plan": os.path.basename(e.get("plan") or "")})
             if new or changed:
-                store.event(inc_id, at, "remediation", {"episode": e["episode"][:19], "outcome": e.get("outcome") or "in flight",
-                            "phase": e.get("phase"), "plan": os.path.basename(e.get("plan") or ""), "verified": verified})
+                detail = {"episode": e["episode"][:19], "outcome": e.get("outcome") or "in flight",
+                          "phase": e.get("phase"), "plan": os.path.basename(e.get("plan") or ""), "verified": verified}
+                store.event(inc_id, at, "remediation", detail)
         in_flight = any(not e.get("outcome") for e in mine)
         latest = max(mine, key=lambda e: e.get("opened_at_unix_ms") or 0) if mine else None
         failed = [latest] if latest and latest.get("outcome") in FAILED_OUTCOMES else []
@@ -390,6 +395,66 @@ def read_intent_log(path, keep_seconds, now):
         except FileNotFoundError:
             continue
     return out
+
+
+def read_consumer(path, journal_limit=16 * 1024 * 1024):
+    """Read state and bounded opening provenance without changing either.
+
+    Definition metadata stays in the existing journal, so older consumers can
+    still read their unchanged strict state schema after a software rollback.
+    Missing, truncated, invalid or conflicting provenance remains unknown.
+    """
+    consumer = load(path)
+    episodes = list(consumer.get("closed", [])) + ([consumer["active"]] if consumer.get("active") else [])
+    wanted = {e["episode"]: e for e in episodes}
+    revisions = {}
+    try:
+        with open(os.path.join(os.path.dirname(path), "journal.jsonl"), "rb") as stream:
+            size = os.fstat(stream.fileno()).st_size
+            offset = max(0, size - journal_limit)
+            stream.seek(offset)
+            data = stream.read(journal_limit)
+        lines = data.splitlines(keepends=True)
+        if offset and lines:
+            lines = lines[1:]
+        for line in lines:
+            if not line.endswith(b"\n"):
+                continue
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    continue
+                eid = record.get("episode")
+                episode = wanted.get(eid)
+                if not episode or record.get("schema") != "constellation.remediation-consumer.journal/v1" or record.get("event") != "episode_opened":
+                    continue
+                detail = record["detail"]
+                if not isinstance(detail, dict):
+                    continue
+                revision = detail.get("rule_revision")
+                if (detail.get("episode") != eid or detail.get("condition_id") != episode["condition_id"] or
+                        detail.get("first_seen") != episode["first_seen"]):
+                    continue
+                if not isinstance(revision, dict) or set(revision) != {"rule", "version", "attention_policy_digest"}:
+                    continue
+                digest = revision["attention_policy_digest"]
+                if (not isinstance(revision["version"], int) or isinstance(revision["version"], bool) or
+                        not 0 < revision["version"] <= 0xffffffff or revision["rule"] != episode["condition_id"].split(":")[3] or
+                        not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:") or
+                        any(c not in "0123456789abcdef" for c in digest[7:])):
+                    continue
+                if eid in revisions and revisions[eid] != revision:
+                    revisions[eid] = None
+                else:
+                    revisions[eid] = revision
+            except (ValueError, KeyError, TypeError, IndexError):
+                continue
+    except OSError:
+        return consumer
+    for eid, revision in revisions.items():
+        if revision is not None:
+            wanted[eid]["rule_revision"] = revision
+    return consumer
 
 
 # ------------------------------------------------------------------ bounded read-only machine inspection (cartography #102)
@@ -637,7 +702,7 @@ def main(argv=None):
                 rules = {r["id"]: r for r in json.loads(subprocess.run([a.rules, "rules"], capture_output=True, check=True, timeout=30).stdout)["rules"]}
                 report = load(a.report)
                 state = load(a.state)
-                consumer = load(a.consumer) if os.path.exists(a.consumer) else None
+                consumer = read_consumer(a.consumer) if os.path.exists(a.consumer) else None
                 intent_log = read_intent_log(a.intent_log, 2 * 86400, now)
                 with store.transaction():
                     sync(store, report, state, consumer, rules, now, intent_log)

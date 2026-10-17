@@ -1,0 +1,5 @@
+{
+  "attention_policy_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "rule": "service-down",
+  "version": 2
+}

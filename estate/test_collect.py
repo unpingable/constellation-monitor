@@ -178,3 +178,71 @@ def test_release_observation_golden(monkeypatch, tmp_path):
     monkeypatch.setattr(c, "deployed_digest", lambda d, timeout: d["digest"])
     assert c.main(["--registry", str(registry), "--output", str(report)]) == 0
     assert json.loads(report.read_bytes()) == json.loads((fixture / "report.json").read_bytes())
+
+
+def test_admission_inspection_uses_owner_verification_and_preserves_unknown(monkeypatch):
+    vector = json.loads((HERE / "fixtures" / "watcher-inspection-v1.json").read_bytes())
+    definition = {"id": "nq.fixture.admission", "kind": "nq-watcher-admission", "owner": "nq-owner",
+                  "nq_config": "/fixture/nq.toml", "instance_id": vector["instance_id"],
+                  "program": "/fixture/nq", "digest": vector["binding_digest"]}
+    reg = {"definitions": [definition]}
+    monkeypatch.setattr(c, "run", fake_run({"/fixture/nq --config /fixture/nq.toml --json watcher inspect": (0, json.dumps(vector))}))
+    assert c.definitions(reg, 5)[0]["state"] == "PRESENT"
+    definition["digest"] = "sha256:" + "d" * 64
+    assert c.definitions(reg, 5)[0]["state"] == "DEGRADED"
+    for doc in [dict(vector, schema="unsupported"), dict(vector, instance_id="other"), dict(vector, binding_digest="unknown")]:
+        monkeypatch.setattr(c, "run", fake_run({"/fixture/nq --config": (0, json.dumps(doc))}))
+        assert c.definitions(reg, 5)[0]["state"] == "UNKNOWN"
+    monkeypatch.setattr(c, "run", fake_run({"/fixture/nq --config": (2, "old CLI has no inspect command")}))
+    assert c.definitions(reg, 5)[0]["state"] == "UNKNOWN"
+
+
+def test_unavailable_required_definition_is_an_operator_visible_supervision_failure(tmp_path, monkeypatch):
+    registry = tmp_path / "registry.json"
+    output = tmp_path / "estate.json"
+    registry.write_text(json.dumps({"schema":"constellation.estate_registry/v1", "site":"fixture", "services":[],
+        "definitions":[{"id":"missing-admission", "kind":"file", "path":str(tmp_path / "missing.json"),
+                        "owner":"operator", "digest":"sha256:" + "a" * 64}]}))
+    monkeypatch.setattr(c, "coverage", lambda *args: [])
+    assert c.main(["--registry", str(registry), "--output", str(output)]) == 0
+    doc = json.loads(output.read_bytes())
+    service = next(s for s in doc["services"] if s["name"] == "estate-definitions")
+    assert service["concerns"][0]["state"] == "UNKNOWN"
+    assert service["verdict"] == "DEGRADED"
+    assert service["failing"] == ["definition.missing-admission"]
+
+
+def test_definition_only_collection_makes_no_workload_coverage_claim(tmp_path, monkeypatch):
+    path = tmp_path / "rule.yml"; path.write_text("known rule\n")
+    registry = tmp_path / "registry.json"; report = tmp_path / "report.json"
+    registry.write_text(json.dumps({"schema":"constellation.estate_registry/v1", "site":"crow", "services":[],
+        "definitions":[{"id":"crow.rules", "kind":"file", "path":str(path), "owner":"operator",
+                        "digest":"sha256:" + c.hashlib.sha256(path.read_bytes()).hexdigest()}]}))
+    def forbidden(*args):
+        raise AssertionError("definition-only collection must not inspect workloads")
+    monkeypatch.setattr(c, "coverage", forbidden)
+    monkeypatch.setattr(c, "evaluate", forbidden)
+    assert c.main(["--registry",str(registry),"--output",str(report),"--definitions-only"]) == 0
+    doc = json.loads(report.read_bytes())
+    assert doc["scope"] == "definitions-only" and len(doc["services"]) == 1
+    assert doc["services"][0]["verdict"] == "OK"
+    path.unlink()
+    c.main(["--registry",str(registry),"--output",str(report),"--definitions-only"])
+    doc = json.loads(report.read_bytes())
+    assert doc["services"][0]["verdict"] == "DEGRADED"
+    assert doc["services"][0]["concerns"][0]["state"] == "UNKNOWN"
+
+
+def test_vmalert_loaded_policy_matches_shared_declared_vector():
+    import copy
+    import pytest
+    vector = json.loads((HERE / "fixtures/vmalert-policy-v1.json").read_bytes())
+    assert c.vmalert_policy(vector["api"]) == vector["policy"]
+    runtime = copy.deepcopy(vector["api"])
+    runtime["data"]["groups"][0]["rules"][0]["state"] = "firing"
+    assert c.vmalert_policy(runtime) == vector["policy"]  # firing is not definition identity
+    runtime["data"]["groups"][0]["rules"][0]["query"] = "vector(0)"
+    assert c.vmalert_policy(runtime) != vector["policy"]
+    for bad in [{"status":"error"}, {"status":"success","data":{"groups":[]}}]:
+        with pytest.raises(ValueError):
+            c.vmalert_policy(bad)

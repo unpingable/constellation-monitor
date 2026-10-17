@@ -46,6 +46,32 @@ remediation or observation semantics.
 Run the package correspondence/refusal fixtures with
 `python3 -B -m unittest discover -s packaging/remediation -p test_build_identity.py`.
 
+## Definition revision at episode opening
+
+The existing `episode_opened` journal detail includes `rule_revision` when the
+opening evaluator report supplies one unambiguous effective rule version and
+a valid policy digest. This is provenance, not an execution prerequisite or
+authority input. Missing, malformed and ambiguous provenance is recorded as
+unknown and does not change any existing admission decision.
+
+The record binds the rule and effective policy at opening, not the original
+detection or a later resume. Resume never rewrites it from a newer report.
+The strict consumer state schema is unchanged, so previous consumers can still
+read it after rollback; the existing append-only journal retains the metadata.
+Incident sync reads at most the last 16 MiB of that journal and associates only
+matching full episode, condition and first-seen identities. A missing, truncated,
+invalid, conflicting or older opening record leaves provenance unknown. Known
+bindings are copied once into `remediation-definition` timeline events,
+including when the opening record becomes readable after the attempt.
+No attempt identity, result, authority, recovery or closure rule changes.
+
+Formalization consideration: tests cover changed reports across restart,
+legacy state, optional/malformed provenance, unchanged effect admission and
+deduplicated late timeline association. Tests and the shared revision vector
+are sufficient for this metadata change. They do not establish portable sync
+atomicity, history-safe lost-ack reconciliation or exactly-once effects;
+#93's future Store work and current SQLite transaction assumptions remain.
+
 ## Model decider (v2, opt-in)
 
 `--decider model` (cartography `architecture/agentic-remediation-v2/DESIGN.md`

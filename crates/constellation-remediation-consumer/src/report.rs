@@ -3,6 +3,7 @@
 //! worth a fresh look. The report is a trigger, never evidence: the
 //! precondition is re-established by the resolver before anything is asked.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -15,6 +16,43 @@ pub const POLICY: &str = "auto_remediate_then_page";
 /// A report stamped further than this in the future is not trusted.
 const FUTURE_SKEW_SECONDS: i64 = 5;
 
+/// Effective definition observed when a remediation episode opens. This is
+/// provenance only, never standing or an additional execution prerequisite.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleRevision {
+    pub rule: String,
+    pub version: u32,
+    pub attention_policy_digest: String,
+}
+
+fn revision(report: &Value) -> Option<RuleRevision> {
+    let digest = report.get("attention_policy_digest")?.as_str()?;
+    let hex = digest.strip_prefix("sha256:")?;
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let mut rules = report
+        .get("rules")?
+        .as_array()?
+        .iter()
+        .filter(|r| r.get("id").and_then(Value::as_str) == Some(RULE));
+    let rule = rules.next()?;
+    if rules.next().is_some() {
+        return None;
+    }
+    let version = u32::try_from(rule.get("version")?.as_u64()?).ok()?;
+    (version > 0).then(|| RuleRevision {
+        rule: RULE.to_owned(),
+        version,
+        attention_policy_digest: digest.to_owned(),
+    })
+}
+
 /// The condition episode a pass may act on.
 #[derive(Clone, Debug)]
 pub struct Candidate {
@@ -23,6 +61,7 @@ pub struct Candidate {
     pub window_until: i64,
     pub page_deferred: bool,
     pub evaluated_at: String,
+    pub rule_revision: Option<RuleRevision>,
     /// The selected report fields a model decider may see, verbatim.
     pub projection: Value,
     /// The condition's `summary`, if any: untrusted narration, never an
@@ -183,6 +222,7 @@ pub fn select_with_margin(config: &Config, report: &Value, now: i64, margin: i64
         window_until,
         page_deferred: true,
         evaluated_at,
+        rule_revision: revision(report),
         projection,
         narration,
     })

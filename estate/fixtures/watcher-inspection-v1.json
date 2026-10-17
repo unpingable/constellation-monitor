@@ -1,0 +1,16 @@
+{
+  "admission_id": "00000000-0000-4000-8000-000000000001",
+  "admitted_at": "2026-01-01T00:00:00Z",
+  "binding_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "config_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "instance_id": "host-diagnostic.primary",
+  "observed_at": "2026-01-01T00:01:00Z",
+  "profile": {
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "id": "nq.host",
+    "version": 1
+  },
+  "protocol_version": "nq.helper.v1",
+  "schema": "nq.watcher_inspection.v1",
+  "scope": "current admission verification only; no collection or service health claim"
+}

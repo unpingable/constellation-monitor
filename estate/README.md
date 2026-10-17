@@ -44,6 +44,19 @@ Older readers may ignore it; a verifier requiring it must report older reports
 as unsupported. The shared `fixtures/definition-release/` vector is consumed
 by Cartography's `architecture/day-two-release-lifecycle` release tests.
 
+`nq-watcher-admission` definitions use the NQ-owned bounded read operation
+`nq --config FILE --json watcher inspect INSTANCE`. The collector requires
+`nq.watcher_inspection.v1`, the exact instance and a valid binding digest,
+then compares that digest with the declared pin. NQ performs its own config,
+profile, protocol/corpus, capability and execution-identity checks; Monitor
+does not implement them. An older CLI, failed verification or unsupported
+response is UNKNOWN. `program` may name an exact side-by-side NQ read artifact
+so enrollment and the resident NQ binary remain unchanged. Its file identity
+must also be pinned by the site registry. Admission verification does not
+collect observations or assert service health. The shared
+`fixtures/watcher-inspection-v1.json` vector is also in NQ's CLI tests.
+New source and contract tests are not a deployment claim.
+
 Install on the host:
 
     install -D -m 0755 constellation-estate-collect.py /usr/local/lib/constellation-estate/constellation-estate-collect.py

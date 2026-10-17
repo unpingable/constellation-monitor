@@ -390,6 +390,7 @@ impl Pass<'_> {
             "remediation_window_until": candidate.window_until,
             "page_deferred": candidate.page_deferred,
             "report_evaluated_at": candidate.evaluated_at,
+            "rule_revision": candidate.rule_revision,
         });
         if self.state.seen(&episode_id) {
             return self.abstain("episode_already_attempted", candidate_detail);

@@ -1,0 +1,56 @@
+{
+  "api": {
+    "data": {
+      "groups": [
+        {
+          "file": "/etc/vmalert/rules/fixture.rules.yml",
+          "interval": 30,
+          "name": "fixture",
+          "rules": [
+            {
+              "annotations": {
+                "summary": "Fixture down"
+              },
+              "duration": 180,
+              "keep_firing_for": 0,
+              "labels": {
+                "notify": "slack"
+              },
+              "lastEvaluation": "2026-01-01T00:00:00Z",
+              "name": "FixtureDown",
+              "query": "up{job=\"fixture\"} == 0",
+              "state": "inactive",
+              "type": "alerting"
+            }
+          ]
+        }
+      ]
+    },
+    "status": "success"
+  },
+  "policy": {
+    "groups": [
+      {
+        "file": "fixture.rules.yml",
+        "interval_seconds": 30,
+        "name": "fixture",
+        "rules": [
+          {
+            "annotations": {
+              "summary": "Fixture down"
+            },
+            "duration_seconds": 180,
+            "keep_firing_for_seconds": 0,
+            "labels": {
+              "notify": "slack"
+            },
+            "name": "FixtureDown",
+            "query": "up{job=\"fixture\"} == 0"
+          }
+        ]
+      }
+    ],
+    "schema": "constellation.vmalert_policy/v1"
+  },
+  "source_yaml": "groups:\n  - name: fixture\n    interval: 30s\n    rules:\n      - alert: FixtureDown\n        expr: up{job=\"fixture\"} == 0\n        for: 3m\n        labels: {notify: slack}\n        annotations: {summary: Fixture down}\n"
+}

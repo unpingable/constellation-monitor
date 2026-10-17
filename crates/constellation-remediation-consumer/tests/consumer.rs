@@ -132,6 +132,100 @@ fn happy_path_drives_one_occurrence_to_completion() {
     assert_eq!(harness.effects(), 1);
 }
 
+fn report_revision(harness: &Harness, version: u32, digest: char) -> Value {
+    let path = harness.path("report.json");
+    let mut report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    report["rules"] = json!([{"id":"service-down", "version":version}]);
+    report["attention_policy_digest"] = json!(format!("sha256:{}", digest.to_string().repeat(64)));
+    fs::write(path, serde_json::to_vec(&report).unwrap()).unwrap();
+    json!({"rule":"service-down", "version":version, "attention_policy_digest":report["attention_policy_digest"]})
+}
+
+#[test]
+fn opening_revision_survives_resume_under_a_changed_report() {
+    let harness = Harness::new();
+    let opening = report_revision(&harness, 2, 'a');
+    let golden: Value =
+        serde_json::from_slice(include_bytes!("fixtures/rule-revision-v1.json")).unwrap();
+    assert_eq!(opening, golden);
+    harness.control("crash_after_authorize", "");
+    assert!(harness.run().is_none());
+    assert!(harness.state()["active"].get("rule_revision").is_none());
+    assert_eq!(
+        harness.events("episode_opened")[0]["detail"]["rule_revision"],
+        opening
+    );
+    report_revision(&harness, 3, 'b');
+    assert_eq!(harness.result(), "completed");
+    assert!(harness.state()["closed"][0].get("rule_revision").is_none());
+    assert_eq!(
+        harness.events("episode_opened")[0]["detail"]["rule_revision"],
+        opening
+    );
+    assert_eq!(harness.effects(), 1);
+}
+
+#[test]
+fn legacy_episode_is_not_backfilled_from_a_current_report() {
+    let harness = Harness::new();
+    harness.control("crash_after_authorize", "");
+    assert!(harness.run().is_none());
+    let mut journal = harness.journal();
+    for record in &mut journal {
+        if record["event"] == "episode_opened" {
+            record["detail"]
+                .as_object_mut()
+                .unwrap()
+                .remove("rule_revision");
+        }
+    }
+    let bytes = journal
+        .iter()
+        .map(|r| serde_json::to_string(r).unwrap() + "\n")
+        .collect::<String>();
+    fs::write(harness.path("state/journal.jsonl"), bytes).unwrap();
+    report_revision(&harness, 7, 'c');
+    assert_eq!(harness.result(), "completed");
+    assert!(harness.state()["closed"][0].get("rule_revision").is_none());
+    assert!(
+        harness.events("episode_opened")[0]["detail"]
+            .get("rule_revision")
+            .is_none()
+    );
+    assert_eq!(harness.effects(), 1);
+}
+
+#[test]
+fn missing_or_ambiguous_revision_does_not_change_execution_admission() {
+    for variant in ["missing", "duplicate", "bad_digest", "zero"] {
+        let harness = Harness::new();
+        report_revision(&harness, 2, 'a');
+        let path = harness.path("report.json");
+        let mut report: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        match variant {
+            "missing" => {
+                report.as_object_mut().unwrap().remove("rules");
+            }
+            "duplicate" => {
+                report["rules"] =
+                    json!([{"id":"service-down","version":2},{"id":"service-down","version":3}]);
+            }
+            "bad_digest" => {
+                report["attention_policy_digest"] = json!("unknown");
+            }
+            _ => {
+                report["rules"][0]["version"] = json!(0);
+            }
+        }
+        fs::write(path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert_eq!(harness.result(), "completed", "{variant}");
+        assert!(harness.state()["closed"][0].get("rule_revision").is_none());
+        assert!(harness.events("episode_opened")[0]["detail"]["rule_revision"].is_null());
+        assert_eq!(ag_and_trigger_calls(&harness), AG_HAPPY);
+        assert_eq!(harness.effects(), 1);
+    }
+}
+
 #[test]
 fn contradictory_precondition_abstains_without_touching_ag() {
     let harness = Harness::new();
