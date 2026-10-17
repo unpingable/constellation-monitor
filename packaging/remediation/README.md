@@ -265,3 +265,28 @@ The retained #71 evaluation was at 05:36:39.403Z, with a 90-second resolver
 recency bound. The subsequent 05:37:09.693Z evaluation expired testimony
 observed at 05:36:09.654Z (age 60.039 seconds). The earlier inferred
 future-sample diagnosis used the wrong recency bound and is withdrawn.
+
+### Consumer cadence and the held-page window (#90, 2026-10-17)
+
+The packaged timer polls 10 seconds after the previous pass finishes. A real
+canary drill exposed a phase-dependent miss with the former 30-second interval:
+first seen 23:47:02Z, deferred report published 23:51:23.67Z, window ending 23:52:02Z.
+The poll at 23:51:20 read the previous non-deferred report; the next at 23:51:50
+had 12 seconds left and correctly refused the unchanged 25-second safety margin.
+The notice and subsequent page were accepted, but no remediation episode opened.
+The test canary was restored by the operator; that run remains incomplete.
+
+A 10-second interval removes this observed 30-second scheduling gap without
+changing the page hold, admission margin, grants, targets, action selection or
+postcondition verification. Longer producer/transport delays can still consume
+the window, in which case the existing refusal and escalation remain correct.
+Do not describe a successful no-op pass as successful remediation.
+
+Formalization consideration: the bounded timing counterexample is the recorded
+publication/poll sequence above. Replaying that sequence at 10-second cadence
+admits at 23:51:30 (32 seconds remaining) rather than23:51:50 (12 seconds).
+This is a scheduling-budget calculation, not a general liveness proof or a
+qualification verdict. Existing selection tests retain the margin and deferred
+page predicates. A new live drill has a new run identity; the failed original
+is retained. Decision owner: unpingable; implementation: Codex. Source evidence:
+managed-definitions run 374040ae, canary run f9b3218c. No #93 Store semantics change.

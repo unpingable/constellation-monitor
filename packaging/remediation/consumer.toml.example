@@ -17,7 +17,11 @@ report = "/var/lib/constellation-attention/report.json"
 # while the evaluator holds the page (after the 180 s service-down bound).
 # Evaluator passes run each minute with up to 5 s jitter, so the trigger lands
 # at first_seen + 180 or + 240; with window_seconds = 300 that leaves 120 or
-# 60 s, and a 30 s timer must still find >= this margin. A fix needs ~3 s,
+# 60 s before report publication. The 10 s timer leaves room for acquisition
+# and notification latency; the former 30 s interval missed a real window
+# when publication was at :23, a poll at :20 saw the previous report and the
+# next poll at :50 had only 12 s left. This cadence does not bound arbitrary
+# I/O delays: an insufficient remaining window still refuses. A fix needs ~3 s,
 # the postcondition dwell below and one on-demand evaluator pass before the
 # window ends; otherwise the held page goes out (fail-safe).
 window_margin_seconds = 25
