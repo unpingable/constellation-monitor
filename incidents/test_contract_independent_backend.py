@@ -5,7 +5,7 @@ contract against the real SqliteStore and a SECOND, separately written in-memory
 append-only op journal folded into a projection), plus fault-injection and concurrency fixtures. It records
 which behaviors are contract-level and which are implementation properties of one backend.
 
-Inline findings (F1..F5) are collected in the lane report; each names the test that reproduces it.
+Inline findings (F1..F4) are collected in the lane report; each names the test that reproduces it.
 """
 import importlib.util, json, os, pathlib, sqlite3, stat, threading
 import pytest
@@ -250,12 +250,13 @@ def test_indeterminate_remediation_outcome_is_not_verified_recovery(store):
 
 def test_unknown_persistence_outcome_retry_safety_is_operation_and_backend_specific(store, request):
     """F2: the shim has no typed outcome-unknown result. After a lost acknowledgment the contract cannot say whether
-    the mutation landed; whether a retry is SAFE, REFUSED or DUPLICATE is established here per operation/backend.
-    - event with a dedup key / attempt upsert / same-value update: retry is SAFE on every backend (contract
-      idempotency, as the Store docstring claims 'where it can be').
+    the mutation landed; whether a retry adds rows, is REFUSED or DUPLICATES is established here per operation/backend.
+    "No duplicate rows" is all this test shows; it says nothing about the event history (see
+    test_lost_ack_inside_sync_drops_lifecycle_history: the same retries lose events).
+    - event with a dedup key / attempt upsert / same-value update: the retry adds no row on every backend.
     - open_incident retried DIRECTLY: SqliteStore REFUSES (partial unique index one_unresolved_per_key);
       JournalStore silently creates a second unresolved incident. Genuinely indeterminate at the contract layer.
-    - open_incident retried through the find-or-open caller pattern (what sync() does): SAFE on every backend.
+    - open_incident retried through the find-or-open caller pattern (what sync() does): no second row on any backend.
     """
     backend = request.node.callspec.params["store"]
     inc.sync(store, report("present", True), {}, None, RULES, T0)
@@ -301,6 +302,48 @@ def test_unknown_persistence_outcome_retry_safety_is_operation_and_backend_speci
         store.open_incident(other, at, at)
     n = len([i for i in store.incidents() if i["key"] == other])
     assert n == (1 if backend == "sqlite" else 2), "find-or-open adds nothing once current() sees the landed write"
+
+
+@pytest.mark.parametrize("lost, expected", [("open_incident", "detected"), ("attempt", "remediation"), ("update", "recurred")])
+def test_lost_ack_inside_sync_drops_lifecycle_history(store, lost, expected):
+    """F2 (history): CHARACTERIZATION of current behavior, not a desired property. When an acknowledgment is lost
+    inside a sync() pass driven without a caller transaction, the retried pass sees the landed row, takes the
+    "already exists / unchanged" branch, and never writes the lifecycle event that the lost call was meant to precede:
+      open_incident -> no 'detected'; attempt -> no 'remediation'; the flap update (recovering -> open) -> no 'recurred'.
+    Rows converge without duplicates; history does not. Same on both backends, so this is the sync()/Store contract
+    (F1 + F2), not a backend property. main() wraps the SQLite pass in BEGIN IMMEDIATE, which rolls a failed pass
+    back whole; that path is not exercised here. Whether to change this is an owner decision about Store semantics."""
+    consumer = {"active": None, "closed": [episode("sha256:aa", "settled_failure")]} if lost == "attempt" else None
+
+    def run(s):
+        if lost == "update":                                          # set up a recovering incident first
+            inc.sync(store, report("present", True), {}, None, RULES, T0)
+            inc.sync(store, report("clear", False), {}, None, RULES, T0 + 60)
+            inc.sync(s, report("present", True), {}, None, RULES, T0 + 120)
+        else:
+            inc.sync(s, report("present", True), {}, consumer, RULES, T0)
+
+    with pytest.raises(inc.StoreUnavailable):
+        run(LostAck(store, lost))
+    inc.sync(store, report("present", True), {}, consumer, RULES, T0 + 180)   # the retry pass
+    rows = store.incidents()
+    assert len(rows) == 1, "rows converge: one incident"
+    if lost == "attempt":
+        assert len(store.attempts(rows[0]["id"])) == 1
+    if lost == "update":
+        assert rows[0]["state"] == "open", "the landed state change survives"
+    assert expected not in kinds(store, rows[0]["id"]), "history lost: %r was never recorded" % expected
+
+
+@pytest.mark.parametrize("lost, expected", [("open_incident", "detected"), ("attempt", "remediation"), ("update", "recurred")])
+def test_lifecycle_history_control_without_a_lost_ack(store, lost, expected):
+    """Control for the characterization above: the same passes with no injected fault record the event."""
+    consumer = {"active": None, "closed": [episode("sha256:aa", "settled_failure")]} if lost == "attempt" else None
+    inc.sync(store, report("present", True), {}, consumer, RULES, T0)
+    if lost == "update":
+        inc.sync(store, report("clear", False), {}, None, RULES, T0 + 60)
+        inc.sync(store, report("present", True), {}, None, RULES, T0 + 120)
+    assert expected in kinds(store, store.incidents()[0]["id"])
 
 
 # ------------------------------------------------------------------ 5. verified resolution
@@ -383,6 +426,8 @@ def test_concurrent_find_or_open_forced_race(tmp_path, backend):
         unresolved = [i for i in probe.incidents() if i["key"] == KEY]
         assert len(unresolved) == 1, unresolved
         assert len(errors) == 1, "exactly one racer was refused by the unique index: %s" % errors
+        # both racers compute the same id, so the primary key would also refuse; pin that it is the partial index
+        assert "incident.key" in errors[0], errors
     else:
         unresolved = [i for i in shared.incidents() if i["key"] == KEY]
         assert len(unresolved) == 2 and [i["id"] for i in unresolved] == ["inc-" + inc.key_hash(KEY),
@@ -393,6 +438,7 @@ def test_concurrent_find_or_open_sqlite_never_duplicates_unforced(tmp_path):
     """The SQLite guarantee without interleave forcing: many races, exactly one unresolved incident each round."""
     path = str(tmp_path / "many.sqlite")
     inc.SqliteStore(path).db.close()
+    refused_rounds = 0
     for round_ in range(25):
         errors, barrier = [], threading.Barrier(4)
         def worker():
@@ -405,6 +451,10 @@ def test_concurrent_find_or_open_sqlite_never_duplicates_unforced(tmp_path):
         assert not any(t.is_alive() for t in threads)
         n = len([i for i in inc.SqliteStore(path).incidents() if i["key"] == KEY])
         assert n == 1, "round %d: %d unresolved incidents for one key" % (round_, n)
+        assert all("incident.key" in e for e in errors), errors
+        refused_rounds += bool(errors)
         # reset for the next round: resolve the episode directly (test-local cleanup, not a lifecycle claim)
         s = inc.SqliteStore(path)
         s._x("UPDATE incident SET state='resolved', resolved_at=? WHERE key=?", (inc.iso(T0), KEY))
+    # a real race happened (a racer was refused) in at least one round; otherwise this test proves nothing
+    assert refused_rounds >= 1, "no round produced a concurrent open_incident"
