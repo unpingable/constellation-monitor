@@ -72,6 +72,37 @@ are sufficient for this metadata change. They do not establish portable sync
 atomicity, history-safe lost-ack reconciliation or exactly-once effects;
 #93's future Store work and current SQLite transaction assumptions remain.
 
+## Journal capacity
+
+Each consumer journal has a 64 MiB (67,108,864-byte) application ceiling.
+`--check-config` reports `journal_max_bytes` without creating or opening state;
+that value is a limit, not a journal-usage or service-health claim.
+
+The Store refuses a full or already oversized journal before a pass starts.
+Each append checks that the complete encoded record fits before writing any
+of it. Capacity refusal preserves existing journal bytes, state, episode IDs
+and dispatch fences. The consumer exits 2 through its existing store-fault path;
+the existing estate supervision of the consumer's failed passes remains the
+operator route. A full journal is not healthy and does not authorize a retry.
+Read-only incident inspection and AG/Docket inspection remain available.
+
+There is no automatic rotation, truncation or history deletion. Exhaustion needs
+operator custody and disposition under the existing recovery procedure. Do not
+clear a campaign, discard an unresolved attempt or reset its fence to make space.
+This bounds this journal only, not per-episode inputs or AG, Docket and NQ stores.
+
+Formalization consideration (Monitor private-history #6 / finding 94-22;
+implementation Codex, owner unpingable): while cooperating writers hold the
+existing exclusive Store lock, admitted appends satisfy
+`used + encoded_record_bytes <= journal_max_bytes`, with overflow refused.
+Tests cover an exact-boundary append followed by byte-preserving refusal, an
+already-full journal preventing every external call while retaining a dispatch
+fence, and configuration inspection without state creation. Practical tests and
+checked arithmetic suffice for this bounded change. This does not establish
+atomic writes under arbitrary I/O failure, exclusion of uncooperating writers,
+automatic retirement, or history-safe reconciliation. Existing JSON schemas and
+authority/remediation transitions are unchanged.
+
 ## Model decider (v2, opt-in)
 
 `--decider model` (cartography `architecture/agentic-remediation-v2/DESIGN.md`

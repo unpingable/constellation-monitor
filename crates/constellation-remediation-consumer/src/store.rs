@@ -15,6 +15,9 @@ use time::format_description::well_known::Rfc3339;
 
 pub const STATE_SCHEMA: &str = "constellation.remediation-consumer.state/v1";
 pub const JOURNAL_SCHEMA: &str = "constellation.remediation-consumer.journal/v1";
+/// Maximum bytes in one consumer journal. Exhaustion refuses further writes;
+/// it never discards existing history or resets an execution obligation.
+pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 /// Closed episodes kept in `state.json` (the journal keeps all of them).
 const CLOSED_KEPT: usize = 256;
 
@@ -149,6 +152,7 @@ pub struct Store {
     dir: PathBuf,
     _lock: File,
     journal: File,
+    journal_max_bytes: u64,
     pass: String,
 }
 
@@ -166,6 +170,10 @@ fn failed(context: &str, error: impl std::fmt::Display) -> OpenError {
 impl Store {
     /// Create (0700) or verify the private state directory, take the lock.
     pub fn open(dir: &Path, pass: String) -> Result<Self, OpenError> {
+        Self::open_bounded(dir, pass, MAX_JOURNAL_BYTES)
+    }
+
+    fn open_bounded(dir: &Path, pass: String, journal_max_bytes: u64) -> Result<Self, OpenError> {
         if !dir.exists() {
             fs::create_dir_all(dir).map_err(|error| failed("create state dir", error))?;
             fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
@@ -197,11 +205,17 @@ impl Store {
             .mode(0o600)
             .open(dir.join("journal.jsonl"))
             .map_err(|error| failed("open journal", error))?;
+        let used = journal
+            .metadata()
+            .map_err(|error| failed("stat journal", error))?
+            .len();
+        journal_capacity(used, 1, journal_max_bytes).map_err(OpenError::Failed)?;
         fs::create_dir_all(dir.join("episodes")).map_err(|error| failed("episodes dir", error))?;
         Ok(Self {
             dir: dir.to_owned(),
             _lock: lock,
             journal,
+            journal_max_bytes,
             pass,
         })
     }
@@ -257,6 +271,14 @@ impl Store {
         });
         let mut bytes = serde_json::to_vec(&line).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
+        let used = self
+            .journal
+            .metadata()
+            .map_err(|error| format!("stat journal: {error}"))?
+            .len();
+        let required =
+            u64::try_from(bytes.len()).map_err(|_| "journal record length exceeds u64")?;
+        journal_capacity(used, required, self.journal_max_bytes)?;
         self.journal
             .write_all(&bytes)
             .and_then(|()| self.journal.sync_data())
@@ -274,6 +296,15 @@ impl Store {
         fs::create_dir_all(&dir).map_err(|error| format!("episode dir: {error}"))?;
         Ok(dir)
     }
+}
+
+fn journal_capacity(used: u64, required: u64, limit: u64) -> Result<(), String> {
+    if used.checked_add(required).is_none_or(|end| end > limit) {
+        return Err(format!(
+            "journal capacity exhausted: used {used} bytes, record requires {required}, limit {limit}; history preserved, operator custody required"
+        ));
+    }
+    Ok(())
 }
 
 #[must_use]
@@ -307,4 +338,70 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| format!("{}: {error}", parent.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_capacity_refuses_whole_record_and_preserves_dispatched_state() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let mut store = Store::open_bounded(directory.path(), "fixture".into(), 4096)
+            .unwrap_or_else(|_| panic!("open private fixture"));
+        let state = State {
+            active: Some(Episode {
+                episode: "retained-episode".into(),
+                campaign: "retained-campaign".into(),
+                dispatch_started: true,
+                attempt: Some("retained-attempt".into()),
+                ..Episode::default()
+            }),
+            ..State::default()
+        };
+        store.save(&state).unwrap();
+        store
+            .event(0, "fixture", state.active.as_ref(), Value::Null)
+            .unwrap();
+        let journal = directory.path().join("journal.jsonl");
+        let first = fs::read(&journal).unwrap();
+        store.journal_max_bytes = u64::try_from(first.len() * 2).unwrap();
+        // A complete record ending exactly at the limit is admitted.
+        store
+            .event(0, "fixture", state.active.as_ref(), Value::Null)
+            .unwrap();
+        let before = fs::read(&journal).unwrap();
+        let state_before = fs::read(directory.path().join("state.json")).unwrap();
+        assert_eq!(before.len(), first.len() * 2);
+        let error = store
+            .event(0, "fixture", state.active.as_ref(), Value::Null)
+            .unwrap_err();
+        assert!(error.contains("journal capacity exhausted"));
+        assert_eq!(fs::read(&journal).unwrap(), before);
+        assert_eq!(
+            fs::read(directory.path().join("state.json")).unwrap(),
+            state_before
+        );
+        assert!(store.load().unwrap().active.unwrap().dispatch_started);
+        for line in before
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+        {
+            let record: Value = serde_json::from_slice(line).unwrap();
+            assert_eq!(record["episode"], "retained-episode");
+        }
+        let limit = store.journal_max_bytes;
+        drop(store);
+        assert!(matches!(
+            Store::open_bounded(directory.path(), "successor".into(), limit),
+            Err(OpenError::Failed(_))
+        ));
+        assert_eq!(fs::read(&journal).unwrap(), before);
+    }
+
+    #[test]
+    fn capacity_length_overflow_refuses_without_wrapping() {
+        assert!(journal_capacity(u64::MAX, 1, u64::MAX).is_err());
+    }
 }

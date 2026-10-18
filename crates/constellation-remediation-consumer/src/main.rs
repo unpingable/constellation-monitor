@@ -88,6 +88,7 @@ fn main() {
                 "config": "ok",
                 "condition_id": config.condition_id(),
                 "decider": decider.as_str(),
+                "journal_max_bytes": constellation_remediation_consumer::store::MAX_JOURNAL_BYTES,
                 "model": config.model.as_ref().map(|_| constellation_remediation_consumer::decider::MODEL),
             })
         );

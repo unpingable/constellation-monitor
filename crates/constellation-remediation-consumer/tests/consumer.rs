@@ -11,6 +11,65 @@ use common::*;
 use constellation_remediation_consumer::{Config, run_pass};
 use serde_json::{Value, json};
 
+#[test]
+fn full_journal_refuses_before_external_commands_and_preserves_dispatch_fence() {
+    use constellation_remediation_consumer::store::{Episode, MAX_JOURNAL_BYTES, State, Store};
+    let harness = Harness::new();
+    let state_dir = harness.path("state");
+    let store = Store::open(&state_dir, "fixture".into())
+        .unwrap_or_else(|_| panic!("open private fixture"));
+    let state = State {
+        active: Some(Episode {
+            episode: "retained-episode".into(),
+            campaign: "retained-campaign".into(),
+            dispatch_started: true,
+            attempt: Some("retained-attempt".into()),
+            ..Episode::default()
+        }),
+        ..State::default()
+    };
+    store.save(&state).unwrap();
+    drop(store);
+    // Sparse local fixture: exercise the production bound without allocating
+    // the journal's capacity or inventing a usable history for this refusal.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(state_dir.join("journal.jsonl"))
+        .unwrap()
+        .set_len(MAX_JOURNAL_BYTES)
+        .unwrap();
+    let state_before = fs::read(state_dir.join("state.json")).unwrap();
+    let error = run_pass(&harness.config(), &|| 0).unwrap_err();
+    assert!(error.contains("journal capacity exhausted"), "{error}");
+    assert!(harness.calls().is_empty());
+    assert_eq!(
+        fs::read(state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+    assert_eq!(
+        fs::metadata(state_dir.join("journal.jsonl")).unwrap().len(),
+        MAX_JOURNAL_BYTES
+    );
+}
+
+#[test]
+fn config_check_reports_journal_bound_without_opening_state() {
+    let harness = Harness::new();
+    assert!(!harness.path("state").exists());
+    let output =
+        std::process::Command::new(env!("CARGO_BIN_EXE_constellation-remediation-consumer"))
+            .arg("--config")
+            .arg(harness.path("consumer.toml"))
+            .arg("--check-config")
+            .output()
+            .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let checked: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(checked["journal_max_bytes"], 64 * 1024 * 1024);
+    assert!(!harness.path("state").exists());
+    assert!(harness.calls().is_empty());
+}
+
 const AG_HAPPY: [&str; 11] = [
     "ag init",
     "ag record-proposal",
