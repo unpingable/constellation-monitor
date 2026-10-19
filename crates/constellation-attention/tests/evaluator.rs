@@ -4172,11 +4172,26 @@ fn metric_rule<'a>(doc: &'a mut Value, name: &str) -> &'a mut Value {
         .unwrap()
 }
 
+/// The producer computes `firing_sites` over every instance; a test that
+/// edits instances by hand must keep that summary consistent.
+fn refresh_firing_sites(rule: &mut Value) {
+    let mut sites = serde_json::Map::new();
+    for i in rule["instances"].as_array().cloned().unwrap_or_default() {
+        if i["state"] == "firing" {
+            let site = i["labels"]["site"].as_str().unwrap_or("").to_owned();
+            let n = sites.get(&site).and_then(Value::as_u64).unwrap_or(0);
+            sites.insert(site, json!(n + 1));
+        }
+    }
+    rule["firing_sites"] = Value::Object(sites);
+}
+
 fn quiet(doc: &mut Value, name: &str) {
     let rule = metric_rule(doc, name);
     rule["state"] = json!("inactive");
     rule["instances"] = json!([]);
     rule["instance_count"] = json!(0);
+    refresh_firing_sites(rule);
 }
 
 fn metric_alerts_harness() -> Harness {
@@ -4449,6 +4464,7 @@ fn swap_on_three_sites(doc: &mut Value) {
     elsewhere["labels"]["site"] = json!("elsewhere");
     instances.push(crow);
     instances.push(elsewhere);
+    refresh_firing_sites(rule);
     rule["instance_count"] = json!(3);
 }
 
@@ -4566,6 +4582,7 @@ fn metric_alerts_keyed_per_site() {
             .unwrap()
             .retain(|i| i["labels"]["site"] != "testbed");
         rule["instance_count"] = json!(2);
+        refresh_firing_sites(rule);
     };
     for offset in [150, 400] {
         write_metric_alerts(&harness, T0 + offset, quiet_testbed);
@@ -4621,4 +4638,75 @@ fn metric_alert_sites_are_validated_by_check_config() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// An inactive rule whose query fetched no series is unknown, not clear, and
+/// faults nothing: the metric is missing or its window has no history yet.
+#[test]
+fn metric_alert_with_no_data_is_unknown_not_clear() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| {
+        metric_rule(doc, "HostIoPressureHigh")["last_series_fetched"] = json!(0);
+    });
+    let report = harness.evaluate(T0);
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "not_current", "{input}");
+    assert_eq!(
+        causes(&input),
+        ["indeterminate"],
+        "only the vector's erroring rule"
+    );
+    let c = condition(
+        &report,
+        "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high",
+    )
+    .unwrap();
+    assert_eq!(c["observation"], "unknown");
+    assert!(
+        c["note"]
+            .as_str()
+            .unwrap()
+            .contains("query fetched no series"),
+        "{c}"
+    );
+    // With data fetched and the rule inactive, the same condition is clear.
+    write_metric_alerts(&harness, T0 + 60, |doc| {
+        metric_rule(doc, "HostIoPressureHigh")["last_series_fetched"] = json!(2);
+    });
+    let report = harness.evaluate(T0 + 60);
+    assert_eq!(
+        condition(
+            &report,
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high"
+        )
+        .unwrap()["observation"],
+        "clear"
+    );
+}
+
+/// Per-site presence comes from the producer's complete firing summary, so a
+/// site whose firing instance fell past the truncated detail is still present.
+#[test]
+fn per_site_presence_uses_the_complete_firing_summary() {
+    let mut harness = Harness::new();
+    let path = harness.path("metric-alerts.json");
+    harness.raw(&format!(
+        "[inputs.metric_alerts]\npath = \"{}\"\nsites = [\"testbed\", \"crow\"]\n",
+        path.display()
+    ));
+    write_metric_alerts(&harness, T0, |doc| {
+        let rule = metric_rule(doc, "HostSwapExhausted");
+        rule["instances"] = json!([]); // detail truncated away entirely
+        rule["instance_count"] = json!(40);
+        rule["firing_sites"] = json!({"crow": 1, "testbed": 39});
+    });
+    let report = harness.evaluate(T0);
+    for site in ["testbed", "crow"] {
+        let c = condition(
+            &report,
+            &format!("constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted.{site}"),
+        )
+        .unwrap();
+        assert_eq!(c["observation"], "present", "{c}");
+    }
 }

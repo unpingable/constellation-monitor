@@ -246,3 +246,18 @@ def test_vmalert_loaded_policy_matches_shared_declared_vector():
     for bad in [{"status":"error"}, {"status":"success","data":{"groups":[]}}]:
         with pytest.raises(ValueError):
             c.vmalert_policy(bad)
+
+
+def test_an_observation_past_its_own_validity_is_stale_even_when_the_producer_says_present(monkeypatch):
+    import json as _json
+    doc = {"schema": "project.ops.status/v1", "concerns": [
+        {"id": "a.fresh", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok", "observed_at": "2099-01-01T00:00:00Z", "valid_for_seconds": 60}},
+        {"id": "a.old", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok", "observed_at": "2020-01-01T00:00:00Z", "valid_for_seconds": 60}},
+        {"id": "a.nodate", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok"}}]}
+    monkeypatch.setattr(c, "run", lambda argv, timeout, user=None, cwd=None, env=None, limit=1 << 20: (0, _json.dumps(doc).encode(), ""))
+    concerns, err = c.project_status({"argv": ["x"]}, 5)
+    assert err is None
+    by = {x["id"]: x for x in concerns}
+    assert by["a.fresh"]["state"] == "PRESENT" and by["a.nodate"]["state"] == "PRESENT"
+    assert by["a.old"]["state"] == "STALE" and "exceeds its 60s validity" in by["a.old"]["reason"]
+    assert by["a.old"]["observed_at"] == "2020-01-01T00:00:00Z"

@@ -112,10 +112,21 @@ def project_status(spec, timeout):
     if doc.get("schema", STATUS_SCHEMA) != STATUS_SCHEMA or not isinstance(doc.get("concerns"), list):
         return None, "producer output is not %s" % STATUS_SCHEMA
     concerns = []
+    now = time.time()
     for c in doc["concerns"]:
         obs = c.get("observation") or {}
-        concerns.append({"id": c.get("id"), "required": bool(c.get("required", True)),
-                         "state": obs.get("local_state") or "ABSENT", "reason": obs.get("reason") or ""})
+        state, reason = obs.get("local_state") or "ABSENT", obs.get("reason") or ""
+        # the observation's own time and validity travel with it: a fresh estate document must not refresh old evidence
+        observed_at, valid_for = obs.get("observed_at"), obs.get("valid_for_seconds")
+        if observed_at and isinstance(valid_for, (int, float)) and valid_for > 0:
+            try:
+                at = datetime.strptime(observed_at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+                if now - at > valid_for and state in ("PRESENT", "NOT_APPLICABLE"):
+                    state, reason = "STALE", "observation %ds old exceeds its %ds validity; was %s: %s" % (now - at, valid_for, obs.get("local_state"), reason)
+            except ValueError:
+                state, reason = "UNKNOWN", "observed_at %r is not a timestamp" % observed_at
+        concerns.append({"id": c.get("id"), "required": bool(c.get("required", True)), "state": state, "reason": reason,
+                         "observed_at": observed_at, "valid_for_seconds": valid_for})
     return concerns, None
 
 

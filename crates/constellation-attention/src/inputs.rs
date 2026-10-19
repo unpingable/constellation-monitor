@@ -1595,6 +1595,16 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         } else {
             Vec::new()
         };
+        // vmalert's own data-presence counter: an inactive rule whose query fetched
+        // no series has no evidence either way (the metric is missing, or an
+        // `offset` window has no history yet). That is unknown, not clear, and not
+        // a fault of the input: the rule is warming up or its source is absent.
+        let no_data =
+            state != "firing" && rule.get("last_series_fetched").and_then(Value::as_i64) == Some(0);
+        // The producer's complete per-site firing summary, computed before it
+        // truncates instance detail; instances alone could omit a site's firing
+        // instance at high fan-out.
+        let firing_sites = rule.get("firing_sites").and_then(Value::as_object);
         let unknown = stale.is_some() || !problems.is_empty();
         let unknown_why = stale
             .iter()
@@ -1613,14 +1623,20 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 None => firing.clone(),
             };
             let present = match site {
-                Some(_) => !mine.is_empty(),
+                Some(site) => match firing_sites {
+                    Some(summary) => summary
+                        .get(site)
+                        .and_then(Value::as_u64)
+                        .is_some_and(|n| n > 0),
+                    None => !mine.is_empty(),
+                },
                 None => state == "firing",
             };
             let observation = if unknown {
                 Observation::Unknown
             } else if present {
                 Observation::Present
-            } else if drift.is_some() {
+            } else if no_data || drift.is_some() {
                 Observation::Unknown
             } else {
                 Observation::Clear
@@ -1655,6 +1671,9 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 "health": health,
                 "since": since,
                 "instance_count": rule.get("instance_count"),
+                "last_samples": rule.get("last_samples"),
+                "last_series_fetched": rule.get("last_series_fetched"),
+                "firing_sites": rule.get("firing_sites"),
                 "instances": mine.iter().take(8).map(|i| json!({
                     "labels": i.get("labels"),
                     "active_at": i.get("active_at"),
@@ -1672,6 +1691,9 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 reference["instances_other_sites"] = json!(other_sites.len());
             }
             let mut note = match observation {
+                Observation::Unknown if !unknown && no_data => format!(
+                    "{name} unknown: query fetched no series (metric missing, or its window has no history yet)"
+                ),
                 Observation::Present => truncate(&reason, 200),
                 Observation::Clear => match site {
                     Some(site) => format!("{name} {state}; nothing firing on {site}"),

@@ -63,6 +63,11 @@ def document(api, site, generated_at, declared=None):
     for group in api["data"]["groups"]:
         for rule in group["rules"]:
             alerts = rule.get("alerts") or []
+            firing_sites = {}
+            for a in alerts:
+                if a.get("state") == "firing":
+                    site = str((a.get("labels") or {}).get("site", ""))[:128]
+                    firing_sites[site] = firing_sites.get(site, 0) + 1
             rules.append({
                 "file": os.path.basename(group["file"]),
                 "group": group["name"],
@@ -74,7 +79,12 @@ def document(api, site, generated_at, declared=None):
                 "last_evaluation": _evaluated(rule.get("lastEvaluation")),
                 "duration_seconds": rule.get("duration", 0),
                 "labels": {k: str(v) for k, v in sorted((rule.get("labels") or {}).items())},
+                # vmalert's own data-presence counters: a query that fetched no series has no evidence either way
+                "last_samples": rule.get("lastSamples"),
+                "last_series_fetched": rule.get("lastSeriesFetched"),
                 "instance_count": len(alerts),
+                # complete, computed over every instance before detail is truncated ("" = no site label)
+                "firing_sites": dict(sorted(firing_sites.items())),
                 "instances": [_instance(a) for a in alerts[:INSTANCE_LIMIT]],
             })
     rules.sort(key=lambda r: (r["file"], r["group"], r["name"]))

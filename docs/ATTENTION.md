@@ -523,6 +523,13 @@ Each opted-in rule is one condition,
   `declared-vmalert-policy.json` exactly as the estate registry pins it), a
   firing alert is still present, but no rule is clear: a changed
   definition's silence is not recovery (`unrecognised`).
+- An inactive rule whose query fetched no series (vmalert's `lastSeriesFetched`
+  is 0: the metric is missing, or an `offset` window has no history yet on a
+  fresh store) is unknown, never clear, and faults nothing: it is warming up or
+  its source is absent, and the condition's note says so.
+- Per-site presence comes from the producer's `firing_sites` summary, computed
+  over every instance before instance detail is truncated, so a site whose
+  firing instance fell past the kept detail is still present.
 - No opted-in rule at all is `empty`; an unreadable file is `unreadable`.
 
 Resolved, missing, stale and unreachable are therefore four different things

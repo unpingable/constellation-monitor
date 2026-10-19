@@ -306,6 +306,9 @@
    {
     "duration_seconds": 180,
     "file": "crow.rules.yml",
+    "firing_sites": {
+     "crow": 1
+    },
     "group": "crow-self",
     "health": "ok",
     "instance_count": 1,
@@ -337,12 +340,17 @@
     },
     "last_error": "",
     "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
     "name": "CrowDefinitionDrift",
     "state": "firing"
    },
    {
     "duration_seconds": 0,
     "file": "crow.rules.yml",
+    "firing_sites": {
+     "crow": 1
+    },
     "group": "crow-self",
     "health": "ok",
     "instance_count": 1,
@@ -368,12 +376,15 @@
     },
     "last_error": "",
     "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 0,
     "name": "Watchdog",
     "state": "firing"
    },
    {
     "duration_seconds": 900,
     "file": "host-pressure.rules.yml",
+    "firing_sites": {},
     "group": "host-pressure",
     "health": "ok",
     "instance_count": 0,
@@ -386,12 +397,15 @@
     },
     "last_error": "",
     "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 0,
+    "last_series_fetched": 2,
     "name": "HostIoPressureHigh",
     "state": "inactive"
    },
    {
     "duration_seconds": 1800,
     "file": "host-pressure.rules.yml",
+    "firing_sites": {},
     "group": "host-pressure",
     "health": "err",
     "instance_count": 0,
@@ -404,12 +418,15 @@
     },
     "last_error": "error when executing query=\"rate(node_pressure_io_stalled_seconds_total[10m]) > 0.5\": datasource unavailable",
     "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 0,
+    "last_series_fetched": 2,
     "name": "HostIoPressureSevere",
     "state": "inactive"
    },
    {
     "duration_seconds": 900,
     "file": "host-pressure.rules.yml",
+    "firing_sites": {},
     "group": "host-pressure",
     "health": "ok",
     "instance_count": 1,
@@ -440,12 +457,17 @@
     },
     "last_error": "",
     "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 0,
+    "last_series_fetched": 2,
     "name": "HostMemoryPressureHigh",
     "state": "pending"
    },
    {
     "duration_seconds": 1800,
     "file": "host-pressure.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
     "group": "host-pressure",
     "health": "ok",
     "instance_count": 1,
@@ -476,12 +498,14 @@
     },
     "last_error": "",
     "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
     "name": "HostSwapExhausted",
     "state": "firing"
    }
   ],
   "schema": "constellation.metric_alerts/v1",
-  "site": "crow"
+  "site": "labelwatch"
  },
  "generated_at": "2026-10-02T12:00:00Z",
  "note": "Shared vector: the vmalert /api/v1/rules answer (trimmed from crow, timestamps rewritten to the evaluator tests' T0) and the metric_alerts document the producer writes for it. Consumed by test_metric_alerts.py and constellation-attention's evaluator tests.",
