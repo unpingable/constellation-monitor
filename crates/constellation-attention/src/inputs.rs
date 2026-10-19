@@ -42,6 +42,12 @@ pub const FILESYSTEM_PROFILE: &str = "nq.host_filesystem_capacity";
 pub const FILESYSTEM_VERSION: u64 = 1;
 pub const FILESYSTEM_CONDITION: &str = "filesystem_capacity_pressure";
 pub const HOST_MEMORY_CONDITION: &str = "memory_pressure_stall";
+/// NQ owns the threshold: one-minute load / logical CPUs >= 2.0.
+/// Linux load includes runnable tasks and tasks in uninterruptible sleep;
+/// this is not a CPU-utilization or CPU-PSI condition.
+pub const HOST_LOAD_PROFILE: &str = "nq.host";
+pub const HOST_LOAD_VERSION: u64 = 1;
+pub const HOST_LOAD_CONDITION: &str = "host_load_pressure";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -706,6 +712,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     report.identity = snapshot.identity.clone();
     let mut units: BTreeMap<String, Lineage> = BTreeMap::new();
     let mut memory: Option<Lineage> = None;
+    let mut loads: BTreeMap<String, Lineage> = BTreeMap::new();
     let mut filesystems: BTreeMap<String, Lineage> = BTreeMap::new();
     // Evaluations this input consumes but cannot interpret. Any of them makes
     // the input not current: a rule fed by it must hold, never read the
@@ -739,12 +746,14 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         let consumed = [
             SYSTEMD_UNIT_PROFILE,
             HOST_MEMORY_PROFILE,
+            HOST_LOAD_PROFILE,
             FILESYSTEM_PROFILE,
         ]
         .contains(&profile.as_str())
             || [
                 SYSTEMD_UNIT_CONDITION,
                 HOST_MEMORY_CONDITION,
+                HOST_LOAD_CONDITION,
                 FILESYSTEM_CONDITION,
             ]
             .contains(&condition.as_str());
@@ -761,7 +770,10 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         let filesystem = profile == FILESYSTEM_PROFILE
             && version == Some(FILESYSTEM_VERSION)
             && condition == FILESYSTEM_CONDITION;
-        if !systemd && !host_memory && !filesystem {
+        let host_load = profile == HOST_LOAD_PROFILE
+            && version == Some(HOST_LOAD_VERSION)
+            && condition == HOST_LOAD_CONDITION;
+        if !systemd && !host_memory && !filesystem && !host_load {
             unrecognised.push(format!(
                 "unrecognised profile {profile:?} version {} condition {condition:?} (instance {instance_id:?})",
                 version.map_or_else(|| "none".to_owned(), |version| version.to_string())
@@ -810,18 +822,25 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             {
                 units.insert(unit, lineage);
             }
-        } else if filesystem {
+        } else if filesystem || host_load {
             // One watcher per filesystem: its instance id names the target.
+            // Load likewise stays per watcher, so a clear host cannot clear
+            // another host's pressure.
             let target = lineage.instance_id.clone();
             if validate_token("target_class", &target, 48).is_err() {
-                untargetable.push(format!("filesystem watcher {:?}", truncate(&target, 96)));
+                untargetable.push(format!("{profile} watcher {:?}", truncate(&target, 96)));
                 continue;
             }
-            if filesystems
+            let targets = if host_load {
+                &mut loads
+            } else {
+                &mut filesystems
+            };
+            if targets
                 .get(&target)
                 .is_none_or(|existing| existing.order < order)
             {
-                filesystems.insert(target, lineage);
+                targets.insert(target, lineage);
             }
         } else if memory
             .as_ref()
@@ -838,6 +857,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     let stale: Vec<&str> = units
         .values()
         .chain(filesystems.values())
+        .chain(loads.values())
         .chain(memory.as_ref())
         .filter(|lineage| stale_instance(lineage))
         .map(|lineage| lineage.instance_id.as_str())
@@ -853,6 +873,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     let indeterminate: Vec<String> = units
         .iter()
         .chain(filesystems.iter())
+        .chain(loads.iter())
         .map(|(unit, lineage)| (unit.as_str(), lineage))
         .chain(memory.as_ref().map(|lineage| ("host memory", lineage)))
         .filter(|(_, lineage)| {
@@ -897,7 +918,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             "untargetable",
             InputStatus::NotCurrent,
             &format!(
-                "systemd units that map to no bounded target class: {}",
+                "watchers or units that map to no bounded target class: {}",
                 truncate(&untargetable.join(", "), ID_TEXT_MAX)
             ),
         );
@@ -957,6 +978,20 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             context,
             read,
             "host-disk",
+            "host_posture",
+            Some(target),
+            &input.label,
+            observation,
+            &reference(lineage),
+            note,
+        );
+    }
+    for (target, lineage) in &loads {
+        let (observation, note) = observe(lineage);
+        push(
+            context,
+            read,
+            "host-load-pressure",
             "host_posture",
             Some(target),
             &input.label,

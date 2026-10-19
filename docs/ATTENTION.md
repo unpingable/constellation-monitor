@@ -25,7 +25,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v4`).
+  compiled in and versioned (`constellation.attention_registry.v5`).
   Configuration may enable or disable a rule, change its one threshold, and
   move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
@@ -50,6 +50,7 @@ anchors marked (M) are below in this document.
 | `host-disk` (v3) | notice | attention | persists 900 s | `host_posture` | publication-root label, or the NQ filesystem watcher's instance id (e.g. `fs-zonestorage`) | host-posture `CURRENT`: current and `aggregate_state` degraded or worse; or NQ: newest `nq.host_filesystem_capacity` version 1 evaluation of a non-stale watcher reports `filesystem_capacity_pressure` present | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
 | `nq-no-fresh-acquisition` | page | page | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
 | `service-down` | page | page | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
+| `host-load-pressure` | notice | attention | persists 600 s | `host_posture` | NQ watcher instance id | NQ status input: newest `nq.host` version 1 evaluation of a non-stale watcher reports `host_load_pressure` present | (M) [`host-load-pressure`](#host-load-pressure) | Check runnable tasks, CPU PSI and I/O PSI; load alone does not identify CPU saturation. |
 | `memory-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
@@ -63,7 +64,8 @@ today). Only the six `page` rules can reach a PagerDuty route; configuration
 may move a page rule down to `notice` but never moves another rule up, so
 `[rules.host-disk] class = "page"` is refused. NQ 0.2.1's v2 contract
 accepts 17 Cartography anchors (`host-disk` among them); `memory-pressure`,
-`sqlite-health` and `evaluator-input-unavailable` are not anchors at all.
+`host-load-pressure`, `sqlite-health` and `evaluator-input-unavailable` are
+not anchors at all.
 `host-disk` is version 3: version 2 added NQ filesystem watchers, version 3
 made it attention-only.
 
@@ -78,6 +80,7 @@ same `response_class`, `operator_action` and `escalation_reason`).
 | `host-disk` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 900 s | never (not page-eligible) | persists 900 s; persistence never escalates it to a page | Ordinary host operations: check the NQ store, host-posture state root, Nightshift stores and Classic backups first. |
 | `nq-no-fresh-acquisition` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 600 s, then persists 300 s | No status object generated for more than 600 s, then 300 s more: the host-posture runner has stopped and nothing is being observed. | Read the runner journal for acquisition_refused; if the runner is down start it and watch two occurrences. |
 | `service-down` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 180 s | The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts. | systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors. |
+| `host-load-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check runnable tasks, CPU PSI and I/O PSI; Linux load includes uninterruptible waits. |
 | `memory-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/memory) and the largest resident processes; this is stall pressure, not memory used. |
 | `nightshift-recurrence-missing` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 1800 s, then persists 300 s | No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale. | systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow. |
 | `sqlite-health` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Inspect the saved check's retained result (nq saved-check result) and the named SQLite file; do not edit the store. |
@@ -100,10 +103,11 @@ and current are still evaluated.
   inode producers write the same `status_artifact.v1` schema; any other
   projection or generation is `unavailable` with the reason.
 - NQ status input: every evaluation of profile `nq.systemd_unit`,
-  `nq.host_memory` or `nq.host_filesystem_capacity`, or of condition
-  `systemd_unit_not_active`, `memory_pressure_stall` or
+  `nq.host`, `nq.host_memory` or `nq.host_filesystem_capacity`, or of condition
+  `systemd_unit_not_active`, `host_load_pressure`, `memory_pressure_stall` or
   `filesystem_capacity_pressure`, must be exactly `nq.systemd_unit` version
-  2, `nq.host_memory` version 1 or `nq.host_filesystem_capacity` version 1
+  2, `nq.host` version 1, `nq.host_memory` version 1 or
+  `nq.host_filesystem_capacity` version 1
   with its condition, with an evaluation envelope and a valid
   `evaluated_at`. An unrecognised profile id or version, or an evaluation
   that cannot be parsed, makes the input `not_current`. Evaluations of other
@@ -496,6 +500,31 @@ shows no intents until a condition has persisted past its bound across real
 passes.
 
 ## Runbook anchors owned here
+
+### host-load-pressure
+
+NQ's existing `nq.host/v1` detector reports one-minute load divided by
+logical CPU count at or above 2.0. Attention reads the condition, adds its
+600 s persistence bound, and keeps each watcher instance separate. It uses
+the existing snapshot/history freshness checks and 120 s clear confirmation.
+Stale, missing, unrecognised or indeterminate input holds an open condition;
+it never establishes recovery. Persistent input failure raises the existing
+`evaluator-input-unavailable` notice.
+
+Check runnable tasks, CPU utilization, `/proc/pressure/cpu` and
+`/proc/pressure/io` together. Linux load also includes tasks in uninterruptible
+sleep; this notice alone does not establish CPU saturation, CPU stall share,
+service impact or memory sufficiency. It does not collect those additional
+metrics or create their history.
+
+Activation uses the existing Attention timer and NQ notice route. Enroll a
+scheduled `nq.host/v1` watcher, confirm it appears in the configured status
+or bounded history input, inspect `check-config`'s new effective policy digest,
+and update the managed definition through its existing release procedure.
+A binary installation alone does not activate acquisition or prove delivery.
+Use an isolated notice route to demonstrate trigger and recovery before a
+separately authorized production activation. Keep the previous binary and
+managed definition together for rollback.
 
 ### memory-pressure
 

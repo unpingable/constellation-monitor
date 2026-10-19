@@ -956,6 +956,7 @@ fn rules_lists_the_closed_registry() {
             "host-disk",
             "nq-no-fresh-acquisition",
             "service-down",
+            "host-load-pressure",
             "memory-pressure",
             "nightshift-recurrence-missing",
             "sqlite-health",
@@ -964,7 +965,198 @@ fn rules_lists_the_closed_registry() {
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][8]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][9]["disabled"], "input not deployed");
+}
+
+// Synthetic NQ envelopes: only the fields consumed by Attention are populated.
+// This checks the existing NQ read boundary, not NQ's detector or signature law.
+fn load_envelope(instance: &str, state: &str, t: i64) -> Value {
+    json!({
+        "schema": "nq.evaluation_envelope.v2",
+        "evaluation_id": format!("load-{instance}-{t}"),
+        "context": {"instance_id": instance},
+        "profile": {"profile": {"id": "nq.host", "version": 1}},
+        "evaluated_at": rfc3339(t),
+        "result": {"condition": "host_load_pressure", "state": state},
+    })
+}
+
+fn load_status(t: i64, states: &[(&str, &str)]) -> Value {
+    let components: Vec<Value> = states
+        .iter()
+        .flat_map(|(instance, state)| {
+            [
+                json!({"kind": "instance", "id": instance, "observed_at": rfc3339(t)}),
+                json!({
+                    "kind": "evaluation", "id": format!("load-{instance}-{t}"),
+                    "detail": {"detail_kind": "evaluation", "result": load_envelope(instance, state, t)},
+                }),
+            ]
+        })
+        .collect();
+    json!({"schema": "nq.status_snapshot.v3", "generated_at": rfc3339(t), "components": components})
+}
+
+const LOAD: &str = "constellation:reference:host_posture:host-load-pressure:load-host";
+
+#[test]
+fn host_load_notice_triggers_deduplicates_holds_and_recovers() {
+    let (harness, status) = nq_status_harness();
+    for offset in (0..=600).step_by(60) {
+        write_status(
+            &status,
+            &load_status(T0 + offset, &[("load-host", "present")]),
+        );
+        assert!(intents(&harness.evaluate(T0 + offset)).is_empty());
+    }
+    write_status(&status, &load_status(T0 + 660, &[("load-host", "present")]));
+    assert_eq!(
+        intents(&harness.evaluate(T0 + 660)),
+        vec![(LOAD.into(), "notice".into(), "trigger".into())]
+    );
+    let intent: Value = serde_json::from_slice(&harness.submitted_intent("n1")).unwrap();
+    assert_eq!(intent["response_class"], "attention");
+    assert!(intent["summary"].as_str().unwrap().contains(LOAD));
+    assert!(
+        intent["summary"]
+            .as_str()
+            .unwrap()
+            .contains("host_load_pressure")
+    );
+    assert!(
+        intent["inspection_reference"]
+            .as_str()
+            .unwrap()
+            .ends_with("#host-load-pressure")
+    );
+    write_status(&status, &load_status(T0 + 720, &[("load-host", "present")]));
+    assert!(intents(&harness.evaluate(T0 + 720)).is_empty());
+    // A current snapshot with a stale collection must hold, including when
+    // its last detector state was explicitly absent.
+    let mut stale = load_status(T0 + 780, &[("load-host", "explicitly_absent")]);
+    stale["components"][0]["observed_at"] = json!(rfc3339(T0));
+    write_status(&status, &stale);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    assert_eq!(harness.state()["conditions"][LOAD]["active"], true);
+    assert!(intents(&report).is_empty());
+    // A vanished watcher is unknown, not recovery.
+    write_status(&status, &load_status(T0 + 840, &[]));
+    let report = harness.evaluate(T0 + 840);
+    assert!(
+        report["inputs"][0]["causes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("unreported"))
+    );
+    assert_eq!(harness.state()["conditions"][LOAD]["active"], true);
+    for offset in [900, 960] {
+        write_status(
+            &status,
+            &load_status(T0 + offset, &[("load-host", "explicitly_absent")]),
+        );
+        assert!(intents(&harness.evaluate(T0 + offset)).is_empty());
+    }
+    write_status(
+        &status,
+        &load_status(T0 + 1020, &[("load-host", "explicitly_absent")]),
+    );
+    assert_eq!(
+        intents(&harness.evaluate(T0 + 1020)),
+        vec![(LOAD.into(), "notice".into(), "resolve".into())]
+    );
+    assert_eq!(
+        harness.calls().len(),
+        2,
+        "one trigger and one resolve, notice only"
+    );
+}
+
+#[test]
+fn host_load_refuses_unknown_version_condition_and_unbounded_target() {
+    for case in ["version", "condition", "profile", "time", "state", "target"] {
+        let (harness, status) = nq_status_harness();
+        let mut value = load_status(T0, &[("load-host", "present")]);
+        let envelope = &mut value["components"][1]["detail"]["result"];
+        match case {
+            "version" => envelope["profile"]["profile"]["version"] = json!(2),
+            "condition" => envelope["result"]["condition"] = json!("memory_pressure_stall"),
+            "profile" => envelope["profile"]["profile"]["id"] = json!("nq.other"),
+            "time" => envelope["evaluated_at"] = json!("invalid"),
+            "state" => envelope["result"]["state"] = json!("cannot_evaluate"),
+            "target" => envelope["context"]["instance_id"] = json!("x".repeat(49)),
+            _ => unreachable!(),
+        }
+        write_status(&status, &value);
+        let report = harness.evaluate(T0);
+        assert_eq!(
+            report["inputs"][0]["status"], "not_current",
+            "{case}: {report}"
+        );
+        assert!(intents(&report).is_empty(), "{case}");
+        assert!(
+            !report["conditions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["rule"] == "host-load-pressure" && c["observation"] == "present"),
+            "{case}: {report}"
+        );
+    }
+    let mut harness = Harness::new();
+    harness.raw("[rules.host-load-pressure]\nclass = \"page\"\n");
+    let config = harness.config_path();
+    let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("may not page"));
+}
+
+#[test]
+fn host_load_keeps_watchers_separate_and_selects_the_newest_evaluation() {
+    let (harness, status) = nq_status_harness();
+    let mut value = load_status(
+        T0,
+        &[
+            ("load-host", "present"),
+            ("other-host", "explicitly_absent"),
+        ],
+    );
+    let mut older = value["components"][1].clone();
+    older["detail"]["result"]["evaluated_at"] = json!(rfc3339(T0 - 1));
+    older["detail"]["result"]["result"]["state"] = json!("explicitly_absent");
+    value["components"].as_array_mut().unwrap().push(older);
+    write_status(&status, &value);
+    let report = harness.evaluate(T0);
+    assert_eq!(report["inputs"][0]["status"], "ok");
+    assert_eq!(harness.state()["conditions"][LOAD]["first_seen"], T0);
+    assert!(
+        harness.state()["conditions"]
+            .get("constellation:reference:host_posture:host-load-pressure:other-host")
+            .is_none()
+    );
+}
+
+#[test]
+fn host_load_from_bounded_evaluation_history() {
+    let harness = history_harness(300);
+    for (sequence, offset) in (0..=660).step_by(60).enumerate() {
+        fs::write(
+            harness.path(&format!("fake/history/{}.json", sequence + 1)),
+            serde_json::to_vec(&load_envelope("load-host", "present", T0 + offset)).unwrap(),
+        )
+        .unwrap();
+        harness.fake("history_generated_at", &rfc3339(T0 + offset));
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["inputs"][0]["status"], "ok");
+        if offset <= 600 {
+            assert!(intents(&report).is_empty());
+        } else {
+            assert_eq!(
+                intents(&report),
+                vec![(LOAD.into(), "notice".into(), "trigger".into())]
+            );
+        }
+    }
 }
 
 #[test]

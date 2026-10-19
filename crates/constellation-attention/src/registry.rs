@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v4";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v5";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -191,7 +191,7 @@ pub struct Rule {
 const CARTOGRAPHY: &str = "cartography:architecture/beta-observability/docs/RUNBOOKS.md";
 const MONITOR: &str = "constellation-monitor:docs/ATTENTION.md";
 
-pub const RULES: [Rule; 10] = [
+pub const RULES: [Rule; 11] = [
     Rule {
         id: "host-posture-unknown",
         version: 1,
@@ -274,6 +274,27 @@ pub const RULES: [Rule; 10] = [
         runbook_document: CARTOGRAPHY,
         operator_response: "systemctl status <unit>; restart if failed; if it refuses to start read the preflight/identity errors.",
         condition: "NQ's current nq.systemd_unit v2 evaluation reports systemd_unit_not_active present for the unit.",
+        disabled: None,
+    },
+    Rule {
+        id: "host-load-pressure",
+        version: 1,
+        default_class: Class::Notice,
+        page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
+        severity: "warning",
+        component: Some("host_posture"),
+        input: InputKind::NqStatus,
+        threshold_meaning: ThresholdMeaning::Persistence,
+        default_threshold_seconds: 600,
+        fixed_persistence_seconds: 0,
+        runbook_anchor: "host-load-pressure",
+        runbook_document: MONITOR,
+        operator_response: "Check runnable tasks, CPU PSI and I/O PSI; Linux load includes uninterruptible waits and does not identify CPU saturation.",
+        condition: "NQ's current nq.host version 1 evaluation reports host_load_pressure present for the watcher.",
         disabled: None,
     },
     Rule {
