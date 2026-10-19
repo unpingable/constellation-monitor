@@ -51,6 +51,7 @@ anchors marked (M) are below in this document.
 | `nq-no-fresh-acquisition` | page | page | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
 | `service-down` | page | page | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
 | `memory-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
+| `io-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_io` version 1 evaluation of a non-stale watcher reports `io_pressure_stall` present | (M) [`io-pressure`](#io-pressure) | Check PSI, SQLite write-ahead logs and processes in D state. |
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `evaluator-input-unavailable` | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
@@ -63,7 +64,8 @@ today). Only the six `page` rules can reach a PagerDuty route; configuration
 may move a page rule down to `notice` but never moves another rule up, so
 `[rules.host-disk] class = "page"` is refused. NQ 0.2.1's v2 contract
 accepts 17 Cartography anchors (`host-disk` among them); `memory-pressure`,
-`sqlite-health` and `evaluator-input-unavailable` are not anchors at all.
+`io-pressure`, `sqlite-health` and `evaluator-input-unavailable` are not
+anchors at all.
 `host-disk` is version 3: version 2 added NQ filesystem watchers, version 3
 made it attention-only.
 
@@ -79,6 +81,7 @@ same `response_class`, `operator_action` and `escalation_reason`).
 | `nq-no-fresh-acquisition` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 600 s, then persists 300 s | No status object generated for more than 600 s, then 300 s more: the host-posture runner has stopped and nothing is being observed. | Read the runner journal for acquisition_refused; if the runner is down start it and watch two occurrences. |
 | `service-down` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 180 s | The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts. | systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors. |
 | `memory-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/memory) and the largest resident processes; this is stall pressure, not memory used. |
+| `io-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/io), the SQLite write-ahead logs under /var/lib and the processes in D state; this is full-stall share, not throughput. |
 | `nightshift-recurrence-missing` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 1800 s, then persists 300 s | No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale. | systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow. |
 | `sqlite-health` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Inspect the saved check's retained result (nq saved-check result) and the named SQLite file; do not edit the store. |
 | `evaluator-input-unavailable` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 300 s | never (not page-eligible) | persists 300 s; persistence never escalates it to a page | Read report.json for the input's error; fix permissions, paths or the producing timer. Rules fed by the input hold their state meanwhile. |
@@ -536,6 +539,17 @@ sent.
 NQ's `nq.host_memory` detector reports `/proc/pressure/memory` `some avg60`
 at or above 10 % (stall pressure, not memory used). Look at PSI, the largest
 resident processes and recent deploys. Do not tune the detector to silence it.
+
+### io-pressure
+
+NQ's `nq.host_io` detector reports `/proc/pressure/io` `full avg60` at or
+above 25 %: for a quarter of the last minute every non-idle task was stalled
+on I/O (NQ #28; labelwatch-host ran at 45–67 % for a day during Monitor #22
+while a 1.6 GB SQLite write-ahead log was being re-read). Look at PSI, the
+`-wal` files under `/var/lib`, processes in D state (`ps -eo stat,pid,comm |
+grep '^D'`) and recent deploys. Do not tune the detector to silence it. The
+`some` figure is not used: one stalled task at a time is a busy disk, not a
+stalled machine.
 
 ### sqlite-health
 

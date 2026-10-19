@@ -42,6 +42,12 @@ pub const FILESYSTEM_PROFILE: &str = "nq.host_filesystem_capacity";
 pub const FILESYSTEM_VERSION: u64 = 1;
 pub const FILESYSTEM_CONDITION: &str = "filesystem_capacity_pressure";
 pub const HOST_MEMORY_CONDITION: &str = "memory_pressure_stall";
+/// NQ's I/O pressure watcher (NQ #28). Its detector's threshold is compiled
+/// into NQ (`/proc/pressure/io` `full avg60` at or above 25 %); the
+/// evaluator reads only `present` / `explicitly_absent`.
+pub const HOST_IO_PROFILE: &str = "nq.host_io";
+pub const HOST_IO_VERSION: u64 = 1;
+pub const HOST_IO_CONDITION: &str = "io_pressure_stall";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -709,6 +715,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
     report.identity = snapshot.identity.clone();
     let mut units: BTreeMap<String, Lineage> = BTreeMap::new();
     let mut memory: Option<Lineage> = None;
+    let mut io: Option<Lineage> = None;
     let mut filesystems: BTreeMap<String, Lineage> = BTreeMap::new();
     // Evaluations this input consumes but cannot interpret. Any of them makes
     // the input not current: a rule fed by it must hold, never read the
@@ -742,12 +749,14 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         let consumed = [
             SYSTEMD_UNIT_PROFILE,
             HOST_MEMORY_PROFILE,
+            HOST_IO_PROFILE,
             FILESYSTEM_PROFILE,
         ]
         .contains(&profile.as_str())
             || [
                 SYSTEMD_UNIT_CONDITION,
                 HOST_MEMORY_CONDITION,
+                HOST_IO_CONDITION,
                 FILESYSTEM_CONDITION,
             ]
             .contains(&condition.as_str());
@@ -761,10 +770,13 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         let host_memory = profile == HOST_MEMORY_PROFILE
             && version == Some(HOST_MEMORY_VERSION)
             && condition == HOST_MEMORY_CONDITION;
+        let host_io = profile == HOST_IO_PROFILE
+            && version == Some(HOST_IO_VERSION)
+            && condition == HOST_IO_CONDITION;
         let filesystem = profile == FILESYSTEM_PROFILE
             && version == Some(FILESYSTEM_VERSION)
             && condition == FILESYSTEM_CONDITION;
-        if !systemd && !host_memory && !filesystem {
+        if !systemd && !host_memory && !host_io && !filesystem {
             unrecognised.push(format!(
                 "unrecognised profile {profile:?} version {} condition {condition:?} (instance {instance_id:?})",
                 version.map_or_else(|| "none".to_owned(), |version| version.to_string())
@@ -826,6 +838,10 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             {
                 filesystems.insert(target, lineage);
             }
+        } else if host_io {
+            if io.as_ref().is_none_or(|existing| existing.order < order) {
+                io = Some(lineage);
+            }
         } else if memory
             .as_ref()
             .is_none_or(|existing| existing.order < order)
@@ -842,6 +858,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         .values()
         .chain(filesystems.values())
         .chain(memory.as_ref())
+        .chain(io.as_ref())
         .filter(|lineage| stale_instance(lineage))
         .map(|lineage| lineage.instance_id.as_str())
         .chain(
@@ -858,6 +875,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         .chain(filesystems.iter())
         .map(|(unit, lineage)| (unit.as_str(), lineage))
         .chain(memory.as_ref().map(|lineage| ("host memory", lineage)))
+        .chain(io.as_ref().map(|lineage| ("host io", lineage)))
         .filter(|(_, lineage)| {
             current
                 && !stale_instance(lineage)
@@ -974,6 +992,20 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             context,
             read,
             "memory-pressure",
+            "host_posture",
+            None,
+            &input.label,
+            observation,
+            &reference(lineage),
+            note,
+        );
+    }
+    if let Some(lineage) = &io {
+        let (observation, note) = observe(lineage);
+        push(
+            context,
+            read,
+            "io-pressure",
             "host_posture",
             None,
             &input.label,

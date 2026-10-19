@@ -193,7 +193,7 @@ pub struct Rule {
 const CARTOGRAPHY: &str = "cartography:architecture/beta-observability/docs/RUNBOOKS.md";
 const MONITOR: &str = "constellation-monitor:docs/ATTENTION.md";
 
-pub const RULES: [Rule; 11] = [
+pub const RULES: [Rule; 12] = [
     Rule {
         id: "host-posture-unknown",
         version: 1,
@@ -297,6 +297,27 @@ pub const RULES: [Rule; 11] = [
         runbook_document: MONITOR,
         operator_response: "Check PSI (/proc/pressure/memory) and the largest resident processes; this is stall pressure, not memory used.",
         condition: "NQ's current nq.host_memory evaluation reports memory_pressure_stall present.",
+        disabled: None,
+    },
+    Rule {
+        id: "io-pressure",
+        version: 1,
+        default_class: Class::Notice,
+        page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
+        severity: "warning",
+        component: Some("host_posture"),
+        input: InputKind::NqStatus,
+        threshold_meaning: ThresholdMeaning::Persistence,
+        default_threshold_seconds: 600,
+        fixed_persistence_seconds: 0,
+        runbook_anchor: "io-pressure",
+        runbook_document: MONITOR,
+        operator_response: "Check PSI (/proc/pressure/io), the SQLite write-ahead logs under /var/lib and the processes in D state; this is full-stall share, not throughput.",
+        condition: "NQ's current nq.host_io evaluation reports io_pressure_stall present.",
         disabled: None,
     },
     Rule {

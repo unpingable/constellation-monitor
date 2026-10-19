@@ -957,6 +957,7 @@ fn rules_lists_the_closed_registry() {
             "nq-no-fresh-acquisition",
             "service-down",
             "memory-pressure",
+            "io-pressure",
             "nightshift-recurrence-missing",
             "sqlite-health",
             "service-not-doing-its-job",
@@ -965,7 +966,7 @@ fn rules_lists_the_closed_registry() {
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][9]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][10]["disabled"], "input not deployed");
 }
 
 #[test]
@@ -1513,6 +1514,83 @@ fn unrecognised_host_memory_version_is_not_current() {
             .as_str()
             .unwrap()
             .contains("unrecognised profile \"nq.host_memory\" version 2")
+    );
+}
+
+/// NQ #28: an `nq.host_io` evaluation feeds `io-pressure` the way
+/// `nq.host_memory` feeds `memory-pressure`: present opens the condition
+/// row, explicitly absent clears it, and the profile is read only at the
+/// version it was qualified against.
+#[test]
+fn io_pressure_from_an_nq_host_io_evaluation() {
+    let (harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let with_io = |state: &str, version: u64| {
+        retimed("healthy.json", t, |value| {
+            let components = value["components"].as_array_mut().unwrap();
+            let mut cloned = Vec::new();
+            for component in components.iter() {
+                let memory = component["kind"] == "instance" && component["id"] == "host-memory"
+                    || component["kind"] == "evaluation"
+                        && component["detail"]["result"]["context"]["instance_id"]
+                            == "host-memory";
+                if !memory {
+                    continue;
+                }
+                let text = serde_json::to_string(component)
+                    .unwrap()
+                    .replace("host-memory", "io-host")
+                    .replace("nq.host_memory.pressure_stall", "nq.host_io.pressure_stall")
+                    .replace("nq.host_memory_scope.v1", "nq.host_io_scope.v1")
+                    .replace("\"nq.host_memory\"", "\"nq.host_io\"")
+                    .replace("\"host_memory\"", "\"host_io\"")
+                    .replace("memory_pressure_stall", "io_pressure_stall")
+                    .replace("2b007ccd-a213-45a1-823a-db4746d51580", "2b007ccd-a213-45a1-823a-db4746d5ffff");
+                let mut clone: Value = serde_json::from_str(&text).unwrap();
+                if clone["kind"] == "evaluation" {
+                    clone["detail"]["result"]["result"]["state"] = json!(state);
+                    clone["detail"]["result"]["profile"]["profile"]["version"] = json!(version);
+                }
+                cloned.push(clone);
+            }
+            assert_eq!(cloned.len(), 2, "fixture must carry the memory instance and evaluation");
+            components.extend(cloned);
+        })
+    };
+    write_status(&status, &with_io("present", 1));
+    let report = harness.evaluate(t + 3);
+    assert_eq!(report["inputs"][0]["status"], "ok", "{}", report["inputs"][0]);
+    let io: Vec<&Value> = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["id"].as_str().unwrap().contains(":io-pressure"))
+        .collect();
+    assert_eq!(io.len(), 1, "{:?}", report["conditions"]);
+    assert_eq!(io[0]["observation"], "present", "{}", io[0]);
+    assert_eq!(io[0]["rule"], "io-pressure");
+    assert!(intents(&report).is_empty(), "a notice needs 600 s of persistence");
+    write_status(&status, &with_io("explicitly_absent", 1));
+    let report = harness.evaluate(t + 63);
+    assert_eq!(report["inputs"][0]["status"], "ok");
+    assert!(
+        !report["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"].as_str().unwrap().contains(":io-pressure")
+                && c["observation"] == "present"),
+        "{:?}",
+        report["conditions"]
+    );
+    write_status(&status, &with_io("present", 2));
+    let report = harness.evaluate(t + 123);
+    assert_eq!(report["inputs"][0]["status"], "not_current");
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unrecognised profile \"nq.host_io\" version 2")
     );
 }
 
