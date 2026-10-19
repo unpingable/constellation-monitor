@@ -258,7 +258,17 @@ pub struct MetricAlertsInput {
     /// the document: a rule vmalert stopped evaluating is unknown, not clear.
     #[serde(default = "default_metric_alerts_age")]
     pub max_evaluation_age_seconds: i64,
+    /// Sites whose alert instances are keyed apart, when one vmalert
+    /// evaluates rules for several sites: each opted-in rule is then one
+    /// condition per listed site, `<alert-name>.<site>`, present when an
+    /// instance labelled `site` fires there. An instance of an unlisted site
+    /// is counted but never a condition. Absent, each rule is one condition
+    /// whatever its instances' sites.
+    pub sites: Option<Vec<String>>,
 }
+
+/// The most sites one `[inputs.metric_alerts]` keys apart.
+pub const METRIC_ALERTS_MAX_SITES: usize = 8;
 
 fn default_metric_alerts_label() -> String {
     "metric_alerts".to_owned()
@@ -544,6 +554,20 @@ impl Config {
                 "inputs.metric_alerts.max_evaluation_age_seconds",
                 input.max_evaluation_age_seconds,
             )?;
+            if let Some(sites) = &input.sites {
+                if sites.is_empty() || sites.len() > METRIC_ALERTS_MAX_SITES {
+                    return Err(format!(
+                        "inputs.metric_alerts.sites must list 1..={METRIC_ALERTS_MAX_SITES} sites"
+                    ));
+                }
+                let mut seen = BTreeSet::new();
+                for site in sites {
+                    validate_token("inputs.metric_alerts.sites entry", site, 48)?;
+                    if !seen.insert(site.as_str()) {
+                        return Err(format!("inputs.metric_alerts.sites lists {site:?} twice"));
+                    }
+                }
+            }
         }
         for input in &self.inputs.saved_checks {
             label(&input.reference)?;

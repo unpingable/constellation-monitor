@@ -4429,3 +4429,196 @@ fn metric_alerts_without_opt_in_or_file_are_faults_not_clears() {
     assert_eq!(input["status"], "unavailable");
     assert_eq!(causes(&input), ["unreadable"], "{input}");
 }
+
+const SWAP_TESTBED: &str =
+    "constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted.testbed";
+const SWAP_CROW: &str =
+    "constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted.crow";
+
+/// The vector's HostSwapExhausted instance relabelled to `testbed`, plus a
+/// second firing instance on `crow` and a third on `elsewhere`.
+fn swap_on_three_sites(doc: &mut Value) {
+    let rule = metric_rule(doc, "HostSwapExhausted");
+    let instances = rule["instances"].as_array_mut().unwrap();
+    let mut crow = instances[0].clone();
+    let mut elsewhere = instances[0].clone();
+    instances[0]["labels"]["site"] = json!("testbed");
+    crow["labels"]["site"] = json!("crow");
+    crow["labels"]["instance"] = json!("10.0.0.2:19100");
+    crow["summary"] = json!("swap 1% free on crow (10.0.0.2:19100) for 30 min");
+    elsewhere["labels"]["site"] = json!("elsewhere");
+    instances.push(crow);
+    instances.push(elsewhere);
+    rule["instance_count"] = json!(3);
+}
+
+/// With `sites`, one vmalert serving several sites yields one condition per
+/// (rule, listed site): a rule firing on crow is not the rule firing on
+/// testbed, each clears on its own, and an instance of an unlisted site is
+/// counted but is no condition.
+#[test]
+fn metric_alerts_keyed_per_site() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\", \"crow\"]\n");
+    write_metric_alerts(&harness, T0, swap_on_three_sites);
+    let report = harness.evaluate(T0);
+    let ids: Vec<&str> = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .filter(|id| id.contains(":metric-alert-firing:"))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high.crow",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high.testbed",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-severe.crow",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-severe.testbed",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-memory-pressure-high.crow",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-memory-pressure-high.testbed",
+            SWAP_CROW,
+            SWAP_TESTBED,
+        ],
+        "one condition per listed site; none for elsewhere, none unkeyed"
+    );
+    assert!(condition(&report, SWAP).is_none());
+    let testbed = condition(&report, SWAP_TESTBED).unwrap();
+    let crow = condition(&report, SWAP_CROW).unwrap();
+    assert_eq!(testbed["observation"], "present", "{testbed}");
+    assert_eq!(crow["observation"], "present", "{crow}");
+    assert_eq!(
+        condition(
+            &report,
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high.crow"
+        )
+        .unwrap()["observation"],
+        "clear"
+    );
+    // Each condition carries its own site's instances only; the unlisted
+    // site is counted and named once, on the first listed site.
+    for (row, site, host) in [
+        (testbed, "testbed", "127.0.0.1:19100"),
+        (crow, "crow", "10.0.0.2:19100"),
+    ] {
+        let reference = &row["reference"];
+        assert_eq!(reference["site"], site, "{reference}");
+        assert_eq!(reference["instances_other_sites"], 1, "{reference}");
+        let instances = reference["instances"].as_array().unwrap();
+        assert_eq!(instances.len(), 1, "{reference}");
+        assert_eq!(instances[0]["labels"]["site"], site);
+        assert_eq!(instances[0]["labels"]["instance"], host);
+    }
+    assert!(
+        testbed["note"]
+            .as_str()
+            .unwrap()
+            .contains("1 firing on unlisted sites (elsewhere)"),
+        "{testbed}"
+    );
+    assert!(
+        !crow["note"].as_str().unwrap().contains("elsewhere"),
+        "{crow}"
+    );
+
+    write_metric_alerts(&harness, T0 + 90, swap_on_three_sites);
+    let report = harness.evaluate(T0 + 90);
+    assert_eq!(
+        alert_intents(&report),
+        vec![
+            (
+                SWAP_CROW.to_owned(),
+                "notice".to_owned(),
+                "trigger".to_owned()
+            ),
+            (
+                SWAP_TESTBED.to_owned(),
+                "notice".to_owned(),
+                "trigger".to_owned()
+            ),
+        ]
+    );
+    let record = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == SWAP_CROW)
+        .unwrap()["notification_id"]
+        .as_str()
+        .unwrap();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(
+        summary.contains(
+            "Now: HostSwapExhausted firing on crow (10.0.0.2:19100): swap 1% free on crow (10.0.0.2:19100) for 30 min. Incident: inc-"
+        ),
+        "{summary}"
+    );
+    assert!(!summary.contains("testbed"), "{summary}");
+
+    // Only the testbed instance quiets: the rule still fires on crow.
+    let quiet_testbed = |doc: &mut Value| {
+        swap_on_three_sites(doc);
+        let rule = metric_rule(doc, "HostSwapExhausted");
+        rule["instances"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|i| i["labels"]["site"] != "testbed");
+        rule["instance_count"] = json!(2);
+    };
+    for offset in [150, 400] {
+        write_metric_alerts(&harness, T0 + offset, quiet_testbed);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(
+            condition(&report, SWAP_TESTBED).unwrap()["observation"],
+            "clear"
+        );
+        assert_eq!(
+            condition(&report, SWAP_CROW).unwrap()["observation"],
+            "present"
+        );
+    }
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(SWAP_TESTBED)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+    assert_eq!(state["conditions"][SWAP_CROW]["active"], true, "{state}");
+}
+
+/// `sites` entries are bounded tokens, distinct and at most eight.
+#[test]
+fn metric_alert_sites_are_validated_by_check_config() {
+    let refused = |sites: &str, message: &str| {
+        let mut harness = metric_alerts_harness();
+        harness.raw(&format!("sites = {sites}\n"));
+        let config = harness.config_path();
+        let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+        assert_eq!(output.status.code(), Some(2), "{sites}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{sites}: {stderr}");
+    };
+    refused("[\"crow\", \"crow\"]", "lists \"crow\" twice");
+    refused("[\"Crow\"]", "inputs.metric_alerts.sites entry \"Crow\"");
+    refused("[\"-crow\"]", "inputs.metric_alerts.sites entry \"-crow\"");
+    refused("[]", "must list 1..=8 sites");
+    refused(
+        "[\"s1\", \"s2\", \"s3\", \"s4\", \"s5\", \"s6\", \"s7\", \"s8\", \"s9\"]",
+        "must list 1..=8 sites",
+    );
+    refused("[\"sha256-root\"]", "looks like a digest");
+
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"labelwatch\", \"crow\"]\n");
+    let config = harness.config_path();
+    let output = harness.command(&["check-config", "--config", config.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

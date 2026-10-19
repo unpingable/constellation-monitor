@@ -1362,6 +1362,24 @@ fn metric_alert_target(name: &str) -> String {
     target
 }
 
+/// The condition target of one alert, keyed by `site` when the input lists
+/// sites: `<alert-token>.<site>`. The combined token must still fit the
+/// 48-byte target bound; it is never truncated, since a cut site would be a
+/// different site.
+fn metric_alert_site_target(target: &str, site: Option<&str>) -> Result<String, String> {
+    let keyed = match site {
+        Some(site) => format!("{target}.{site}"),
+        None => target.to_owned(),
+    };
+    validate_token("target_class", &keyed, 48)?;
+    Ok(keyed)
+}
+
+/// The `site` label of an alert instance.
+fn instance_site(instance: &Value) -> Option<&str> {
+    instance.pointer("/labels/site").and_then(Value::as_str)
+}
+
 /// `constellation.metric_alerts/v1`: vmalert's loaded alerting rules with
 /// their state. A rule labelled `attention = "true"` is one condition,
 /// `host_posture:metric-alert-firing:<alert-name>`: `firing` is present;
@@ -1370,6 +1388,13 @@ fn metric_alert_target(name: &str) -> String {
 /// document is stale is unknown. A firing alert is still present when the
 /// effective policy differs from the declared one, but nothing is clear
 /// then: a changed definition's silence is not recovery.
+///
+/// With `sites`, each opted-in rule is one condition per listed site,
+/// `<alert-name>.<site>`, present when a firing instance carries that `site`
+/// label and clear when the rule is evaluable and none does; the note and
+/// reference carry that site's instances only. Firing instances of unlisted
+/// or unlabelled sites are counted (`instances_other_sites`) and named in the
+/// first listed site's note, but are no condition.
 fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
@@ -1464,6 +1489,13 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             &format!("no alerting rule carries the label {METRIC_ALERTS_OPT_IN_LABEL}=\"true\""),
         );
     }
+    let sites: Vec<Option<&str>> = input.sites.as_ref().map_or_else(
+        || vec![None],
+        |sites| sites.iter().map(|site| Some(site.as_str())).collect(),
+    );
+    let listed = |instance: &Value| -> bool {
+        instance_site(instance).is_some_and(|site| sites.contains(&Some(site)))
+    };
     let mut targets: BTreeMap<String, String> = BTreeMap::new();
     let mut observations = Vec::new();
     for rule in &opted {
@@ -1483,6 +1515,27 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 InputStatus::NotCurrent,
                 &format!("alerts {other:?} and {name:?} share the target {target}"),
             );
+            continue;
+        }
+        let mut keyed: Vec<(Option<&str>, String)> = Vec::with_capacity(sites.len());
+        for site in &sites {
+            match metric_alert_site_target(&target, *site) {
+                Ok(keyed_target) => keyed.push((*site, keyed_target)),
+                Err(_) => {
+                    report.fault(
+                        "untargetable",
+                        InputStatus::NotCurrent,
+                        &format!(
+                            "alert {name:?} keyed by site {} exceeds the 48-byte condition target",
+                            site.unwrap_or_default()
+                        ),
+                    );
+                    keyed.clear();
+                    break;
+                }
+            }
+        }
+        if keyed.is_empty() {
             continue;
         }
         targets.insert(target.clone(), name.to_owned());
@@ -1535,89 +1588,112 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             .iter()
             .filter(|i| i.get("state").and_then(Value::as_str) == Some("firing"))
             .collect();
-        let observation = if stale.is_some() || !problems.is_empty() {
-            Observation::Unknown
-        } else if state == "firing" {
-            Observation::Present
-        } else if drift.is_some() {
-            Observation::Unknown
+        // Firing instances of sites the input does not key: counted and
+        // named once, never a condition.
+        let other_sites: Vec<&Value> = if input.sites.is_some() {
+            firing.iter().copied().filter(|i| !listed(i)).collect()
         } else {
-            Observation::Clear
+            Vec::new()
         };
-        let describe = |instance: &Value| -> String {
-            let labels = instance.get("labels");
-            let site = labels
-                .and_then(|l| l.get("site"))
-                .and_then(Value::as_str)
-                .unwrap_or("?");
-            let host = labels
-                .and_then(|l| l.get("instance"))
-                .and_then(Value::as_str)
-                .unwrap_or("?");
-            let summary = instance
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            format!("{site} ({host}): {}", truncate(summary.trim(), 160))
-        };
-        let mut reason: Vec<String> = firing
+        let unknown = stale.is_some() || !problems.is_empty();
+        let unknown_why = stale
             .iter()
-            .take(METRIC_ALERTS_INSTANCES_IN_NOTE)
-            .map(|i| describe(i))
-            .collect();
-        if firing.len() > METRIC_ALERTS_INSTANCES_IN_NOTE {
-            reason.push(format!(
-                "and {} more",
-                firing.len() - METRIC_ALERTS_INSTANCES_IN_NOTE
-            ));
+            .chain(problems.iter())
+            .chain(drift.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        for (index, (site, keyed_target)) in keyed.into_iter().enumerate() {
+            let mine: Vec<&Value> = match site {
+                Some(site) => firing
+                    .iter()
+                    .copied()
+                    .filter(|i| instance_site(i) == Some(site))
+                    .collect(),
+                None => firing.clone(),
+            };
+            let present = match site {
+                Some(_) => !mine.is_empty(),
+                None => state == "firing",
+            };
+            let observation = if unknown {
+                Observation::Unknown
+            } else if present {
+                Observation::Present
+            } else if drift.is_some() {
+                Observation::Unknown
+            } else {
+                Observation::Clear
+            };
+            let mut reason: Vec<String> = mine
+                .iter()
+                .take(METRIC_ALERTS_INSTANCES_IN_NOTE)
+                .map(|i| describe_metric_instance(i))
+                .collect();
+            if mine.len() > METRIC_ALERTS_INSTANCES_IN_NOTE {
+                reason.push(format!(
+                    "and {} more",
+                    mine.len() - METRIC_ALERTS_INSTANCES_IN_NOTE
+                ));
+            }
+            let reason = if !reason.is_empty() {
+                format!("{name} firing on {}", reason.join("; "))
+            } else if let Some(site) = site {
+                format!("{state}; nothing firing on {site}")
+            } else {
+                state.to_owned()
+            };
+            let since = mine
+                .iter()
+                .filter_map(|i| i.get("active_at").and_then(Value::as_str))
+                .min();
+            let mut reference = json!({
+                "alert": name,
+                "file": rule.get("file"),
+                "group": rule.get("group"),
+                "state": state,
+                "health": health,
+                "since": since,
+                "instance_count": rule.get("instance_count"),
+                "instances": mine.iter().take(8).map(|i| json!({
+                    "labels": i.get("labels"),
+                    "active_at": i.get("active_at"),
+                    "value": i.get("value"),
+                    "summary": i.get("summary").and_then(Value::as_str).map(|s| truncate(s, 200)),
+                })).collect::<Vec<_>>(),
+                "reason": truncate(&reason, 200),
+                "problems": problems,
+                "last_evaluation": rule.get("last_evaluation"),
+                "generated_at": document.get("generated_at"),
+                "policy_sha256": effective,
+            });
+            if let Some(site) = site {
+                reference["site"] = json!(site);
+                reference["instances_other_sites"] = json!(other_sites.len());
+            }
+            let mut note = match observation {
+                Observation::Present => truncate(&reason, 200),
+                Observation::Clear => match site {
+                    Some(site) => format!("{name} {state}; nothing firing on {site}"),
+                    None => format!("{name} {state}"),
+                },
+                _ => format!("{name} unknown: {}", truncate(&unknown_why, 160)),
+            };
+            if index == 0 && !other_sites.is_empty() {
+                let mut names: Vec<&str> = other_sites
+                    .iter()
+                    .map(|i| instance_site(i).unwrap_or("(no site label)"))
+                    .collect();
+                names.sort_unstable();
+                names.dedup();
+                note.push_str(&format!(
+                    "; {} firing on unlisted sites ({})",
+                    other_sites.len(),
+                    truncate(&names.join(", "), 80)
+                ));
+            }
+            observations.push((keyed_target, observation, reference, note));
         }
-        let reason = if reason.is_empty() {
-            state.to_owned()
-        } else {
-            format!("{name} firing on {}", reason.join("; "))
-        };
-        let since = firing
-            .iter()
-            .filter_map(|i| i.get("active_at").and_then(Value::as_str))
-            .min();
-        let reference = json!({
-            "alert": name,
-            "file": rule.get("file"),
-            "group": rule.get("group"),
-            "state": state,
-            "health": health,
-            "since": since,
-            "instance_count": rule.get("instance_count"),
-            "instances": firing.iter().take(8).map(|i| json!({
-                "labels": i.get("labels"),
-                "active_at": i.get("active_at"),
-                "value": i.get("value"),
-                "summary": i.get("summary").and_then(Value::as_str).map(|s| truncate(s, 200)),
-            })).collect::<Vec<_>>(),
-            "reason": truncate(&reason, 200),
-            "problems": problems,
-            "last_evaluation": rule.get("last_evaluation"),
-            "generated_at": document.get("generated_at"),
-            "policy_sha256": effective,
-        });
-        let note = match observation {
-            Observation::Present => truncate(&reason, 200),
-            Observation::Clear => format!("{name} {state}"),
-            _ => format!(
-                "{name} unknown: {}",
-                truncate(
-                    &stale
-                        .iter()
-                        .chain(problems.iter())
-                        .chain(drift.iter())
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                    160
-                )
-            ),
-        };
-        observations.push((target, observation, reference, note));
     }
     read.reports.push(report);
     for (target, observation, reference, note) in observations {
@@ -1635,9 +1711,24 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     }
 }
 
+/// One firing instance for a note: `<site> (<instance>): <summary>`.
+fn describe_metric_instance(instance: &Value) -> String {
+    let labels = instance.get("labels");
+    let site = instance_site(instance).unwrap_or("?");
+    let host = labels
+        .and_then(|l| l.get("instance"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let summary = instance
+        .get("summary")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    format!("{site} ({host}): {}", truncate(summary.trim(), 160))
+}
+
 #[cfg(test)]
 mod metric_alert_tests {
-    use super::metric_alert_target;
+    use super::{metric_alert_site_target, metric_alert_target};
 
     #[test]
     fn alert_names_become_stable_targets() {
@@ -1659,5 +1750,29 @@ mod metric_alert_tests {
             "spaces-and-slashes"
         );
         assert_eq!(metric_alert_target(&"A".repeat(60)).len(), 48);
+    }
+
+    /// A site-keyed target is `<alert>.<site>` and must fit the 48-byte
+    /// target bound without truncation.
+    #[test]
+    fn site_keyed_targets_keep_the_target_bound() {
+        assert_eq!(
+            metric_alert_site_target("host-swap-exhausted", Some("crow")).unwrap(),
+            "host-swap-exhausted.crow"
+        );
+        assert_eq!(
+            metric_alert_site_target("host-swap-exhausted", None).unwrap(),
+            "host-swap-exhausted"
+        );
+        let base = "z".repeat(43);
+        assert_eq!(
+            metric_alert_site_target(&base, Some("crow")).unwrap().len(),
+            48
+        );
+        let base = "z".repeat(44);
+        assert!(metric_alert_site_target(&base, Some("crow")).is_err());
+        assert!(metric_alert_site_target(&base, None).is_ok());
+        let base = "z".repeat(48);
+        assert!(metric_alert_site_target(&base, Some("x")).is_err());
     }
 }

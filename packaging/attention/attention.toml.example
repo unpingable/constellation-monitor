@@ -68,6 +68,7 @@ store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
 # path = "/var/lib/constellation-metric-alerts/metric-alerts.json"
 # max_age_seconds = 300             # the document's generated_at
 # max_evaluation_age_seconds = 300  # each rule's last_evaluation, before generated_at
+# sites = ["labelwatch", "crow"]    # one condition per rule and listed site (<alert>.<site>)
 
 # Overrides are limited to enabled, threshold_seconds and class. class can
 # move a page rule down to "notice"; only the registry's page rules can page.

@@ -529,6 +529,31 @@ Resolved, missing, stale and unreachable are therefore four different things
 here, as for every input: only a current, healthy, declared rule that vmalert
 reports `inactive` or `pending` resolves a condition.
 
+When one vmalert evaluates rules for several sites (crow's does, for
+`labelwatch`, `crow` and `testbed`; every alert instance carries a `site`
+label), a rule firing on one site must not be the rule firing on another.
+`sites = ["labelwatch", "crow"]` (optional; at most 8 distinct site tokens of
+at most 48 bytes) keys each opted-in rule per listed site:
+`host_posture:metric-alert-firing:<alert name>.<site>`, so
+`host-swap-exhausted.crow` and `host-swap-exhausted.labelwatch` trigger,
+hold and resolve on their own.
+
+- A (rule, site) condition is present when a firing instance of the rule is
+  labelled with that site, and clear when the rule is evaluable (as above)
+  and no firing instance carries that site. Unknown is as above, for every
+  site of the rule at once.
+- Its notice, note and reference carry that site's instances only
+  (`reference.site`).
+- A firing instance whose `site` is not listed, or that has no `site` label,
+  is counted (`reference.instances_other_sites`) and named in the note of the
+  rule's first listed site, but it is never a condition: the evaluator keys
+  what it was told to key.
+- A keyed target must still fit the 48-byte target bound; an alert name too
+  long to carry `.<site>` faults the input `untargetable` and is skipped.
+
+Absent `sites` (the default), each rule is one condition whatever its
+instances' sites, as above.
+
 The rule is notice-only and not in NQ's page anchor set. The condition's
 component is `host_posture` (the NQ v2 contract's closed set has no
 "metrics"; the alerts this input exists for describe the host) and the
