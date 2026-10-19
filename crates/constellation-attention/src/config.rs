@@ -220,6 +220,8 @@ pub struct Inputs {
     pub saved_checks: Vec<SavedCheckInput>,
     /// The estate collector's per-service verdicts (`constellation.estate/v1`).
     pub estate: Option<EstateInput>,
+    /// vmalert's loaded alerting rules and their state (`constellation.metric_alerts/v1`).
+    pub metric_alerts: Option<MetricAlertsInput>,
 }
 
 /// `[inputs.estate]`: every service the site is responsible for, with whether it
@@ -236,6 +238,34 @@ pub struct EstateInput {
 
 const fn default_estate_age() -> i64 {
     600
+}
+
+/// `[inputs.metric_alerts]`: the document `metric-alerts-collect.py` writes
+/// from vmalert's `/api/v1/rules`. Only rules labelled `attention = "true"`
+/// become conditions; the rest are carried for the report only.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricAlertsInput {
+    /// Input label (`evaluator-input-unavailable` target prefix).
+    #[serde(default = "default_metric_alerts_label")]
+    pub label: String,
+    /// JSON file written by `metric-alerts-collect.py`.
+    pub path: PathBuf,
+    /// The document's `generated_at` must be at most this old.
+    #[serde(default = "default_metric_alerts_age")]
+    pub max_age_seconds: i64,
+    /// Each rule's `last_evaluation` must be at most this much older than
+    /// the document: a rule vmalert stopped evaluating is unknown, not clear.
+    #[serde(default = "default_metric_alerts_age")]
+    pub max_evaluation_age_seconds: i64,
+}
+
+fn default_metric_alerts_label() -> String {
+    "metric_alerts".to_owned()
+}
+
+const fn default_metric_alerts_age() -> i64 {
+    300
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -503,6 +533,18 @@ impl Config {
             absolute("inputs.estate.path", &input.path)?;
             age("inputs.estate.max_age_seconds", input.max_age_seconds)?;
         }
+        if let Some(input) = &self.inputs.metric_alerts {
+            label(&input.label)?;
+            absolute("inputs.metric_alerts.path", &input.path)?;
+            age(
+                "inputs.metric_alerts.max_age_seconds",
+                input.max_age_seconds,
+            )?;
+            age(
+                "inputs.metric_alerts.max_evaluation_age_seconds",
+                input.max_evaluation_age_seconds,
+            )?;
+        }
         for input in &self.inputs.saved_checks {
             label(&input.reference)?;
             source("saved_checks", input.command.as_ref(), input.path.as_ref())?;
@@ -639,6 +681,7 @@ impl Config {
             InputKind::Nightshift => self.inputs.nightshift.is_some(),
             InputKind::SavedCheck => !self.inputs.saved_checks.is_empty(),
             InputKind::Estate => self.inputs.estate.is_some(),
+            InputKind::MetricAlerts => self.inputs.metric_alerts.is_some(),
             InputKind::Evaluator => true,
             InputKind::NotDeployed => false,
         }

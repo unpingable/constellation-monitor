@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v4";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v5";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -102,6 +102,9 @@ pub enum InputKind {
     SavedCheck,
     /// The estate collector's per-service verdicts.
     Estate,
+    /// vmalert's loaded alerting rules, their state and health, as one
+    /// bounded document; only rules that opt in are evaluated.
+    MetricAlerts,
     /// The evaluator's own view of whether its configured inputs are readable.
     Evaluator,
     /// Not deployed; the rule exists so the registry matches Cartography.
@@ -193,7 +196,7 @@ pub struct Rule {
 const CARTOGRAPHY: &str = "cartography:architecture/beta-observability/docs/RUNBOOKS.md";
 const MONITOR: &str = "constellation-monitor:docs/ATTENTION.md";
 
-pub const RULES: [Rule; 12] = [
+pub const RULES: [Rule; 13] = [
     Rule {
         id: "host-posture-unknown",
         version: 1,
@@ -381,6 +384,30 @@ pub const RULES: [Rule; 12] = [
         runbook_document: MONITOR,
         operator_response: "Read the service's row in the estate dashboard or /var/lib/constellation-estate/estate.json: DOWN names the unit or container; DEGRADED names the required concerns of the project's own status contract that are not present.",
         condition: "An estate service is down, or running but a required concern of its own status contract is not present.",
+        disabled: None,
+    },
+    Rule {
+        id: "metric-alert-firing",
+        version: 1,
+        default_class: Class::Notice,
+        page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
+        severity: "warning",
+        // The NQ v2 contract's closed component set has no "metrics"; the
+        // alerts this input is for describe the host, and the rule's
+        // reference carries the alert's own labels (area, site, instance).
+        component: Some("host_posture"),
+        input: InputKind::MetricAlerts,
+        threshold_meaning: ThresholdMeaning::Persistence,
+        default_threshold_seconds: 60,
+        fixed_persistence_seconds: 0,
+        runbook_anchor: "metric-alert-firing",
+        runbook_document: MONITOR,
+        operator_response: "Open the alert in vmalert (the rule's `runbook` label names the Cartography RUNBOOKS.md anchor): the notice carries the alert's own summary per instance. A firing metric alert is an observation, not qualified evidence; inspect the host before acting.",
+        condition: "A vmalert alerting rule labelled attention=\"true\" is firing (vmalert's own `for` hold has elapsed) on at least one instance.",
         disabled: None,
     },
     Rule {

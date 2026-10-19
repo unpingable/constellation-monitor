@@ -61,6 +61,14 @@ store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
 # path = "/var/lib/nq-ops-results/atproto-freelist.json"
 # max_age_seconds = 3600
 
+# vmalert's loaded alerting rules, written by estate/metric-alerts-collect.py
+# (constellation.metric_alerts/v1). Only rules labelled attention = "true" in
+# their rule file are evaluated (metric-alert-firing, notice after 60 s).
+# [inputs.metric_alerts]
+# path = "/var/lib/constellation-metric-alerts/metric-alerts.json"
+# max_age_seconds = 300             # the document's generated_at
+# max_evaluation_age_seconds = 300  # each rule's last_evaluation, before generated_at
+
 # Overrides are limited to enabled, threshold_seconds and class. class can
 # move a page rule down to "notice"; only the registry's page rules can page.
 # [rules.host-disk]

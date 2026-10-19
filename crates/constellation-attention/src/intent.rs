@@ -134,9 +134,12 @@ fn summary(input: &IntentInput<'_>) -> String {
                 input.rule.persistence_seconds(),
             );
             // An estate verdict carries the service's own reason (unit state or the
-            // required concerns that are not present); say it, not just the rule.
-            if input.rule.rule.id == "service-not-doing-its-job"
-                && let Some(reason) = input.reference.get("reason").and_then(Value::as_str)
+            // required concerns that are not present), and a metric alert its own
+            // summary per instance; say it, not just the rule.
+            if matches!(
+                input.rule.rule.id,
+                "service-not-doing-its-job" | "metric-alert-firing"
+            ) && let Some(reason) = input.reference.get("reason").and_then(Value::as_str)
                 && !reason.is_empty()
             {
                 text.push_str(" Now: ");

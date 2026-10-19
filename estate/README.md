@@ -69,3 +69,26 @@ Install on the host:
     install -m 0644 constellation-estate-collect.{service,timer} /etc/systemd/system/
     systemctl daemon-reload && systemctl enable --now constellation-estate-collect.timer
     # attention.toml:  [inputs.estate]  path = "/var/lib/constellation-estate/estate.json"
+
+## Metric alerts: vmalert as an attention input
+
+`metric-alerts-collect.py` reads vmalert's `/api/v1/rules` once (1 MiB bound)
+and writes `constellation.metric_alerts/v1`: every loaded alerting rule with
+the same definition identity the estate collector pins
+(`constellation.vmalert_policy/v1`), its state, health, last evaluation and
+alert instances. The attention evaluator's `[inputs.metric_alerts]` turns each
+rule labelled `attention: "true"` into a condition (`metric-alert-firing`,
+notice after 60 s, carrying the alert's own summary); see
+`docs/ATTENTION.md`. It observes only: no evaluation, no notifier, and an
+unreadable source leaves the last good document in place and exits 1.
+
+    install -D -m 0755 metric-alerts-collect.py constellation-estate-collect.py /usr/local/lib/constellation-estate/
+    install -m 0644 constellation-metric-alerts-collect.{service,timer} /etc/systemd/system/
+    systemctl daemon-reload && systemctl enable --now constellation-metric-alerts-collect.timer
+    # attention.toml:  [inputs.metric_alerts]  path = "/var/lib/constellation-metric-alerts/metric-alerts.json"
+
+`--declared <declared-vmalert-policy.json>` carries the deployment
+repository's declared policy identity so the evaluator can tell a firing
+alert under a drifted definition set from one under the declared set. The
+shared vector `fixtures/vmalert-rules-runtime-v1.json` is consumed by
+`test_metric_alerts.py` and by the evaluator's tests.

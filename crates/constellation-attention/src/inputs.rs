@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::condition::{ConditionKey, validate_token};
 use crate::config::{
-    Config, EffectiveRule, EstateInput, HostPostureInput, NightshiftInput, NqStatusInput,
-    NqStatusSource, SavedCheckInput,
+    Config, EffectiveRule, EstateInput, HostPostureInput, MetricAlertsInput, NightshiftInput,
+    NqStatusInput, NqStatusSource, SavedCheckInput,
 };
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
@@ -186,6 +186,9 @@ pub fn read_all(context: &Context<'_>) -> InputsRead {
     }
     if let Some(input) = &context.config.inputs.estate {
         estate(context, input, &mut read);
+    }
+    if let Some(input) = &context.config.inputs.metric_alerts {
+        metric_alerts(context, input, &mut read);
     }
     for report in &mut read.reports {
         if report.causes.is_empty() {
@@ -1324,5 +1327,337 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
             &reference,
             format!("{verdict}: {}", truncate(reason, 200)),
         );
+    }
+}
+
+const METRIC_ALERTS_LIMIT: usize = 4 * 1024 * 1024;
+pub const METRIC_ALERTS_SCHEMA: &str = "constellation.metric_alerts/v1";
+/// The rule label that opts a vmalert alerting rule into evaluation.
+pub const METRIC_ALERTS_OPT_IN_LABEL: &str = "attention";
+const METRIC_ALERTS_INSTANCES_IN_NOTE: usize = 4;
+
+/// A vmalert alert name as a condition target: `HostSwapExhausted` is
+/// `host-swap-exhausted`. Anything outside `[a-z0-9._-]` becomes `-`.
+fn metric_alert_target(name: &str) -> String {
+    let mut target = String::with_capacity(name.len() + 4);
+    let mut previous_lower = false;
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() {
+            if previous_lower {
+                target.push('-');
+            }
+            target.push(ch.to_ascii_lowercase());
+            previous_lower = false;
+        } else if ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-') {
+            target.push(ch);
+            previous_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        } else {
+            target.push('-');
+            previous_lower = false;
+        }
+    }
+    if target.len() > 48 {
+        target.truncate(48);
+    }
+    target
+}
+
+/// `constellation.metric_alerts/v1`: vmalert's loaded alerting rules with
+/// their state. A rule labelled `attention = "true"` is one condition,
+/// `host_posture:metric-alert-firing:<alert-name>`: `firing` is present;
+/// `pending` or `inactive` is clear; a rule whose health is not `ok`, whose
+/// last evaluation is older than `max_evaluation_age_seconds`, or whose
+/// document is stale is unknown. A firing alert is still present when the
+/// effective policy differs from the declared one, but nothing is clear
+/// then: a changed definition's silence is not recovery.
+fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut InputsRead) {
+    let mut report = InputReport {
+        causes: Vec::new(),
+        label: input.label.clone(),
+        kind: "metric_alerts",
+        component: "host_posture",
+        source: input.path.display().to_string(),
+        status: InputStatus::Unavailable,
+        error: None,
+        identity: Value::Null,
+    };
+    let document = match load_json(context, None, Some(&input.path), METRIC_ALERTS_LIMIT) {
+        Ok((_, value)) => value,
+        Err(error) => {
+            report.error = Some(error);
+            read.reports.push(report);
+            return;
+        }
+    };
+    if document.get("schema").and_then(Value::as_str) != Some(METRIC_ALERTS_SCHEMA) {
+        report.fault(
+            "unrecognised",
+            InputStatus::NotCurrent,
+            &format!("not {METRIC_ALERTS_SCHEMA}"),
+        );
+        read.reports.push(report);
+        return;
+    }
+    let generated = document
+        .get("generated_at")
+        .and_then(Value::as_str)
+        .map(rfc3339_seconds);
+    let rules = document
+        .get("rules")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let opted: Vec<&Value> = rules
+        .iter()
+        .filter(|rule| {
+            rule.pointer(&format!("/labels/{METRIC_ALERTS_OPT_IN_LABEL}"))
+                .and_then(Value::as_str)
+                == Some("true")
+        })
+        .collect();
+    let effective = document.get("policy_sha256").and_then(Value::as_str);
+    let declared = document
+        .get("declared_policy_sha256")
+        .and_then(Value::as_str);
+    report.identity = json!({
+        "generated_at": document.get("generated_at"),
+        "site": document.get("site"),
+        "policy_sha256": effective,
+        "declared_policy_sha256": declared,
+        "counts": document.get("counts"),
+        "attention_rules": opted.iter().filter_map(|r| r.get("name")).collect::<Vec<_>>(),
+    });
+    report.status = InputStatus::Ok;
+    let (generated_at, stale) = match generated {
+        Some(Ok(at)) if context.now - at <= input.max_age_seconds => (Some(at), None),
+        Some(Ok(at)) => (
+            Some(at),
+            Some(format!(
+                "metric alerts document is {} s old",
+                context.now - at
+            )),
+        ),
+        _ => (
+            None,
+            Some("metric alerts document has no valid generated_at".to_owned()),
+        ),
+    };
+    if let Some(note) = &stale {
+        report.fault("stale", InputStatus::NotCurrent, note);
+    }
+    let drift = match (effective, declared) {
+        (Some(effective), Some(declared)) if effective != declared => Some(format!(
+            "effective vmalert policy {} is not the declared {}",
+            truncate(effective, 19),
+            truncate(declared, 19)
+        )),
+        (None, _) => Some("document carries no policy_sha256".to_owned()),
+        _ => None,
+    };
+    if let Some(note) = &drift {
+        report.fault("unrecognised", InputStatus::NotCurrent, note);
+    }
+    if opted.is_empty() {
+        report.fault(
+            "empty",
+            InputStatus::NotCurrent,
+            &format!("no alerting rule carries the label {METRIC_ALERTS_OPT_IN_LABEL}=\"true\""),
+        );
+    }
+    let mut targets: BTreeMap<String, String> = BTreeMap::new();
+    let mut observations = Vec::new();
+    for rule in &opted {
+        let name = rule.get("name").and_then(Value::as_str).unwrap_or_default();
+        let target = metric_alert_target(name);
+        if validate_token("target_class", &target, 48).is_err() {
+            report.fault(
+                "untargetable",
+                InputStatus::NotCurrent,
+                &format!("alert {name:?} has no usable condition target"),
+            );
+            continue;
+        }
+        if let Some(other) = targets.get(&target) {
+            report.fault(
+                "untargetable",
+                InputStatus::NotCurrent,
+                &format!("alerts {other:?} and {name:?} share the target {target}"),
+            );
+            continue;
+        }
+        targets.insert(target.clone(), name.to_owned());
+        let state = rule.get("state").and_then(Value::as_str).unwrap_or("");
+        let health = rule.get("health").and_then(Value::as_str).unwrap_or("");
+        let last_evaluation = rule
+            .get("last_evaluation")
+            .and_then(Value::as_str)
+            .map(rfc3339_seconds);
+        let mut problems: Vec<String> = Vec::new();
+        if health != "ok" {
+            let error = rule
+                .get("last_error")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            problems.push(format!(
+                "health {health:?}: {}",
+                truncate(error.trim(), 120)
+            ));
+        }
+        match (generated_at, last_evaluation) {
+            (Some(at), Some(Ok(evaluated)))
+                if at - evaluated <= input.max_evaluation_age_seconds => {}
+            (Some(at), Some(Ok(evaluated))) => problems.push(format!(
+                "last evaluated {} s before the document",
+                at - evaluated
+            )),
+            _ => problems.push("has no valid last_evaluation".to_owned()),
+        }
+        if !matches!(state, "firing" | "pending" | "inactive") {
+            problems.push(format!("state {state:?} is not recognised"));
+        }
+        for problem in &problems {
+            report.fault(
+                if problem.starts_with("state ") {
+                    "unrecognised"
+                } else {
+                    "indeterminate"
+                },
+                InputStatus::NotCurrent,
+                &format!("alert {name}: {problem}"),
+            );
+        }
+        let instances = rule
+            .get("instances")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let firing: Vec<&Value> = instances
+            .iter()
+            .filter(|i| i.get("state").and_then(Value::as_str) == Some("firing"))
+            .collect();
+        let observation = if stale.is_some() || !problems.is_empty() {
+            Observation::Unknown
+        } else if state == "firing" {
+            Observation::Present
+        } else if drift.is_some() {
+            Observation::Unknown
+        } else {
+            Observation::Clear
+        };
+        let describe = |instance: &Value| -> String {
+            let labels = instance.get("labels");
+            let site = labels
+                .and_then(|l| l.get("site"))
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let host = labels
+                .and_then(|l| l.get("instance"))
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let summary = instance
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            format!("{site} ({host}): {}", truncate(summary.trim(), 160))
+        };
+        let mut reason: Vec<String> = firing
+            .iter()
+            .take(METRIC_ALERTS_INSTANCES_IN_NOTE)
+            .map(|i| describe(i))
+            .collect();
+        if firing.len() > METRIC_ALERTS_INSTANCES_IN_NOTE {
+            reason.push(format!(
+                "and {} more",
+                firing.len() - METRIC_ALERTS_INSTANCES_IN_NOTE
+            ));
+        }
+        let reason = if reason.is_empty() {
+            state.to_owned()
+        } else {
+            format!("{name} firing on {}", reason.join("; "))
+        };
+        let since = firing
+            .iter()
+            .filter_map(|i| i.get("active_at").and_then(Value::as_str))
+            .min();
+        let reference = json!({
+            "alert": name,
+            "file": rule.get("file"),
+            "group": rule.get("group"),
+            "state": state,
+            "health": health,
+            "since": since,
+            "instance_count": rule.get("instance_count"),
+            "instances": firing.iter().take(8).map(|i| json!({
+                "labels": i.get("labels"),
+                "active_at": i.get("active_at"),
+                "value": i.get("value"),
+                "summary": i.get("summary").and_then(Value::as_str).map(|s| truncate(s, 200)),
+            })).collect::<Vec<_>>(),
+            "reason": truncate(&reason, 200),
+            "problems": problems,
+            "last_evaluation": rule.get("last_evaluation"),
+            "generated_at": document.get("generated_at"),
+            "policy_sha256": effective,
+        });
+        let note = match observation {
+            Observation::Present => truncate(&reason, 200),
+            Observation::Clear => format!("{name} {state}"),
+            _ => format!(
+                "{name} unknown: {}",
+                truncate(
+                    &stale
+                        .iter()
+                        .chain(problems.iter())
+                        .chain(drift.iter())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                    160
+                )
+            ),
+        };
+        observations.push((target, observation, reference, note));
+    }
+    read.reports.push(report);
+    for (target, observation, reference, note) in observations {
+        push(
+            context,
+            read,
+            "metric-alert-firing",
+            "host_posture",
+            Some(&target),
+            &input.label,
+            observation,
+            &reference,
+            note,
+        );
+    }
+}
+
+#[cfg(test)]
+mod metric_alert_tests {
+    use super::metric_alert_target;
+
+    #[test]
+    fn alert_names_become_stable_targets() {
+        assert_eq!(
+            metric_alert_target("HostSwapExhausted"),
+            "host-swap-exhausted"
+        );
+        assert_eq!(
+            metric_alert_target("HostIoPressureHigh"),
+            "host-io-pressure-high"
+        );
+        assert_eq!(metric_alert_target("NQ2Down"), "nq2-down");
+        assert_eq!(
+            metric_alert_target("already-kebab_case.1"),
+            "already-kebab_case.1"
+        );
+        assert_eq!(
+            metric_alert_target("Spaces And/Slashes"),
+            "spaces-and-slashes"
+        );
+        assert_eq!(metric_alert_target(&"A".repeat(60)).len(), 48);
     }
 }

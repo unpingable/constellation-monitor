@@ -25,7 +25,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v4`).
+  compiled in and versioned (`constellation.attention_registry.v5`).
   Configuration may enable or disable a rule, change its one threshold, and
   move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
@@ -54,6 +54,7 @@ anchors marked (M) are below in this document.
 | `io-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_io` version 1 evaluation of a non-stale watcher reports `io_pressure_stall` present | (M) [`io-pressure`](#io-pressure) | Check PSI, SQLite write-ahead logs and processes in D state. |
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
+| `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
 | `evaluator-input-unavailable` | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
 | `ag-executor-unavailable` | page | page | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
@@ -114,6 +115,13 @@ and current are still evaluated.
   is the `host-disk` target class; its threshold is NQ's compiled detector
   (available space at or below 10 % of non-reserved capacity, i.e. about
   90 % used), not the evaluator's.
+- Metric alerts input: the `constellation.metric_alerts/v1` document that
+  `metric-alerts-collect.py` writes from vmalert's `/api/v1/rules`. Only
+  rules labelled `attention: "true"` are evaluated; the document's
+  `generated_at` must be within `max_age_seconds` and each rule's
+  `last_evaluation` within `max_evaluation_age_seconds` of it, the rule's
+  health must be `ok`, and the effective policy identity must be the declared
+  one. See [Metric alerts](#metric-alerts-vmalert-as-an-input).
 
 ### NQ status sources
 
@@ -480,6 +488,62 @@ Open the estate dashboard row or `estate.json` for the named service:
 Fix the service. If the outage is deliberate, declare it paused in the
 registry, with a reason, rather than letting it alert.
 
+## Metric alerts: vmalert as an input
+
+`[inputs.metric_alerts] path = "/var/lib/constellation-metric-alerts/metric-alerts.json"`
+(optional `label`, default `metric_alerts`; `max_age_seconds` and
+`max_evaluation_age_seconds`, default 300) reads the document
+`estate/metric-alerts-collect.py` writes from vmalert's `/api/v1/rules`: every
+loaded alerting rule with its definition identity, state (`firing`, `pending`,
+`inactive`), health, last evaluation time and alert instances. Conventional
+metric alerting (node_exporter, VictoriaMetrics, vmalert on crow) thereby
+reaches the same conditions, notices, incidents and digest as every other
+input, without a compiled NQ profile per observation. NQ is not bypassed:
+delivery is still `nq notification submit`, and NQ remains the path when a
+condition needs qualified evidence. Ordinary monitoring does not require NQ
+qualification by default.
+
+A rule opts in with the label `attention: "true"` in its rule file; nothing
+else in vmalert changes, and Alertmanager routing (`notify`) is independent.
+Each opted-in rule is one condition,
+`host_posture:metric-alert-firing:<alert name as a token>`
+(`HostSwapExhausted` is `host-swap-exhausted`):
+
+- `firing` is present. After 60 s a notice is sent (vmalert's own `for`
+  hold has already elapsed), and its text carries the alert's own summary per
+  firing instance, with the instance's `site` and `instance` labels.
+- `pending` and `inactive` are clear, when the rule is evaluable.
+- Unknown, holding whatever is open and never clearing: the document older
+  than `max_age_seconds` (`stale`); a rule whose health is not `ok` or whose
+  `last_evaluation` is older than `max_evaluation_age_seconds` before the
+  document (`indeterminate`: vmalert stopped evaluating it, or its query
+  errors); a rule state the evaluator does not know (`unrecognised`).
+- When the document's effective policy identity is not the declared one
+  (`declared_policy_sha256`, computed from the deployment repository's
+  `declared-vmalert-policy.json` exactly as the estate registry pins it), a
+  firing alert is still present, but no rule is clear: a changed
+  definition's silence is not recovery (`unrecognised`).
+- No opted-in rule at all is `empty`; an unreadable file is `unreadable`.
+
+Resolved, missing, stale and unreachable are therefore four different things
+here, as for every input: only a current, healthy, declared rule that vmalert
+reports `inactive` or `pending` resolves a condition.
+
+The rule is notice-only and not in NQ's page anchor set. The condition's
+component is `host_posture` (the NQ v2 contract's closed set has no
+"metrics"; the alerts this input exists for describe the host) and the
+reference carries the alert's own labels, including `area` and `runbook`.
+
+### metric-alert-firing
+
+The notice names the vmalert alert and its summary per instance. Open the
+alert in vmalert (`/vmalert/alerts` on the evaluating host) and follow the
+rule's `runbook` label to its Cartography `RUNBOOKS.md` anchor (for the
+`host-pressure` group: PSI, swap, the largest cgroups and SQLite `-wal`
+files). A firing metric alert is an observation from node_exporter, not
+qualified evidence about the host: confirm on the host before acting, and
+do not tune the rule to silence it.
+
 ## Suspensions
 
 ```toml
@@ -590,7 +654,7 @@ classes in `causes` and the detail in `error`:
 | `untargetable` | a systemd unit with no bounded target class |
 | `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed` |
 | `unreported` | an open condition the input no longer reports |
-| `empty` | no closed Nightshift cycle yet |
+| `empty` | no closed Nightshift cycle yet; an estate document listing no services; a metric alerts document with no rule labelled `attention: "true"` |
 
 Each class notifies after it has persisted 300 s. While the input has any
 fault, a class it is not showing now is unknown, not clear, so a fault that

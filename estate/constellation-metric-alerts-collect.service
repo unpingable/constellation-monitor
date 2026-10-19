@@ -1,0 +1,15 @@
+[Unit]
+Description=Constellation metric alerts collector (vmalert's loaded rules and their state)
+Documentation=file:///usr/share/doc/constellation-attention/ATTENTION.md
+After=network.target
+
+[Service]
+Type=oneshot
+# Unprivileged: one HTTP read of vmalert's rules API on this host, one JSON document.
+# --declared points at the deployment repository's declared-vmalert-policy.json where one is deployed.
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -I /usr/local/lib/constellation-estate/metric-alerts-collect.py --site %H --url http://127.0.0.1:8880/api/v1/rules --out /var/lib/constellation-metric-alerts/metric-alerts.json
+StateDirectory=constellation-metric-alerts
+StateDirectoryMode=0755
+TimeoutStartSec=60
+Nice=10

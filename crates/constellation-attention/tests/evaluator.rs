@@ -961,12 +961,13 @@ fn rules_lists_the_closed_registry() {
             "nightshift-recurrence-missing",
             "sqlite-health",
             "service-not-doing-its-job",
+            "metric-alert-firing",
             "evaluator-input-unavailable",
             "docket-unsettled",
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][10]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][11]["disabled"], "input not deployed");
 }
 
 #[test]
@@ -1532,8 +1533,7 @@ fn io_pressure_from_an_nq_host_io_evaluation() {
             for component in components.iter() {
                 let memory = component["kind"] == "instance" && component["id"] == "host-memory"
                     || component["kind"] == "evaluation"
-                        && component["detail"]["result"]["context"]["instance_id"]
-                            == "host-memory";
+                        && component["detail"]["result"]["context"]["instance_id"] == "host-memory";
                 if !memory {
                     continue;
                 }
@@ -1545,7 +1545,10 @@ fn io_pressure_from_an_nq_host_io_evaluation() {
                     .replace("\"nq.host_memory\"", "\"nq.host_io\"")
                     .replace("\"host_memory\"", "\"host_io\"")
                     .replace("memory_pressure_stall", "io_pressure_stall")
-                    .replace("2b007ccd-a213-45a1-823a-db4746d51580", "2b007ccd-a213-45a1-823a-db4746d5ffff");
+                    .replace(
+                        "2b007ccd-a213-45a1-823a-db4746d51580",
+                        "2b007ccd-a213-45a1-823a-db4746d5ffff",
+                    );
                 let mut clone: Value = serde_json::from_str(&text).unwrap();
                 if clone["kind"] == "evaluation" {
                     clone["detail"]["result"]["result"]["state"] = json!(state);
@@ -1553,13 +1556,21 @@ fn io_pressure_from_an_nq_host_io_evaluation() {
                 }
                 cloned.push(clone);
             }
-            assert_eq!(cloned.len(), 2, "fixture must carry the memory instance and evaluation");
+            assert_eq!(
+                cloned.len(),
+                2,
+                "fixture must carry the memory instance and evaluation"
+            );
             components.extend(cloned);
         })
     };
     write_status(&status, &with_io("present", 1));
     let report = harness.evaluate(t + 3);
-    assert_eq!(report["inputs"][0]["status"], "ok", "{}", report["inputs"][0]);
+    assert_eq!(
+        report["inputs"][0]["status"], "ok",
+        "{}",
+        report["inputs"][0]
+    );
     let io: Vec<&Value> = report["conditions"]
         .as_array()
         .unwrap()
@@ -1569,7 +1580,10 @@ fn io_pressure_from_an_nq_host_io_evaluation() {
     assert_eq!(io.len(), 1, "{:?}", report["conditions"]);
     assert_eq!(io[0]["observation"], "present", "{}", io[0]);
     assert_eq!(io[0]["rule"], "io-pressure");
-    assert!(intents(&report).is_empty(), "a notice needs 600 s of persistence");
+    assert!(
+        intents(&report).is_empty(),
+        "a notice needs 600 s of persistence"
+    );
     write_status(&status, &with_io("explicitly_absent", 1));
     let report = harness.evaluate(t + 63);
     assert_eq!(report["inputs"][0]["status"], "ok");
@@ -4122,4 +4136,296 @@ fn intent_log_keeps_the_resolve_of_a_forgotten_condition() {
             .iter()
             .all(|l| l["at"].is_string() && l["stable_event_id"].is_string())
     );
+}
+
+// ---- metric alerts (vmalert as an input) ----
+
+const METRIC_ALERTS_VECTOR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../estate/fixtures/vmalert-rules-runtime-v1.json"
+);
+const SWAP: &str = "constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted";
+
+/// The shared producer vector, retimed so the document was generated at `at`
+/// and every rule evaluated two seconds earlier, then edited.
+fn write_metric_alerts(harness: &Harness, at: i64, edit: impl Fn(&mut Value)) {
+    let vector: Value = serde_json::from_slice(&fs::read(METRIC_ALERTS_VECTOR).unwrap()).unwrap();
+    let mut doc = vector["document"].clone();
+    doc["generated_at"] = json!(rfc3339(at));
+    for rule in doc["rules"].as_array_mut().unwrap() {
+        rule["last_evaluation"] = json!(rfc3339(at - 2));
+    }
+    edit(&mut doc);
+    fs::write(
+        harness.path("metric-alerts.json"),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+}
+
+fn metric_rule<'a>(doc: &'a mut Value, name: &str) -> &'a mut Value {
+    doc["rules"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|r| r["name"] == name)
+        .unwrap()
+}
+
+fn quiet(doc: &mut Value, name: &str) {
+    let rule = metric_rule(doc, name);
+    rule["state"] = json!("inactive");
+    rule["instances"] = json!([]);
+    rule["instance_count"] = json!(0);
+}
+
+fn metric_alerts_harness() -> Harness {
+    let mut harness = Harness::new();
+    let path = harness.path("metric-alerts.json");
+    harness.raw(&format!(
+        "[inputs.metric_alerts]\npath = \"{}\"\n",
+        path.display()
+    ));
+    harness
+}
+
+fn metric_input(report: &Value) -> Value {
+    report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["kind"] == "metric_alerts")
+        .unwrap()
+        .clone()
+}
+
+fn causes(input: &Value) -> Vec<String> {
+    input["causes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn alert_intents(report: &Value) -> Vec<(String, String, String)> {
+    intents(report)
+        .into_iter()
+        .filter(|(id, _, _)| id.contains(":metric-alert-firing:"))
+        .collect()
+}
+
+fn condition<'a>(report: &'a Value, id: &str) -> Option<&'a Value> {
+    report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == id)
+}
+
+/// A firing opted-in rule is a notice after the bound, carrying the alert's
+/// own summary; a rule without the label, a pending rule and an inactive rule
+/// are not; a rule whose query errors is unknown and faults the input; and
+/// the condition resolves once vmalert reports the rule inactive.
+#[test]
+fn metric_alert_firing_from_the_shared_vector() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |_| {});
+    let report = harness.evaluate(T0);
+    assert!(alert_intents(&report).is_empty(), "below the 60 s bound");
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "not_current", "{input}");
+    assert_eq!(
+        causes(&input),
+        ["indeterminate"],
+        "HostIoPressureSevere health err"
+    );
+    assert!(
+        input["error"]
+            .as_str()
+            .unwrap()
+            .contains("alert HostIoPressureSevere: health \"err\": error when executing query"),
+        "{input}"
+    );
+    let ids: Vec<&str> = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .filter(|id| id.contains(":metric-alert-firing:"))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-severe",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-memory-pressure-high",
+            SWAP,
+        ],
+        "opted-in rules only: CrowDefinitionDrift and Watchdog carry no attention label"
+    );
+    let severe = condition(
+        &report,
+        "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-severe",
+    )
+    .unwrap();
+    assert_eq!(severe["observation"], "unknown", "{severe}");
+    assert_eq!(
+        condition(
+            &report,
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-memory-pressure-high"
+        )
+        .unwrap()["observation"],
+        "clear",
+        "pending is vmalert's own hold, not firing"
+    );
+
+    write_metric_alerts(&harness, T0 + 90, |_| {});
+    let report = harness.evaluate(T0 + 90);
+    assert_eq!(
+        alert_intents(&report),
+        vec![(SWAP.to_owned(), "notice".to_owned(), "trigger".to_owned())]
+    );
+    let record = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == SWAP)
+        .unwrap()["notification_id"]
+        .as_str()
+        .unwrap();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(
+        summary.contains(
+            "Now: HostSwapExhausted firing on labelwatch (127.0.0.1:19100): swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min. Incident: inc-"
+        ),
+        "{summary}"
+    );
+    assert_eq!(
+        sent["inspection_reference"],
+        "constellation-monitor:docs/ATTENTION.md#metric-alert-firing"
+    );
+
+    for offset in [150, 400] {
+        write_metric_alerts(&harness, T0 + offset, |doc| quiet(doc, "HostSwapExhausted"));
+        harness.evaluate(T0 + offset);
+    }
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(SWAP)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+}
+
+/// A stale document, or a rule vmalert stopped evaluating, is unknown: an
+/// open condition holds and nothing resolves, and the input says why.
+#[test]
+fn stale_metric_alerts_hold_the_open_condition() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |_| {});
+    write_metric_alerts(&harness, T0 + 90, |_| {});
+    harness.evaluate(T0);
+    assert_eq!(alert_intents(&harness.evaluate(T0 + 90)).len(), 1);
+    // The producer stops: the same document ages past max_age_seconds.
+    let report = harness.evaluate(T0 + 90 + 301);
+    assert!(alert_intents(&report).is_empty());
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "not_current");
+    assert!(causes(&input).contains(&"stale".to_owned()), "{input}");
+    assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+    // Fresh document, but vmalert last evaluated the swap rule ten minutes ago
+    // and now calls it inactive: not recovery.
+    for offset in [500, 700] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            quiet(doc, "HostSwapExhausted");
+            metric_rule(doc, "HostSwapExhausted")["last_evaluation"] =
+                json!(rfc3339(T0 + offset - 600));
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert!(alert_intents(&report).is_empty(), "{report}");
+        let input = metric_input(&report);
+        assert!(
+            causes(&input).contains(&"indeterminate".to_owned()),
+            "{input}"
+        );
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+    }
+    assert_eq!(harness.state()["conditions"][SWAP]["active"], true);
+}
+
+/// When vmalert's effective policy is not the declared one, a firing alert is
+/// still an observation (it triggers), but a changed definition's silence is
+/// not recovery (nothing clears), and the input is not current.
+#[test]
+fn policy_drift_keeps_firing_present_but_never_clears() {
+    let harness = metric_alerts_harness();
+    let drift = |doc: &mut Value| {
+        doc["declared_policy_sha256"] =
+            json!("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        doc["policy_matches_declared"] = json!(false);
+    };
+    write_metric_alerts(&harness, T0, drift);
+    harness.evaluate(T0);
+    write_metric_alerts(&harness, T0 + 90, drift);
+    let report = harness.evaluate(T0 + 90);
+    assert_eq!(alert_intents(&report).len(), 1, "{report}");
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "not_current");
+    assert!(
+        causes(&input).contains(&"unrecognised".to_owned()),
+        "{input}"
+    );
+    assert!(
+        input["error"]
+            .as_str()
+            .unwrap()
+            .contains("is not the declared")
+    );
+    for offset in [150, 400, 700] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            drift(doc);
+            quiet(doc, "HostSwapExhausted");
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert!(alert_intents(&report).is_empty(), "{report}");
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+    }
+    assert_eq!(harness.state()["conditions"][SWAP]["active"], true);
+    // Declared and effective agree again: the inactive rule now clears.
+    for offset in [800, 1000] {
+        write_metric_alerts(&harness, T0 + offset, |doc| quiet(doc, "HostSwapExhausted"));
+        harness.evaluate(T0 + offset);
+    }
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(SWAP)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+}
+
+/// A document with no opted-in rule is `empty`; a missing file is unreadable;
+/// neither claims anything about any alert.
+#[test]
+fn metric_alerts_without_opt_in_or_file_are_faults_not_clears() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| {
+        for rule in doc["rules"].as_array_mut().unwrap() {
+            rule["labels"].as_object_mut().unwrap().remove("attention");
+        }
+    });
+    let report = harness.evaluate(T0);
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "not_current");
+    assert_eq!(causes(&input), ["empty"], "{input}");
+    assert!(condition(&report, SWAP).is_none());
+    fs::remove_file(harness.path("metric-alerts.json")).unwrap();
+    let report = harness.evaluate(T0 + 60);
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "unavailable");
+    assert_eq!(causes(&input), ["unreadable"], "{input}");
 }

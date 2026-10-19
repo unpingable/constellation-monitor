@@ -1,0 +1,489 @@
+{
+ "api": {
+  "data": {
+   "groups": [
+    {
+     "concurrency": 1,
+     "file": "/etc/vmalert/rules/crow.rules.yml",
+     "id": "3063683976366157246",
+     "interval": 30,
+     "lastEvaluation": "2026-10-02T11:59:58.500000000Z",
+     "name": "crow-self",
+     "rules": [
+      {
+       "alerts": [
+        {
+         "activeAt": "2026-10-02T10:19:30Z",
+         "annotations": {
+          "summary": "crow's dead-man heartbeat (always firing by design)"
+         },
+         "expression": "vector(1)",
+         "labels": {
+          "alertgroup": "crow-self",
+          "alertname": "Watchdog",
+          "deadman": "true",
+          "severity": "none",
+          "site": "crow"
+         },
+         "name": "Watchdog",
+         "restored": false,
+         "stabilizing": false,
+         "state": "firing",
+         "value": "1"
+        }
+       ],
+       "annotations": {
+        "summary": "crow's dead-man heartbeat (always firing by design)"
+       },
+       "datasourceType": "prometheus",
+       "debug": false,
+       "duration": 0,
+       "evaluationTime": 0.000182297,
+       "file": "/etc/vmalert/rules/crow.rules.yml",
+       "group_name": "crow-self",
+       "health": "ok",
+       "keep_firing_for": 0,
+       "labels": {
+        "deadman": "true",
+        "severity": "none",
+        "site": "crow"
+       },
+       "lastError": "",
+       "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+       "lastSamples": 1,
+       "lastSeriesFetched": 0,
+       "max_updates_entries": 20,
+       "name": "Watchdog",
+       "query": "vector(1)",
+       "state": "firing",
+       "type": "alerting"
+      },
+      {
+       "alerts": [
+        {
+         "activeAt": "2026-10-02T10:19:30Z",
+         "annotations": {
+          "summary": "crow definition definition.crow.vmalert.effective-policy is not deployed as declared. Inspect constellation-definitions-status.service and its retained report; do not adopt live hashes automatically."
+         },
+         "expression": "constellation_definition_reconciled{site=\"crow\"} != 1",
+         "labels": {
+          "alertgroup": "crow-self",
+          "alertname": "CrowDefinitionDrift",
+          "area": "definitions",
+          "definition": "definition.crow.vmalert.effective-policy",
+          "exported_site": "crow",
+          "instance": "127.0.0.1:19110",
+          "job": "crow-node",
+          "notify": "slack",
+          "severity": "operational",
+          "site": "crow"
+         },
+         "name": "CrowDefinitionDrift",
+         "restored": false,
+         "stabilizing": false,
+         "state": "firing",
+         "value": "0"
+        }
+       ],
+       "annotations": {
+        "summary": "crow definition {{ $labels.definition }} is not deployed as declared. Inspect constellation-definitions-status.service and its retained report; do not adopt live hashes automatically."
+       },
+       "datasourceType": "prometheus",
+       "debug": false,
+       "duration": 180,
+       "evaluationTime": 0.000287117,
+       "file": "/etc/vmalert/rules/crow.rules.yml",
+       "group_name": "crow-self",
+       "health": "ok",
+       "keep_firing_for": 0,
+       "labels": {
+        "area": "definitions",
+        "notify": "slack",
+        "severity": "operational",
+        "site": "crow"
+       },
+       "lastError": "",
+       "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+       "lastSamples": 1,
+       "lastSeriesFetched": 6,
+       "max_updates_entries": 20,
+       "name": "CrowDefinitionDrift",
+       "query": "constellation_definition_reconciled{site=\"crow\"} != 1",
+       "state": "firing",
+       "type": "alerting"
+      }
+     ],
+     "type": "prometheus"
+    },
+    {
+     "concurrency": 1,
+     "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+     "id": "2439411320071231377",
+     "interval": 30,
+     "lastEvaluation": "2026-10-02T11:59:58.500000000Z",
+     "name": "host-pressure",
+     "rules": [
+      {
+       "annotations": {
+        "summary": "I/O stall {{ $value | humanizePercentage }} of wall time on {{ $labels.site }} ({{ $labels.instance }}) for 15 min"
+       },
+       "datasourceType": "prometheus",
+       "debug": false,
+       "duration": 900,
+       "evaluationTime": 0.00056182,
+       "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+       "group_name": "host-pressure",
+       "health": "ok",
+       "keep_firing_for": 0,
+       "labels": {
+        "area": "host",
+        "attention": "true",
+        "runbook": "host-pressure",
+        "severity": "warn"
+       },
+       "lastError": "",
+       "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+       "lastSamples": 0,
+       "lastSeriesFetched": 2,
+       "max_updates_entries": 20,
+       "name": "HostIoPressureHigh",
+       "query": "rate(node_pressure_io_stalled_seconds_total[10m]) > 0.25",
+       "state": "inactive",
+       "type": "alerting"
+      },
+      {
+       "alerts": [
+        {
+         "activeAt": "2026-10-02T11:50:00Z",
+         "annotations": {
+          "summary": "memory stall 12% of wall time on labelwatch (127.0.0.1:19100) for 15 min"
+         },
+         "labels": {
+          "alertgroup": "host-pressure",
+          "alertname": "HostMemoryPressureHigh",
+          "area": "host",
+          "attention": "true",
+          "instance": "127.0.0.1:19100",
+          "job": "node",
+          "runbook": "host-pressure",
+          "severity": "warn",
+          "site": "labelwatch"
+         },
+         "name": "HostMemoryPressureHigh",
+         "restored": false,
+         "stabilizing": false,
+         "state": "pending",
+         "value": "0.12"
+        }
+       ],
+       "annotations": {
+        "summary": "memory stall {{ $value | humanizePercentage }} of wall time on {{ $labels.site }} ({{ $labels.instance }}) for 15 min"
+       },
+       "datasourceType": "prometheus",
+       "debug": false,
+       "duration": 900,
+       "evaluationTime": 0.000249345,
+       "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+       "group_name": "host-pressure",
+       "health": "ok",
+       "keep_firing_for": 0,
+       "labels": {
+        "area": "host",
+        "attention": "true",
+        "runbook": "host-pressure",
+        "severity": "warn"
+       },
+       "lastError": "",
+       "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+       "lastSamples": 0,
+       "lastSeriesFetched": 2,
+       "max_updates_entries": 20,
+       "name": "HostMemoryPressureHigh",
+       "query": "rate(node_pressure_memory_stalled_seconds_total[10m]) > 0.10",
+       "state": "pending",
+       "type": "alerting"
+      },
+      {
+       "alerts": [
+        {
+         "activeAt": "2026-10-02T10:19:30Z",
+         "annotations": {
+          "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+         },
+         "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+         "labels": {
+          "alertgroup": "host-pressure",
+          "alertname": "HostSwapExhausted",
+          "area": "host",
+          "attention": "true",
+          "instance": "127.0.0.1:19100",
+          "job": "node",
+          "runbook": "host-pressure",
+          "severity": "warn",
+          "site": "labelwatch"
+         },
+         "name": "HostSwapExhausted",
+         "restored": false,
+         "stabilizing": false,
+         "state": "firing",
+         "value": "536866800"
+        }
+       ],
+       "annotations": {
+        "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+       },
+       "datasourceType": "prometheus",
+       "debug": false,
+       "duration": 1800,
+       "evaluationTime": 0.000531512,
+       "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+       "group_name": "host-pressure",
+       "health": "ok",
+       "keep_firing_for": 0,
+       "labels": {
+        "area": "host",
+        "attention": "true",
+        "runbook": "host-pressure",
+        "severity": "warn"
+       },
+       "lastError": "",
+       "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+       "lastSamples": 1,
+       "lastSeriesFetched": 6,
+       "max_updates_entries": 20,
+       "name": "HostSwapExhausted",
+       "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+       "state": "firing",
+       "type": "alerting"
+      },
+      {
+       "annotations": {
+        "summary": "I/O stall {{ $value | humanizePercentage }} of wall time on {{ $labels.site }} ({{ $labels.instance }}) for 15 min"
+       },
+       "datasourceType": "prometheus",
+       "debug": false,
+       "duration": 1800,
+       "evaluationTime": 0.00056182,
+       "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+       "group_name": "host-pressure",
+       "health": "err",
+       "keep_firing_for": 0,
+       "labels": {
+        "area": "host",
+        "attention": "true",
+        "runbook": "host-pressure",
+        "severity": "warn"
+       },
+       "lastError": "error when executing query=\"rate(node_pressure_io_stalled_seconds_total[10m]) > 0.5\": datasource unavailable",
+       "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+       "lastSamples": 0,
+       "lastSeriesFetched": 2,
+       "max_updates_entries": 20,
+       "name": "HostIoPressureSevere",
+       "query": "rate(node_pressure_io_stalled_seconds_total[10m]) > 0.25",
+       "state": "inactive",
+       "type": "alerting"
+      }
+     ],
+     "type": "prometheus"
+    }
+   ]
+  },
+  "status": "success"
+ },
+ "document": {
+  "counts": {
+   "attention": 4,
+   "firing": 3,
+   "groups": 2,
+   "rules": 6
+  },
+  "declared_policy_sha256": "sha256:b78ab44c2c12f4c191d687a71d11d11f822c5d5fd0826e5a39d339e0aa5c2359",
+  "generated_at": "2026-10-02T12:00:00Z",
+  "policy_matches_declared": true,
+  "policy_sha256": "sha256:b78ab44c2c12f4c191d687a71d11d11f822c5d5fd0826e5a39d339e0aa5c2359",
+  "rules": [
+   {
+    "duration_seconds": 180,
+    "file": "crow.rules.yml",
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "crow-self",
+       "alertname": "CrowDefinitionDrift",
+       "area": "definitions",
+       "definition": "definition.crow.vmalert.effective-policy",
+       "exported_site": "crow",
+       "instance": "127.0.0.1:19110",
+       "job": "crow-node",
+       "notify": "slack",
+       "severity": "operational",
+       "site": "crow"
+      },
+      "state": "firing",
+      "summary": "crow definition definition.crow.vmalert.effective-policy is not deployed as declared. Inspect constellation-definitions-status.service and its retained report; do not adopt live hashes automatically.",
+      "value": "0"
+     }
+    ],
+    "labels": {
+     "area": "definitions",
+     "notify": "slack",
+     "severity": "operational",
+     "site": "crow"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "name": "CrowDefinitionDrift",
+    "state": "firing"
+   },
+   {
+    "duration_seconds": 0,
+    "file": "crow.rules.yml",
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "crow-self",
+       "alertname": "Watchdog",
+       "deadman": "true",
+       "severity": "none",
+       "site": "crow"
+      },
+      "state": "firing",
+      "summary": "crow's dead-man heartbeat (always firing by design)",
+      "value": "1"
+     }
+    ],
+    "labels": {
+     "deadman": "true",
+     "severity": "none",
+     "site": "crow"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "name": "Watchdog",
+    "state": "firing"
+   },
+   {
+    "duration_seconds": 900,
+    "file": "host-pressure.rules.yml",
+    "group": "host-pressure",
+    "health": "ok",
+    "instance_count": 0,
+    "instances": [],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "name": "HostIoPressureHigh",
+    "state": "inactive"
+   },
+   {
+    "duration_seconds": 1800,
+    "file": "host-pressure.rules.yml",
+    "group": "host-pressure",
+    "health": "err",
+    "instance_count": 0,
+    "instances": [],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "error when executing query=\"rate(node_pressure_io_stalled_seconds_total[10m]) > 0.5\": datasource unavailable",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "name": "HostIoPressureSevere",
+    "state": "inactive"
+   },
+   {
+    "duration_seconds": 900,
+    "file": "host-pressure.rules.yml",
+    "group": "host-pressure",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T11:50:00Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostMemoryPressureHigh",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "pending",
+      "summary": "memory stall 12% of wall time on labelwatch (127.0.0.1:19100) for 15 min",
+      "value": "0.12"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "name": "HostMemoryPressureHigh",
+    "state": "pending"
+   },
+   {
+    "duration_seconds": 1800,
+    "file": "host-pressure.rules.yml",
+    "group": "host-pressure",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "536866800"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "name": "HostSwapExhausted",
+    "state": "firing"
+   }
+  ],
+  "schema": "constellation.metric_alerts/v1",
+  "site": "crow"
+ },
+ "generated_at": "2026-10-02T12:00:00Z",
+ "note": "Shared vector: the vmalert /api/v1/rules answer (trimmed from crow, timestamps rewritten to the evaluator tests' T0) and the metric_alerts document the producer writes for it. Consumed by test_metric_alerts.py and constellation-attention's evaluator tests.",
+ "site": "crow"
+}
