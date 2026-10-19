@@ -75,3 +75,12 @@ def test_main_writes_atomically_and_reports_an_unreadable_source(tmp_path, monke
     monkeypatch.setattr(m, "read_api", boom)
     assert m.main(["--site", "crow", "--out", str(out)]) == 1
     assert out.read_bytes() == before  # the last good document is never replaced by an empty one
+
+
+def test_a_rule_vmalert_has_not_evaluated_yet_has_no_last_evaluation():
+    api = copy.deepcopy(VECTOR["api"])
+    swap = next(r for g in api["data"]["groups"] for r in g["rules"] if r["name"] == "HostSwapExhausted")
+    swap["lastEvaluation"] = "0001-01-01T00:00:00Z"
+    doc = m.document(api, "crow", VECTOR["generated_at"])
+    rule = next(r for r in doc["rules"] if r["name"] == "HostSwapExhausted")
+    assert rule["last_evaluation"] is None   # the reader then says "has no valid last_evaluation" (indeterminate), not a huge age

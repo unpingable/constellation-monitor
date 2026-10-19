@@ -38,6 +38,12 @@ def declared_sha256(path):
     return policy_sha256(document)
 
 
+def _evaluated(value):
+    if not value or str(value).startswith("0001-01-01"):
+        return None
+    return value
+
+
 def _instance(alert):
     labels = alert.get("labels") or {}
     return {
@@ -64,7 +70,8 @@ def document(api, site, generated_at, declared=None):
                 "state": rule.get("state"),
                 "health": rule.get("health"),
                 "last_error": str(rule.get("lastError", ""))[:SUMMARY_LIMIT],
-                "last_evaluation": rule.get("lastEvaluation"),
+                # vmalert reports a rule it has not evaluated yet (just loaded) with Go's zero time; that is "never", not a date
+                "last_evaluation": _evaluated(rule.get("lastEvaluation")),
                 "duration_seconds": rule.get("duration", 0),
                 "labels": {k: str(v) for k, v in sorted((rule.get("labels") or {}).items())},
                 "instance_count": len(alerts),
