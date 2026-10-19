@@ -82,6 +82,7 @@ notice after 60 s, carrying the alert's own summary); see
 `docs/ATTENTION.md`. It observes only: no evaluation, no notifier, and an
 unreadable source leaves the last good document in place and exits 1.
 
+    useradd --system --no-create-home --shell /usr/sbin/nologin constellation-metrics
     install -D -m 0755 metric-alerts-collect.py constellation-estate-collect.py /usr/local/lib/constellation-estate/
     install -m 0644 constellation-metric-alerts-collect.{service,timer} /etc/systemd/system/
     systemctl daemon-reload && systemctl enable --now constellation-metric-alerts-collect.timer

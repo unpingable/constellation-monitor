@@ -6,8 +6,11 @@ After=network.target
 [Service]
 Type=oneshot
 # Unprivileged: one HTTP read of vmalert's rules API on this host, one JSON document.
+# A static system user, not DynamicUser: DynamicUser's StateDirectory lives under /var/lib/private (0700), which
+# the evaluator's nq account cannot traverse. Create it once: useradd --system --no-create-home constellation-metrics
 # --declared points at the deployment repository's declared-vmalert-policy.json where one is deployed.
-DynamicUser=yes
+User=constellation-metrics
+Group=constellation-metrics
 ExecStart=/usr/bin/python3 -I /usr/local/lib/constellation-estate/metric-alerts-collect.py --site %H --url http://127.0.0.1:8880/api/v1/rules --out /var/lib/constellation-metric-alerts/metric-alerts.json
 StateDirectory=constellation-metric-alerts
 StateDirectoryMode=0755
