@@ -250,3 +250,14 @@ in seconds. Date-only and timezone-free text, native systemd timestamp text and
 nonfinite numbers are rejected. This makes the approved deadline independent of
 the renderer's or target host's local timezone. Native systemd completion-time
 parsing retains its existing UTC text support.
+
+For application-owned textfiles, declare `thresholds.metrics_observation_age_seconds`
+and export `service_observation_timestamp_seconds{service="..."}` from the
+application's recorded observation time. A node_exporter scrape timestamp only
+proves the file was read, so it cannot establish that the application advanced.
+The collector emits the authored limit even when the application is absent;
+Cartography's optional `ServiceMetricsObservationNeedsAttention` rule detects
+missing, future or frozen observation timestamps. Declare a separate
+`last_success_age_seconds` budget for useful committed work: an application
+heartbeat is not evidence of successful output. Neither timestamp grants action
+authority. Existing declarations without this threshold keep their current rules.

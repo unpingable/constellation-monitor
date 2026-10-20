@@ -27,7 +27,7 @@ REGISTRY_SCHEMA = "constellation.estate_registry/v1"
 OUTPUT_SCHEMA = "constellation.estate/v1"
 STATUS_SCHEMA = "project.ops.status/v1"
 OK_STATES = {"PRESENT", "NOT_APPLICABLE"}
-THRESHOLD_KEYS = {"last_success_age_seconds", "cursor_lag_seconds", "output_age_seconds",
+THRESHOLD_KEYS = {"metrics_observation_age_seconds", "last_success_age_seconds", "cursor_lag_seconds", "output_age_seconds",
                   "store_bytes", "wal_growth_bytes", "backup_age_seconds"}
 NAME_OK = set("abcdefghijklmnopqrstuvwxyz0123456789-")
 

@@ -597,3 +597,14 @@ def test_authored_timer_deadline_has_portable_timezone_semantics():
                 {'name': 'demo', 'runtime': {'docker': 'demo'}, 'timers': [
                     {'unit': 'demo.timer', 'first_result_due_at': value}]}]})
     assert c.timestamp('Tue 2026-10-20 12:00:00 UTC') is not None
+
+
+def test_metrics_observation_limit_survives_absent_application(tmp_path, monkeypatch):
+    declarations = tmp_path / 'services.d'
+    declarations.mkdir()
+    (declarations / 'demo.toml').write_text('name="demo"\nruntime={systemd="absent.service"}\nthresholds={metrics_observation_age_seconds=60}\n')
+    reg = c.derive_registry({'schema': c.REGISTRY_SCHEMA, 'site': 'testbed'}, str(declarations))
+    c.validate(reg)
+    text = c.render_service_limits(reg, now=100)
+    assert 'service_metrics_observation_age_seconds_limit{service="demo"} 60' in text
+    assert 'service_observation_timestamp_seconds{' not in text  # acquisition is not app progress
