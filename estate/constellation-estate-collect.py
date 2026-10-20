@@ -153,7 +153,7 @@ def derive_registry(reg, directory, declaration_root=None):
         raw = path.read_bytes()
         service = tomllib.loads(raw.decode())
         allowed = {"name", "role", "runtime", "status", "declared", "contract", "timers",
-                   "probes", "dependencies", "health_url", "metrics_url", "status_command", "thresholds"}
+                   "probes", "dependencies", "health_url", "metrics_url", "status_command", "status_user", "thresholds"}
         if set(service) - allowed:
             raise ValueError("unknown declaration fields: " + str(sorted(set(service) - allowed)))
         if service.get("health_url"):
@@ -166,7 +166,13 @@ def derive_registry(reg, directory, declaration_root=None):
             argv = service.pop("status_command")
             if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
                 raise ValueError("status_command must be an argv list")
-            service["status"] = {"kind": "project-ops-status", "argv": argv}
+            service["status"] = {"kind": "project-ops-status", "argv": argv, "user": service.pop("status_user", None)}
+        elif "status_user" in service:
+            raise ValueError("status_user requires status_command")
+        if (service.get("status") or {}).get("kind") == "project-ops-status":
+            user = service["status"].get("user")
+            if not isinstance(user, str) or not user.strip() or user != user.strip() or user.lower() == "root" or (user.isdecimal() and int(user) == 0):
+                raise ValueError("declaration command status requires explicit non-root user")
         services.append(service)
         declarations.append({"name": service["name"], "path": str(Path(declaration_root) / path.name) if declaration_root else str(path.resolve()),
                              "sha256": hashlib.sha256(raw).hexdigest()})
@@ -214,6 +220,8 @@ def timer_concern(spec, timeout, now=None):
         if success is None:
             state = "DEGRADED" if due is not None and now >= due else "UNKNOWN"
             reason = "first successful result overdue" if state == "DEGRADED" else "armed; no successful result observed"
+        elif success > now:
+            state, reason = "UNKNOWN", "successful result timestamp is in the future"
         elif "max_success_age_seconds" in spec and now - success > spec["max_success_age_seconds"]:
             state, reason = "STALE", "last success exceeds maximum age"
         else:

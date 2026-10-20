@@ -190,8 +190,11 @@ thresholds = {output_age_seconds = 60}
 
 `runtime`, `status`, `contract`, `declared`, `probes` and `timers` retain the
 existing JSON shapes (TOML inline tables work). `health_url` is shorthand for
-HTTP status; `status_command = ["producer", "--json"]` is shorthand for a
-project-ops-status producer. Choose one status source. Optional `metrics_url`
+HTTP status; `status_command = ["producer", "--json"]` plus `status_user = "demo"` is
+shorthand for a project-ops-status producer. New declaration command statuses
+require an explicit non-root execution user, including the full `status` table
+form. The renderer rejects missing, empty, root and UID-zero execution users.
+Legacy JSON command configuration retains its existing behavior. Choose one status source. Optional `metrics_url`
 is checked for HTTP availability; `dependencies = ["other-service"]` records
 graph edges between expected subjects. Thresholds are positive finite service
 limits preserved for the generic rule renderer; declaring one alone does not
@@ -233,3 +236,10 @@ not successful observation or application health. Generic rules must separately
 gate on current successful probe/application observations. Applications supply
 `service_last_success_timestamp_seconds` and `service_cursor_lag_seconds` through
 ordinary Prometheus instrumentation; authored limits do not create those facts.
+
+Service declarations and their rendered registry must be installed and approved
+by the trusted operator through the existing deployment procedure. They are not
+untrusted application input and cannot grant collector access or authorize an
+action. Command producers run with the explicitly named account using the
+existing collector execution path; installation must ensure that account has
+only its intended permissions.

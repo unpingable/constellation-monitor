@@ -464,7 +464,7 @@ def test_declaration_hash_drift_and_install_path(tmp_path):
 
 def test_declaration_translates_health_command_and_graph(tmp_path):
     (tmp_path / 'a.toml').write_text('name="a"\nruntime={systemd="a.service"}\nhealth_url="http://localhost/health"\ndependencies=["b"]\n')
-    (tmp_path / 'b.toml').write_text('name="b"\nruntime={docker="b"}\nstatus_command=["producer", "--json"]\n')
+    (tmp_path / 'b.toml').write_text('name="b"\nruntime={docker="b"}\nstatus_command=["producer", "--json"]\nstatus_user="demo"\n')
     reg = c.derive_registry({"schema": c.REGISTRY_SCHEMA, "services": []}, tmp_path)
     assert reg['services'][0]['status'] == {'kind': 'http', 'url': 'http://localhost/health'}
     assert reg['services'][1]['status']['argv'] == ['producer', '--json']
@@ -478,6 +478,8 @@ def test_timer_deadline_success_age_and_output_are_distinct(monkeypatch):
     spec = {'unit': 'demo.timer', 'first_result_due_at': 100, 'max_success_age_seconds': 20}
     assert c.timer_concern(spec, 1, now=99)['state'] == 'UNKNOWN'
     assert c.timer_concern(spec, 1, now=100)['state'] == 'DEGRADED'
+    service['ExecMainExitTimestamp'] = 200
+    assert c.timer_concern(spec, 1, now=100)['state'] == 'UNKNOWN'
     service['ExecMainExitTimestamp'] = 100
     assert c.timer_concern(spec, 1, now=120)['state'] == 'PRESENT'
     assert c.timer_concern(spec, 1, now=121)['state'] == 'STALE'
@@ -521,3 +523,63 @@ def test_application_thresholds_publish_without_file_probes(tmp_path, monkeypatc
     assert 'service_last_success_age_seconds_limit{service="a"} 60\n' in text
     assert 'service_declaration_observed_timestamp_seconds{service="a"}' in text
     assert json.loads((tmp_path / 'output.json').read_text())['services'][0]['verdict'] == 'DOWN'
+
+
+def test_declaration_commands_require_non_root_user(tmp_path):
+    import pytest
+    declaration = tmp_path / 'demo.toml'
+    base = {'schema': c.REGISTRY_SCHEMA, 'services': []}
+    for user in (None, 'root', '0', '', ' ROOT '):
+        declaration.write_text('name="demo"\nruntime={docker="demo"}\nstatus_command=["producer"]\n' +
+                               ('status_user=' + json.dumps(user) + '\n' if user is not None else ''))
+        with pytest.raises(ValueError, match='non-root user'):
+            c.derive_registry(base, tmp_path)
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\nstatus={kind="project-ops-status",argv=["producer"],user="root"}\n')
+    with pytest.raises(ValueError, match='non-root user'):
+        c.derive_registry(base, tmp_path)
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\nstatus_command=["producer"]\nstatus_user="demo"\n')
+    assert c.derive_registry(base, tmp_path)['services'][0]['status']['user'] == 'demo'
+
+
+def test_main_retains_approved_subject_for_missing_and_changed_declaration(tmp_path, monkeypatch):
+    directory = tmp_path / 'services.d'
+    directory.mkdir()
+    declaration = directory / 'demo.toml'
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\n')
+    reg = c.derive_registry({'schema': c.REGISTRY_SCHEMA, 'services': []}, directory)
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps(reg))
+    expected_bytes = registry.read_bytes()
+    monkeypatch.setattr(c, 'runtime_state', lambda runtime, *a: {'up': True, 'target': runtime['docker']})
+    monkeypatch.setattr(c, 'coverage', lambda *a: [])
+    for replacement in (None, 'name="replacement"\nruntime={docker="replacement"}\n'):
+        if replacement is None:
+            declaration.unlink()
+        else:
+            declaration.write_text(replacement)
+        assert c.main(['--registry', str(registry), '--output', str(tmp_path / 'output.json')]) == 0
+        result = json.loads((tmp_path / 'output.json').read_text())['services'][0]
+        assert result['name'] == 'demo'
+        assert result['runtime']['target'] == 'demo'
+        assert 'declaration.drift' in result['failing']
+        assert registry.read_bytes() == expected_bytes
+
+
+def test_malformed_declaration_render_has_no_execution_or_output(tmp_path, monkeypatch):
+    import pytest
+    directory = tmp_path / 'services.d'
+    directory.mkdir()
+    (directory / 'demo.toml').write_text('name="demo"\nruntime={docker="demo"}\nstatus_command=["producer"]\n')
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'schema': c.REGISTRY_SCHEMA, 'services': []}))
+    def unexpected(*args, **kwargs):
+        raise AssertionError('render must not execute commands')
+    monkeypatch.setattr(c, 'run', unexpected)
+    output = tmp_path / 'rendered.json'
+    with pytest.raises(ValueError, match='non-root user'):
+        c.main(['--registry', str(registry), '--services-dir', str(directory), '--render-registry', str(output)])
+    assert not output.exists()
+
+
+def test_timestamp_rejects_nonfinite_and_bool():
+    assert all(c.timestamp(value) is None for value in (float('inf'), float('-inf'), float('nan'), True, False))
