@@ -30,14 +30,14 @@ QUERIES = {
 BINS = ("wrong", "probably_wrong", "checked_not_wrong_within_scope", "unknown")
 
 
-def target_query(query, instance, job):
-    selector = "instance=" + json.dumps(instance) + ",job=" + json.dumps(job)
+def target_query(query, instance, job, site):
+    selector = "instance=" + json.dumps(instance) + ",job=" + json.dumps(job) + ",site=" + json.dumps(site)
     if "__name__" in query:
         return query.replace("{__name__", "{" + selector + ",__name__")
     return re.sub("|".join(FAMILIES), lambda match: match[0] + "{" + selector + "}", query)
 
 
-def required_families(document, instance, job, now, window):
+def required_families(document, instance, job, site, now, window):
     if document.get("status") != "success" or document.get("data", {}).get("resultType") != "matrix":
         raise ValueError("required family range query failed")
     results = document["data"]["result"]
@@ -45,7 +45,8 @@ def required_families(document, instance, job, now, window):
     for series in results:
         labels = series.get("metric", {})
         name = labels.get("__name__")
-        if (labels.get("instance") != instance or labels.get("job") != job or name not in FAMILIES or name in names):
+        if (labels.get("instance") != instance or labels.get("job") != job or labels.get("site") != site
+                or name not in FAMILIES or name in names):
             raise ValueError("insufficient history: mixed target, duplicate or unexpected family")
         names.add(name)
         history({"status": "success", "data": {"resultType": "matrix", "result": [series]}}, now, window)
@@ -237,10 +238,14 @@ class Investigation:
                                  ["incidents"], incident.get("needs_operator") or "Inspect retained history and current observations.")
         for index, path in enumerate(args.runbook):
             self.source("runbook:" + str(index), path, lambda p=path: read_bytes(p))
-        if not args.condition or args.condition == "host.memory_pressure":
+        site = registry.get("site") if registry else None
+        memory_requested = not args.condition or args.condition == "host.memory_pressure"
+        if memory_requested and (not isinstance(site, str) or not site):
+            self.finding("unknown", "host.memory_pressure", "Registry has no usable expected site identity.", ["registry"], "Restore the expected host registry before diagnosing memory.")
+        if memory_requested and isinstance(site, str) and site:
             metrics, ids = {}, []
             for name, query in QUERIES.items():
-                query = target_query(query, args.instance, args.job)
+                query = target_query(query, args.instance, args.job, site)
                 identity = "metric:" + name
                 ids.append(identity)
                 path = Path(args.metrics_fixture) / (name + ".json") if args.metrics_fixture else None
@@ -249,7 +254,7 @@ class Investigation:
                 if raw is not None:
                     try:
                         doc = json.loads(raw)
-                        metrics[name] = (required_families(doc, args.instance, args.job, self.now, args.window)
+                        metrics[name] = (required_families(doc, args.instance, args.job, site, self.now, args.window)
                                          if name == "required_families" else history(doc, self.now, args.window))
                     except (ValueError, KeyError, TypeError) as error:
                         self.finding("unknown", identity, str(error), [identity], "Acquire a complete fresh range; do not infer from occupied swap.")

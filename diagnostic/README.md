@@ -35,7 +35,9 @@ The host sweep also checks memory using five fixed range queries: occupied swap,
 paging rate, memory waiting PSI rate, underlying sample age, and the five raw
 required metric families. `--instance` and `--job` select the exact expected
 node_exporter target in every query (use the host's actual scrape labels).
-Each required family must supply exactly one series with those labels and a
+The registry's nonempty `site` is also selected in every query and checked in
+every raw series; a missing registry site is unknown. Each required family must
+supply exactly one series with those three labels and a
 complete window; a missing family, mixed target or duplicate series from another
 site is unknown. The range must
 be ordered, finite and cover the window with no gap over 120 seconds; source
