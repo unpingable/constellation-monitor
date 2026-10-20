@@ -26,7 +26,7 @@ class DiagnosticTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.write("registry.json", {"schema": "constellation.estate_registry/v1", "services": []})
+        self.write("registry.json", {"schema": "constellation.estate_registry/v1", "site": "fixture-site", "services": []})
         self.write("attention.json", {"schema": "constellation.attention_report.v1", "evaluated_at": "2026-10-20T00:00:00Z", "conditions": []})
         for name in diagnostic.QUERIES:
             fixture = Path(__file__).parent / "fixtures" / "swap-occupied" / (name + ".json")
@@ -178,11 +178,11 @@ class DiagnosticTest(unittest.TestCase):
 
     def test_mixed_target_or_duplicate_site_cannot_clear(self):
         original = json.loads((self.root / "required_families.json").read_text())
-        for label, value in (("instance", "other:9100"), ("job", "other")):
+        for label, value in (("instance", "other:9100"), ("job", "other"), ("site", "other-site")):
             doc = json.loads(json.dumps(original))
             doc["data"]["result"][0]["metric"][label] = value
             with self.subTest(label=label), self.assertRaises(ValueError):
-                diagnostic.required_families(doc, "fixture:9100", "node", NOW, 900)
+                diagnostic.required_families(doc, "fixture:9100", "node", "fixture-site", NOW, 900)
         doc = json.loads(json.dumps(original))
         extra = json.loads(json.dumps(doc["data"]["result"][0]))
         extra["metric"]["site"] = "other-site"
@@ -193,8 +193,20 @@ class DiagnosticTest(unittest.TestCase):
 
     def test_all_queries_pin_target_without_changing_metric_names(self):
         for query in diagnostic.QUERIES.values():
-            selected = diagnostic.target_query(query, 'a"b:9100', "node")
+            selected = diagnostic.target_query(query, 'a"b:9100', "node", "fixture-site")
             self.assertIn('instance="a\\"b:9100",job="node"', selected)
+            self.assertIn('site="fixture-site"', selected)
+
+    def test_missing_registry_site_or_wrong_only_site_cannot_clear(self):
+        doc = json.loads((self.root / "required_families.json").read_text())
+        for row in doc["data"]["result"]:
+            row["metric"]["site"] = "wrong-only-site"
+        with self.assertRaises(ValueError):
+            diagnostic.required_families(doc, "fixture:9100", "node", "fixture-site", NOW, 900)
+        self.write("registry.json", {"schema": "constellation.estate_registry/v1", "services": []})
+        result = self.run_diagnostic()
+        self.assertFalse(result["bins"]["checked_not_wrong_within_scope"])
+        self.assertTrue(any("site identity" in f["statement"] for f in result["bins"]["unknown"]))
 
 
 if __name__ == "__main__":

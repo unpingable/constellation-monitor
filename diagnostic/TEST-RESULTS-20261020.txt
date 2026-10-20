@@ -9,17 +9,18 @@ test_insufficient_history_cannot_clear (test_diagnostic.DiagnosticTest.test_insu
 test_loopback_vm_query_range_contract (test_diagnostic.DiagnosticTest.test_loopback_vm_query_range_contract) ... ok
 test_missing_constituent_family_cannot_clear (test_diagnostic.DiagnosticTest.test_missing_constituent_family_cannot_clear) ... ok
 test_missing_metric_is_unknown (test_diagnostic.DiagnosticTest.test_missing_metric_is_unknown) ... ok
+test_missing_registry_site_or_wrong_only_site_cannot_clear (test_diagnostic.DiagnosticTest.test_missing_registry_site_or_wrong_only_site_cannot_clear) ... ok
 test_mixed_target_or_duplicate_site_cannot_clear (test_diagnostic.DiagnosticTest.test_mixed_target_or_duplicate_site_cannot_clear) ... ok
 test_no_registry_command_is_executed (test_diagnostic.DiagnosticTest.test_no_registry_command_is_executed) ... ok
 test_old_underlying_samples_do_not_clear (test_diagnostic.DiagnosticTest.test_old_underlying_samples_do_not_clear) ... ok
 test_oversize_source_is_unknown (test_diagnostic.DiagnosticTest.test_oversize_source_is_unknown) ... ok
 test_paging_is_a_symptom_not_root_cause (test_diagnostic.DiagnosticTest.test_paging_is_a_symptom_not_root_cause) ... ok
-test_record_is_exclusive (test_diagnostic.DiagnosticTest.test_record_is_exclusive) ... diagnostic incomplete: [Errno 17] File exists: '/tmp/tmpd1ge7hkc/record.json'
+test_record_is_exclusive (test_diagnostic.DiagnosticTest.test_record_is_exclusive) ... diagnostic incomplete: [Errno 17] File exists: '/tmp/tmp8rs35xae/record.json'
 ok
 test_subprocess_timeout_and_capture_limit (test_diagnostic.DiagnosticTest.test_subprocess_timeout_and_capture_limit) ... ok
 test_swap_occupied_without_paging_or_psi_is_not_pressure (test_diagnostic.DiagnosticTest.test_swap_occupied_without_paging_or_psi_is_not_pressure) ... ok
 
 ----------------------------------------------------------------------
-Ran 19 tests in 0.696s
+Ran 20 tests in 0.696s
 
 OK
