@@ -37,7 +37,8 @@ class DiagnosticTest(unittest.TestCase):
 
     def run_diagnostic(self, extra=()):
         argv = ["--registry", str(self.root / "registry.json"), "--attention", str(self.root / "attention.json"),
-                "--metrics-fixture", str(self.root), "--record", str(self.root / "record.json"), *extra]
+                "--metrics-fixture", str(self.root), "--instance", "fixture:9100", "--job", "node",
+                "--record", str(self.root / "record.json"), *extra]
         with patch.object(diagnostic.time, "time", return_value=NOW), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(diagnostic.main(argv), 0)
         return json.loads((self.root / "record.json").read_text())
@@ -166,6 +167,34 @@ class DiagnosticTest(unittest.TestCase):
         self.write("metric_source_age_seconds.json", matrix(600))
         result = self.run_diagnostic()
         self.assertFalse(result["bins"]["checked_not_wrong_within_scope"])
+
+    def test_missing_constituent_family_cannot_clear(self):
+        doc = json.loads((self.root / "required_families.json").read_text())
+        doc["data"]["result"].pop()
+        self.write("required_families.json", doc)
+        result = self.run_diagnostic()
+        self.assertFalse(result["bins"]["checked_not_wrong_within_scope"])
+        self.assertTrue(any("family missing" in f["statement"] for f in result["bins"]["unknown"]))
+
+    def test_mixed_target_or_duplicate_site_cannot_clear(self):
+        original = json.loads((self.root / "required_families.json").read_text())
+        for label, value in (("instance", "other:9100"), ("job", "other")):
+            doc = json.loads(json.dumps(original))
+            doc["data"]["result"][0]["metric"][label] = value
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                diagnostic.required_families(doc, "fixture:9100", "node", NOW, 900)
+        doc = json.loads(json.dumps(original))
+        extra = json.loads(json.dumps(doc["data"]["result"][0]))
+        extra["metric"]["site"] = "other-site"
+        doc["data"]["result"].append(extra)
+        self.write("required_families.json", doc)
+        result = self.run_diagnostic()
+        self.assertFalse(result["bins"]["checked_not_wrong_within_scope"])
+
+    def test_all_queries_pin_target_without_changing_metric_names(self):
+        for query in diagnostic.QUERIES.values():
+            selected = diagnostic.target_query(query, 'a"b:9100', "node")
+            self.assertIn('instance="a\\"b:9100",job="node"', selected)
 
 
 if __name__ == "__main__":

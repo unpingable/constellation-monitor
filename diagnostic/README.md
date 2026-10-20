@@ -6,9 +6,10 @@ and dependency edges remain expectations and grant no access or action authority
 
 ```sh
 python3 diagnostic/constellation-diagnostic.py \
-  --registry /etc/constellation-estate/registry.json \
+  --registry /etc/constellation-estate/estate.json \
   --attention /var/lib/constellation-attention/report.json \
   --vm-url http://127.0.0.1:8428 \
+  --instance 127.0.0.1:9100 --job node \
   --record /path/to/new-investigation.json
 ```
 
@@ -30,22 +31,26 @@ wrong. Unknown, removed or suspended conditions do not clear. Incidents are
 retained history, never current service-health evidence. A missing condition
 does not establish recovery. A declaration is never placed in the clear bin.
 
-The host sweep also checks memory using four fixed range queries: occupied swap,
-paging rate, memory waiting PSI rate, and underlying sample age. The range must
+The host sweep also checks memory using five fixed range queries: occupied swap,
+paging rate, memory waiting PSI rate, underlying sample age, and the five raw
+required metric families. `--instance` and `--job` select the exact expected
+node_exporter target in every query (use the host's actual scrape labels).
+Each required family must supply exactly one series with those labels and a
+complete window; a missing family, mixed target or duplicate series from another
+site is unknown. The range must
 be ordered, finite and cover the window with no gap over 120 seconds; source
 age must stay within `--max-age` (default 300 seconds). No paging and PSI zero
 means no pressure **by those measures in the sampled window**. Paging or stalls
 are symptoms requiring investigation, not a root cause or automatic severity
 threshold. Empty, stale, gapped, malformed and missing history is unknown.
-VictoriaMetrics must contain only this host's intended node_exporter population:
-the fixed queries aggregate that local store; they do not authenticate target
-identity or establish expected scrape coverage. They do not cover OOMs, memory
+The explicit target labels select observations; they do not authenticate target
+identity or establish coverage of other expected targets. They do not cover OOMs, memory
 capacity or service productivity. Cross-service causal inference is not delivered.
 
 The CLI accepts literal loopback HTTP only, disables proxies and redirects, and
 performs GET query_range requests. Each source has a hard three-second deadline
 and a 1 MiB cap. Registry services are capped at 100; conditions/incidents at
-1000; the investigation reads at most 32 sources (96 seconds of reader budget
+1000; the investigation reads at most 33 sources (99 seconds of reader budget
 at maximum settings, plus finite parsing/record work). Window is 300–3600
 seconds. Units can be reduced with `--unit-limit` (0–10). Missing access becomes
 unknown; this command does not request more authority. A socket/reader failure
