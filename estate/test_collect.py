@@ -1,5 +1,5 @@
 """Collector tests: declared contracts must be acquired, coverage includes timers and contracts."""
-import importlib.util, json, os, pathlib, sys
+import importlib.util, json, os, pathlib, sys, time
 
 HERE = pathlib.Path(__file__).parent
 spec = importlib.util.spec_from_file_location("collect", HERE / "constellation-estate-collect.py")
@@ -261,3 +261,117 @@ def test_an_observation_past_its_own_validity_is_stale_even_when_the_producer_sa
     assert by["a.fresh"]["state"] == "PRESENT" and by["a.nodate"]["state"] == "PRESENT"
     assert by["a.old"]["state"] == "STALE" and "exceeds its 60s validity" in by["a.old"]["reason"]
     assert by["a.old"]["observed_at"] == "2020-01-01T00:00:00Z"
+
+
+def test_declared_file_probes_emit_geometry_and_age_without_sqlite_sidecars(tmp_path):
+    import sqlite3
+    db = tmp_path / "store.sqlite"
+    connection = sqlite3.connect(db)
+    connection.execute("CREATE TABLE records (x TEXT)")
+    connection.commit()
+    connection.close()
+    wal = tmp_path / "store.sqlite-wal"
+    wal.write_bytes(b"wal fixture")
+    output = tmp_path / "output.json"; output.write_text("{}")
+    backup = tmp_path / "backup.sqlite"; backup.write_bytes(b"backup")
+    before = set(tmp_path.iterdir())
+    reg = {"services": [{"name": "demo", "runtime": {"systemd": "demo.service"}, "probes": {
+        "stores": [{"name": "main", "path": str(db)}],
+        "outputs": [{"name": "report", "path": str(output)}],
+        "backups": [{"name": "daily", "path": str(backup)}]}}]}
+    specs = c.probe_specs(reg)
+    entries = c.collect_probes(specs, str(tmp_path / "state.json"), 2)
+    metrics = c.render_probes(specs, entries)
+    assert 'service_store_bytes{service="demo",store="main"} ' in metrics
+    assert 'service_store_wal_bytes{service="demo",store="main"} 11' in metrics
+    assert 'service_store_freelist_pages{service="demo",store="main"} 0' in metrics
+    assert 'service_filesystem_avail_bytes{service="demo",store="main"} ' in metrics
+    assert 'service_filesystem_avail_inodes{service="demo",store="main"} ' in metrics
+    assert 'service_output_age_seconds{service="demo",output="report"} ' in metrics
+    assert 'service_backup_created_timestamp_seconds{service="demo",backup="daily"} ' in metrics
+    assert set(tmp_path.iterdir()) - before == {tmp_path / "state.json"}
+    assert not (tmp_path / "store.sqlite-shm").exists()
+
+
+def test_hung_file_probe_does_not_delay_other_probe_or_clear_missing(tmp_path):
+    blocked = tmp_path / "blocked.sqlite"
+    os.mkfifo(blocked)
+    good = tmp_path / "good.json"; good.write_text("good")
+    missing = tmp_path / "missing.json"
+    specs = [("demo", "store", "blocked", str(blocked), "sqlite"),
+             ("demo", "output", "good", str(good), "output_mtime"),
+             ("demo", "output", "missing", str(missing), "output_mtime")]
+    started = time.monotonic()
+    entries = c.collect_probes(specs, str(tmp_path / "state.json"), 0.25, workers=3)
+    assert time.monotonic() - started < 3
+    assert entries[c.probe_key(specs[0])]["success"] is False
+    assert entries[c.probe_key(specs[1])]["success"] is True
+    assert entries[c.probe_key(specs[2])]["success"] is False
+    metrics = c.render_probes(specs, entries)
+    assert 'service_probe_success{service="demo",output="good",probe="output_mtime"} 1' in metrics
+    assert 'service_probe_success{service="demo",output="missing",probe="output_mtime"} 0' in metrics
+    assert 'service_output_age_seconds{service="demo",output="missing"}' not in metrics
+
+
+def test_slow_probe_retains_observation_time_then_reports_failure(tmp_path):
+    import sqlite3
+    db = tmp_path / "store.sqlite"
+    cx = sqlite3.connect(db); cx.execute("CREATE TABLE x (v)"); cx.close()
+    spec = ("demo", "store", "main", str(db), "sqlite")
+    state = str(tmp_path / "state.json")
+    first = c.collect_probes([spec], state, 2, slow_seconds=600)
+    observed = first[c.probe_key(spec)]["observed_at"]
+    db.unlink()
+    skipped = c.collect_probes([spec], state, 2, slow_seconds=600)
+    assert skipped[c.probe_key(spec)]["observed_at"] == observed
+    assert 'service_probe_observed_timestamp_seconds{service="demo",store="main",probe="sqlite"} ' in c.render_probes([spec], skipped)
+    due = c.collect_probes([spec], state, 2, slow_seconds=0)
+    assert due[c.probe_key(spec)]["success"] is False
+    assert due[c.probe_key(spec)]["observed_at"] == observed
+    assert 'service_store_bytes{service="demo",store="main"}' not in c.render_probes([spec], due)
+
+
+def test_command_output_capture_is_bounded_while_draining_both_pipes():
+    code = "import os; os.write(1,b'x'*2000000); os.write(2,b'y'*2000000+b'end')"
+    rc, out, err = c.run([sys.executable, "-c", code], 4, limit=128)
+    assert rc == 0 and out == b"x" * 128 and len(err) == 2000 and err.endswith("end")
+
+
+def test_filesystem_probe_uses_declared_path(monkeypatch):
+    class Stat:
+        f_bavail = 2
+        f_frsize = 4096
+        f_favail = 3
+    seen = []
+    monkeypatch.setattr(c.os, "statvfs", lambda path: (seen.append(path), Stat())[1])
+    assert c.probe_worker("filesystem", "/a/link-to-store") == {
+        "filesystem_avail_bytes": 8192, "filesystem_avail_inodes": 3}
+    assert seen == ["/a/link-to-store"]
+
+
+def test_main_publishes_probes_before_concurrent_service_checks(tmp_path, monkeypatch):
+    import threading
+    output = tmp_path / "output.json"; output.write_text("{}")
+    textfiles = tmp_path / "textfiles"; textfiles.mkdir()
+    report = tmp_path / "estate.json"
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"schema": "constellation.estate_registry/v1", "services": [
+        {"name": name, "runtime": {"systemd": name + ".service"},
+         "probes": {"outputs": [{"name": "report", "path": str(output)}]}}
+        for name in ("one", "two")]}))
+    barrier = threading.Barrier(2)
+
+    def evaluate(svc, timeout):
+        assert 'service_output_age_seconds{service="one",output="report"}' in (textfiles / "constellation-estate.prom").read_text()
+        barrier.wait(timeout=2)
+        return {"name": svc["name"], "verdict": "OK", "reason": "fixture", "concerns": []}
+
+    monkeypatch.setattr(c, "evaluate", evaluate)
+    monkeypatch.setattr(c, "coverage", lambda *args: [])
+    assert c.main(["--registry", str(registry), "--output", str(report),
+                   "--textfile-dir", str(textfiles)]) == 0
+    assert [s["name"] for s in json.loads(report.read_text())["services"][:2]] == ["one", "two"]
+    registry.write_text(json.dumps({"schema": "constellation.estate_registry/v1", "services": []}))
+    assert c.main(["--registry", str(registry), "--output", str(report),
+                   "--textfile-dir", str(textfiles)]) == 0
+    assert "service_output_age_seconds{" not in (textfiles / "constellation-estate.prom").read_text()

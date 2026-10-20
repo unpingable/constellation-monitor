@@ -93,3 +93,74 @@ repository's declared policy identity so the evaluator can tell a firing
 alert under a drifted definition set from one under the declared set. The
 shared vector `fixtures/vmalert-rules-runtime-v1.json` is consumed by
 `test_metric_alerts.py` and by the evaluator's tests.
+
+## External file probes (P1)
+
+The registry may add read-only file probes to a service entry. P2 will derive
+these entries from service declarations; this collector reads the additive JSON
+form today:
+
+```json
+"probes": {
+  "stores": [{"name": "main", "path": "/var/lib/example/main.sqlite"}],
+  "outputs": [{"name": "report", "path": "/var/lib/example/report.json"}],
+  "backups": [{"name": "daily", "path": "/var/backups/example.sqlite"}]
+}
+```
+
+Names are unique lowercase tokens within each list. Paths are absolute host
+paths visible to the collector account. A container-only path must be exposed
+as a read-only host path before declaration. A missing path is a failed probe,
+never a zero-size file or a healthy result. A store means a SQLite database.
+The collector does not open it through SQLite or create any sibling file. It
+reads the 100-byte main database header, checks the SQLite magic and page size,
+and reads the main-header freelist count. That count may lag uncheckpointed WAL
+changes; none of these file measurements asserts transactional SQLite health.
+WAL absence yields zero WAL bytes only after the database itself was read and
+validated.
+
+The existing two-minute timer is the fast schedule: filesystem capacity and
+file mtimes are checked on every pass. SQLite header and WAL geometry run every
+ten minutes by default (`--probe-slow-seconds`). Each file operation runs in a
+child process with its own three-second deadline (`--probe-timeout`), with at
+most four probe workers. Service checks run with at most four workers
+(`--service-workers`). A delayed service status producer cannot prevent probes
+from publishing, because the probe textfile is replaced before service checks
+begin. Command stdout retains at most 1 MiB (4 KiB for a probe), while stderr
+retains its final 2 KiB; both pipes are drained throughout execution.
+
+`--textfile-dir` must name the existing node_exporter textfile directory when
+probes are declared. The service unit uses `/var/lib/prometheus/node-exporter`.
+The collector atomically replaces `constellation-estate.prom` there and stores
+the schedule cache as `probe-state.json` beside its estate JSON output. The
+textfile exposes `service_filesystem_avail_bytes`,
+`service_filesystem_avail_inodes`, `service_store_bytes`,
+`service_store_wal_bytes`, `service_store_freelist_pages`,
+`service_store_page_size_bytes`, `service_store_age_seconds`,
+`service_output_age_seconds`, `service_backup_age_seconds`, and
+`service_backup_created_timestamp_seconds`. The backup timestamp is file mtime,
+not a verified creation or successful restore time. Measurement labels include
+`service` and the appropriate `store`, `output`, or `backup` name.
+
+Every operation also emits `service_probe_success{service,<kind>,probe}`. A
+failure emits zero and omits its measurement families; it cannot turn missing
+data into a clear reading. `service_probe_last_success_timestamp_seconds` and
+`service_probe_observed_timestamp_seconds` retain the observation time when a
+slow probe is skipped, and last success survives a failed attempt. Rules must
+check success, observation age, and textfile freshness (node_exporter's
+`node_textfile_mtime_seconds`) before treating measurements as current. The
+collector removes old metric series when a registry removes its probes.
+
+Formalization consideration for P1: the source is Monitor revision `0c6928a`;
+the resulting revision and local test receipt are named in the immutable lane
+notice for run `fec2dc7f-8535-41e4-9bd8-18c4c6ebc08e`. The proposition is
+limited to one collector pass: for each declared file operation, a successful
+measurement has an observation time, and an unavailable or timed-out operation
+emits success zero without a fabricated measurement; one blocked operation does
+not prevent other probe results from publishing. Counterexamples outside that
+scope include the filesystem changing immediately after observation, a
+stopped collector leaving an old textfile, and a store header that does not
+reflect WAL content. The Monitor lane owns this decision. The bounded child
+deadline, atomic output, and deterministic missing/FIFO fixtures directly test
+the boundary, so practical tests and prose are sufficient for this change.
+Freshness rules and end-to-end delivery remain separate integration claims.

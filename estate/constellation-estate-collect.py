@@ -16,7 +16,7 @@ the telemetry exporter and the dashboard read. Verdicts:
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
-import argparse, fnmatch, hashlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+import argparse, concurrent.futures, fnmatch, hashlib, json, os, selectors, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
 
 REGISTRY_SCHEMA = "constellation.estate_registry/v1"
@@ -35,8 +35,53 @@ def run(argv, timeout, user=None, cwd=None, env=None, limit=1 << 20):
         argv = ["setpriv", "--reuid", user, "--regid", user, "--init-groups", "--"] + argv
     full_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LC_ALL": "C.UTF-8"}
     full_env.update(env or {})
-    p = subprocess.run(argv, cwd=cwd, env=full_env, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
-    return p.returncode, p.stdout[:limit], p.stderr[-2000:].decode("utf-8", "replace")
+    # Drain pipes throughout the run. communicate()/subprocess.run() retains all
+    # output before slicing, so a noisy producer could exhaust collector memory.
+    p = subprocess.Popen(argv, cwd=cwd, env=full_env, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    captured = {p.stdout: bytearray(), p.stderr: bytearray()}
+    caps = {p.stdout: limit, p.stderr: 2000}
+    deadline = time.monotonic() + timeout
+    with selectors.DefaultSelector() as sel:
+        for pipe in captured:
+            os.set_blocking(pipe.fileno(), False)
+            sel.register(pipe, selectors.EVENT_READ)
+        try:
+            while sel.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                for key, _ in sel.select(remaining):
+                    pipe = key.fileobj
+                    try:
+                        chunk = os.read(pipe.fileno(), 65536)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        sel.unregister(pipe)
+                        pipe.close()
+                        continue
+                    if pipe is p.stderr:
+                        captured[pipe] = (captured[pipe] + chunk)[-caps[pipe]:]
+                    else:
+                        room = caps[pipe] - len(captured[pipe])
+                        if room > 0:
+                            captured[pipe].extend(chunk[:room])
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            p.wait(timeout=remaining)
+        except BaseException:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            p.wait()
+            raise
+        finally:
+            for pipe in captured:
+                pipe.close()
+    return p.returncode, bytes(captured[p.stdout]), captured[p.stderr].decode("utf-8", "replace")
 
 
 def parse_concerns(path):
@@ -363,6 +408,194 @@ def definition_service(defs):
             "failing": [x["id"] for x in bad]}
 
 
+PROBE_FIELDS = {"stores": "store", "outputs": "output", "backups": "backup"}
+PROBE_FAMILIES = {
+    "filesystem_avail_bytes": "Available bytes on the filesystem containing the declared store",
+    "filesystem_avail_inodes": "Available inodes on the filesystem containing the declared store",
+    "store_bytes": "Declared SQLite store file size in bytes",
+    "store_wal_bytes": "Declared SQLite store WAL file size in bytes (zero when absent)",
+    "store_freelist_pages": "SQLite freelist page count from the database header",
+    "store_page_size_bytes": "SQLite page size from the database header",
+    "store_age_seconds": "Age of the declared store file mtime in seconds",
+    "output_age_seconds": "Age of the declared output file mtime in seconds",
+    "backup_age_seconds": "Age of the declared backup file mtime in seconds",
+    "backup_created_timestamp_seconds": "Declared backup file mtime as Unix seconds",
+    "probe_success": "Whether the latest scheduled probe succeeded",
+    "probe_last_success_timestamp_seconds": "Unix time of the last successful probe observation",
+    "probe_observed_timestamp_seconds": "Unix time when the emitted measurement was observed",
+}
+
+
+def probe_specs(reg):
+    """The P1 additive JSON surface; P2 owns TOML and derived declarations."""
+    specs = []
+    for svc in reg["services"]:
+        probes = svc.get("probes") or {}
+        if not isinstance(probes, dict) or set(probes) - set(PROBE_FIELDS):
+            raise ValueError("%s: probes must contain only stores, outputs, backups" % svc["name"])
+        for field, kind in PROBE_FIELDS.items():
+            entries = probes.get(field, [])
+            if not isinstance(entries, list):
+                raise ValueError("%s: probes.%s must be a list" % (svc["name"], field))
+            seen = set()
+            for entry in entries:
+                if not isinstance(entry, dict) or set(entry) != {"name", "path"}:
+                    raise ValueError("%s: %s probe needs only name and path" % (svc["name"], kind))
+                name, path = entry["name"], entry["path"]
+                if (not isinstance(name, str) or not name or len(name) > 48 or set(name) - NAME_OK or
+                        name in seen or not isinstance(path, str) or not os.path.isabs(path)):
+                    raise ValueError("%s: invalid or duplicate %s probe" % (svc["name"], kind))
+                seen.add(name)
+                operations = ("filesystem", "sqlite", "store_mtime") if kind == "store" else (kind + "_mtime",)
+                for operation in operations:
+                    specs.append((svc["name"], kind, name, path, operation))
+    if len(specs) > 256:
+        raise ValueError("too many probes (maximum 256)")
+    return specs
+
+
+def probe_worker(operation, path):
+    """One read-only filesystem operation, isolated in a deadline-bound child."""
+    if operation == "filesystem":
+        stat = os.statvfs(path)
+        return {"filesystem_avail_bytes": stat.f_bavail * stat.f_frsize,
+                "filesystem_avail_inodes": stat.f_favail}
+    if operation == "sqlite":
+        with open(path, "rb") as fh:
+            header = fh.read(100)
+            size = os.fstat(fh.fileno()).st_size
+        if len(header) != 100 or header[:16] != b"SQLite format 3\x00":
+            raise ValueError("invalid SQLite header")
+        page_size = int.from_bytes(header[16:18], "big")
+        if page_size == 1:
+            page_size = 65536
+        if page_size < 512 or page_size > 65536 or page_size & (page_size - 1):
+            raise ValueError("invalid SQLite page size")
+        wal_path = path + "-wal"
+        try:
+            wal_size = os.stat(wal_path).st_size
+        except FileNotFoundError:
+            wal_size = 0
+        return {"store_bytes": size, "store_wal_bytes": wal_size,
+                "store_freelist_pages": int.from_bytes(header[36:40], "big"),
+                "store_page_size_bytes": page_size}
+    st = os.stat(path)
+    observed = time.time()
+    if operation == "store_mtime":
+        return {"store_age_seconds": max(0, observed - st.st_mtime)}
+    if operation == "output_mtime":
+        return {"output_age_seconds": max(0, observed - st.st_mtime)}
+    if operation == "backup_mtime":
+        return {"backup_age_seconds": max(0, observed - st.st_mtime),
+                "backup_created_timestamp_seconds": st.st_mtime}
+    raise ValueError("unknown probe operation")
+
+
+def probe_key(spec):
+    return json.dumps(spec, separators=(",", ":"))
+
+
+def collect_one_probe(spec, timeout):
+    _, _, _, path, operation = spec
+    rc, out, err = run([sys.executable, "-I", os.path.abspath(__file__), "--probe-worker", operation, path],
+                       timeout, limit=4096)
+    if rc != 0:
+        raise RuntimeError("probe exited %d: %s" % (rc, err[-200:]))
+    values = json.loads(out)
+    if not isinstance(values, dict) or not values or set(values) - set(PROBE_FAMILIES):
+        raise ValueError("unexpected probe result")
+    return values
+
+
+def collect_probes(specs, state_path, timeout, slow_seconds=600, workers=4):
+    try:
+        with open(state_path) as fh:
+            old = json.load(fh)
+        if old.get("schema") != "constellation.estate_probes/v1":
+            old = {}
+    except (OSError, ValueError):
+        old = {}
+    old_entries = old.get("entries", {})
+    if not isinstance(old_entries, dict):
+        old_entries = {}
+    now = time.time()
+    entries = {}
+    futures = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for spec in specs:
+            key = probe_key(spec)
+            previous = old_entries.get(key, {})
+            if not isinstance(previous, dict):
+                previous = {}
+            entries[key] = dict(previous)
+            due = (spec[4] != "sqlite" or now - previous.get("attempted_at", 0) >= slow_seconds)
+            if due:
+                futures[pool.submit(collect_one_probe, spec, timeout)] = key
+        for future in concurrent.futures.as_completed(futures):
+            key = futures[future]
+            entry = entries[key]
+            entry["attempted_at"] = time.time()
+            try:
+                entry["values"] = future.result()
+                entry["observed_at"] = time.time()
+                entry["success"] = True
+            except Exception as exc:  # one unavailable path must not stop another
+                entry["values"] = {}
+                entry["success"] = False
+                entry["error"] = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    state = {"schema": "constellation.estate_probes/v1", "entries": entries}
+    write_atomic(state_path, state)
+    return entries
+
+
+def prometheus_escape(value):
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def render_probes(specs, entries, now=None):
+    now = time.time() if now is None else now
+    rows = {name: [] for name in PROBE_FAMILIES}
+    for spec in specs:
+        service, kind, name, _, operation = spec
+        entry = entries[probe_key(spec)]
+        labels = {"service": service, kind: name, "probe": operation}
+        probe_labels = ",".join('%s="%s"' % (k, prometheus_escape(v)) for k, v in labels.items())
+        rows["probe_success"].append((probe_labels, int(bool(entry.get("success")))))
+        if entry.get("observed_at"):
+            rows["probe_last_success_timestamp_seconds"].append((probe_labels, entry["observed_at"]))
+        if not entry.get("success"):
+            continue
+        for field, value in entry.get("values", {}).items():
+            # Age measurements keep the original file mtime when carried from
+            # a slow pass; a schedule skip must not make old data look fresh.
+            if field.endswith("_age_seconds"):
+                value += max(0, now - entry["observed_at"])
+            metric_labels = ",".join('%s="%s"' % (k, prometheus_escape(v))
+                                     for k, v in {"service": service, kind: name}.items())
+            rows[field].append((metric_labels, value))
+        rows["probe_observed_timestamp_seconds"].append((probe_labels, entry["observed_at"]))
+    lines = []
+    for name, help_text in PROBE_FAMILIES.items():
+        metric = "service_" + name
+        lines.extend(["# HELP %s %s" % (metric, help_text), "# TYPE %s gauge" % metric])
+        lines.extend("%s{%s} %s" % (metric, labels, value) for labels, value in rows[name])
+    return "\n".join(lines) + "\n"
+
+
+def write_textfile(path, text):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".estate-probes-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
 def validate(reg):
     if reg.get("schema") != REGISTRY_SCHEMA:
         raise ValueError("registry schema must be " + REGISTRY_SCHEMA)
@@ -374,6 +607,7 @@ def validate(reg):
         names.add(n)
         if not ({"systemd", "docker"} & set(svc["runtime"])):
             raise ValueError("%s: runtime needs systemd or docker" % n)
+    probe_specs(reg)
 
 
 def write_atomic(path, doc):
@@ -389,10 +623,17 @@ def write_atomic(path, doc):
 
 
 def main(argv=None):
+    if argv is None and len(sys.argv) == 4 and sys.argv[1] == "--probe-worker":
+        print(json.dumps(probe_worker(sys.argv[2], sys.argv[3])))
+        return 0
     ap = argparse.ArgumentParser()
     ap.add_argument("--registry", default="/etc/constellation-estate/estate.json")
     ap.add_argument("--output", default="/var/lib/constellation-estate/estate.json")
     ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--textfile-dir", help="node_exporter textfile collector directory for declared probes")
+    ap.add_argument("--probe-timeout", type=float, default=3, help="deadline in seconds for each file probe")
+    ap.add_argument("--probe-slow-seconds", type=int, default=600, help="SQLite geometry polling interval")
+    ap.add_argument("--service-workers", type=int, default=4, help="maximum concurrent service checks")
     ap.add_argument("--print", action="store_true")
     ap.add_argument("--definitions-only", action="store_true", help="inspect only declared definition pins; no workload or coverage claim")
     a = ap.parse_args(argv)
@@ -401,6 +642,20 @@ def main(argv=None):
     reg = json.loads(registry_bytes)
     validate(reg)
     started = time.time()
+    if a.service_workers < 1 or a.service_workers > 16:
+        raise ValueError("service-workers must be between 1 and 16")
+    specs = probe_specs(reg)
+    if specs and not a.definitions_only:
+        if not a.textfile_dir or not os.path.isdir(a.textfile_dir):
+            raise ValueError("declared probes require an existing --textfile-dir")
+        if a.probe_timeout <= 0 or a.probe_slow_seconds <= 0:
+            raise ValueError("probe deadlines and schedule must be positive")
+        entries = collect_probes(specs, os.path.join(os.path.dirname(a.output), "probe-state.json"),
+                                 a.probe_timeout, a.probe_slow_seconds)
+        write_textfile(os.path.join(a.textfile_dir, "constellation-estate.prom"), render_probes(specs, entries))
+    elif a.textfile_dir and os.path.isdir(a.textfile_dir) and not a.definitions_only:
+        # Removing the last declaration must remove its old metric series.
+        write_textfile(os.path.join(a.textfile_dir, "constellation-estate.prom"), render_probes([], {}))
     if a.definitions_only:
         defs = definitions(reg, a.timeout)
         if not defs:
@@ -419,8 +674,11 @@ def main(argv=None):
     except (OSError, ValueError):
         previous = {}
     services = []
-    for svc in reg["services"]:
-        s = evaluate(svc, a.timeout)
+    # File metrics are already published above. A slow status producer cannot
+    # keep unrelated service evaluations waiting behind it in registry order.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=a.service_workers) as pool:
+        evaluated = list(pool.map(lambda svc: evaluate(svc, a.timeout), reg["services"]))
+    for s in evaluated:
         prev = previous.get(s["name"])
         s["since"] = prev["since"] if prev and prev.get("verdict") == s["verdict"] and prev.get("since") else now_iso(started)
         services.append(s)
