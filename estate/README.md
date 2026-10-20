@@ -221,3 +221,15 @@ after its limit. A failed run remains DEGRADED. Output existence/mtime is a sepa
 probe and cannot establish successful execution. Legacy timers without these
 fields retain their existing armed/result checks. No earlier success is inferred
 when systemd exposes only a later unsuccessful run.
+
+P3 limits accept exactly `last_success_age_seconds`, `cursor_lag_seconds`,
+`output_age_seconds`, `store_bytes`, `wal_growth_bytes`, and `backup_age_seconds`.
+Unknown keys fail validation. Collection publishes each as
+`service_<key>_limit{service="name"}` in the same textfile, including services
+without file probes. Threshold declarations require `--textfile-dir`.
+`service_declaration_observed_timestamp_seconds{service="name"}` records the
+collector pass over an expected subject, even when its runtime is absent. It is
+not successful observation or application health. Generic rules must separately
+gate on current successful probe/application observations. Applications supply
+`service_last_success_timestamp_seconds` and `service_cursor_lag_seconds` through
+ordinary Prometheus instrumentation; authored limits do not create those facts.

@@ -27,6 +27,8 @@ REGISTRY_SCHEMA = "constellation.estate_registry/v1"
 OUTPUT_SCHEMA = "constellation.estate/v1"
 STATUS_SCHEMA = "project.ops.status/v1"
 OK_STATES = {"PRESENT", "NOT_APPLICABLE"}
+THRESHOLD_KEYS = {"last_success_age_seconds", "cursor_lag_seconds", "output_age_seconds",
+                  "store_bytes", "wal_growth_bytes", "backup_age_seconds"}
 NAME_OK = set("abcdefghijklmnopqrstuvwxyz0123456789-")
 
 
@@ -732,6 +734,23 @@ def render_probes(specs, entries, now=None):
     return "\n".join(lines) + "\n"
 
 
+def render_service_limits(reg, now=None):
+    """Publish authored limits; timestamp means a collector pass, never health."""
+    now = time.time() if now is None else now
+    lines = ["# HELP service_declaration_observed_timestamp_seconds Collector pass over expected service declaration; not service health",
+             "# TYPE service_declaration_observed_timestamp_seconds gauge"]
+    for key in sorted(THRESHOLD_KEYS):
+        metric = "service_" + key + "_limit"
+        lines.extend(["# HELP " + metric + " Authored service threshold", "# TYPE " + metric + " gauge"])
+        for svc in sorted(reg["services"], key=lambda service: service["name"]):
+            if key in svc.get("thresholds", {}):
+                lines.append('%s{service="%s"} %s' % (metric, prometheus_escape(svc["name"]), svc["thresholds"][key]))
+    for svc in sorted(reg["services"], key=lambda service: service["name"]):
+        lines.append('service_declaration_observed_timestamp_seconds{service="%s"} %s' %
+                     (prometheus_escape(svc["name"]), now))
+    return "\n".join(lines) + "\n"
+
+
 def write_textfile(path, text):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".estate-probes-", suffix=".tmp")
     try:
@@ -771,7 +790,10 @@ def validate(reg):
                 value = timer["max_success_age_seconds"]
                 if not finite_nonnegative(value) or value <= 0 or "first_result_due_at" not in timer:
                     raise ValueError("maximum success age needs positive seconds and first_result_due_at")
-        for value in svc.get("thresholds", {}).values():
+        thresholds = svc.get("thresholds", {})
+        if not isinstance(thresholds, dict) or set(thresholds) - THRESHOLD_KEYS:
+            raise ValueError("unknown service threshold")
+        for value in thresholds.values():
             if not finite_nonnegative(value) or value <= 0:
                 raise ValueError("thresholds must be positive finite numbers")
     for svc in reg["services"]:
@@ -835,6 +857,9 @@ def main(argv=None):
     if a.service_workers < 1 or a.service_workers > 16:
         raise ValueError("service-workers must be between 1 and 16")
     specs = probe_specs(reg)
+    has_limits = any(svc.get("thresholds") for svc in reg["services"])
+    if has_limits and not a.definitions_only and (not a.textfile_dir or not os.path.isdir(a.textfile_dir)):
+        raise ValueError("declared thresholds require an existing --textfile-dir")
     if specs and not a.definitions_only:
         if not a.textfile_dir or not os.path.isdir(a.textfile_dir):
             raise ValueError("declared probes require an existing --textfile-dir")
@@ -842,10 +867,10 @@ def main(argv=None):
             raise ValueError("probe deadlines and schedule must be positive")
         entries = collect_probes(specs, os.path.join(os.path.dirname(a.output), "probe-state.json"),
                                  a.probe_timeout, a.probe_slow_seconds)
-        write_textfile(os.path.join(a.textfile_dir, "constellation-estate.prom"), render_probes(specs, entries))
+        write_textfile(os.path.join(a.textfile_dir, "constellation-estate.prom"), render_probes(specs, entries) + render_service_limits(reg))
     elif a.textfile_dir and os.path.isdir(a.textfile_dir) and not a.definitions_only:
         # Removing the last declaration must remove its old metric series.
-        write_textfile(os.path.join(a.textfile_dir, "constellation-estate.prom"), render_probes([], {}))
+        write_textfile(os.path.join(a.textfile_dir, "constellation-estate.prom"), render_probes([], {}) + render_service_limits(reg))
     if a.definitions_only:
         defs = definitions(reg, a.timeout)
         if not defs:

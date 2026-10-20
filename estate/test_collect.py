@@ -490,3 +490,34 @@ def test_false_path_declaration_is_drift(tmp_path, monkeypatch):
     svc = {'name': 'demo', 'runtime': {'docker': 'demo'}, '_has_declaration': True,
            'probes': {'outputs': [{'name': 'result', 'path': str(tmp_path / 'missing')}]}}
     assert 'declaration.drift' in c.evaluate(svc, 1)['failing']
+
+
+def test_service_limit_rendering_is_deterministic_and_not_health():
+    reg = {'services': [{'name': 'z'}, {'name': 'a', 'thresholds': {'cursor_lag_seconds': 60}}]}
+    text = c.render_service_limits(reg, now=100)
+    assert 'service_cursor_lag_seconds_limit{service="a"} 60\n' in text
+    assert 'service_declaration_observed_timestamp_seconds{service="z"} 100\n' in text
+    assert 'service_declaration_observed_timestamp_seconds{service="a"} 100\n' in text
+    assert 'service_probe_success' not in text
+    assert text == c.render_service_limits({'services': list(reversed(reg['services']))}, now=100)
+
+
+def test_unknown_threshold_is_rejected():
+    import pytest
+    with pytest.raises(ValueError, match='unknown service threshold'):
+        c.validate({'schema': c.REGISTRY_SCHEMA, 'services': [
+            {'name': 'a', 'runtime': {'docker': 'a'}, 'thresholds': {'invented': 60}}]})
+
+
+def test_application_thresholds_publish_without_file_probes(tmp_path, monkeypatch):
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'schema': c.REGISTRY_SCHEMA, 'services': [
+        {'name': 'a', 'runtime': {'docker': 'a'}, 'thresholds': {'last_success_age_seconds': 60}}]}))
+    monkeypatch.setattr(c, 'runtime_state', lambda *a: {'up': False, 'state': 'absent'})
+    monkeypatch.setattr(c, 'coverage', lambda *a: [])
+    assert c.main(['--registry', str(registry), '--output', str(tmp_path / 'output.json'),
+                   '--textfile-dir', str(tmp_path)]) == 0
+    text = (tmp_path / 'constellation-estate.prom').read_text()
+    assert 'service_last_success_age_seconds_limit{service="a"} 60\n' in text
+    assert 'service_declaration_observed_timestamp_seconds{service="a"}' in text
+    assert json.loads((tmp_path / 'output.json').read_text())['services'][0]['verdict'] == 'DOWN'
