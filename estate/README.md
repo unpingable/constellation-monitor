@@ -169,3 +169,55 @@ reflect WAL content. The Monitor lane owns this decision. The bounded child
 deadline, atomic output, and deterministic missing/FIFO fixtures directly test
 the boundary, so practical tests and prose are sufficient for this change.
 Freshness rules and end-to-end delivery remain separate integration claims.
+
+### Authored service declarations (P2)
+
+An approved desired-state registry remains the expected set even when the service,
+collector or entire target host is unavailable. Render it before deployment from
+`/etc/constellation/services.d/<name>.toml`; retain that JSON in the existing
+versioned deployment inventory off-host. Collection never reconstructs expectations
+from a live directory, processes or advertisements. Retire a subject by reviewing
+and rendering an explicit desired-state change.
+
+```toml
+name = "demo"
+role = "worker"
+runtime = {systemd = "demo.service"}
+health_url = "http://127.0.0.1:8080/health"
+probes = {outputs = [{name = "result", path = "/var/lib/demo/result"}]}
+thresholds = {output_age_seconds = 60}
+```
+
+`runtime`, `status`, `contract`, `declared`, `probes` and `timers` retain the
+existing JSON shapes (TOML inline tables work). `health_url` is shorthand for
+HTTP status; `status_command = ["producer", "--json"]` is shorthand for a
+project-ops-status producer. Choose one status source. Optional `metrics_url`
+is checked for HTTP availability; `dependencies = ["other-service"]` records
+graph edges between expected subjects. Thresholds are positive finite service
+limits preserved for the generic rule renderer; declaring one alone does not
+activate an alert. Existing collector permissions and action boundaries apply.
+
+```sh
+python3 constellation-estate-collect.py --registry base.json \
+  --services-dir ./services.d --declaration-root /etc/constellation/services.d \
+  --render-registry derived-estate.json
+```
+
+This mode makes no runtime observations. It replaces `services` in the base,
+retains its other fields, and pins each declaration's target path and exact byte
+SHA-256. Identical inputs produce identical sorted JSON. Deploy the rendered
+registry and the exact declaration files together. Ordinary `--registry` collection
+verifies those pins, retains the approved service fields when files are missing or
+changed, and reports `declaration.drift`. Unavailable declared runtime, status or
+metrics endpoints and missing declared paths also report drift. Unregistered
+workload coverage still runs. `--declaration-root` is render-only: collection always uses the approved paths.
+
+Timers can add `first_result_due_at = "2026-10-20T12:00:00Z"` and
+`max_success_age_seconds = 3600` (the latter requires a first deadline). Armed
+without an observed successful completion is UNKNOWN before that deadline and
+DEGRADED at or after it. Success means systemd reports `Result=success`, an
+accepted exit status and `ExecMainExitTimestamp`; the maximum age expires strictly
+after its limit. A failed run remains DEGRADED. Output existence/mtime is a separate
+probe and cannot establish successful execution. Legacy timers without these
+fields retain their existing armed/result checks. No earlier success is inferred
+when systemd exposes only a later unsuccessful run.

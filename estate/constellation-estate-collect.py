@@ -18,6 +18,10 @@ Read-only towards services. Never shells out through a shell; argv is executed d
 """
 import argparse, concurrent.futures, fnmatch, hashlib, json, math, os, selectors, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
+try:
+    import tomllib
+except ImportError:  # Ubuntu 22.04 / Python 3.10
+    import tomli as tomllib
 
 REGISTRY_SCHEMA = "constellation.estate_registry/v1"
 OUTPUT_SCHEMA = "constellation.estate/v1"
@@ -120,16 +124,98 @@ def unit_props(unit, timeout, props):
     return dict(line.split("=", 1) for line in out.decode().splitlines() if "=" in line)
 
 
-def timer_concern(spec, timeout):
+def timestamp(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) and value >= 0 else None
+    if isinstance(value, bool):
+        return None
+    if not value or value in ("n/a", "never"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.timestamp() if parsed.tzinfo is not None else None
+    except ValueError:
+        try:
+            return datetime.strptime(value, "%a %Y-%m-%d %H:%M:%S %Z").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
+
+
+def derive_registry(reg, directory, declaration_root=None):
+    """Build expected subjects from authored inputs, never runtime/discovery state."""
+    import copy
+    from pathlib import Path
+    result = copy.deepcopy(reg)
+    services, declarations = [], []
+    for path in sorted(Path(directory).glob("*.toml")):
+        raw = path.read_bytes()
+        service = tomllib.loads(raw.decode())
+        allowed = {"name", "role", "runtime", "status", "declared", "contract", "timers",
+                   "probes", "dependencies", "health_url", "metrics_url", "status_command", "thresholds"}
+        if set(service) - allowed:
+            raise ValueError("unknown declaration fields: " + str(sorted(set(service) - allowed)))
+        if service.get("health_url"):
+            if "status" in service or "status_command" in service:
+                raise ValueError("choose health_url, status or status_command")
+            service["status"] = {"kind": "http", "url": service.pop("health_url")}
+        if "status_command" in service:
+            if "status" in service:
+                raise ValueError("choose status or status_command")
+            argv = service.pop("status_command")
+            if not isinstance(argv, list) or not argv or not all(isinstance(x, str) for x in argv):
+                raise ValueError("status_command must be an argv list")
+            service["status"] = {"kind": "project-ops-status", "argv": argv}
+        services.append(service)
+        declarations.append({"name": service["name"], "path": str(Path(declaration_root) / path.name) if declaration_root else str(path.resolve()),
+                             "sha256": hashlib.sha256(raw).hexdigest()})
+    if not services:
+        raise ValueError("no service declarations")
+    result["services"] = sorted(services, key=lambda x: x["name"])
+    result["service_declarations"] = sorted(declarations, key=lambda x: x["name"])
+    validate(result)
+    return result
+
+
+def declaration_findings(reg, directory=None):
+    """Verify the approved copy; unavailable inputs cannot retire its subjects."""
+    from pathlib import Path
+    findings = {}
+    for declaration in reg.get("service_declarations", []):
+        path = Path(declaration["path"])
+        if directory is not None:
+            path = Path(directory) / path.name
+        try:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            reason = "declaration differs from approved registry" if actual != declaration["sha256"] else None
+        except OSError as error:
+            reason = "declaration unavailable: " + str(error)
+        if reason:
+            findings[declaration["name"]] = reason
+    return findings
+
+
+def timer_concern(spec, timeout, now=None):
     """A timer is part of its service's job: armed, and its last run did not fail (unless result checks are off)."""
     spec = {"unit": spec} if isinstance(spec, str) else spec
+    now = time.time() if now is None else now
     t = unit_props(spec["unit"], timeout, ["ActiveState", "Unit", "LastTriggerUSec"])
-    svc = unit_props(t.get("Unit", ""), timeout, ["Result", "ExecMainStatus", "ActiveState"]) if t.get("Unit") else {}
+    svc = unit_props(t.get("Unit", ""), timeout, ["Result", "ExecMainStatus", "ActiveState", "ExecMainExitTimestamp"]) if t.get("Unit") else {}
     ok_status = [str(x) for x in spec.get("ok_status", [0])]
     if t.get("ActiveState") != "active":
         state, reason = "DEGRADED", "timer %s is %s" % (spec["unit"], t.get("ActiveState", "?"))
     elif spec.get("check_result", True) and svc.get("ActiveState") == "failed" and svc.get("ExecMainStatus") not in ok_status:
         state, reason = "DEGRADED", "last run of %s failed (status %s)" % (t.get("Unit"), svc.get("ExecMainStatus"))
+    elif "first_result_due_at" in spec or "max_success_age_seconds" in spec:
+        exited = timestamp(svc.get("ExecMainExitTimestamp"))
+        success = exited if svc.get("Result") == "success" and svc.get("ExecMainStatus") in ok_status else None
+        due = timestamp(spec.get("first_result_due_at"))
+        if success is None:
+            state = "DEGRADED" if due is not None and now >= due else "UNKNOWN"
+            reason = "first successful result overdue" if state == "DEGRADED" else "armed; no successful result observed"
+        elif "max_success_age_seconds" in spec and now - success > spec["max_success_age_seconds"]:
+            state, reason = "STALE", "last success exceeds maximum age"
+        else:
+            state, reason = "PRESENT", "successful result within declared age"
     else:
         state, reason = "PRESENT", "armed; last trigger %s" % (t.get("LastTriggerUSec") or "never")
     return {"id": "timer." + spec["unit"], "required": True, "state": state, "reason": reason}
@@ -262,6 +348,26 @@ def evaluate(svc, timeout):
             out["concerns"].append(timer_concern(spec, timeout))
         except Exception as e:  # noqa: BLE001
             out["concerns"].append({"id": "timer." + str(spec), "required": True, "state": "UNKNOWN", "reason": str(e)[:200]})
+    declaration_errors = []
+    if svc.get("_has_declaration"):
+        if not out["runtime"].get("up"):
+            declaration_errors.append("declared runtime is unavailable")
+        for entries in (svc.get("probes") or {}).values():
+            for entry in entries:
+                if not os.path.exists(entry["path"]):
+                    declaration_errors.append("declared path unavailable: " + entry["path"])
+        if error or any(c["id"] == "http.health" and c["state"] not in OK_STATES for c in out["concerns"]):
+            declaration_errors.append("declared status endpoint or producer unavailable")
+        if svc.get("metrics_url"):
+            try:
+                metrics, _ = http_status({"url": svc["metrics_url"]}, timeout)
+                if metrics[0]["state"] not in OK_STATES:
+                    declaration_errors.append("declared metrics endpoint unavailable")
+            except Exception:
+                declaration_errors.append("declared metrics endpoint unavailable")
+    if svc.get("_declaration_drift") or declaration_errors:
+        out["concerns"].append({"id": "declaration.drift", "required": True, "state": "DEGRADED",
+                                "reason": svc.get("_declaration_drift") or "; ".join(declaration_errors)})
     failing = [c for c in out["concerns"] if c["required"] and c["state"] not in OK_STATES]
     declared = (svc.get("declared") or {}).get("state")
     if declared == "paused":
@@ -651,6 +757,29 @@ def validate(reg):
         names.add(n)
         if not ({"systemd", "docker"} & set(svc["runtime"])):
             raise ValueError("%s: runtime needs systemd or docker" % n)
+        if len(set(svc["runtime"]) & {"systemd", "docker"}) != 1:
+            raise ValueError("runtime must select exactly one kind")
+        deps = svc.get("dependencies", [])
+        if not isinstance(deps, list) or any(not isinstance(x, str) for x in deps) or len(set(deps)) != len(deps):
+            raise ValueError("dependencies must be unique names")
+        for timer in svc.get("timers", []):
+            if isinstance(timer, str):
+                continue
+            if "first_result_due_at" in timer and timestamp(timer["first_result_due_at"]) is None:
+                raise ValueError("first_result_due_at must be a timestamp")
+            if "max_success_age_seconds" in timer:
+                value = timer["max_success_age_seconds"]
+                if not finite_nonnegative(value) or value <= 0 or "first_result_due_at" not in timer:
+                    raise ValueError("maximum success age needs positive seconds and first_result_due_at")
+        for value in svc.get("thresholds", {}).values():
+            if not finite_nonnegative(value) or value <= 0:
+                raise ValueError("thresholds must be positive finite numbers")
+    for svc in reg["services"]:
+        if set(svc.get("dependencies", [])) - names or svc["name"] in svc.get("dependencies", []):
+            raise ValueError("dependencies must name another declared service")
+    pins = reg.get("service_declarations", [])
+    if pins and (len({x["name"] for x in pins}) != len(pins) or {x["name"] for x in pins} != names):
+        raise ValueError("declaration pins must cover every service exactly once")
     probe_specs(reg)
 
 
@@ -672,6 +801,9 @@ def main(argv=None):
         return 0
     ap = argparse.ArgumentParser()
     ap.add_argument("--registry", default="/etc/constellation-estate/estate.json")
+    ap.add_argument("--services-dir", help="authored TOML inputs, only with --render-registry")
+    ap.add_argument("--render-registry", help="write deterministic expected registry without observations")
+    ap.add_argument("--declaration-root", help="target declaration directory used while rendering")
     ap.add_argument("--output", default="/var/lib/constellation-estate/estate.json")
     ap.add_argument("--timeout", type=int, default=60)
     ap.add_argument("--textfile-dir", help="node_exporter textfile collector directory for declared probes")
@@ -684,7 +816,21 @@ def main(argv=None):
     with open(a.registry, "rb") as fh:
         registry_bytes = fh.read()
     reg = json.loads(registry_bytes)
+    if a.render_registry:
+        if not a.services_dir:
+            raise ValueError("--render-registry requires --services-dir")
+        reg = derive_registry(reg, a.services_dir, a.declaration_root)
+        write_atomic(a.render_registry, reg)
+        return 0
+    if a.services_dir or a.declaration_root:
+        raise ValueError("--services-dir and --declaration-root require --render-registry; collection uses approved registry")
     validate(reg)
+    drift = declaration_findings(reg)
+    declared_names = {d["name"] for d in reg.get("service_declarations", [])}
+    for svc in reg["services"]:
+        svc["_has_declaration"] = svc["name"] in declared_names
+        if svc["name"] in drift:
+            svc["_declaration_drift"] = drift[svc["name"]]
     started = time.time()
     if a.service_workers < 1 or a.service_workers > 16:
         raise ValueError("service-workers must be between 1 and 16")

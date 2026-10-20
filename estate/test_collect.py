@@ -430,3 +430,63 @@ def test_malformed_cache_is_discarded_and_missing_store_is_probed(tmp_path):
         entry = c.collect_probes([spec], str(path), 1)[key]
         assert entry["success"] is False
         assert entry["values"] == {}
+
+
+def test_derived_registry_is_deterministic_and_retains_absent_subjects(tmp_path, monkeypatch):
+    declaration = tmp_path / 'demo.toml'
+    declaration.write_text('name="demo"\nrole="worker"\nruntime={systemd="demo.service"}\nthresholds={output_age_seconds=60}\n')
+    base = {"schema": c.REGISTRY_SCHEMA, "site": "test", "services": [], "exclusions": {}}
+    reg = c.derive_registry(base, tmp_path)
+    assert reg == c.derive_registry(base, tmp_path)
+    assert base['services'] == []
+    declaration.unlink()
+    assert list(c.declaration_findings(reg)) == ['demo']
+    # Neither collector loss nor target host loss can mutate the approved copy.
+    assert reg['services'][0]['name'] == 'demo'
+    monkeypatch.setattr(c, 'runtime_state', lambda *a: {"up": False, "state": "absent"})
+    svc = dict(reg['services'][0], _has_declaration=True)
+    out = c.evaluate(svc, 1)
+    assert out['verdict'] == 'DOWN'
+    assert 'declaration.drift' in out['failing']
+
+
+def test_declaration_hash_drift_and_install_path(tmp_path):
+    declaration = tmp_path / 'demo.toml'
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\n')
+    base = {"schema": c.REGISTRY_SCHEMA, "services": []}
+    reg = c.derive_registry(base, tmp_path, '/etc/constellation/services.d')
+    assert reg['service_declarations'][0]['path'] == '/etc/constellation/services.d/demo.toml'
+    assert not c.declaration_findings(reg, tmp_path)
+    declaration.write_text('name="replacement"\nruntime={docker="other"}\n')
+    assert 'demo' in c.declaration_findings(reg, tmp_path)
+    assert reg['services'][0]['runtime'] == {'docker': 'demo'}
+
+
+def test_declaration_translates_health_command_and_graph(tmp_path):
+    (tmp_path / 'a.toml').write_text('name="a"\nruntime={systemd="a.service"}\nhealth_url="http://localhost/health"\ndependencies=["b"]\n')
+    (tmp_path / 'b.toml').write_text('name="b"\nruntime={docker="b"}\nstatus_command=["producer", "--json"]\n')
+    reg = c.derive_registry({"schema": c.REGISTRY_SCHEMA, "services": []}, tmp_path)
+    assert reg['services'][0]['status'] == {'kind': 'http', 'url': 'http://localhost/health'}
+    assert reg['services'][1]['status']['argv'] == ['producer', '--json']
+    assert reg['services'][0]['dependencies'] == ['b']
+
+
+def test_timer_deadline_success_age_and_output_are_distinct(monkeypatch):
+    timer = {"ActiveState": "active", "Unit": "demo.service", "LastTriggerUSec": "never"}
+    service = {"ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0", "ExecMainExitTimestamp": ""}
+    monkeypatch.setattr(c, 'unit_props', lambda unit, *a: timer if unit.endswith('.timer') else service)
+    spec = {'unit': 'demo.timer', 'first_result_due_at': 100, 'max_success_age_seconds': 20}
+    assert c.timer_concern(spec, 1, now=99)['state'] == 'UNKNOWN'
+    assert c.timer_concern(spec, 1, now=100)['state'] == 'DEGRADED'
+    service['ExecMainExitTimestamp'] = 100
+    assert c.timer_concern(spec, 1, now=120)['state'] == 'PRESENT'
+    assert c.timer_concern(spec, 1, now=121)['state'] == 'STALE'
+    service.update(ActiveState='failed', ExecMainStatus='1', Result='exit-code')
+    assert c.timer_concern(spec, 1, now=121)['state'] == 'DEGRADED'
+
+
+def test_false_path_declaration_is_drift(tmp_path, monkeypatch):
+    monkeypatch.setattr(c, 'runtime_state', lambda *a: {'up': True})
+    svc = {'name': 'demo', 'runtime': {'docker': 'demo'}, '_has_declaration': True,
+           'probes': {'outputs': [{'name': 'result', 'path': str(tmp_path / 'missing')}]}}
+    assert 'declaration.drift' in c.evaluate(svc, 1)['failing']
