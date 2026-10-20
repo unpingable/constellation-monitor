@@ -583,3 +583,17 @@ def test_malformed_declaration_render_has_no_execution_or_output(tmp_path, monke
 
 def test_timestamp_rejects_nonfinite_and_bool():
     assert all(c.timestamp(value) is None for value in (float('inf'), float('-inf'), float('nan'), True, False))
+
+
+def test_authored_timer_deadline_has_portable_timezone_semantics():
+    import pytest
+    assert c.deadline_timestamp('2026-10-20T12:00:00Z') == c.deadline_timestamp('2026-10-20T14:00:00+02:00')
+    assert c.deadline_timestamp(100) == 100
+    for value in ('2026-10-20', '2026-10-20T12:00:00', 'NaN', 'Tue 2026-10-20 12:00:00 UTC',
+                  float('nan'), float('inf'), True, [], {}):
+        assert c.deadline_timestamp(value) is None
+        with pytest.raises(ValueError, match='timezone-aware ISO'):
+            c.validate({'schema': c.REGISTRY_SCHEMA, 'services': [
+                {'name': 'demo', 'runtime': {'docker': 'demo'}, 'timers': [
+                    {'unit': 'demo.timer', 'first_result_due_at': value}]}]})
+    assert c.timestamp('Tue 2026-10-20 12:00:00 UTC') is not None

@@ -28,3 +28,16 @@ parent independent acceptance. No new authority mechanism introduced.
 Custody: only source/tests/receipt and immutable notice created. No credentials,
 VMs, compiler outputs or caches. Parent owns aggregate storage and worktree
 retirement after source integration; minimal source provenance remains in Git.
+
+Follow-up deadline precision: source base `7a7b1f5`. Authored first-result
+deadlines now use a separate parser accepting only timezone-aware ISO text or
+finite nonnegative Unix seconds. Naive/date-only inputs, native systemd text,
+NaN text and nonfinite numbers are rejected; equivalent offset/UTC inputs agree.
+Native systemd completion text retains its UTC parser. The prior implementation
+already rejected naive ISO inputs; this change removes the native-text fallback
+from authored deadline validation and states its portable contract explicitly.
+The same Python test command now passes 45 tests; diff whitespace checks pass.
+Formalization consideration: the proposition is timezone-invariant authored
+absolute deadline interpretation, limited to explicit ISO offsets/epoch seconds.
+Direct parser cases suffice; no host clock accuracy or global ordering claim.
+Decision owner: P2 lane, subject to parent integration review. Custody unchanged.

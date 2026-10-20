@@ -143,6 +143,19 @@ def timestamp(value):
             return None
 
 
+def deadline_timestamp(value):
+    """Authored deadlines have portable timezone semantics, unlike native unit text."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if math.isfinite(value) and value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.timestamp() if parsed.tzinfo is not None else None
+    except ValueError:
+        return None
+
+
 def derive_registry(reg, directory, declaration_root=None):
     """Build expected subjects from authored inputs, never runtime/discovery state."""
     import copy
@@ -216,7 +229,7 @@ def timer_concern(spec, timeout, now=None):
     elif "first_result_due_at" in spec or "max_success_age_seconds" in spec:
         exited = timestamp(svc.get("ExecMainExitTimestamp"))
         success = exited if svc.get("Result") == "success" and svc.get("ExecMainStatus") in ok_status else None
-        due = timestamp(spec.get("first_result_due_at"))
+        due = deadline_timestamp(spec.get("first_result_due_at"))
         if success is None:
             state = "DEGRADED" if due is not None and now >= due else "UNKNOWN"
             reason = "first successful result overdue" if state == "DEGRADED" else "armed; no successful result observed"
@@ -792,8 +805,8 @@ def validate(reg):
         for timer in svc.get("timers", []):
             if isinstance(timer, str):
                 continue
-            if "first_result_due_at" in timer and timestamp(timer["first_result_due_at"]) is None:
-                raise ValueError("first_result_due_at must be a timestamp")
+            if "first_result_due_at" in timer and deadline_timestamp(timer["first_result_due_at"]) is None:
+                raise ValueError("first_result_due_at must be timezone-aware ISO text or finite nonnegative Unix seconds")
             if "max_success_age_seconds" in timer:
                 value = timer["max_success_age_seconds"]
                 if not finite_nonnegative(value) or value <= 0 or "first_result_due_at" not in timer:
