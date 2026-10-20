@@ -243,3 +243,10 @@ untrusted application input and cannot grant collector access or authorize an
 action. Command producers run with the explicitly named account using the
 existing collector execution path; installation must ensure that account has
 only its intended permissions.
+
+Authored `first_result_due_at` must be a quoted ISO timestamp with an explicit
+UTC designator or numeric timezone offset, or a finite nonnegative Unix timestamp
+in seconds. Date-only and timezone-free text, native systemd timestamp text and
+nonfinite numbers are rejected. This makes the approved deadline independent of
+the renderer's or target host's local timezone. Native systemd completion-time
+parsing retains its existing UTC text support.
