@@ -18,13 +18,40 @@ import urllib.parse
 import urllib.request
 
 LIMIT = 1024 * 1024
+FAMILIES = ("node_memory_SwapTotal_bytes", "node_memory_SwapFree_bytes", "node_vmstat_pswpin",
+            "node_vmstat_pswpout", "node_pressure_memory_waiting_seconds_total")
 QUERIES = {
     "swap_used_bytes": "sum(node_memory_SwapTotal_bytes) - sum(node_memory_SwapFree_bytes)",
     "paging_pages_per_second": "sum(rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m]))",
     "memory_psi_ratio": "max(rate(node_pressure_memory_waiting_seconds_total[5m]))",
     "metric_source_age_seconds": 'max(time() - timestamp({__name__=~"node_memory_SwapTotal_bytes|node_memory_SwapFree_bytes|node_vmstat_pswpin|node_vmstat_pswpout|node_pressure_memory_waiting_seconds_total"}))',
+    "required_families": '{__name__=~"node_memory_SwapTotal_bytes|node_memory_SwapFree_bytes|node_vmstat_pswpin|node_vmstat_pswpout|node_pressure_memory_waiting_seconds_total"}',
 }
 BINS = ("wrong", "probably_wrong", "checked_not_wrong_within_scope", "unknown")
+
+
+def target_query(query, instance, job):
+    selector = "instance=" + json.dumps(instance) + ",job=" + json.dumps(job)
+    if "__name__" in query:
+        return query.replace("{__name__", "{" + selector + ",__name__")
+    return re.sub("|".join(FAMILIES), lambda match: match[0] + "{" + selector + "}", query)
+
+
+def required_families(document, instance, job, now, window):
+    if document.get("status") != "success" or document.get("data", {}).get("resultType") != "matrix":
+        raise ValueError("required family range query failed")
+    results = document["data"]["result"]
+    names = set()
+    for series in results:
+        labels = series.get("metric", {})
+        name = labels.get("__name__")
+        if (labels.get("instance") != instance or labels.get("job") != job or name not in FAMILIES or name in names):
+            raise ValueError("insufficient history: mixed target, duplicate or unexpected family")
+        names.add(name)
+        history({"status": "success", "data": {"resultType": "matrix", "result": [series]}}, now, window)
+    if names != set(FAMILIES):
+        raise ValueError("insufficient history: required target family missing")
+    return [1]
 
 
 def read_bytes(path):
@@ -213,6 +240,7 @@ class Investigation:
         if not args.condition or args.condition == "host.memory_pressure":
             metrics, ids = {}, []
             for name, query in QUERIES.items():
+                query = target_query(query, args.instance, args.job)
                 identity = "metric:" + name
                 ids.append(identity)
                 path = Path(args.metrics_fixture) / (name + ".json") if args.metrics_fixture else None
@@ -220,7 +248,9 @@ class Investigation:
                                   lambda p=path, q=query: read_bytes(p) if p else vm_query(args.vm_url, q, self.now, args.window))
                 if raw is not None:
                     try:
-                        metrics[name] = history(json.loads(raw), self.now, args.window)
+                        doc = json.loads(raw)
+                        metrics[name] = (required_families(doc, args.instance, args.job, self.now, args.window)
+                                         if name == "required_families" else history(doc, self.now, args.window))
                     except (ValueError, KeyError, TypeError) as error:
                         self.finding("unknown", identity, str(error), [identity], "Acquire a complete fresh range; do not infer from occupied swap.")
             if len(metrics) == len(QUERIES):
@@ -251,6 +281,8 @@ def main(argv=None):
     parser.add_argument("--incidents", help="JSON from constellation-incidents inspect")
     parser.add_argument("--condition", help="Exact attention condition ID, or host.memory_pressure")
     parser.add_argument("--vm-url", default="http://127.0.0.1:8428")
+    parser.add_argument("--instance", required=True, help="Exact expected node_exporter instance label")
+    parser.add_argument("--job", required=True, help="Exact expected node_exporter job label")
     parser.add_argument("--metrics-fixture", help="Directory of captured query_range responses (one per named query)")
     parser.add_argument("--window", type=int, default=900)
     parser.add_argument("--max-age", type=int, default=300)
