@@ -375,3 +375,58 @@ def test_main_publishes_probes_before_concurrent_service_checks(tmp_path, monkey
     assert c.main(["--registry", str(registry), "--output", str(report),
                    "--textfile-dir", str(textfiles)]) == 0
     assert "service_output_age_seconds{" not in (textfiles / "constellation-estate.prom").read_text()
+
+
+def test_timeout_cleanup_reports_pending_child_pid_without_waiting_forever(monkeypatch):
+    import pytest
+    import subprocess
+    seen = []
+
+    class Pending:
+        pid = 4242
+
+        def wait(self, timeout):
+            seen.append(timeout)
+            raise subprocess.TimeoutExpired(["fixture"], timeout)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(c.os, "killpg", lambda pid, sig: seen.append((pid, sig)))
+        original = subprocess.TimeoutExpired(["fixture"], 0.1)
+        with pytest.raises(RuntimeError, match="child PID 4242 remains pending exit"):
+            c.kill_and_reap(Pending(), original)
+    assert seen == [(4242, c.signal.SIGKILL), 0.2]
+    with pytest.raises(subprocess.TimeoutExpired):
+        c.run([sys.executable, "-c", "import time; time.sleep(5)"], 0.05)
+
+
+def test_symlinked_sqlite_uses_target_wal_path(tmp_path):
+    import sqlite3
+    target = tmp_path / "real.sqlite"
+    cx = sqlite3.connect(target); cx.execute("CREATE TABLE x (v)"); cx.close()
+    link = tmp_path / "link.sqlite"
+    link.symlink_to(target)
+    (tmp_path / "real.sqlite-wal").write_bytes(b"target wal")
+    (tmp_path / "link.sqlite-wal").write_bytes(b"wrong wal")
+    assert c.probe_worker("sqlite", str(link))["store_wal_bytes"] == len(b"target wal")
+
+
+def test_malformed_cache_is_discarded_and_missing_store_is_probed(tmp_path):
+    spec = ("demo", "store", "main", str(tmp_path / "missing.sqlite"), "sqlite")
+    key = c.probe_key(spec)
+    path = tmp_path / "state.json"
+    fake_values = {"store_bytes": 100, "store_wal_bytes": 0,
+                   "store_freelist_pages": 0, "store_page_size_bytes": 4096}
+    for malformed in [[],
+                      {"schema": "constellation.estate_probes/v1", "entries": {
+                          key: {"success": True, "attempted_at": "bad", "observed_at": 1,
+                                "values": fake_values}}},
+                      {"schema": "constellation.estate_probes/v1", "entries": {
+                          key: {"success": True, "attempted_at": time.time() + 3600,
+                                "observed_at": time.time() + 3600, "values": fake_values}}},
+                      {"schema": "constellation.estate_probes/v1", "entries": {
+                          key: {"success": True, "attempted_at": time.time(),
+                                "observed_at": time.time(), "values": dict(fake_values, store_bytes=float("nan"))}}}]:
+        path.write_text(json.dumps(malformed))
+        entry = c.collect_probes([spec], str(path), 1)[key]
+        assert entry["success"] is False
+        assert entry["values"] == {}

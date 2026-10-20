@@ -16,7 +16,7 @@ the telemetry exporter and the dashboard read. Verdicts:
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
-import argparse, concurrent.futures, fnmatch, hashlib, json, os, selectors, shutil, signal, subprocess, sys, tempfile, time, urllib.request
+import argparse, concurrent.futures, fnmatch, hashlib, json, math, os, selectors, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
 
 REGISTRY_SCHEMA = "constellation.estate_registry/v1"
@@ -28,6 +28,19 @@ NAME_OK = set("abcdefghijklmnopqrstuvwxyz0123456789-")
 
 def now_iso(t=None):
     return datetime.fromtimestamp(time.time() if t is None else t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def kill_and_reap(p, original):
+    """Stop a timed-out child without making cleanup an unbounded wait."""
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        p.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("child PID %d remains pending exit after SIGKILL; original %s: %s" %
+                           (p.pid, type(original).__name__, original)) from original
 
 
 def run(argv, timeout, user=None, cwd=None, env=None, limit=1 << 20):
@@ -71,12 +84,8 @@ def run(argv, timeout, user=None, cwd=None, env=None, limit=1 << 20):
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(argv, timeout)
             p.wait(timeout=remaining)
-        except BaseException:
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            p.wait()
+        except BaseException as exc:
+            kill_and_reap(p, exc)
             raise
         finally:
             for pipe in captured:
@@ -409,6 +418,13 @@ def definition_service(defs):
 
 
 PROBE_FIELDS = {"stores": "store", "outputs": "output", "backups": "backup"}
+PROBE_OPERATION_FIELDS = {
+    "filesystem": {"filesystem_avail_bytes", "filesystem_avail_inodes"},
+    "sqlite": {"store_bytes", "store_wal_bytes", "store_freelist_pages", "store_page_size_bytes"},
+    "store_mtime": {"store_age_seconds"},
+    "output_mtime": {"output_age_seconds"},
+    "backup_mtime": {"backup_age_seconds", "backup_created_timestamp_seconds"},
+}
 PROBE_FAMILIES = {
     "filesystem_avail_bytes": "Available bytes on the filesystem containing the declared store",
     "filesystem_avail_inodes": "Available inodes on the filesystem containing the declared store",
@@ -461,7 +477,10 @@ def probe_worker(operation, path):
         return {"filesystem_avail_bytes": stat.f_bavail * stat.f_frsize,
                 "filesystem_avail_inodes": stat.f_favail}
     if operation == "sqlite":
-        with open(path, "rb") as fh:
+        # Use the same resolved pathname for the main file and its WAL. A
+        # declared symlink may point to a store on another filesystem.
+        main_path = os.path.realpath(path)
+        with open(main_path, "rb") as fh:
             header = fh.read(100)
             size = os.fstat(fh.fileno()).st_size
         if len(header) != 100 or header[:16] != b"SQLite format 3\x00":
@@ -471,7 +490,7 @@ def probe_worker(operation, path):
             page_size = 65536
         if page_size < 512 or page_size > 65536 or page_size & (page_size - 1):
             raise ValueError("invalid SQLite page size")
-        wal_path = path + "-wal"
+        wal_path = main_path + "-wal"
         try:
             wal_size = os.stat(wal_path).st_size
         except FileNotFoundError:
@@ -502,16 +521,41 @@ def collect_one_probe(spec, timeout):
     if rc != 0:
         raise RuntimeError("probe exited %d: %s" % (rc, err[-200:]))
     values = json.loads(out)
-    if not isinstance(values, dict) or not values or set(values) - set(PROBE_FAMILIES):
+    if not isinstance(values, dict) or set(values) != PROBE_OPERATION_FIELDS[operation]:
         raise ValueError("unexpected probe result")
     return values
+
+
+def finite_nonnegative(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
+
+
+def valid_probe_cache_entry(entry, operation, now):
+    if not isinstance(entry, dict) or not isinstance(entry.get("success"), bool):
+        return False
+    attempt = entry.get("attempted_at")
+    observation = entry.get("observed_at")
+    values = entry.get("values")
+    if not finite_nonnegative(attempt) or attempt > now:
+        return False
+    if observation is not None and (not finite_nonnegative(observation) or observation > now):
+        return False
+    if not isinstance(values, dict):
+        return False
+    if entry["success"]:
+        return observation is not None and set(values) == PROBE_OPERATION_FIELDS[operation] and all(
+            finite_nonnegative(value) for value in values.values())
+    return not values
 
 
 def collect_probes(specs, state_path, timeout, slow_seconds=600, workers=4):
     try:
         with open(state_path) as fh:
             old = json.load(fh)
-        if old.get("schema") != "constellation.estate_probes/v1":
+        if not isinstance(old, dict) or old.get("schema") != "constellation.estate_probes/v1":
             old = {}
     except (OSError, ValueError):
         old = {}
@@ -525,7 +569,7 @@ def collect_probes(specs, state_path, timeout, slow_seconds=600, workers=4):
         for spec in specs:
             key = probe_key(spec)
             previous = old_entries.get(key, {})
-            if not isinstance(previous, dict):
+            if not valid_probe_cache_entry(previous, spec[4], now):
                 previous = {}
             entries[key] = dict(previous)
             due = (spec[4] != "sqlite" or now - previous.get("attempted_at", 0) >= slow_seconds)

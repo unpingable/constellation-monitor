@@ -114,8 +114,10 @@ as a read-only host path before declaration. A missing path is a failed probe,
 never a zero-size file or a healthy result. A store means a SQLite database.
 The collector does not open it through SQLite or create any sibling file. It
 reads the 100-byte main database header, checks the SQLite magic and page size,
-and reads the main-header freelist count. That count may lag uncheckpointed WAL
-changes; none of these file measurements asserts transactional SQLite health.
+and reads the main-header freelist count. For a declared symlink, it reads the
+resolved target and measures the WAL beside that target. The freelist count
+may lag uncheckpointed WAL changes; none of these file measurements asserts
+transactional SQLite health.
 WAL absence yields zero WAL bytes only after the database itself was read and
 validated.
 
@@ -126,13 +128,16 @@ child process with its own three-second deadline (`--probe-timeout`), with at
 most four probe workers. Service checks run with at most four workers
 (`--service-workers`). A delayed service status producer cannot prevent probes
 from publishing, because the probe textfile is replaced before service checks
-begin. Command stdout retains at most 1 MiB (4 KiB for a probe), while stderr
+begin. If a child remains blocked after its deadline and SIGKILL, the collector
+reports its exact PID as pending exit; it does not wait without a bound. Command
+stdout retains at most 1 MiB (4 KiB for a probe), while stderr
 retains its final 2 KiB; both pipes are drained throughout execution.
 
 `--textfile-dir` must name the existing node_exporter textfile directory when
 probes are declared. The service unit uses `/var/lib/prometheus/node-exporter`.
 The collector atomically replaces `constellation-estate.prom` there and stores
 the schedule cache as `probe-state.json` beside its estate JSON output. The
+collector discards malformed or future-dated cache entries and probes again. The
 textfile exposes `service_filesystem_avail_bytes`,
 `service_filesystem_avail_inodes`, `service_store_bytes`,
 `service_store_wal_bytes`, `service_store_freelist_pages`,
