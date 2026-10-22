@@ -61,7 +61,7 @@ anchors marked (M) are below in this document.
 | `io-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_io` version 1 evaluation of a non-stale watcher reports `io_pressure_stall` present | (M) [`io-pressure`](#io-pressure) | Check PSI, SQLite write-ahead logs and processes in D state. |
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
-| `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
+| `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` (code 1 for value-coded rules; codes 2–4 hold unknown) | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
 | `remediation-journal-critical` | page | page | persists 600 s | `service` | `remediation-consumer` | estate input: the `remediation-consumer` row's concern `remediation.journal.generations-critical` is `ABSENT` (15 or more sealed journal segments; the consumer refuses at 16); missing row, any other state or a stale document is unknown | (M) [`remediation-journal-critical`](#remediation-journal-critical) | Take sealed segments into custody, oldest first. |
 | `evaluator-input-unavailable` (v2) | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input, and its admission of each metric-alert definition | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
@@ -135,7 +135,10 @@ and current are still evaluated.
   health must be `ok`, and the effective policy identity must be the declared
   one. Each opted-in definition is admitted on its own: one whose condition
   target cannot be derived is rejected alone (`rejected`) and the input stays
-  `ok` for the rest. See [Metric alerts](#metric-alerts-vmalert-as-an-input).
+  `ok` for the rest. Rules marked `constellation_value_codes: "v1"` interpret
+  1 as threshold, 2 as warming/reset, 3 as missing and 4 as stale. Codes 2–4
+  hold unknown; persistent unknown surfaces through `evaluator-input-unavailable`.
+  See [Metric alerts](#metric-alerts-vmalert-as-an-input).
 
 ### NQ status sources
 
@@ -558,9 +561,15 @@ Each opted-in rule is one condition,
   firing alert is still present, but no rule is clear: a changed
   definition's silence is not recovery (`unrecognised`).
 - An inactive rule whose query fetched no series (vmalert's `lastSeriesFetched`
-  is 0: the metric is missing, or an `offset` window has no history yet on a
-  fresh store) is unknown, never clear, and faults nothing: it is warming up or
-  its source is absent, and the condition's note says so.
+  is 0) is unknown, never clear, and faults nothing: its source is absent,
+  and the condition's note says so. A positive fetched count with
+  `lastSamples = 0` cannot distinguish a healthy false comparison from an
+  expression with a missing operand, including missing `offset 1h` history.
+  Those fields do not identify which operand had samples; plain rules keep
+  their existing semantics. Use the explicit value-code contract below for
+  definitions that need this distinction. The pinned
+  [vmalert v1.106.1 implementation](https://github.com/VictoriaMetrics/VictoriaMetrics/blob/v1.106.1/app/vmalert/rule/alerting.go#L351-L360)
+  records the result length and the datasource's aggregate fetch statistic.
 - Per-site presence comes from the producer's `firing_sites` summary, computed
   over every instance before instance detail is truncated, so a site whose
   firing instance fell past the kept detail is still present.
@@ -594,6 +603,55 @@ hold and resolve on their own.
 
 Absent `sites` (the default), each rule is one condition whatever its
 instances' sites, as above.
+
+### Value-coded metric alerts
+
+In addition to `attention: "true"`, a rule opts in with the rule-level label
+`constellation_value_codes: "v1"`. This marker is proposed for the Cartography
+lanes: it was absent from the P8/P9 source rules inspected on 2026-10-22.
+The expression must emit one stable alert identity per family and scope,
+with no healthy fallback series. Its numeric `$value` means:
+
+| Value | Meaning | Attention observation |
+| --- | --- | --- |
+| 1 | threshold / firing | Present when the instance is firing; pending retains vmalert's own hold and is clear. |
+| 2 | warming history / counter reset | Unknown and held, whether firing or pending. |
+| 3 | missing source data | Unknown and held, whether firing or pending. |
+| 4 | stale source data | Unknown and held, whether firing or pending. |
+
+The condition note in `report.json`, the input's `identity.value_code_notes`,
+and the bounded daily digest name the code and meaning. The collector passes
+through rule labels and instance values and adds `value_code_counts`, complete
+counts of active `(site, state, value)` instances before truncating detail to
+32 instances. Marked active rules without this summary are unknown: update
+the collector along with the evaluator. Numeric encodings such as `1e0` and
+`2.0` are accepted. Unknown versions, missing/malformed values, and unsupported
+codes (including 5) are unknown and held, never present or clear.
+
+Unknown takes precedence over threshold when a condition's scope includes
+both. With `sites`, each site's values are interpreted independently;
+without it, any unknown code holds the whole rule. An inactive marked rule,
+or a site with no active instances, is clear only under the same health,
+evaluation recency, document freshness, data-presence and declared-policy
+checks as plain rules. Labels and conditions remain stable across codes.
+
+A condition that has never been present stays inactive while unknown and
+sends no `metric-alert-firing` notice. Each unknown value-code state also
+raises the existing input fault `indeterminate`. If that fault persists for
+300 s (the default), `evaluator-input-unavailable:<input>.indeterminate`
+sends a notice naming the rule and code. This uses the existing persistence
+and recovery mechanism without a new warming timer or condition family;
+warming for an hour will therefore be visible. Other healthy rules and sites
+continue to evaluate. The digest includes code meanings from the first pass,
+even for never-present conditions, within its existing 512-byte bound.
+
+Cartography adoption must reconcile two source conventions: P9 probes used
+2 for exporter unreachable (v1 here means warming/reset), and process/substrate
+rules used 5 for invalid limit/uptime (unsupported here, held unknown). Add
+the marker only after checking those expressions and annotations against this
+contract. Unmarked rules retain their previous interpretation of every value.
+This opt-in adapter adds no registry entry or policy-digest field; registry
+v7 and existing attention policy pins are unchanged.
 
 ### Admission of metric-alert definitions
 

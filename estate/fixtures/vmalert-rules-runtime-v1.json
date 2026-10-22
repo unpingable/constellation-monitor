@@ -505,9 +505,1257 @@
    }
   ],
   "schema": "constellation.metric_alerts/v1",
-  "site": "labelwatch"
+  "site": "crow"
  },
  "generated_at": "2026-10-02T12:00:00Z",
  "note": "Shared vector: the vmalert /api/v1/rules answer (trimmed from crow, timestamps rewritten to the evaluator tests' T0) and the metric_alerts document the producer writes for it. Consumed by test_metric_alerts.py and constellation-attention's evaluator tests.",
- "site": "crow"
+ "site": "crow",
+ "value_code_cases": [
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "1"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "1"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "1"
+     }
+    ]
+   },
+   "meaning": "threshold",
+   "name": "threshold",
+   "observation": "present"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "pending",
+      "value": "1e0"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "pending",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {},
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "pending",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "1e0"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "pending",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "pending",
+      "value": "1e0"
+     }
+    ]
+   },
+   "meaning": "threshold",
+   "name": "threshold-pending",
+   "observation": "clear"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "2"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "2"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "2"
+     }
+    ]
+   },
+   "meaning": "warming / counter reset",
+   "name": "warming",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "pending",
+      "value": "2.0"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "pending",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {},
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "pending",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "2.0"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "pending",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "pending",
+      "value": "2.0"
+     }
+    ]
+   },
+   "meaning": "warming / counter reset",
+   "name": "warming-pending",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "3"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "3"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "3"
+     }
+    ]
+   },
+   "meaning": "missing",
+   "name": "missing",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "4"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "4"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "4"
+     }
+    ]
+   },
+   "meaning": "stale",
+   "name": "stale",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "5"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "5"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "5"
+     }
+    ]
+   },
+   "meaning": "unsupported",
+   "name": "invalid-limit",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "NaN"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "NaN"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "NaN"
+     }
+    ]
+   },
+   "meaning": "unsupported",
+   "name": "invalid-number",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": ""
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": ""
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": ""
+     }
+    ]
+   },
+   "meaning": "unsupported",
+   "name": "missing-value",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "1"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v2",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "1"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v2",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing",
+    "value_code_counts": [
+     {
+      "count": 1,
+      "site": "labelwatch",
+      "state": "firing",
+      "value": "1"
+     }
+    ]
+   },
+   "meaning": "unsupported constellation_value_codes",
+   "name": "unknown-version",
+   "observation": "unknown"
+  },
+  {
+   "api_rule": {
+    "alerts": [],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "inactive",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {},
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 0,
+    "instances": [],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "constellation_value_codes": "v1",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "inactive",
+    "value_code_counts": []
+   },
+   "meaning": "no active value codes",
+   "name": "inactive",
+   "observation": "clear"
+  },
+  {
+   "api_rule": {
+    "alerts": [
+     {
+      "activeAt": "2026-10-02T10:19:30Z",
+      "annotations": {
+       "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min"
+      },
+      "expression": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "name": "HostSwapExhausted",
+      "restored": false,
+      "stabilizing": false,
+      "state": "firing",
+      "value": "2"
+     }
+    ],
+    "annotations": {
+     "summary": "swap {{ $value | humanizePercentage }} free on {{ $labels.site }} ({{ $labels.instance }}) for 30 min"
+    },
+    "datasourceType": "prometheus",
+    "debug": false,
+    "duration": 1800,
+    "evaluationTime": 0.000531512,
+    "file": "/etc/vmalert/rules/host-pressure.rules.yml",
+    "group_name": "host-pressure",
+    "health": "ok",
+    "keep_firing_for": 0,
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "lastError": "",
+    "lastEvaluation": "2026-10-02T11:59:58.512345678Z",
+    "lastSamples": 1,
+    "lastSeriesFetched": 6,
+    "max_updates_entries": 20,
+    "name": "HostSwapExhausted",
+    "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+    "state": "firing",
+    "type": "alerting"
+   },
+   "document_rule": {
+    "duration_seconds": 1800,
+    "file": "crow.rules.yml",
+    "firing_sites": {
+     "labelwatch": 1
+    },
+    "group": "crow-self",
+    "health": "ok",
+    "instance_count": 1,
+    "instances": [
+     {
+      "active_at": "2026-10-02T10:19:30Z",
+      "labels": {
+       "alertgroup": "host-pressure",
+       "alertname": "HostSwapExhausted",
+       "area": "host",
+       "attention": "true",
+       "instance": "127.0.0.1:19100",
+       "job": "node",
+       "runbook": "host-pressure",
+       "severity": "warn",
+       "site": "labelwatch"
+      },
+      "state": "firing",
+      "summary": "swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min",
+      "value": "2"
+     }
+    ],
+    "labels": {
+     "area": "host",
+     "attention": "true",
+     "runbook": "host-pressure",
+     "severity": "warn"
+    },
+    "last_error": "",
+    "last_evaluation": "2026-10-02T11:59:58.512345678Z",
+    "last_samples": 1,
+    "last_series_fetched": 6,
+    "name": "HostSwapExhausted",
+    "state": "firing"
+   },
+   "meaning": null,
+   "name": "plain",
+   "observation": "present"
+  }
+ ],
+ "value_code_marker": {
+  "constellation_value_codes": "v1"
+ }
 }

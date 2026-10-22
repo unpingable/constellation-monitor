@@ -16,6 +16,7 @@ SCHEMA = "constellation.metric_alerts/v1"
 LIMIT = 1 << 20  # the rules API answer must fit in 1 MiB, as for the estate collector
 SUMMARY_LIMIT = 300
 INSTANCE_LIMIT = 32  # instances kept per rule; the count is always carried
+VALUE_CODES_LABEL = "constellation_value_codes"
 
 
 def _collector():
@@ -55,6 +56,20 @@ def _instance(alert):
     }
 
 
+def value_code_counts(alerts):
+    """Complete active value/state counts by site, before instance detail is truncated."""
+    counts = {}
+    for alert in alerts:
+        state = alert.get("state")
+        if state not in ("firing", "pending"):
+            continue
+        site = str((alert.get("labels") or {}).get("site", ""))[:128]
+        value = str(alert.get("value", ""))[:64]
+        key = (site, state, value)
+        counts[key] = counts.get(key, 0) + 1
+    return [dict(site=s, state=t, value=v, count=n) for (s, t, v), n in sorted(counts.items())]
+
+
 def document(api, site, generated_at, declared=None):
     """The document for one API answer. `generated_at` is the read time (RFC 3339)."""
     collector = _collector()
@@ -66,8 +81,8 @@ def document(api, site, generated_at, declared=None):
             firing_sites = {}
             for a in alerts:
                 if a.get("state") == "firing":
-                    site = str((a.get("labels") or {}).get("site", ""))[:128]
-                    firing_sites[site] = firing_sites.get(site, 0) + 1
+                    alert_site = str((a.get("labels") or {}).get("site", ""))[:128]
+                    firing_sites[alert_site] = firing_sites.get(alert_site, 0) + 1
             rules.append({
                 "file": os.path.basename(group["file"]),
                 "group": group["name"],
@@ -87,6 +102,8 @@ def document(api, site, generated_at, declared=None):
                 "firing_sites": dict(sorted(firing_sites.items())),
                 "instances": [_instance(a) for a in alerts[:INSTANCE_LIMIT]],
             })
+            if VALUE_CODES_LABEL in (rule.get("labels") or {}):
+                rules[-1]["value_code_counts"] = value_code_counts(alerts)
     rules.sort(key=lambda r: (r["file"], r["group"], r["name"]))
     effective = policy_sha256(policy)
     return {

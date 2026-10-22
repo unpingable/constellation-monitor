@@ -4336,6 +4336,223 @@ fn metric_alert_firing_from_the_shared_vector() {
     );
 }
 
+fn value_code_rule(doc: &mut Value, state: &str, value: &str) {
+    doc["rules"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|r| r["name"] == "HostSwapExhausted");
+    let rule = metric_rule(doc, "HostSwapExhausted");
+    rule["labels"]["constellation_value_codes"] = json!("v1");
+    rule["state"] = json!(state);
+    rule["instances"].as_array_mut().unwrap().truncate(1);
+    rule["instances"][0]["state"] = json!(state);
+    rule["instances"][0]["value"] = json!(value);
+    rule["instance_count"] = json!(1);
+    rule["value_code_counts"] = json!([{
+        "site": "labelwatch", "state": state, "value": value, "count": 1
+    }]);
+    refresh_firing_sites(rule);
+}
+
+#[test]
+fn metric_value_codes_from_the_shared_vector() {
+    let vector: Value = serde_json::from_slice(&fs::read(METRIC_ALERTS_VECTOR).unwrap()).unwrap();
+    for case in vector["value_code_cases"].as_array().unwrap() {
+        let mut harness = metric_alerts_harness();
+        harness.raw("[digest]\nat_utc = \"00:00\"\n");
+        write_metric_alerts(&harness, T0, |doc| {
+            let mut rule = case["document_rule"].clone();
+            rule["last_evaluation"] = json!(rfc3339(T0 - 2));
+            doc["rules"] = json!([rule]);
+        });
+        let report = harness.evaluate(T0);
+        let c = condition(&report, SWAP).unwrap();
+        assert_eq!(c["observation"], case["observation"], "{case}: {c}");
+        if let Some(meaning) = case["meaning"].as_str() {
+            assert!(c["note"].as_str().unwrap().contains(meaning), "{case}: {c}");
+            assert!(
+                report["digest"]["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains(meaning),
+                "{report}"
+            );
+        }
+        assert!(
+            alert_intents(&report).is_empty(),
+            "no immediate notice: {case}"
+        );
+        if case["observation"] == "unknown" {
+            assert!(
+                harness.state()["conditions"]
+                    .get(SWAP)
+                    .is_none_or(|c| c["active"] == false)
+            );
+            assert!(causes(&metric_input(&report)).contains(&"indeterminate".into()));
+        }
+    }
+}
+
+#[test]
+fn value_codes_hold_an_open_condition_until_healthy_recovery() {
+    let harness = metric_alerts_harness();
+    for offset in [0, 90] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "1")
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "present");
+        assert_eq!(alert_intents(&report).len(), usize::from(offset == 90));
+    }
+    for (offset, state, code) in [
+        (150, "firing", "2"),
+        (400, "pending", "3"),
+        (650, "firing", "4"),
+    ] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, state, code)
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+        assert!(alert_intents(&report).is_empty());
+        assert_eq!(harness.state()["conditions"][SWAP]["active"], true);
+    }
+    for (offset, fault) in [
+        (800, "health"),
+        (950, "evaluation"),
+        (1100, "drift"),
+        (1250, "stale"),
+    ] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "1");
+            quiet(doc, "HostSwapExhausted");
+            let rule = metric_rule(doc, "HostSwapExhausted");
+            rule["value_code_counts"] = json!([]);
+            match fault {
+                "health" => rule["health"] = json!("err"),
+                "evaluation" => rule["last_evaluation"] = json!(rfc3339(T0)),
+                "drift" => doc["declared_policy_sha256"] = json!("different"),
+                "stale" => doc["generated_at"] = json!(rfc3339(T0)),
+                _ => unreachable!(),
+            }
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(
+            condition(&report, SWAP).unwrap()["observation"],
+            "unknown",
+            "{fault}"
+        );
+        assert!(alert_intents(&report).is_empty());
+    }
+    for offset in [1400, 1530] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "1");
+            quiet(doc, "HostSwapExhausted");
+            metric_rule(doc, "HostSwapExhausted")["value_code_counts"] = json!([]);
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "clear");
+        assert_eq!(alert_intents(&report).len(), usize::from(offset == 1530));
+    }
+    assert!(
+        harness.state()["conditions"]
+            .get(SWAP)
+            .is_none_or(|c| c["active"] == false)
+    );
+}
+
+#[test]
+fn never_present_warming_surfaces_through_input_unavailable() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("[digest]\nat_utc = \"12:05\"\n");
+    for offset in [0, 299, 360] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "pending", "2")
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert!(alert_intents(&report).is_empty());
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+        assert!(
+            harness.state()["conditions"]
+                .get(SWAP)
+                .is_none_or(|c| c["active"] == false)
+        );
+        let input_intents = intents(&report)
+            .into_iter()
+            .filter(|(id, _, _)| id.ends_with(":metric_alerts.indeterminate"))
+            .count();
+        assert_eq!(input_intents, usize::from(offset == 360), "{report}");
+        if offset == 360 {
+            assert!(
+                report["digest"]["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("value code 2 (warming / counter reset)")
+            );
+        }
+    }
+}
+
+#[test]
+fn value_codes_are_scoped_by_site_and_survive_truncated_detail() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"crow\", \"testbed\", \"labelwatch\"]\n");
+    write_metric_alerts(&harness, T0, |doc| {
+        value_code_rule(doc, "firing", "1");
+        let rule = metric_rule(doc, "HostSwapExhausted");
+        rule["instances"] = json!([]);
+        rule["instance_count"] = json!(80);
+        rule["firing_sites"] = json!({"crow": 41, "testbed": 39});
+        rule["value_code_counts"] = json!([
+            {"site":"crow", "state":"firing", "value":"1", "count":40},
+            {"site":"crow", "state":"firing", "value":"4", "count":1},
+            {"site":"testbed", "state":"firing", "value":"1", "count":39}
+        ]);
+    });
+    let report = harness.evaluate(T0);
+    for (site, observation) in [
+        ("crow", "unknown"),
+        ("testbed", "present"),
+        ("labelwatch", "clear"),
+    ] {
+        let c = condition(&report, &format!("{SWAP}.{site}")).unwrap();
+        assert_eq!(c["observation"], observation, "{c}");
+    }
+    let c = condition(&report, &format!("{SWAP}.crow")).unwrap();
+    assert!(c["note"].as_str().unwrap().contains("value code 4 (stale)"));
+}
+
+#[test]
+fn marked_active_rules_without_complete_values_never_guess() {
+    let harness = metric_alerts_harness();
+    for (offset, malformed) in [
+        (0, Value::Null),
+        (60, json!([])),
+        (120, json!([{"site":"labelwatch"}])),
+    ] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "1");
+            metric_rule(doc, "HostSwapExhausted")["value_code_counts"] = malformed.clone();
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+        assert!(alert_intents(&report).is_empty());
+    }
+}
+
+#[test]
+fn plain_zero_results_with_fetched_series_remain_clear() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| {
+        quiet(doc, "HostSwapExhausted");
+        let rule = metric_rule(doc, "HostSwapExhausted");
+        rule["last_samples"] = json!(0);
+        rule["last_series_fetched"] = json!(1);
+    });
+    let report = harness.evaluate(T0);
+    assert_eq!(condition(&report, SWAP).unwrap()["observation"], "clear");
+}
+
 /// A stale document, or a rule vmalert stopped evaluating, is unknown: an
 /// open condition holds and nothing resolves, and the input says why.
 #[test]

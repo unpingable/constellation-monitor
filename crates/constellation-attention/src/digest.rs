@@ -140,6 +140,17 @@ pub fn summary(
         .map(|input| format!("{} ({})", input.label, input.causes.join(", ")))
         .collect();
     let mut text = format!("DIGEST {site} {}: ", day(now));
+    let metric_values: Vec<&str> = inputs
+        .iter()
+        .filter_map(|input| input.identity["value_code_notes"].as_array())
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !metric_values.is_empty() {
+        text.push_str("Metric values: ");
+        text.push_str(&metric_values.join("; "));
+        text.push_str(". ");
+    }
     if active.is_empty() {
         text.push_str("no active conditions");
     } else {

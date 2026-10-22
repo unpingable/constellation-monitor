@@ -1602,6 +1602,78 @@ fn instance_site(instance: &Value) -> Option<&str> {
     instance.pointer("/labels/site").and_then(Value::as_str)
 }
 
+const METRIC_VALUE_CODES_LABEL: &str = "constellation_value_codes";
+
+struct MetricValueState {
+    present: bool,
+    unknown: bool,
+    note: String,
+}
+
+/// The producer counts every active instance before bounding detail. Never
+/// infer a marked rule's value from its state or its truncated instances.
+fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueState, String> {
+    if rule["labels"][METRIC_VALUE_CODES_LABEL].as_str() != Some("v1") {
+        return Err("unsupported constellation_value_codes marker (expected v1)".into());
+    }
+    if rule["state"] == "inactive" {
+        return Ok(MetricValueState {
+            present: false,
+            unknown: false,
+            note: "no active value codes".into(),
+        });
+    }
+    let counts = rule["value_code_counts"]
+        .as_array()
+        .ok_or("missing complete value_code_counts; update the metric-alerts collector")?;
+    let mut meanings = BTreeMap::new();
+    let mut present = false;
+    let mut unknown = false;
+    let mut active = false;
+    for row in counts {
+        let count = row["count"].as_u64().ok_or("invalid value code count")?;
+        let row_site = row["site"].as_str().ok_or("invalid value code site")?;
+        let state = row["state"].as_str().ok_or("invalid value code state")?;
+        let value = row["value"].as_str().ok_or("invalid value code value")?;
+        if !matches!(state, "firing" | "pending") {
+            return Err("invalid active value code state".into());
+        }
+        if count == 0 {
+            continue;
+        }
+        active = true;
+        if site.is_some_and(|site| site != row_site) {
+            continue;
+        }
+        let code = value.parse::<f64>().ok();
+        let meaning = match code {
+            Some(1.0) => "threshold",
+            Some(2.0) => "warming / counter reset",
+            Some(3.0) => "missing",
+            Some(4.0) => "stale",
+            _ => "unsupported",
+        };
+        if code == Some(1.0) {
+            present |= state == "firing";
+        } else {
+            unknown = true;
+        }
+        meanings.insert(value.to_owned(), format!("value code {value} ({meaning})"));
+    }
+    if !active {
+        return Err("active rule has no complete value code counts".into());
+    }
+    Ok(MetricValueState {
+        present,
+        unknown,
+        note: if meanings.is_empty() {
+            "no active value codes for this site".into()
+        } else {
+            meanings.into_values().collect::<Vec<_>>().join("; ")
+        },
+    })
+}
+
 /// `constellation.metric_alerts/v1`: vmalert's loaded alerting rules with
 /// their state. A rule labelled `attention = "true"` is one condition,
 /// `host_posture:metric-alert-firing:<alert-name>`: `firing` is present;
@@ -1610,6 +1682,10 @@ fn instance_site(instance: &Value) -> Option<&str> {
 /// document is stale is unknown. A firing alert is still present when the
 /// effective policy differs from the declared one, but nothing is clear
 /// then: a changed definition's silence is not recovery.
+///
+/// Rules marked `constellation_value_codes = "v1"` interpret active values
+/// through the producer's complete summary: 1 is threshold, 2 warming/reset,
+/// 3 missing, 4 stale. Unknown values hold the condition and fault the input.
 ///
 /// With `sites`, each opted-in rule is one condition per listed site,
 /// `<alert-name>.<site>`, present when a firing instance carries that `site`
@@ -1741,6 +1817,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         }
     }
     let mut observations = Vec::new();
+    let mut value_code_notes = Vec::new();
     for (rule, (name, admission)) in opted.iter().zip(&admissions) {
         let name = *name;
         for rejection in &admission.rejected {
@@ -1824,9 +1901,10 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             Vec::new()
         };
         // vmalert's own data-presence counter: an inactive rule whose query fetched
-        // no series has no evidence either way (the metric is missing, or an
-        // `offset` window has no history yet). That is unknown, not clear, and not
-        // a fault of the input: the rule is warming up or its source is absent.
+        // no series has no evidence either way. A positive fetched count with
+        // zero result samples cannot distinguish a healthy false comparison
+        // from a missing operand (e.g. offset history). Leave plain rules alone;
+        // definitions needing that distinction must emit explicit value codes.
         let no_data =
             state != "firing" && rule.get("last_series_fetched").and_then(Value::as_i64) == Some(0);
         // The producer's complete per-site firing summary, computed before it
@@ -1850,7 +1928,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                     .collect(),
                 None => firing.clone(),
             };
-            let present = match site {
+            let mut present = match site {
                 Some(site) => match firing_sites {
                     Some(summary) => summary
                         .get(site)
@@ -1860,7 +1938,33 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 },
                 None => state == "firing",
             };
-            let observation = if unknown {
+            let marked = rule["labels"].get(METRIC_VALUE_CODES_LABEL).is_some();
+            let mut code_unknown = false;
+            let code_note = if marked {
+                let note = match metric_value_state(rule, site) {
+                    Ok(value) => {
+                        present = value.present;
+                        code_unknown = value.unknown;
+                        value.note
+                    }
+                    Err(error) => {
+                        code_unknown = true;
+                        error
+                    }
+                };
+                if code_unknown {
+                    report.fault(
+                        "indeterminate",
+                        InputStatus::NotCurrent,
+                        &format!("alert {name} ({keyed_target}): {note}"),
+                    );
+                }
+                value_code_notes.push(format!("{keyed_target}: {}", truncate(&note, 160)));
+                Some(note)
+            } else {
+                None
+            };
+            let observation = if unknown || code_unknown {
                 Observation::Unknown
             } else if present {
                 Observation::Present
@@ -1914,11 +2018,25 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 "generated_at": document.get("generated_at"),
                 "policy_sha256": effective,
             });
+            if let Some(note) = &code_note {
+                reference["value_codes"] = rule["labels"][METRIC_VALUE_CODES_LABEL].clone();
+                reference["value_code_note"] = json!(note);
+                reference["value_code_counts"] = rule["value_code_counts"].clone();
+            }
             if let Some(site) = site {
                 reference["site"] = json!(site);
                 reference["instances_other_sites"] = json!(other_sites.len());
             }
             let mut note = match observation {
+                Observation::Unknown if code_unknown => format!(
+                    "{name} unknown: {}{}",
+                    code_note.as_deref().unwrap_or_default(),
+                    if unknown_why.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; {unknown_why}")
+                    },
+                ),
                 Observation::Unknown if !unknown && no_data => format!(
                     "{name} unknown: query fetched no series (metric missing, or its window has no history yet)"
                 ),
@@ -1929,6 +2047,11 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 },
                 _ => format!("{name} unknown: {}", truncate(&unknown_why, 160)),
             };
+            if let Some(code_note) = &code_note
+                && !code_unknown
+            {
+                note.push_str(&format!("; {code_note}"));
+            }
             if index == 0 && !other_sites.is_empty() {
                 let mut names: Vec<&str> = other_sites
                     .iter()
@@ -1944,6 +2067,9 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             }
             observations.push((keyed_target, observation, reference, note));
         }
+    }
+    if !value_code_notes.is_empty() {
+        report.identity["value_code_notes"] = json!(value_code_notes);
     }
     read.reports.push(report);
     for (target, observation, reference, note) in observations {

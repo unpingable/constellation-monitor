@@ -94,6 +94,33 @@ alert under a drifted definition set from one under the declared set. The
 shared vector `fixtures/vmalert-rules-runtime-v1.json` is consumed by
 `test_metric_alerts.py` and by the evaluator's tests.
 
+For rules labelled `attention: "true"` and
+`constellation_value_codes: "v1"`, numeric instance values are evidence codes:
+1 = threshold (present only when firing), 2 = warming history/counter reset,
+3 = missing, 4 = stale. Codes 2–4 are unknown and held even while pending;
+unsupported values/versions are also unknown. Inactive rules clear only when
+the usual freshness, health, evaluation and policy checks permit recovery.
+Unmarked rules keep their existing semantics. The marker was absent from the
+inspected Cartography P8/P9 files and must be adopted there; their probe
+code 2 (unreachable) and code 5 (invalid data) need reconciliation.
+
+Rule labels and bounded instance values pass through unchanged. For marked
+rules the producer additionally writes `value_code_counts`, a complete list
+of `{site, state, value, count}` rows for firing and pending instances,
+computed before the 32-instance detail bound (empty site means no label).
+This keeps unknown codes visible at high fan-out and across sites. Deploy
+the collector with the evaluator: a marked active rule missing that summary
+is unknown. The shared vector covers both producer bytes and evaluator
+meaning, including pending and unsupported codes.
+
+Unknown-held conditions send no metric notice until they have been present.
+Their code and meaning appear immediately in the report and bounded digest;
+lasting unknown codes surface through the existing input `indeterminate`
+fault and `evaluator-input-unavailable` notice after its default 300 s.
+No additional timer is introduced. Plain `lastSamples = 0` with positive
+`lastSeriesFetched` cannot reliably reveal missing comparison history;
+definitions needing that distinction must opt into explicit value codes.
+
 **Admission before deployment.** The evaluator admits each opted-in rule on
 its own: a rule whose condition target cannot be derived (the alert name as a
 token, plus `.<site>` for each `[inputs.metric_alerts] sites` entry, at most
@@ -106,6 +133,7 @@ declared policy the producer carries, with the evaluator's sites:
 
     metric-alerts-collect.py --check-targets --declared declared-vmalert-policy.json --key-site labelwatch
 
+The value-code marker is accepted without changing target derivation.
 It reads nothing else, prints `constellation.metric_alert_admission/v1` (each
 attention rule with its admitted targets, its refusals per site and the
 longest derived byte count), names each refused rule and site on stderr and exits 1 if any rule would be rejected. A

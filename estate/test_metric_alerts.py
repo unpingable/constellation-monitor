@@ -16,6 +16,48 @@ def test_document_matches_the_shared_vector():
     assert VECTOR["document"]["policy_matches_declared"] is True
 
 
+@pytest.mark.parametrize("case", VECTOR["value_code_cases"], ids=lambda c: c["name"])
+def test_value_codes_match_the_shared_vector_and_are_admitted(case):
+    api = copy.deepcopy(VECTOR["api"])
+    api["data"]["groups"] = [api["data"]["groups"][0]]
+    api["data"]["groups"][0]["rules"] = [case["api_rule"]]
+    doc = m.document(api, "collector-site", VECTOR["generated_at"])
+    assert doc["site"] == "collector-site", "an instance's site is not the collector site"
+    assert doc["rules"] == [case["document_rule"]]
+    policy = m._collector().vmalert_policy(api)
+    rows = m.check_targets(policy, ["labelwatch"])
+    assert len(rows) == 1 and rows[0]["admitted"], rows
+
+
+def test_value_code_summary_includes_pending_and_truncated_instances():
+    api = copy.deepcopy(VECTOR["api"])
+    rule = next(r for g in api["data"]["groups"] for r in g["rules"] if r["name"] == "HostSwapExhausted")
+    rule["labels"].update(VECTOR["value_code_marker"])
+    one = rule["alerts"][0]
+    rule["alerts"] = [dict(one, value="1", labels=dict(one["labels"], site="crow", instance=str(i))) for i in range(40)]
+    rule["alerts"].extend([dict(one, state="pending", value="2", labels=dict(one["labels"], site="testbed")),
+                           dict(one, state="firing", value="4", labels=dict(one["labels"], site="crow")),
+                           dict(one, state="inactive", value="3")])
+    doc = m.document(api, "collector-site", VECTOR["generated_at"])
+    out = next(r for r in doc["rules"] if r["name"] == "HostSwapExhausted")
+    assert len(out["instances"]) == 32 and out["instance_count"] == 43
+    assert out["value_code_counts"] == [
+        dict(site="crow", state="firing", value="1", count=40),
+        dict(site="crow", state="firing", value="4", count=1),
+        dict(site="testbed", state="pending", value="2", count=1)]
+
+
+def test_check_targets_cli_accepts_the_value_code_marker(tmp_path, capsys):
+    policy = m._collector().vmalert_policy(copy.deepcopy(VECTOR["api"]))
+    for group in policy["groups"]:
+        for rule in group["rules"]:
+            rule["labels"].update(VECTOR["value_code_marker"])
+    path = tmp_path / "declared.json"
+    path.write_text(json.dumps(policy))
+    assert m.main(["--check-targets", "--declared", str(path), "--key-site", "labelwatch"]) == 0
+    assert json.loads(capsys.readouterr().out)["rejected"] == 0
+
+
 def test_policy_identity_ignores_runtime_state_but_not_definitions():
     api = copy.deepcopy(VECTOR["api"])
     swap = next(r for g in api["data"]["groups"] for r in g["rules"] if r["name"] == "HostSwapExhausted")
