@@ -5,7 +5,7 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use common::*;
 use constellation_remediation_consumer::{Config, run_pass};
@@ -158,6 +158,7 @@ fn exhausted_sealed_generations_refuse_before_external_commands() {
     fill_journal_sparsely(&state_dir);
     let state_before = fs::read(state_dir.join("state.json")).unwrap();
     let names_before = listing(&state_dir);
+    let inode = fs::metadata(state_dir.join("journal.jsonl")).unwrap().ino();
     let error = run_pass(&harness.config(), &|| 0).unwrap_err();
     assert!(error.contains("journal capacity exhausted"), "{error}");
     assert!(
@@ -174,6 +175,10 @@ fn exhausted_sealed_generations_refuse_before_external_commands() {
         MAX_JOURNAL_BYTES
     );
     assert_eq!(listing(&state_dir), names_before);
+    assert_eq!(
+        fs::metadata(state_dir.join("journal.jsonl")).unwrap().ino(),
+        inode
+    );
 }
 
 #[test]

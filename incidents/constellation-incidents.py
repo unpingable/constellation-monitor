@@ -397,35 +397,53 @@ def read_intent_log(path, keep_seconds, now):
     return out
 
 
-CONSUMER_SEALED = re.compile(r"^journal\.sealed\.([0-9]+)\.jsonl$")
+CONSUMER_SEALED = re.compile(r"journal\.sealed\.([0-9]+)\.jsonl")
+
+
+def _read_tail(stream, budget):
+    size = os.fstat(stream.fileno()).st_size
+    offset = max(0, size - budget)
+    stream.seek(offset)
+    data = stream.read(budget)
+    lines = data.splitlines(keepends=True)
+    if offset and lines:
+        lines = lines[1:]
+    return len(data), lines
 
 
 def _consumer_journal_tails(directory, journal_limit):
     """Complete lines from the tail of the live consumer journal and, while the
     shared byte budget lasts, of its newest sealed generations
-    (journal.sealed.NNNN.jsonl, newest first). Unreadable files are skipped."""
-    paths = [os.path.join(directory, "journal.jsonl")]
+    (journal.sealed.NNNN.jsonl, newest first). Unreadable files are skipped.
+    The live journal is opened before the directory is listed: a seal landing
+    in between leaves this descriptor on the newly sealed inode, which the
+    listing then also names, so no generation is skipped."""
     try:
-        sealed = [(int(m.group(1)), name) for name in os.listdir(directory) for m in [CONSUMER_SEALED.match(name)] if m]
+        live = open(os.path.join(directory, "journal.jsonl"), "rb")
+    except OSError:
+        live = None
+    try:
+        sealed = [(int(m.group(1)), name) for name in os.listdir(directory) for m in [CONSUMER_SEALED.fullmatch(name)] if m]
     except OSError:
         sealed = []
-    paths += [os.path.join(directory, name) for _, name in sorted(sealed, reverse=True)]
     budget = journal_limit
-    for p in paths:
+    if live is not None:
+        try:
+            with live:
+                used, lines = _read_tail(live, budget)
+            budget -= used
+            yield lines
+        except OSError:
+            pass
+    for _, name in sorted(sealed, reverse=True):
         if budget <= 0:
             break
         try:
-            with open(p, "rb") as stream:
-                size = os.fstat(stream.fileno()).st_size
-                offset = max(0, size - budget)
-                stream.seek(offset)
-                data = stream.read(budget)
+            with open(os.path.join(directory, name), "rb") as stream:
+                used, lines = _read_tail(stream, budget)
         except OSError:
             continue
-        budget -= len(data)
-        lines = data.splitlines(keepends=True)
-        if offset and lines:
-            lines = lines[1:]
+        budget -= used
         yield lines
 
 

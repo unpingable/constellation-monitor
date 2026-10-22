@@ -82,48 +82,68 @@ ceiling. `--check-config` reports `journal_max_bytes`, `journal_max_sealed`
 or null when it cannot be read) without creating, locking or opening state.
 These are limits and a count, not a journal-usage or service-health claim.
 
-A full journal is sealed, not truncated. When a pass opens a journal with less
-than 1/64 of the bound (1 MiB) left, or when an append would carry a journal
-that is at least half full over the bound, the Store seals it before writing
-the record. Sealing hard-links `journal.jsonl` as `journal.sealed.NNNN.jsonl`
-(zero-padded sequence, 0001 first) and fsyncs the directory, atomically writes
-the sidecar `journal.sealed.NNNN.json` (byte length, SHA-256, newline-terminated
-record count, torn-tail bytes, first and last `at`, sealing pass and time),
-then atomically replaces `journal.jsonl` with a new file whose first record is
-`journal_sealed` carrying the same fields plus `predecessor`. Every intermediate
-state leaves a complete `journal.jsonl`; a crash after the link is resumed under
-the same sequence. The chain is replayable backwards from the live file: each
-generation's first record names and digests its predecessor. Sequences stay
-monotonic after segments are moved away, because the live journal's first
-record names its predecessor's sequence. Sealing reads only the journal: it does
-not read or write `state.json`, `episodes/` or the lock, so pending obligations
-(the active episode and its dispatch fence), completed outcomes, authorization
-history and the replay fence are exactly what they were. The consumer itself
-never reads the journal back. A single record that cannot fit in a journal under
-half full is refused as before rather than sealing a young generation.
+A full journal is sealed, not truncated. The Store seals before writing a
+record in three cases: at open, when less than 1 MiB (1/64 of the bound)
+remains, which includes a journal at exactly or over 64 MiB; at open, when the
+live journal is still the same inode as a sealed segment (an interrupted seal,
+whatever its size); and mid-pass, when the next record would carry a journal
+that is at least half full over the bound. A record that would not fit in a
+journal under half full is refused, not sealed.
+
+Sealing hard-links `journal.jsonl` as `journal.sealed.NNNN.jsonl` (zero-padded
+sequence, 0001 first) and fsyncs the directory, atomically writes the sidecar
+`journal.sealed.NNNN.json` (byte length, SHA-256, newline-terminated record
+count, torn-tail bytes, first and last `at`, sealing pass, time and trigger),
+then writes and fsyncs the successor journal under a temporary name, renames it
+over `journal.jsonl` and fsyncs the directory. The successor's first record is
+`journal_sealed` carrying the same fields plus `predecessor`, and the pass keeps
+appending through the handle it opened on that file, so no record can reach the
+sealed inode. Every intermediate state leaves a complete `journal.jsonl`. If a
+crash or power loss leaves the live journal linked to a segment (after the link,
+or because an unsynced rename was lost), the next open detects the shared inode
+and finishes that seal under the same sequence with trigger `resume` before any
+append. A sealed name that already exists and is not the live journal's own
+regular-file inode (for example a symlink) is never reused; a name that would
+need a sequence past the largest one is refused. Any failed seal refuses that
+append and every later one in the pass. The chain is replayable backwards from
+the live file: each generation's first record names and digests its
+predecessor. Sequences stay monotonic after segments are moved away, because the
+live journal's first record names its predecessor's sequence. Sealing reads only
+the journal: it does not read or write `state.json` or `episodes/`, so pending
+obligations (the active episode and its dispatch fence), completed outcomes,
+authorization history and the replay fence are exactly what they were. The
+consumer itself never reads the journal back.
 
 At most 16 sealed generations are kept beside the live one, about 1.06 GiB in
 all; at the 2026-10 idle cadence (about 8.2 MB a day) that is roughly four
-months of history before custody is needed. When 16 are present a full journal
-is refused exactly as before: at open, before any external command, with
+months of history before custody is needed. When 16 are present and a seal is
+due at open, the pass is refused at open, before any external command, with
 `journal capacity exhausted ... sealed journal generations exhausted ...
 history preserved, operator custody required`, leaving the journal, state,
-episode IDs, dispatch fences and directory listing unchanged. The consumer exits
-2 through its existing store-fault path, and the estate supervision of failed
-passes remains the operator route. A full journal is not healthy and does not
-authorize a retry. Read-only incident inspection and AG/Docket inspection remain
-available.
+episode IDs, dispatch fences and directory listing unchanged. If the bound is
+reached by a mid-pass seal instead, that append and the rest of the pass are
+refused, as an append crossing the bound was before this change. The consumer
+exits 2 through its existing store-fault path, and the estate supervision of
+failed passes remains the operator route. A full journal is not healthy and
+does not authorize a retry. Read-only incident inspection and AG/Docket
+inspection remain available.
 
 Custody procedure when sealed generations are exhausted (or earlier, to keep
-disk use low): for each of the oldest sealed segments, check its length and
-digest against its sidecar (`stat -c %s` and `sha256sum` against the sidecar's
-`bytes` and `sha256`), copy the segment and sidecar off-host, verify the copy's
-digest there, then remove both from the state directory. Never edit, truncate or
+disk use low). Hold the consumer's lock for the whole procedure
+(`flock state/lock -c '...'` as the consumer's user) or stop
+`constellation-remediation-consumer.timer` and wait for any running pass to
+finish. Then, for each of the oldest sealed segments: skip it if it has no
+sidecar or its link count (`stat -c %h`) is above 1, since that is an
+interrupted seal the next pass will finish; check its length and digest against
+its sidecar (`stat -c %s` and `sha256sum` against the sidecar's `bytes` and
+`sha256`); copy the segment and sidecar off-host and verify the copy's digest
+there; then remove both from the state directory. Never edit, truncate or
 reorder a segment, never touch `journal.jsonl`, `state.json` or `episodes/`, and
 do not clear a campaign, discard an unresolved attempt or reset its fence to make
-space. The next pass seals normally once fewer than 16 segments are present.
-Incident provenance for episodes whose opening record left with a moved segment
-becomes unknown, as for any record past its read bound.
+space. Release the lock or restart the timer afterwards; the next pass seals
+normally once fewer than 16 segments are present. Incident provenance for
+episodes whose opening record left with a moved segment becomes unknown, as for
+any record past its read bound.
 
 Deploying this release against a full journal seals it on the first pass:
 a 67,108,673-byte journal (about 190 bytes short of the bound, less than the
@@ -140,7 +160,9 @@ existing exclusive Store lock, admitted appends satisfy
 at most `journal_max_sealed` sealed generations are present before refusal.
 Tests cover sealing on append and at open (byte-identical segments, sidecar and
 first-record digests, unchanged state and fence), an interrupted seal resuming
-under its own name, sequence continuity after segments are moved away, a
+under its own name (including below the open headroom, without growing the
+segment), a symlinked segment name never standing in for the journal, sequence
+space exhaustion and refusal after a failed seal, sequence continuity after segments are moved away, a
 production-shaped 67,108,673-byte journal sealing on an idle pass, a full
 journal with a dispatch fence sealing and then never dispatching again, refusal
 at the generation bound before every external call with nothing renamed, and

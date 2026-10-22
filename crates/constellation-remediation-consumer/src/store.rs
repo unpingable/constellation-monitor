@@ -171,8 +171,11 @@ pub struct Store {
     journal: File,
     journal_max_bytes: u64,
     max_sealed: usize,
-    /// The live journal was full at open: seal before the first append.
+    /// The live journal was full at open, or is still linked to a sealed
+    /// segment by an interrupted seal: seal before the first append.
     seal_due: bool,
+    /// A seal failed part-way: every later append is refused this pass.
+    seal_failed: Option<String>,
     pass: String,
 }
 
@@ -235,10 +238,13 @@ impl Store {
             .map_err(|error| failed("stat journal", error))?
             .len();
         // Seal at open when less than 1/64 of the bound remains, so one pass
-        // normally journals into one generation. Refusal (all sealed
-        // generations present) happens here, before any external command.
+        // normally journals into one generation, or when an interrupted seal
+        // left the live journal linked to a segment (whatever its size: no
+        // append may grow a sealed segment). Refusal (all sealed generations
+        // present) happens here, before any external command.
         let headroom = (journal_max_bytes / 64).max(1);
-        let seal_due = used.saturating_add(headroom) > journal_max_bytes;
+        let linked = linked_segment(dir, &journal).map_err(OpenError::Failed)?;
+        let seal_due = linked.is_some() || used.saturating_add(headroom) > journal_max_bytes;
         if seal_due {
             seal_sequence(dir, &journal, max_sealed)
                 .map_err(|error| OpenError::Failed(exhausted(&error, used, journal_max_bytes)))?;
@@ -251,6 +257,7 @@ impl Store {
             journal_max_bytes,
             max_sealed,
             seal_due,
+            seal_failed: None,
             pass,
         })
     }
@@ -294,6 +301,9 @@ impl Store {
         episode: Option<&Episode>,
         detail: Value,
     ) -> Result<(), String> {
+        if let Some(error) = &self.seal_failed {
+            return Err(format!("journal unusable after a failed seal: {error}"));
+        }
         let bytes = self.record(now_ms, event, episode, detail)?;
         let required =
             u64::try_from(bytes.len()).map_err(|_| "journal record length exceeds u64")?;
@@ -302,8 +312,11 @@ impl Store {
         // A journal under half full is never sealed for one oversized record.
         if self.seal_due || (crosses && used >= self.journal_max_bytes / 2) {
             let trigger = if self.seal_due { "open" } else { "append" };
-            self.seal(now_ms, trigger)
-                .map_err(|error| exhausted(&error, used, self.journal_max_bytes))?;
+            if let Err(error) = self.seal(now_ms, trigger) {
+                let error = exhausted(&error, used, self.journal_max_bytes);
+                self.seal_failed = Some(error.clone());
+                return Err(error);
+            }
             self.seal_due = false;
             used = self.used()?;
         }
@@ -349,16 +362,31 @@ impl Store {
     /// complete `journal.jsonl`: hard link and directory fsync, sidecar
     /// (atomic), then the live name atomically replaced by a new journal
     /// holding only the `journal_sealed` record. A crash after the link is
-    /// resumed by the next seal (same inode, same sequence); nothing is ever
-    /// truncated or deleted.
+    /// resumed by the next open (same inode, same sequence); nothing is ever
+    /// truncated or deleted. A sealed name that exists but is not the live
+    /// journal's own inode is refused before anything changes.
     fn seal(&mut self, now_ms: u64, trigger: &str) -> Result<(), String> {
-        let sequence = seal_sequence(&self.dir, &self.journal, self.max_sealed)?;
+        let resumed = linked_segment(&self.dir, &self.journal)?;
+        let sequence = match resumed {
+            Some(sequence) => sequence,
+            None => seal_sequence(&self.dir, &self.journal, self.max_sealed)?,
+        };
+        let trigger = if resumed.is_some() { "resume" } else { trigger };
         let live = self.dir.join(LIVE_JOURNAL);
         let name = sealed_name(sequence);
         let sealed = self.dir.join(&name);
-        if !sealed.exists() {
-            fs::hard_link(&live, &sealed).map_err(|error| format!("seal journal: {error}"))?;
-            sync_dir(&self.dir)?;
+        match fs::symlink_metadata(&sealed) {
+            Ok(_) if resumed == Some(sequence) => {}
+            Ok(_) => {
+                return Err(format!(
+                    "seal journal: {name} already exists and is not the live journal; operator custody required"
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::hard_link(&live, &sealed).map_err(|error| format!("seal journal: {error}"))?;
+                sync_dir(&self.dir)?;
+            }
+            Err(error) => return Err(format!("seal journal: {error}")),
         }
         let summary = summarize(&sealed)?;
         let sidecar = format!("{SEALED_PREFIX}{sequence:04}.json");
@@ -385,12 +413,25 @@ impl Store {
             detail.insert("predecessor".into(), json!(name));
         }
         let first = self.record(now_ms, "journal_sealed", None, record)?;
-        write_atomic(&live, &first)?;
-        self.journal = OpenOptions::new()
+        // The successor's append handle is opened on the temporary file, so
+        // once the rename lands no later record can reach the sealed inode.
+        let temporary = self
+            .dir
+            .join(format!(".{LIVE_JOURNAL}.{}.tmp", std::process::id()));
+        let _ = fs::remove_file(&temporary);
+        let mut successor = OpenOptions::new()
             .append(true)
-            .open(&live)
-            .map_err(|error| format!("open journal: {error}"))?;
-        Ok(())
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("{}: {error}", temporary.display()))?;
+        successor
+            .write_all(&first)
+            .and_then(|()| successor.sync_all())
+            .map_err(|error| format!("{}: {error}", temporary.display()))?;
+        fs::rename(&temporary, &live).map_err(|error| format!("{}: {error}", live.display()))?;
+        self.journal = successor;
+        sync_dir(&self.dir)
     }
 
     /// Directory for one episode's AG input records.
@@ -458,23 +499,35 @@ pub fn sealed_journal_count(dir: &Path) -> Option<usize> {
         .map(|(segments, _)| segments.len())
 }
 
+/// The sealed segment that is the live journal's own inode: an interrupted
+/// seal. Symlinks never match.
+fn linked_segment(dir: &Path, journal: &File) -> Result<Option<u64>, String> {
+    let live = journal
+        .metadata()
+        .map_err(|error| format!("stat journal: {error}"))?;
+    if live.nlink() < 2 {
+        return Ok(None);
+    }
+    let (segments, _) = sealed_segments(dir)?;
+    Ok(segments.into_iter().find_map(|(sequence, path)| {
+        fs::symlink_metadata(path)
+            .ok()
+            .filter(|metadata| {
+                metadata.is_file() && metadata.dev() == live.dev() && metadata.ino() == live.ino()
+            })
+            .map(|_| sequence)
+    }))
+}
+
 /// The sequence the live journal seals as: the segment already linked to it
 /// (an interrupted seal), else one past every sealed name on disk and the
 /// predecessor its own first record names (segments moved off-host keep the
 /// chain monotonic). Refuses once `max_sealed` segments are present.
 fn seal_sequence(dir: &Path, journal: &File, max_sealed: usize) -> Result<u64, String> {
-    let live = journal
-        .metadata()
-        .map_err(|error| format!("stat journal: {error}"))?;
-    let (segments, highest) = sealed_segments(dir)?;
-    for (sequence, path) in &segments {
-        if let Ok(metadata) = fs::metadata(path)
-            && metadata.dev() == live.dev()
-            && metadata.ino() == live.ino()
-        {
-            return Ok(*sequence);
-        }
+    if let Some(sequence) = linked_segment(dir, journal)? {
+        return Ok(sequence);
     }
+    let (segments, highest) = sealed_segments(dir)?;
     if segments.len() >= max_sealed {
         return Err(format!(
             "sealed journal generations exhausted: {} sealed segments present, bound {max_sealed}",
@@ -485,7 +538,10 @@ fn seal_sequence(dir: &Path, journal: &File, max_sealed: usize) -> Result<u64, S
         .filter(|record| record["event"] == "journal_sealed")
         .and_then(|record| record["detail"]["sequence"].as_u64())
         .unwrap_or(0);
-    Ok(highest.max(predecessor).saturating_add(1))
+    highest
+        .max(predecessor)
+        .checked_add(1)
+        .ok_or_else(|| "seal journal: sealed sequence space exhausted".to_owned())
 }
 
 fn exhausted(error: &str, used: u64, limit: u64) -> String {
@@ -823,6 +879,103 @@ mod tests {
             records(&fs::read(&journal).unwrap())[0]["detail"]["sequence"],
             1
         );
+    }
+
+    #[test]
+    fn interrupted_seal_below_the_headroom_is_resumed_and_never_grows_the_segment() {
+        let directory = private_dir();
+        let dir = directory.path();
+        let journal = dir.join(LIVE_JOURNAL);
+        drop(open(dir, 4096, 4).unwrap());
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&journal)
+            .unwrap()
+            .set_len(4096 * 40 / 64)
+            .unwrap();
+        let segment = dir.join("journal.sealed.0001.jsonl");
+        fs::hard_link(&journal, &segment).unwrap();
+        let mut store = open(dir, 4096, 4).unwrap();
+        store.event(1, "pass_started", None, Value::Null).unwrap();
+        let (live, sealed) = (
+            fs::metadata(&journal).unwrap(),
+            fs::metadata(&segment).unwrap(),
+        );
+        assert_ne!(live.ino(), sealed.ino());
+        assert_eq!(sealed.len(), 4096 * 40 / 64);
+        assert_eq!(sealed.nlink(), 1);
+        assert!(!dir.join("journal.sealed.0002.jsonl").exists());
+        let live = records(&fs::read(&journal).unwrap());
+        assert_eq!(live[0]["detail"]["sequence"], 1);
+        assert_eq!(live[0]["detail"]["trigger"], "resume");
+        assert_eq!(live[1]["event"], "pass_started");
+    }
+
+    #[test]
+    fn a_symlinked_segment_name_never_stands_in_for_the_journal() {
+        let directory = private_dir();
+        let dir = directory.path();
+        let journal = dir.join(LIVE_JOURNAL);
+        drop(open(dir, 4096, 4).unwrap());
+        fs::write(&journal, b"{}\n".repeat(1366)).unwrap();
+        let history = fs::read(&journal).unwrap();
+        std::os::unix::fs::symlink(LIVE_JOURNAL, dir.join("journal.sealed.0001.jsonl")).unwrap();
+        let mut store = open(dir, 4096, 4).unwrap();
+        store.event(1, "pass_started", None, Value::Null).unwrap();
+        assert!(
+            fs::symlink_metadata(dir.join("journal.sealed.0001.jsonl"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            fs::read(dir.join("journal.sealed.0002.jsonl")).unwrap(),
+            history
+        );
+        let live = records(&fs::read(&journal).unwrap());
+        assert_eq!(
+            live[0]["detail"]["predecessor"],
+            "journal.sealed.0002.jsonl"
+        );
+    }
+
+    #[test]
+    fn exhausted_sequence_space_refuses_and_a_failed_seal_stops_the_pass() {
+        let directory = private_dir();
+        let dir = directory.path();
+        let journal = dir.join(LIVE_JOURNAL);
+        let mut store = open(dir, 4096, 4).unwrap();
+        while fs::metadata(&journal).unwrap().len() + 400 <= 4096 {
+            store.event(0, "fixture", None, Value::Null).unwrap();
+        }
+        fs::write(dir.join(format!("journal.sealed.{}.jsonl", u64::MAX)), b"").unwrap();
+        let listing = names(dir);
+        let mut error = String::new();
+        for _ in 0..8 {
+            if let Err(refused) = store.event(0, "fixture", None, Value::Null) {
+                error = refused;
+                break;
+            }
+        }
+        assert!(error.contains("sealed sequence space exhausted"), "{error}");
+        let before = fs::read(&journal).unwrap();
+        let after_failure = store.event(0, "small", None, Value::Null).unwrap_err();
+        assert!(
+            after_failure.contains("unusable after a failed seal"),
+            "{after_failure}"
+        );
+        assert_eq!(fs::read(&journal).unwrap(), before);
+        assert_eq!(names(dir), listing);
+        drop(store);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&journal)
+            .unwrap()
+            .set_len(4096)
+            .unwrap();
+        let error = open(dir, 4096, 4).err().unwrap();
+        assert!(error.contains("sealed sequence space exhausted"), "{error}");
+        assert_eq!(names(dir), listing);
     }
 
     #[test]

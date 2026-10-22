@@ -241,6 +241,7 @@ def test_opening_provenance_is_found_in_sealed_journal_generations_within_the_bo
     (tmp_path / "journal.sealed.0003.jsonl").unlink()
     (tmp_path / "journal.sealed.0004.jsonl").mkdir()
     (tmp_path / "journal.sealed.x.jsonl").write_bytes(line.replace(b'"version": 2', b'"version": 3'))
+    (tmp_path / "journal.sealed.0005.jsonl\n").write_bytes(line.replace(b'"version": 2', b'"version": 3'))
     live.unlink()
     assert inc.read_consumer(str(state_path))["closed"][0]["rule_revision"] == revision
 
