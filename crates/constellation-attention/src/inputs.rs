@@ -103,6 +103,13 @@ pub struct InputReport {
     /// `evaluator-input-unavailable` condition, so a lasting fault of one
     /// class never masks a later fault of another.
     pub causes: Vec<&'static str>,
+    /// Definitions the input carries that admission refused, one entry per
+    /// definition (`{label}.rule_rejected:<name>` with the reason). A
+    /// rejected definition is never evaluated and never clears anything, but
+    /// it does not change `status`: every other definition of the input is
+    /// evaluated normally. The class `rejected` in `causes` says so.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rejected_rules: Vec<Value>,
 }
 
 /// Fault classes of an input, each keyed separately (`{label}.{cause}`).
@@ -114,9 +121,40 @@ pub const INPUT_CAUSES: &[&str] = &[
     "indeterminate",
     "unreported",
     "empty",
+    REJECTED_CAUSE,
 ];
 
+/// The fault class of a definition refused by per-definition admission.
+/// Only inputs of [`ADMISSION_KINDS`] carry it.
+pub const REJECTED_CAUSE: &str = "rejected";
+
+/// Input kinds whose definitions are admitted one by one.
+pub const ADMISSION_KINDS: &[&str] = &["metric_alerts"];
+
 impl InputReport {
+    /// Refuse one definition the input carries: it is listed in
+    /// `rejected_rules` with its fault (`{label}.rule_rejected:<name>`) and
+    /// reason, and the class `rejected` is raised. `status` is left alone,
+    /// so the input's other definitions stay current.
+    pub fn reject(&mut self, name: &str, target: &str, reason: &str) {
+        let name = truncate(name, 128);
+        let fault = format!("{}.rule_rejected:{name}", self.label);
+        if !self.causes.contains(&REJECTED_CAUSE) {
+            self.causes.push(REJECTED_CAUSE);
+        }
+        let message = format!("{fault}: {reason}");
+        self.error = Some(match self.error.take() {
+            Some(error) if !error.is_empty() => format!("{error}; {message}"),
+            _ => message,
+        });
+        self.rejected_rules.push(json!({
+            "fault": fault,
+            "rule": name,
+            "target": target,
+            "reason": reason,
+        }));
+    }
+
     /// Record a fault: its class, the worse of the two statuses, and the
     /// message appended to `error`.
     pub fn fault(&mut self, cause: &'static str, status: InputStatus, message: &str) {
@@ -240,6 +278,7 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         Err(error) => {
             read.reports.push(InputReport {
                 causes: Vec::new(),
+                rejected_rules: Vec::new(),
                 label: input.label.clone(),
                 kind: "host_posture",
                 component: "host_posture",
@@ -259,6 +298,7 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         // feeds these rules.
         read.reports.push(InputReport {
             causes: Vec::new(),
+            rejected_rules: Vec::new(),
             label: input.label.clone(),
             kind: "host_posture",
             component: "host_posture",
@@ -299,6 +339,7 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         .all(|component| component.mode == ModeV1::Maintenance);
     read.reports.push(InputReport {
         causes: Vec::new(),
+        rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "host_posture",
         component: "host_posture",
@@ -637,6 +678,7 @@ fn evaluation_history(context: &Context<'_>, input: &NqStatusInput) -> Result<Nq
 fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
+        rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "nq_status",
         component: "nq",
@@ -1022,6 +1064,7 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
 fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
+        rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "nightshift",
         component: "nightshift",
@@ -1124,6 +1167,7 @@ fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut Inputs
     let label = input.reference.as_str();
     let mut report = InputReport {
         causes: Vec::new(),
+        rejected_rules: Vec::new(),
         label: label.to_owned(),
         kind: "saved_check",
         component: "nq",
@@ -1224,6 +1268,7 @@ pub const ESTATE_LABEL: &str = "estate";
 fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
+        rejected_rules: Vec::new(),
         label: ESTATE_LABEL.to_owned(),
         kind: "estate",
         component: "estate",
@@ -1375,6 +1420,57 @@ fn metric_alert_site_target(target: &str, site: Option<&str>) -> Result<String, 
     Ok(keyed)
 }
 
+/// The longest condition target NQ admits.
+pub const TARGET_MAX: usize = 48;
+
+/// One site's condition target of an admitted alert definition.
+pub type KeyedTarget<'s> = (Option<&'s str>, String);
+
+/// Admission of one opted-in alert definition, before anything is evaluated:
+/// its condition target (`<alert-token>`, or `<alert-token>.<site>` for each
+/// listed site) must be a bounded condition token. On refusal, the offending
+/// target and the reason, with the byte count. `metric-alerts-collect.py
+/// --check-targets` applies the same derivation to a declared policy.
+///
+/// # Errors
+///
+/// A derived target that is not a bounded token of at most [`TARGET_MAX`]
+/// bytes.
+pub fn admit_metric_alert<'s>(
+    name: &str,
+    sites: &[Option<&'s str>],
+) -> Result<(String, Vec<KeyedTarget<'s>>), (String, String)> {
+    let target = metric_alert_target(name);
+    if let Err(error) = validate_token("target_class", &target, TARGET_MAX) {
+        return Err((
+            target.clone(),
+            format!("derived target is not a condition token: {error}"),
+        ));
+    }
+    let mut keyed = Vec::with_capacity(sites.len());
+    for site in sites {
+        match metric_alert_site_target(&target, *site) {
+            Ok(keyed_target) => keyed.push((*site, keyed_target)),
+            Err(error) => {
+                let site = site.unwrap_or_default();
+                let full = format!("{target}.{site}");
+                let reason = if full.len() > TARGET_MAX {
+                    format!(
+                        "derived target {full:?} is {} bytes ({}-byte alert token, \".\", {}-byte site {site:?}); the condition target bound is {TARGET_MAX} bytes",
+                        full.len(),
+                        target.len(),
+                        site.len()
+                    )
+                } else {
+                    format!("derived target is not a condition token: {error}")
+                };
+                return Err((full, reason));
+            }
+        }
+    }
+    Ok((target, keyed))
+}
+
 /// The `site` label of an alert instance.
 fn instance_site(instance: &Value) -> Option<&str> {
     instance.pointer("/labels/site").and_then(Value::as_str)
@@ -1398,6 +1494,7 @@ fn instance_site(instance: &Value) -> Option<&str> {
 fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
+        rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "metric_alerts",
         component: "host_posture",
@@ -1500,42 +1597,22 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     let mut observations = Vec::new();
     for rule in &opted {
         let name = rule.get("name").and_then(Value::as_str).unwrap_or_default();
-        let target = metric_alert_target(name);
-        if validate_token("target_class", &target, 48).is_err() {
-            report.fault(
-                "untargetable",
-                InputStatus::NotCurrent,
-                &format!("alert {name:?} has no usable condition target"),
-            );
-            continue;
-        }
-        if let Some(other) = targets.get(&target) {
-            report.fault(
-                "untargetable",
-                InputStatus::NotCurrent,
-                &format!("alerts {other:?} and {name:?} share the target {target}"),
-            );
-            continue;
-        }
-        let mut keyed: Vec<(Option<&str>, String)> = Vec::with_capacity(sites.len());
-        for site in &sites {
-            match metric_alert_site_target(&target, *site) {
-                Ok(keyed_target) => keyed.push((*site, keyed_target)),
-                Err(_) => {
-                    report.fault(
-                        "untargetable",
-                        InputStatus::NotCurrent,
-                        &format!(
-                            "alert {name:?} keyed by site {} exceeds the 48-byte condition target",
-                            site.unwrap_or_default()
-                        ),
-                    );
-                    keyed.clear();
-                    break;
-                }
+        // Per-definition admission: a definition whose condition target
+        // cannot be derived is refused alone, and named; every other
+        // definition is evaluated as usual.
+        let (target, keyed) = match admit_metric_alert(name, &sites) {
+            Ok(admitted) => admitted,
+            Err((target, reason)) => {
+                report.reject(name, &target, &reason);
+                continue;
             }
-        }
-        if keyed.is_empty() {
+        };
+        if let Some(other) = targets.get(&target) {
+            report.reject(
+                name,
+                &target,
+                &format!("derived target {target:?} is already the target of alert {other:?}"),
+            );
             continue;
         }
         targets.insert(target.clone(), name.to_owned());
@@ -1750,7 +1827,52 @@ fn describe_metric_instance(instance: &Value) -> String {
 
 #[cfg(test)]
 mod metric_alert_tests {
-    use super::{metric_alert_site_target, metric_alert_target};
+    use super::{admit_metric_alert, metric_alert_site_target, metric_alert_target};
+
+    /// The shared admission vector: `metric-alerts-collect.py --check-targets`
+    /// derives and refuses exactly the same targets.
+    #[test]
+    fn admission_matches_the_shared_target_vector() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../estate/fixtures/metric-alert-targets-v1.json"
+        ))
+        .unwrap();
+        for case in vector["cases"].as_array().unwrap() {
+            let alert = case["alert"].as_str().unwrap();
+            let site = case["site"].as_str();
+            let (admitted, target) = match admit_metric_alert(alert, &[site]) {
+                Ok((_, keyed)) => (true, keyed[0].1.clone()),
+                Err((target, _)) => (false, target),
+            };
+            assert_eq!(case["admitted"].as_bool().unwrap(), admitted, "{case}");
+            assert_eq!(case["target"].as_str().unwrap(), target, "{case}");
+            assert_eq!(
+                case["bytes"].as_u64().unwrap(),
+                target.len() as u64,
+                "{case}"
+            );
+        }
+    }
+
+    /// The 2026-10-22 testbed drill: the 43-byte token of
+    /// `ServiceMetricsObservationNeedsAttention` keyed by `.testbed` is 51
+    /// bytes, and the refusal says so.
+    #[test]
+    fn the_drill_rule_is_refused_with_its_byte_count() {
+        let (target, reason) = admit_metric_alert(
+            "ServiceMetricsObservationNeedsAttention",
+            &[Some("testbed")],
+        )
+        .unwrap_err();
+        assert_eq!(
+            target,
+            "service-metrics-observation-needs-attention.testbed"
+        );
+        assert_eq!(
+            reason,
+            "derived target \"service-metrics-observation-needs-attention.testbed\" is 51 bytes (43-byte alert token, \".\", 7-byte site \"testbed\"); the condition target bound is 48 bytes"
+        );
+    }
 
     #[test]
     fn alert_names_become_stable_targets() {

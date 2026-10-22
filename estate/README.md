@@ -93,3 +93,23 @@ repository's declared policy identity so the evaluator can tell a firing
 alert under a drifted definition set from one under the declared set. The
 shared vector `fixtures/vmalert-rules-runtime-v1.json` is consumed by
 `test_metric_alerts.py` and by the evaluator's tests.
+
+**Admission before deployment.** The evaluator admits each opted-in rule on
+its own: a rule whose condition target cannot be derived (the alert name as a
+token, plus `.<site>` for each `[inputs.metric_alerts] sites` entry, at most
+48 bytes of `[a-z0-9._-]`, not shaped like a date or digest, not shared with
+another rule) is rejected alone and reported as
+`metric_alerts.rule_rejected:<AlertName>`; the other rules are evaluated. To
+refuse such a rule set before it reaches a host, run the check against the
+declared policy the producer carries, with the evaluator's sites:
+
+    metric-alerts-collect.py --check-targets --declared declared-vmalert-policy.json --key-site labelwatch
+
+It reads nothing else, prints `constellation.metric_alert_admission/v1` (each
+attention rule with its derived targets and byte count, or the refusal), names
+each refused rule on stderr and exits 1 if any rule would be rejected. A
+renderer or a definitions test should run it for every site set it deploys.
+`ServiceMetricsObservationNeedsAttention` is the case it exists for: its
+43-byte token plus `.testbed` is 51 bytes (`.labelwatch`: 54). The shared
+vector `fixtures/metric-alert-targets-v1.json` holds both implementations to
+the same derivation.

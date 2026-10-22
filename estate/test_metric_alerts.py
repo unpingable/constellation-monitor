@@ -84,3 +84,66 @@ def test_a_rule_vmalert_has_not_evaluated_yet_has_no_last_evaluation():
     doc = m.document(api, "crow", VECTOR["generated_at"])
     rule = next(r for r in doc["rules"] if r["name"] == "HostSwapExhausted")
     assert rule["last_evaluation"] is None   # the reader then says "has no valid last_evaluation" (indeterminate), not a huge age
+
+
+TARGETS = json.loads((HERE / "fixtures/metric-alert-targets-v1.json").read_bytes())
+
+
+def test_admission_matches_the_shared_target_vector():
+    """The evaluator's inputs.rs tests the same vector: both sides derive and refuse the same targets."""
+    for case in TARGETS["cases"]:
+        verdict = m.admit(case["alert"], [case["site"]] if case["site"] else None)
+        admitted = not isinstance(verdict, tuple)
+        target = verdict[0][1] if admitted else verdict[1]
+        assert (admitted, target, len(target.encode())) == (case["admitted"], case["target"], case["bytes"]), case
+
+
+def _declared(tmp_path, names):
+    rule = {"annotations": {"summary": "x"}, "duration_seconds": 300, "keep_firing_for_seconds": 0,
+            "labels": {"attention": "true", "severity": "warn"}, "query": "vector(1)"}
+    policy = {"schema": "constellation.vmalert_policy/v1",
+              "groups": [{"file": "service.rules.yml", "interval_seconds": 30, "name": "service",
+                          "rules": [dict(rule, name=n) for n in names] + [dict(rule, name="NotOptedInAtAllWithAVeryLongAlertName", labels={})]}]}
+    path = tmp_path / "declared-vmalert-policy.json"
+    path.write_text(json.dumps(policy))
+    return path
+
+
+def test_check_targets_refuses_a_49_byte_derived_target(tmp_path, capsys):
+    fits = "Z" + "z" * 41 + "Z"   # a 44-byte alert token
+    path = _declared(tmp_path, ["HostSwapExhausted", fits])
+    assert m.main(["--check-targets", "--declared", str(path), "--key-site", "cro"]) == 0   # 44 + 1 + 3 = 48
+    capsys.readouterr()
+    assert m.main(["--check-targets", "--declared", str(path), "--key-site", "crow"]) == 1   # 44 + 1 + 4 = 49
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["rejected"] == 1 and out["sites"] == ["crow"]
+    bad = next(r for r in out["rules"] if not r["admitted"])
+    assert bad["rule"] == fits and bad["bytes"] == 49 and "is 49 bytes" in bad["reason"], bad
+    assert "rule_rejected:" + fits in captured.err
+    assert next(r for r in out["rules"] if r["rule"] == "HostSwapExhausted")["targets"] == ["host-swap-exhausted.crow"]
+    assert [r["rule"] for r in out["rules"]] == ["HostSwapExhausted", fits], "only attention-labelled rules are admitted"
+
+
+def test_check_targets_names_the_real_p3_rule_on_the_testbed(tmp_path, capsys):
+    """The 2026-10-22 testbed drill: ServiceMetricsObservationNeedsAttention keyed by site testbed is 51 bytes."""
+    path = _declared(tmp_path, ["ServiceMetricsObservationNeedsAttention", "ServiceLastSuccessNeedsAttention",
+                                "HostMetricsAcquisitionNeedsAttention"])
+    assert m.main(["--check-targets", "--declared", str(path), "--key-site", "testbed"]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert [(r["rule"], r["admitted"], r["bytes"]) for r in out["rules"]] == [
+        ("ServiceMetricsObservationNeedsAttention", False, 51),
+        ("ServiceLastSuccessNeedsAttention", True, 44),
+        ("HostMetricsAcquisitionNeedsAttention", True, 48)]
+
+
+def test_check_targets_refuses_two_rules_with_one_target(tmp_path, capsys):
+    path = _declared(tmp_path, ["HostSwapExhausted", "host-swap-exhausted"])
+    assert m.main(["--check-targets", "--declared", str(path)]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["rules"][1]["reason"] == 'derived target "host-swap-exhausted" is already the target of alert "HostSwapExhausted"'
+
+
+def test_check_targets_needs_the_declared_policy():
+    with pytest.raises(SystemExit):
+        m.main(["--check-targets"])

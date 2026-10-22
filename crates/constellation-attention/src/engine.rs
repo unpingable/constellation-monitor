@@ -11,7 +11,10 @@ use serde_json::{Value, json};
 
 use crate::condition::ConditionKey;
 use crate::config::{Config, EffectiveRule};
-use crate::inputs::{self, Context, INPUT_CAUSES, InputReport, InputStatus, Observation, Observed};
+use crate::inputs::{
+    self, ADMISSION_KINDS, Context, INPUT_CAUSES, InputReport, InputStatus, Observation, Observed,
+    REJECTED_CAUSE,
+};
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{
@@ -20,7 +23,7 @@ use crate::registry::{
 };
 use crate::remediation::{self, PageDecision};
 use crate::state::{ConditionState, LastIntent, State};
-use crate::util::{format_seconds, read_bounded, write_atomic};
+use crate::util::{format_seconds, read_bounded, truncate, write_atomic};
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
 const INPUT_UNAVAILABLE: &str = "evaluator-input-unavailable";
@@ -376,6 +379,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 if report.kind == "host_posture" && *cause == "stale" {
                     continue;
                 }
+                // Per-definition admission exists only for these kinds.
+                if *cause == REJECTED_CAUSE && !ADMISSION_KINDS.contains(&report.kind) {
+                    continue;
+                }
                 let Ok(key) = ConditionKey::new(
                     &config.site,
                     report.component,
@@ -399,13 +406,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     } else {
                         Observation::Unknown
                     },
-                    reference: json!({
-                        "input": report.label,
-                        "kind": report.kind,
-                        "status": report.status,
-                        "cause": cause,
-                    }),
-                    note: if report.causes.contains(cause) {
+                    reference: input_fault_reference(report, cause),
+                    note: if *cause == REJECTED_CAUSE {
+                        rejected_note(report)
+                    } else if report.causes.contains(cause) {
                         report.error.clone().unwrap_or_default()
                     } else {
                         String::new()
@@ -1048,10 +1052,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     if let Some(attempt) = &digest_attempt {
         delivery_problem |= !attempt["settled"].as_bool().unwrap_or(false);
     }
+    // A rejected definition leaves its input `ok` but is still an input
+    // problem: the pass exits 3, and the report tells the two apart (status
+    // `ok`, cause `rejected`, `rejected_rules`).
     let input_problem = read
         .reports
         .iter()
-        .any(|report| report.status != InputStatus::Ok);
+        .any(|report| report.status != InputStatus::Ok || !report.causes.is_empty());
     let report = json!({
         "schema": REPORT_SCHEMA,
         "site": config.site,
@@ -1094,6 +1101,44 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             0
         },
     })
+}
+
+/// The reference of an input-fault condition. For `rejected`, the refused
+/// definitions by fault and the reason, so the notice names them.
+fn input_fault_reference(report: &InputReport, cause: &str) -> Value {
+    let mut reference = json!({
+        "input": report.label,
+        "kind": report.kind,
+        "status": report.status,
+        "cause": cause,
+    });
+    if cause == REJECTED_CAUSE && !report.rejected_rules.is_empty() {
+        reference["rejected_rules"] = json!(
+            report
+                .rejected_rules
+                .iter()
+                .map(|rule| &rule["fault"])
+                .collect::<Vec<_>>()
+        );
+        reference["reason"] = json!(truncate(&rejected_note(report), 400));
+    }
+    reference
+}
+
+/// `<fault>: <reason>` for every rejected definition of the input.
+fn rejected_note(report: &InputReport) -> String {
+    report
+        .rejected_rules
+        .iter()
+        .map(|rule| {
+            format!(
+                "{}: {}",
+                rule["fault"].as_str().unwrap_or_default(),
+                rule["reason"].as_str().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// An NQ-status condition whose target the operator listed in

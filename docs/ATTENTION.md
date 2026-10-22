@@ -25,7 +25,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v5`).
+  compiled in and versioned (`constellation.attention_registry.v6`).
   Configuration may enable or disable a rule, change its one threshold, and
   move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
@@ -55,7 +55,7 @@ anchors marked (M) are below in this document.
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
-| `evaluator-input-unavailable` | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
+| `evaluator-input-unavailable` (v2) | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input, and its admission of each metric-alert definition | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
 | `ag-executor-unavailable` | page | page | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
 
@@ -68,7 +68,8 @@ accepts 17 Cartography anchors (`host-disk` among them); `memory-pressure`,
 `io-pressure`, `sqlite-health` and `evaluator-input-unavailable` are not
 anchors at all.
 `host-disk` is version 3: version 2 added NQ filesystem watchers, version 3
-made it attention-only.
+made it attention-only. `evaluator-input-unavailable` is version 2: it gained
+the `rejected` class (per-definition admission, registry v6).
 
 ### Classification
 
@@ -121,7 +122,9 @@ and current are still evaluated.
   `generated_at` must be within `max_age_seconds` and each rule's
   `last_evaluation` within `max_evaluation_age_seconds` of it, the rule's
   health must be `ok`, and the effective policy identity must be the declared
-  one. See [Metric alerts](#metric-alerts-vmalert-as-an-input).
+  one. Each opted-in definition is admitted on its own: one whose condition
+  target cannot be derived is rejected alone (`rejected`) and the input stays
+  `ok` for the rest. See [Metric alerts](#metric-alerts-vmalert-as-an-input).
 
 ### NQ status sources
 
@@ -404,9 +407,9 @@ with each new intent recorded as `unknown` without a notification id. Then:
   refusal `network_dispatch_not_explicitly_enabled` and sends nothing; those
   are not retried and are not counted as failures.
 
-A pass exits 3 when any input was not readable or current, any retained
-delivery is not accepted (other than deliberate refusals), or a trigger was
-dropped, so the systemd unit shows failed and the condition stays visible in
+A pass exits 3 when any input was not readable or current or carries a
+rejected definition, any retained delivery is not accepted (other than
+deliberate refusals), or a trigger was dropped, so the systemd unit shows failed and the condition stays visible in
 `systemctl --failed` without a recursive notification.
 
 ## Clock
@@ -556,10 +559,58 @@ hold and resolve on their own.
   rule's first listed site, but it is never a condition: the evaluator keys
   what it was told to key.
 - A keyed target must still fit the 48-byte target bound; an alert name too
-  long to carry `.<site>` faults the input `untargetable` and is skipped.
+  long to carry `.<site>` is rejected by admission (below).
 
 Absent `sites` (the default), each rule is one condition whatever its
 instances' sites, as above.
+
+### Admission of metric-alert definitions
+
+One invalid definition must not disable unrelated monitoring coverage. Each
+pass admits every opted-in definition on its own before evaluating it. A
+definition is **rejected** when its condition target cannot be derived: the
+alert-name token (cut at 48 bytes), or `<token>.<site>` for a listed site
+(never cut), is not 1..=48 bytes of `[a-z0-9._-]` starting with a letter or
+digit, looks like a per-event identity (date, digest, long digit run), or is
+already another definition's target (the first in document order keeps it).
+
+- A rejected definition is never a condition: it neither triggers nor clears
+  anything, and it is never silent. The input's report lists it in
+  `rejected_rules` (`{"fault": "metric_alerts.rule_rejected:<AlertName>",
+  "rule", "target", "reason"}`, the reason with the byte count) and carries
+  the class `rejected` in `causes`.
+- The class `rejected` is the condition
+  `evaluator-input-unavailable:{label}.rejected` (a notice after 300 s whose
+  text ends with `Now: <fault>: <reason>` for each rejected definition). It is
+  one condition per input, not per definition: the very name that was
+  rejected cannot be a bounded target. A second rejection while the first is
+  open joins the same condition (and its report row and note) without a new
+  notice.
+- Every other definition is evaluated as usual. The input's `status` stays
+  `ok` (`not_current` only for its own other faults), so its other fault
+  classes clear and resolve normally.
+- The pass exits 3 while any definition is rejected: it is an input problem.
+  The report tells it from an unavailable input: `status: "ok"`, `causes:
+  ["rejected"]` and `rejected_rules`, against `not_current`/`unavailable` with
+  their own classes.
+- There is no cache of a last known-good definition set. When the effective
+  policy is not the declared one, the drift semantics above stand (a firing
+  alert still triggers, nothing clears) and rejections are reported beside
+  the drift.
+
+The ServiceMetricsObservationNeedsAttention case (2026-10-22 testbed drill):
+its token `service-metrics-observation-needs-attention` is 43 bytes, and
+keyed by site it becomes `service-metrics-observation-needs-attention.testbed`,
+51 bytes (`.labelwatch`: 54). Before this admission it faulted the whole input
+`untargetable`; now only that definition is rejected.
+
+**Refuse it before deployment.** `estate/metric-alerts-collect.py
+--check-targets --declared declared-vmalert-policy.json --key-site <site>
+[--key-site ...]` applies the same derivation to the declared policy the
+producer carries and exits 1, naming each rule, if any would be rejected
+(see `estate/README.md`). Run it with the evaluator's `sites` wherever a rule
+set is rendered or tested. `estate/fixtures/metric-alert-targets-v1.json`
+holds both implementations to the same derivation.
 
 The rule is notice-only and not in NQ's page anchor set. The condition's
 component is `host_posture` (the NQ v2 contract's closed set has no
@@ -684,6 +735,7 @@ classes in `causes` and the detail in `error`:
 | `stale` | NQ snapshot older than `max_age_seconds`, or an evaluation-history page that is not complete or whose upper bound moved; a watcher whose last collection (status export) or newest evaluation (evaluation history) is older than `stale_after_seconds` at the snapshot's `generated_at` (default 180 s; a stopped nqd still answers from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds` |
 | `unrecognised` | an NQ evaluation with an unrecognised profile id or version, or that cannot be parsed; a saved-check result without a valid `read_attempted_at` |
 | `untargetable` | a systemd unit with no bounded target class |
+| `rejected` | metric alerts only: a definition admission refused, listed in `rejected_rules`; the input stays `ok` for its other definitions (see [Admission](#admission-of-metric-alert-definitions)) |
 | `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed` |
 | `unreported` | an open condition the input no longer reports |
 | `empty` | no closed Nightshift cycle yet; an estate document listing no services; a metric alerts document with no rule labelled `attention: "true"` |

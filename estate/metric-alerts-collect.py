@@ -103,6 +103,114 @@ def document(api, site, generated_at, declared=None):
     }
 
 
+# ---- admission of opted-in definitions, before deployment ----
+# The attention evaluator derives each opted-in rule's condition target exactly as below
+# (crates/constellation-attention/src/inputs.rs: metric_alert_target, admit_metric_alert) and refuses a
+# definition whose target is not a bounded token. --check-targets applies it to the declared policy, so a rule
+# set that the evaluator would refuse is refused before it is deployed. fixtures/metric-alert-targets-v1.json
+# is the shared vector both sides test against.
+TARGET_MAX = 48
+
+
+def alert_target(name):
+    """`HostSwapExhausted` is `host-swap-exhausted`; anything outside [a-z0-9._-] becomes `-`; cut at 48 bytes."""
+    out, previous_lower = [], False
+    for ch in name:
+        if "A" <= ch <= "Z":
+            if previous_lower:
+                out.append("-")
+            out.append(ch.lower())
+            previous_lower = False
+        elif ("a" <= ch <= "z") or ("0" <= ch <= "9") or ch in "._-":
+            out.append(ch)
+            previous_lower = ("a" <= ch <= "z") or ("0" <= ch <= "9")
+        else:
+            out.append("-")
+            previous_lower = False
+    return "".join(out).encode()[:TARGET_MAX].decode("utf-8", "ignore")
+
+
+def per_event_identity(value):
+    """NQ's heuristic: the kind of per-event identity a condition token appears to carry, or None."""
+    lower = value.lower()
+    if "sha256" in lower:
+        return "a digest"
+    hexd, dig = set("0123456789abcdef"), set("0123456789")
+    for i in range(len(lower) - 35):
+        w = lower[i:i + 36]
+        if all((c == "-") if j in (8, 13, 18, 23) else (c in hexd) for j, c in enumerate(w)):
+            return "a UUID"
+    for i in range(len(lower) - 9):
+        w = lower[i:i + 10]
+        if all((c == "-") if j in (4, 7) else (c in dig) for j, c in enumerate(w)):
+            return "a date"
+    hex_run = digit_run = 0
+    for c in lower:
+        hex_run = hex_run + 1 if c in hexd else 0
+        digit_run = digit_run + 1 if c in dig else 0
+        if hex_run >= 32:
+            return "a hexadecimal identifier"
+        if digit_run >= 8:
+            return "a numeric timestamp or identifier"
+    if all(c in dig for c in lower):
+        return "a numeric identifier"
+    return None
+
+
+def token_error(value, maximum=TARGET_MAX):
+    raw = value.encode()
+    if not raw or len(raw) > maximum or not chr(raw[0]).isalnum() or not all(
+            chr(b) in "abcdefghijklmnopqrstuvwxyz0123456789._-" for b in raw):
+        return "must be 1..=%d characters of [a-z0-9._-] starting with a letter or digit" % maximum
+    kind = per_event_identity(value)
+    if kind:
+        return "looks like %s; a condition names a stable class, not an event" % kind
+    return None
+
+
+def admit(name, sites=None):
+    """One opted-in definition: [(site, target)] or a refusal ("rejected", target, reason)."""
+    target = alert_target(name)
+    error = token_error(target)
+    if error:
+        return ("rejected", target, "derived target is not a condition token: %s" % error)
+    keyed = []
+    for site in sites or [None]:
+        full = target if site is None else "%s.%s" % (target, site)
+        if len(full.encode()) > TARGET_MAX:
+            return ("rejected", full, "derived target %s is %d bytes (%d-byte alert token, \".\", %d-byte site %s); "
+                    "the condition target bound is %d bytes" % (json.dumps(full), len(full.encode()), len(target.encode()),
+                                                                len(site.encode()), json.dumps(site), TARGET_MAX))
+        error = token_error(full)
+        if error:
+            return ("rejected", full, "derived target is not a condition token: %s" % error)
+        keyed.append((site, full))
+    return keyed
+
+
+def check_targets(policy, sites=None):
+    """Every attention-labelled alerting rule of a declared policy, admitted or refused, in policy order."""
+    rows, seen = [], {}
+    for group in policy.get("groups", []):
+        for rule in group.get("rules", []):
+            if (rule.get("labels") or {}).get("attention") != "true":
+                continue
+            name = rule.get("name", "")
+            row = {"rule": name, "group": group.get("name"), "file": group.get("file")}
+            verdict = admit(name, sites)
+            base = alert_target(name)
+            if isinstance(verdict, tuple):
+                row.update(admitted=False, target=verdict[1], bytes=len(verdict[1].encode()), reason=verdict[2])
+            elif base in seen:
+                row.update(admitted=False, target=base, bytes=len(base.encode()),
+                           reason="derived target %s is already the target of alert %s" % (json.dumps(base), json.dumps(seen[base])))
+            else:
+                seen[base] = name
+                row.update(admitted=True, targets=[t for _, t in verdict], bytes=max(len(t.encode()) for _, t in verdict))
+            rows.append(row)
+    return rows
+
+
 def read_api(url, timeout):
     with urllib.request.urlopen(url, timeout=timeout) as response:
         raw = response.read(LIMIT + 1)
@@ -130,11 +238,30 @@ def atomic_write(path, data):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8880/api/v1/rules")
-    parser.add_argument("--site", required=True, help="the evaluator site this document is written for")
-    parser.add_argument("--out", required=True)
+    parser.add_argument("--site", help="the evaluator site this document is written for (required to collect)")
+    parser.add_argument("--out", help="the document to write (required to collect)")
     parser.add_argument("--declared", help="declared-vmalert-policy.json; its identity is carried for the reader to compare")
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--check-targets", action="store_true",
+                        help="admit the declared policy's attention rules as the evaluator will (needs --declared); "
+                             "print the verdict and exit 1 if any rule would be rejected; reads nothing else")
+    parser.add_argument("--key-site", action="append", dest="key_sites", metavar="SITE",
+                        help="with --check-targets: a site the evaluator keys conditions by ([inputs.metric_alerts] sites); repeat")
     args = parser.parse_args(argv)
+    if args.check_targets:
+        if not args.declared:
+            parser.error("--check-targets needs --declared")
+        with open(args.declared, "rb") as fh:
+            policy = json.loads(fh.read())
+        rows = check_targets(policy, args.key_sites)
+        rejected = [r for r in rows if not r["admitted"]]
+        print(json.dumps({"schema": "constellation.metric_alert_admission/v1", "declared_policy_sha256": declared_sha256(args.declared),
+                          "sites": args.key_sites, "rules": rows, "rejected": len(rejected)}, indent=1, sort_keys=True))
+        for r in rejected:
+            sys.stderr.write("rule_rejected:%s: %s\n" % (r["rule"], r["reason"]))
+        return 1 if rejected else 0
+    if not args.site or not args.out:
+        parser.error("--site and --out are required to collect")
     declared = declared_sha256(args.declared) if args.declared else None
     now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     try:

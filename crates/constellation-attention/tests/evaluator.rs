@@ -4710,3 +4710,239 @@ fn per_site_presence_uses_the_complete_firing_summary() {
         assert_eq!(c["observation"], "present", "{c}");
     }
 }
+
+// ---- per-definition admission (2026-10-22 testbed drill) ----
+
+const OBSERVATION_RULE: &str = "ServiceMetricsObservationNeedsAttention";
+const REJECTED_INPUT: &str =
+    "constellation:labelwatch:host_posture:evaluator-input-unavailable:metric_alerts.rejected";
+const UNTARGETABLE_INPUT: &str =
+    "constellation:labelwatch:host_posture:evaluator-input-unavailable:metric_alerts.untargetable";
+
+/// The testbed drill's document: the vector's host-pressure rules keyed to
+/// site `testbed` (the erroring one healthy, so only admission is at stake),
+/// plus P3-like service rules, one of them with a name whose site-keyed
+/// target is 51 bytes.
+fn p3_with_an_overlong_rule(doc: &mut Value, swap_firing: bool) {
+    metric_rule(doc, "HostIoPressureSevere")["health"] = json!("ok");
+    metric_rule(doc, "HostIoPressureSevere")["last_error"] = json!("");
+    let template = metric_rule(doc, "HostSwapExhausted").clone();
+    {
+        let swap = metric_rule(doc, "HostSwapExhausted");
+        swap["instances"][0]["labels"]["site"] = json!("testbed");
+        refresh_firing_sites(swap);
+    }
+    if !swap_firing {
+        quiet(doc, "HostSwapExhausted");
+    }
+    for (name, firing) in [
+        (OBSERVATION_RULE, true),
+        ("ServiceLastSuccessNeedsAttention", false),
+    ] {
+        let mut rule = template.clone();
+        rule["name"] = json!(name);
+        rule["file"] = json!("service.rules.yml");
+        rule["group"] = json!("service");
+        rule["labels"] = json!({"area": "service", "attention": "true", "runbook": "service-obligations", "severity": "warn"});
+        rule["instances"][0]["labels"]["site"] = json!("testbed");
+        rule["instances"][0]["labels"]["alertname"] = json!(name);
+        rule["instances"][0]["summary"] = json!(format!("{name} on testbed"));
+        if !firing {
+            rule["state"] = json!("inactive");
+            rule["instances"] = json!([]);
+            rule["instance_count"] = json!(0);
+        }
+        refresh_firing_sites(&mut rule);
+        doc["rules"].as_array_mut().unwrap().push(rule);
+    }
+}
+
+/// One opted-in definition whose derived target overflows the 48-byte bound
+/// is rejected alone: it is named in the report as
+/// `metric_alerts.rule_rejected:<name>` and raises the input's `rejected`
+/// class (a notice after 300 s that names it), while the input stays `ok`
+/// and every other definition triggers and resolves as usual. The pass
+/// exits 3.
+#[test]
+fn an_overlong_metric_alert_is_rejected_alone() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\"]\n");
+    let swap =
+        "constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted.testbed";
+    write_metric_alerts(&harness, T0, |doc| p3_with_an_overlong_rule(doc, true));
+    let output = harness.evaluate_at(T0, &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "a rejected definition is an input problem"
+    );
+    let report = harness.report();
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "ok", "{input}");
+    assert_eq!(causes(&input), ["rejected"], "{input}");
+    let rejected = input["rejected_rules"].as_array().unwrap();
+    assert_eq!(rejected.len(), 1, "{input}");
+    assert_eq!(
+        rejected[0]["fault"],
+        "metric_alerts.rule_rejected:ServiceMetricsObservationNeedsAttention"
+    );
+    assert_eq!(
+        rejected[0]["target"],
+        "service-metrics-observation-needs-attention.testbed"
+    );
+    assert!(
+        rejected[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("is 51 bytes"),
+        "{input}"
+    );
+    // The rejected definition is no condition; every other one is.
+    let ids: Vec<&str> = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .filter(|id| id.contains(":metric-alert-firing:"))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high.testbed",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-severe.testbed",
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-memory-pressure-high.testbed",
+            swap,
+            "constellation:labelwatch:host_posture:metric-alert-firing:service-last-success-needs-attention.testbed",
+        ]
+    );
+    assert_eq!(condition(&report, swap).unwrap()["observation"], "present");
+    assert_eq!(
+        condition(
+            &report,
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-io-pressure-high.testbed"
+        )
+        .unwrap()["observation"],
+        "clear"
+    );
+    let rejected_condition = condition(&report, REJECTED_INPUT).unwrap();
+    assert_eq!(rejected_condition["observation"], "present");
+    assert!(
+        rejected_condition["note"].as_str().unwrap().starts_with(
+            "metric_alerts.rule_rejected:ServiceMetricsObservationNeedsAttention: derived target"
+        ),
+        "{rejected_condition}"
+    );
+    // Other fault classes are clear: the input is ok for every other rule.
+    assert_eq!(
+        condition(&report, UNTARGETABLE_INPUT).unwrap()["observation"],
+        "clear"
+    );
+
+    // The host-pressure rule triggers on its own bound.
+    write_metric_alerts(&harness, T0 + 90, |doc| p3_with_an_overlong_rule(doc, true));
+    let report = harness.evaluate(T0 + 90);
+    assert_eq!(
+        alert_intents(&report),
+        vec![(swap.to_owned(), "notice".to_owned(), "trigger".to_owned())]
+    );
+    // The rejection is noticed after 300 s, and the notice names the rule.
+    write_metric_alerts(&harness, T0 + 360, |doc| {
+        p3_with_an_overlong_rule(doc, true)
+    });
+    let report = harness.evaluate(T0 + 360);
+    assert_eq!(
+        intents(&report),
+        vec![(
+            REJECTED_INPUT.to_owned(),
+            "notice".to_owned(),
+            "trigger".to_owned()
+        )]
+    );
+    let record = report["intents"][0]["notification_id"].as_str().unwrap();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("Now: metric_alerts.rule_rejected:ServiceMetricsObservationNeedsAttention: derived target"),
+        "{summary}"
+    );
+    // The host-pressure rule resolves on its own recovery while the
+    // rejection stays open.
+    for offset in [420, 560] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            p3_with_an_overlong_rule(doc, false);
+        });
+        harness.evaluate(T0 + offset);
+    }
+    let state = harness.state();
+    assert!(
+        state["conditions"]
+            .get(swap)
+            .is_none_or(|c| c["active"] == false),
+        "{state}"
+    );
+    assert_eq!(state["conditions"][REJECTED_INPUT]["active"], true);
+
+    // The rule file is fixed (the definition is gone): the rejection
+    // resolves after its confirmation window and passes exit 0.
+    let fixed = |doc: &mut Value| {
+        p3_with_an_overlong_rule(doc, false);
+        doc["rules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|r| r["name"] != OBSERVATION_RULE);
+    };
+    write_metric_alerts(&harness, T0 + 600, fixed);
+    let report = harness.evaluate(T0 + 600);
+    assert!(causes(&metric_input(&report)).is_empty());
+    assert_eq!(
+        condition(&report, REJECTED_INPUT).unwrap()["observation"],
+        "clear"
+    );
+    write_metric_alerts(&harness, T0 + 730, fixed);
+    let output = harness.evaluate_at(T0 + 730, &[]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        intents(&harness.report()),
+        vec![(
+            REJECTED_INPUT.to_owned(),
+            "notice".to_owned(),
+            "resolve".to_owned()
+        )]
+    );
+}
+
+/// A rejected definition while vmalert's policy drifted from the declared one:
+/// the existing drift semantics hold (a firing alert still triggers, nothing
+/// clears), and the rejection is reported beside the drift.
+#[test]
+fn a_rejected_definition_under_policy_drift_keeps_drift_semantics() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\"]\n");
+    let drifted = |doc: &mut Value, firing: bool| {
+        p3_with_an_overlong_rule(doc, firing);
+        doc["declared_policy_sha256"] =
+            json!("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+        doc["policy_matches_declared"] = json!(false);
+    };
+    let swap =
+        "constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted.testbed";
+    write_metric_alerts(&harness, T0, |doc| drifted(doc, true));
+    harness.evaluate(T0);
+    write_metric_alerts(&harness, T0 + 90, |doc| drifted(doc, true));
+    let report = harness.evaluate(T0 + 90);
+    assert_eq!(alert_intents(&report).len(), 1, "firing still triggers");
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "not_current");
+    assert_eq!(causes(&input), ["unrecognised", "rejected"], "{input}");
+    for offset in [150, 400] {
+        write_metric_alerts(&harness, T0 + offset, |doc| drifted(doc, false));
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(condition(&report, swap).unwrap()["observation"], "unknown");
+    }
+    assert_eq!(harness.state()["conditions"][swap]["active"], true);
+}

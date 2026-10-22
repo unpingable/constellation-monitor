@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v5";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v6";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -412,7 +412,7 @@ pub const RULES: [Rule; 13] = [
     },
     Rule {
         id: "evaluator-input-unavailable",
-        version: 1,
+        version: 2,
         default_class: Class::Notice,
         page_allowed: false,
         response_class: ResponseClass::Attention,
@@ -427,8 +427,8 @@ pub const RULES: [Rule; 13] = [
         fixed_persistence_seconds: 0,
         runbook_anchor: "evaluator-input-unavailable",
         runbook_document: MONITOR,
-        operator_response: "Read report.json for the input's error; fix permissions, paths or the producing timer. Rules fed by the input hold their state meanwhile.",
-        condition: "A configured input cannot be read, or its content is not current.",
+        operator_response: "Read report.json for the input's error; fix permissions, paths or the producing timer. Rules fed by the input hold their state meanwhile. A rejected definition (rejected_rules) is fixed in its rule file; the input's other definitions are evaluated meanwhile.",
+        condition: "A configured input cannot be read, or its content is not current, or admission refused one of its definitions.",
         disabled: None,
     },
     Rule {
