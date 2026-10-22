@@ -174,11 +174,34 @@ fn exhausted_sealed_generations_refuse_before_external_commands() {
         fs::metadata(state_dir.join("journal.jsonl")).unwrap().len(),
         MAX_JOURNAL_BYTES
     );
-    assert_eq!(listing(&state_dir), names_before);
+    // Nothing changes but the fault record the refusal leaves for `--status`.
+    let mut expected = names_before;
+    expected.push("last-pass.json".to_owned());
+    expected.sort();
+    assert_eq!(listing(&state_dir), expected);
     assert_eq!(
         fs::metadata(state_dir.join("journal.jsonl")).unwrap().ino(),
         inode
     );
+    let record = last_pass(&harness);
+    assert_eq!(record["result"], "fault");
+    assert!(
+        record["error"]
+            .as_str()
+            .unwrap()
+            .contains("sealed journal generations exhausted")
+    );
+    assert_eq!(record["sealed_segments"], 16);
+    let document = status(&harness);
+    assert_eq!(states(&document)[1..4], ["ABSENT", "ABSENT", "ABSENT"]);
+    assert!(concerns(&document)[1].2.contains("generations exhausted"));
+    // The lock was released.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(state_dir.join("lock"))
+        .unwrap()
+        .try_lock()
+        .unwrap();
 }
 
 #[test]
@@ -1456,4 +1479,122 @@ fn an_opened_episode_ends_a_repeated_abstention_streak() {
     let record = last_pass(&harness);
     assert!(record["repeat_reason"].is_null());
     assert_eq!(record["result"], "completed");
+}
+
+/// Rewrite `last-pass.json` with `change` applied.
+fn edit_last_pass(harness: &Harness, change: impl FnOnce(&mut Value)) {
+    let mut record = last_pass(harness);
+    change(&mut record);
+    fs::write(
+        harness.path("state/last-pass.json"),
+        serde_json::to_vec_pretty(&record).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_last_pass_left_behind_the_journal_is_not_a_predecessor() {
+    // A crash (or failed save) between a journal append and the save of
+    // last-pass.json, reproduced by restoring an older file.
+    let harness = Harness::new();
+    fs::remove_file(harness.path("report.json")).unwrap();
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    let older = fs::read(harness.path("state/last-pass.json")).unwrap();
+    assert_eq!(last_pass(&harness)["repeat_unsummarized"]["count"], 1);
+    fs::write(harness.path("report.json"), br#"{"schema":"other"}"#).unwrap();
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(
+        harness.abstentions(),
+        ["report_unreadable", "report_malformed"]
+    );
+    let journaled = harness.journal().len();
+    fs::write(harness.path("state/last-pass.json"), &older).unwrap();
+    fs::remove_file(harness.path("report.json")).unwrap();
+    assert_eq!(harness.result(), "abstained");
+    // The onset is journaled again in full; the stale window is not
+    // summarized a second time.
+    let after: Vec<String> = events(&harness)[journaled..].to_vec();
+    assert_eq!(after, ["pass_started", "abstained", "pass_finished"]);
+    assert_eq!(harness.events("abstention_summary").len(), 1);
+    let record = last_pass(&harness);
+    assert_eq!(record["repeat_count"], 1);
+    assert!(record["repeat_unsummarized"].is_null());
+}
+
+#[test]
+fn a_gap_of_more_than_a_minute_ends_the_streaks_with_its_length() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    edit_last_pass(&harness, |record| {
+        let at = record["at_unix_ms"].as_u64().unwrap() - 61_000;
+        record["at_unix_ms"] = json!(at);
+    });
+    assert_eq!(harness.result(), "abstained");
+    let journal = harness.journal();
+    assert_eq!(journal.len(), 1, "{journal:#?}");
+    assert_eq!(journal[0]["event"], "idle_summary");
+    assert_eq!(journal[0]["detail"]["trigger"], "streak_ended");
+    assert_eq!(journal[0]["detail"]["count"], 2);
+    let gap = journal[0]["detail"]["gap_seconds"].as_i64().unwrap();
+    assert!((61..70).contains(&gap), "{gap}");
+    let record = last_pass(&harness);
+    assert_eq!(record["consecutive_idle_passes"], 1);
+    assert_eq!(record["idle_unsummarized"]["count"], 1);
+    // A summary without a gap carries a null one.
+    harness.write_report(&Report::default());
+    assert_eq!(harness.result(), "completed");
+    assert!(harness.events("idle_summary")[1]["detail"]["gap_seconds"].is_null());
+}
+
+#[test]
+fn a_clock_step_back_ends_the_streak_and_journals_a_new_onset() {
+    let harness = Harness::new();
+    failing_inputs(&harness, "not_current");
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    // The previous pass appears ten minutes in the future.
+    edit_last_pass(&harness, |record| {
+        let at = record["at_unix_ms"].as_u64().unwrap() + 600_000;
+        record["at_unix_ms"] = json!(at);
+    });
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(
+        events(&harness),
+        [
+            "pass_started",
+            "abstained",
+            "pass_finished",
+            "abstention_summary",
+            "pass_started",
+            "abstained",
+            "pass_finished"
+        ]
+    );
+    let summary = &harness.journal()[3]["detail"];
+    assert_eq!(summary["trigger"], "streak_ended");
+    assert_eq!(summary["count"], 1);
+    let gap = summary["gap_seconds"].as_i64().unwrap();
+    assert!((-601..=-590).contains(&gap), "{gap}");
+    assert_eq!(last_pass(&harness)["repeat_count"], 1);
+}
+
+#[test]
+fn inputs_ok_is_not_applicable_when_the_pass_did_not_read_the_report() {
+    let harness = Harness::new();
+    harness.control("crash_in_dispatch", "");
+    assert!(harness.run().is_none(), "the pass should have been killed");
+    // The next pass resumes the open episode without reading the report.
+    assert_eq!(harness.result(), "completed");
+    let record = last_pass(&harness);
+    assert_eq!(record["phase"], "resumed");
+    let document = status(&harness);
+    assert_eq!(states(&document)[4], "NOT_APPLICABLE");
+    assert!(concerns(&document)[4].2.contains("resumed"));
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(last_pass(&harness)["phase"], "considered");
+    assert_eq!(states(&status(&harness))[4], "PRESENT");
 }

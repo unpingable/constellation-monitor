@@ -590,12 +590,6 @@ impl Pass<'_> {
         )
     }
 
-    /// LA's restart law, run before any new work of a model-mode pass: every
-    /// call this consumer's durable state shows begun but unsettled (in any
-    /// episode, open or closed) is settled through one `recover`, the
-    /// never-sent ones named `known_unsent`; reservations of closed episodes
-    /// that missed their LA `close` are closed. `Err` when LA could not be
-    /// brought up to date.
     /// Whether [`Self::la_sweep`] has anything to settle, and so would run
     /// LA. Reads only the loaded state.
     pub(super) fn la_sweep_pending(&self) -> bool {
@@ -610,6 +604,12 @@ impl Pass<'_> {
                 .any(|(closed, r)| sweep_needed(closed, r))
     }
 
+    /// LA's restart law, run before any new work of a model-mode pass: every
+    /// call this consumer's durable state shows begun but unsettled (in any
+    /// episode, open or closed) is settled through one `recover`, the
+    /// never-sent ones named `known_unsent`; reservations of closed episodes
+    /// that missed their LA `close` are closed. `Err` when LA could not be
+    /// brought up to date.
     pub(super) fn la_sweep(&mut self) -> Result<(), String> {
         let Some(model) = self.config.model.clone() else {
             return Ok(());

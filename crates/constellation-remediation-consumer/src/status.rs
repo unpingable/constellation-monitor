@@ -147,27 +147,35 @@ fn inputs_ok(last: &Result<LastPass, String>, generated: &str) -> Observed {
                 .abstain_reason
                 .as_deref()
                 .filter(|reason| last.result == "abstained" && INPUT_FAILURES.contains(reason));
-            let reason = match failing {
-                Some(failure) => format!(
-                    "inputs not read: {failure}{}",
-                    last.repeat_since
-                        .as_deref()
-                        .map_or_else(String::new, |since| format!(
-                            " since {since} ({} passes)",
-                            last.repeat_count
-                        ))
+            let (state, reason) = match (failing, last.phase.as_deref()) {
+                (Some(failure), _) => (
+                    "ABSENT",
+                    format!(
+                        "inputs not read: {failure}{}",
+                        last.repeat_since
+                            .as_deref()
+                            .map_or_else(String::new, |since| format!(
+                                " since {since} ({} passes)",
+                                last.repeat_count
+                            ))
+                    ),
                 ),
-                None => "last pass read its report and NQ inputs".to_owned(),
+                (None, Some("considered")) => (
+                    "PRESENT",
+                    "last pass read its report and NQ inputs".to_owned(),
+                ),
+                (None, Some(phase)) => (
+                    "NOT_APPLICABLE",
+                    format!("last pass did not read the report (phase {phase})"),
+                ),
+                (None, None) => ("NOT_APPLICABLE", "last pass recorded no phase".to_owned()),
             };
             (
-                if failing.is_some() {
-                    "ABSENT"
-                } else {
-                    "PRESENT"
-                },
+                state,
                 reason,
                 last.at.clone(),
                 json!({
+                    "phase": last.phase,
                     "abstain_reason": last.abstain_reason,
                     "repeat_reason": last.repeat_reason,
                     "repeat_count": last.repeat_count,

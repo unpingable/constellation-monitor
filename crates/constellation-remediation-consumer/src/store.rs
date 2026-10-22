@@ -238,6 +238,12 @@ pub struct LastPass {
     /// Repeated passes not yet carried by an `abstention_summary` record.
     #[serde(default)]
     pub repeat_unsummarized: Option<AbstentionWindow>,
+    /// What the pass did with its inputs: `considered` (it read the report:
+    /// idle, repeated, or judged from it), `resumed` (it drove an open
+    /// episode), `la_recovery_failed` (it stopped before the report); null
+    /// for a fault.
+    #[serde(default)]
+    pub phase: Option<String>,
     pub journal_bytes: Option<u64>,
     pub sealed_segments: Option<usize>,
     pub journal_max_bytes: u64,
@@ -263,7 +269,11 @@ pub struct Store {
 pub enum OpenError {
     /// Another pass holds the lock.
     Busy,
+    /// Refused before the lock was taken.
     Failed(String),
+    /// Refused after the lock was taken; `lock` (a handle on the same open
+    /// file description) keeps it held until dropped.
+    Refused { error: String, lock: Option<File> },
 }
 
 fn failed(context: &str, error: impl std::fmt::Display) -> OpenError {
@@ -307,15 +317,21 @@ impl Store {
             Err(fs::TryLockError::WouldBlock) => return Err(OpenError::Busy),
             Err(fs::TryLockError::Error(error)) => return Err(failed("lock", error)),
         }
+        // From here on the lock is held: a refusal returns it with the error,
+        // so the caller can record the fault before releasing it.
+        let refused = |error: String| OpenError::Refused {
+            error,
+            lock: lock.try_clone().ok(),
+        };
         let journal = OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(dir.join(LIVE_JOURNAL))
-            .map_err(|error| failed("open journal", error))?;
+            .map_err(|error| refused(format!("open journal: {error}")))?;
         let used = journal
             .metadata()
-            .map_err(|error| failed("stat journal", error))?
+            .map_err(|error| refused(format!("stat journal: {error}")))?
             .len();
         // Seal at open when less than 1/64 of the bound remains, so one pass
         // normally journals into one generation, or when an interrupted seal
@@ -323,13 +339,14 @@ impl Store {
         // append may grow a sealed segment). Refusal (all sealed generations
         // present) happens here, before any external command.
         let headroom = (journal_max_bytes / 64).max(1);
-        let linked = linked_segment(dir, &journal).map_err(OpenError::Failed)?;
+        let linked = linked_segment(dir, &journal).map_err(refused)?;
         let seal_due = linked.is_some() || used.saturating_add(headroom) > journal_max_bytes;
         if seal_due {
             seal_sequence(dir, &journal, max_sealed)
-                .map_err(|error| OpenError::Failed(exhausted(&error, used, journal_max_bytes)))?;
+                .map_err(|error| refused(exhausted(&error, used, journal_max_bytes)))?;
         }
-        fs::create_dir_all(dir.join("episodes")).map_err(|error| failed("episodes dir", error))?;
+        fs::create_dir_all(dir.join("episodes"))
+            .map_err(|error| refused(format!("episodes dir: {error}")))?;
         Ok(Self {
             dir: dir.to_owned(),
             _lock: lock,
@@ -449,9 +466,7 @@ impl Store {
 
     /// Atomically replace `last-pass.json` (0600).
     pub fn save_last_pass(&self, record: &LastPass) -> Result<(), String> {
-        let mut bytes = serde_json::to_vec_pretty(record).map_err(|error| error.to_string())?;
-        bytes.push(b'\n');
-        write_atomic(&self.dir.join(LAST_PASS), &bytes)
+        write_last_pass(&self.dir, record)
     }
 
     fn used(&self) -> Result<u64, String> {
@@ -624,6 +639,14 @@ pub fn sealed_journal_count(dir: &Path) -> Option<usize> {
     sealed_segments(dir)
         .ok()
         .map(|(segments, _)| segments.len())
+}
+
+/// Atomically replace `last-pass.json` (0600) in `dir`. Only for a caller
+/// that holds the lock.
+pub fn write_last_pass(dir: &Path, record: &LastPass) -> Result<(), String> {
+    let mut bytes = serde_json::to_vec_pretty(record).map_err(|error| error.to_string())?;
+    bytes.push(b'\n');
+    write_atomic(&dir.join(LAST_PASS), &bytes)
 }
 
 /// Read `last-pass.json` from a state directory without locking or creating
@@ -845,7 +868,7 @@ mod tests {
     fn open(dir: &Path, limit: u64, max_sealed: usize) -> Result<Store, String> {
         Store::open_bounded(dir, "fixture".into(), limit, max_sealed).map_err(|error| match error {
             OpenError::Busy => "busy".into(),
-            OpenError::Failed(error) => error,
+            OpenError::Failed(error) | OpenError::Refused { error, .. } => error,
         })
     }
 

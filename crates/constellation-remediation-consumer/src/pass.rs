@@ -18,8 +18,9 @@ use crate::config::{Config, Plan};
 use crate::external::{External, Failure};
 use crate::report::{Candidate, Selection, select_with_margin};
 use crate::store::{
-    AbstentionWindow, Episode, IdleWindow, LAST_PASS_SCHEMA, LastPass, OpenError, Reasoning, State,
-    Store, sealed_journal_count, stamp, write_atomic,
+    AbstentionWindow, Episode, IdleWindow, LAST_PASS_SCHEMA, LastPass, MAX_JOURNAL_BYTES,
+    MAX_SEALED_JOURNALS, OpenError, Reasoning, State, Store, live_journal_bytes, read_last_pass,
+    sealed_journal_count, stamp, write_atomic, write_last_pass,
 };
 
 mod reasoning;
@@ -124,15 +125,39 @@ pub fn run_pass_with(
             });
         }
         Err(OpenError::Failed(error)) => return Err(error),
+        Err(OpenError::Refused { error, lock }) => {
+            // Refused with the lock held: record the fault so `--status`
+            // shows it, then release the lock.
+            let dir = &config.consumer.state_dir;
+            let pending = read_last_pass(dir).map_or((None, None), |p| {
+                (p.idle_unsummarized, p.repeat_unsummarized)
+            });
+            record_fault(
+                dir,
+                live_journal_bytes(dir),
+                (MAX_JOURNAL_BYTES, MAX_SEALED_JOURNALS),
+                &pass_id,
+                pending,
+                now_ms(),
+                &error,
+            );
+            drop(lock);
+            return Err(error);
+        }
     };
-    let previous = store.load_last_pass();
+    let opened_at = now_ms();
+    let (previous, gap) = predecessor(
+        store.load_last_pass(),
+        store.journal_bytes().ok(),
+        opened_at,
+    );
     let state = match store.load() {
         Ok(state) => state,
         Err(error) => {
             let pending = previous.as_ref().map_or((None, None), |p| {
                 (p.idle_unsummarized.clone(), p.repeat_unsummarized.clone())
             });
-            record_fault(&store, &pass_id, pending, now_ms(), &error);
+            record_store_fault(&store, &pass_id, pending, now_ms(), &error);
             return Err(error);
         }
     };
@@ -149,8 +174,10 @@ pub fn run_pass_with(
             .as_ref()
             .and_then(|p| p.repeat_unsummarized.clone()),
         previous,
+        gap,
         last_abstain: None,
         quiet_at: None,
+        phase: "considered",
     };
     match pass.run() {
         Ok((summary, kind)) => {
@@ -160,10 +187,40 @@ pub fn run_pass_with(
         }
         Err(error) => {
             let pending = (pass.idle_pending.take(), pass.repeat_pending.take());
-            record_fault(&pass.store, &pass_id, pending, now_ms(), &error);
+            record_store_fault(&pass.store, &pass_id, pending, now_ms(), &error);
             Err(error)
         }
     }
+}
+
+/// The previous pass's streak state is trusted only when it describes the
+/// immediately preceding pass: nothing was journaled since it was written
+/// (a crash or failed save between a journal append and the save, or a
+/// restored file, leaves it behind the journal) and it is at most this old
+/// and not in the future.
+pub const PREDECESSOR_MAX_AGE_MS: u64 = 60_000;
+
+/// `(previous, gap)`: the previous pass when trusted; on a journal mismatch
+/// nothing (its unsummarized windows were already journaled by the pass
+/// that appended); on a time gap the previous pass with the gap in seconds,
+/// so its windows are flushed as `streak_ended` and then forgotten.
+fn predecessor(
+    previous: Option<LastPass>,
+    journal_bytes: Option<u64>,
+    now: u64,
+) -> (Option<LastPass>, Option<i64>) {
+    let Some(previous) = previous else {
+        return (None, None);
+    };
+    if previous.journal_bytes.is_none() || previous.journal_bytes != journal_bytes {
+        return (None, None);
+    }
+    if previous.at_unix_ms > now || now - previous.at_unix_ms > PREDECESSOR_MAX_AGE_MS {
+        let millis = i128::from(now) - i128::from(previous.at_unix_ms);
+        let gap = i64::try_from(millis / 1000).unwrap_or(i64::MAX);
+        return (Some(previous), Some(gap));
+    }
+    (Some(previous), None)
 }
 
 /// How a pass reached its summary.
@@ -216,8 +273,29 @@ enum Prejudged {
 /// `last-pass.json` for a pass that held the lock and then failed on its own
 /// state: the streak ends, idle passes not yet summarized are kept. Best
 /// effort: the pass already fails with `error`.
-fn record_fault(
+fn record_store_fault(
     store: &Store,
+    pass: &str,
+    pending: (Option<IdleWindow>, Option<AbstentionWindow>),
+    now: u64,
+    error: &str,
+) {
+    record_fault(
+        store.dir(),
+        store.journal_bytes().ok(),
+        (store.journal_max_bytes(), store.max_sealed()),
+        pass,
+        pending,
+        now,
+        error,
+    );
+}
+
+/// `last-pass.json` for a refused or failed pass that held the lock.
+fn record_fault(
+    dir: &Path,
+    journal_bytes: Option<u64>,
+    bounds: (u64, usize),
     pass: &str,
     pending: (Option<IdleWindow>, Option<AbstentionWindow>),
     now: u64,
@@ -242,12 +320,13 @@ fn record_fault(
         repeat_since: None,
         repeat_since_unix_ms: None,
         repeat_unsummarized: pending.1,
-        journal_bytes: store.journal_bytes().ok(),
-        sealed_segments: sealed_journal_count(store.dir()),
-        journal_max_bytes: store.journal_max_bytes(),
-        max_sealed_journals: store.max_sealed(),
+        phase: None,
+        journal_bytes,
+        sealed_segments: sealed_journal_count(dir),
+        journal_max_bytes: bounds.0,
+        max_sealed_journals: bounds.1,
     };
-    let _ = store.save_last_pass(&record);
+    let _ = write_last_pass(dir, &record);
 }
 
 struct Pass<'a> {
@@ -270,6 +349,11 @@ struct Pass<'a> {
     repeat_pending: Option<AbstentionWindow>,
     /// When an idle or repeated pass judged itself so: its `at` everywhere.
     quiet_at: Option<u64>,
+    /// Seconds between the previous pass and this one when that breaks the
+    /// streaks (see [`predecessor`]); cleared once flushed.
+    gap: Option<i64>,
+    /// `last-pass.json` `phase`.
+    phase: &'static str,
 }
 
 /// One resolver answer: its status (or the consumer's own `unbound`,
@@ -404,6 +488,9 @@ impl Pass<'_> {
     /// The pass itself: its summary and how it was recorded.
     fn run(&mut self) -> Result<(Summary, Kind), String> {
         let pass_id = self.store.pass().to_owned();
+        if self.gap.is_some() {
+            self.flush_after_gap()?;
+        }
         let abstained = |pass: String| Summary {
             pass,
             result: "abstained".into(),
@@ -451,6 +538,9 @@ impl Pass<'_> {
         let now_ms = self.now_ms;
         let decider = self.decider;
         let active = self.state.active.clone();
+        if active.is_some() {
+            self.phase = "resumed";
+        }
         self.store.event(
             now_ms(),
             "pass_started",
@@ -466,6 +556,9 @@ impl Pass<'_> {
             Ok(())
         };
         if let Err(error) = &swept {
+            if active.is_none() {
+                self.phase = "la_recovery_failed";
+            }
             self.store.event(
                 now_ms(),
                 "la_recovery_failed",
@@ -535,6 +628,8 @@ impl Pass<'_> {
                 });
             }
         };
+        // In model mode `config.model()?` now runs before `pass_started`;
+        // harmless, since `run_pass_with` (and `main`) validated it first.
         let margin = match self.decider {
             Decider::Deterministic => self.config.consumer.window_margin_seconds,
             Decider::Model => self.config.model()?.window_min_seconds,
@@ -617,6 +712,24 @@ impl Pass<'_> {
         Ok(())
     }
 
+    /// The previous pass is too far away in time to continue its streaks:
+    /// summarize what it left unsummarized, with the gap, and forget them.
+    fn flush_after_gap(&mut self) -> Result<(), String> {
+        if let Some(window) = self.idle_pending.clone() {
+            let (streak, since) = self.previous_streak();
+            self.summarize_idle("streak_ended", &window, streak, since)?;
+        }
+        if let Some(window) = self.repeat_pending.clone() {
+            self.summarize_abstention("streak_ended", &window)?;
+        }
+        self.idle_pending = None;
+        self.repeat_pending = None;
+        self.repeat = None;
+        self.previous = None;
+        self.gap = None;
+        Ok(())
+    }
+
     /// End the repeated-abstention streak: summarize its unsummarized
     /// repeats, if any.
     fn end_repeat(&mut self) -> Result<(), String> {
@@ -654,6 +767,7 @@ impl Pass<'_> {
                 "last_at_unix_ms": window.last_at_unix_ms,
                 "repeat_since": window.repeat_since,
                 "repeat_count": streak,
+                "gap_seconds": self.gap,
             }),
         )
     }
@@ -718,6 +832,7 @@ impl Pass<'_> {
                 "last_reason": window.last_reason,
                 "consecutive_idle_passes": streak,
                 "idle_since": since.map(|(at, _)| at),
+                "gap_seconds": self.gap,
             }),
         )
     }
@@ -758,6 +873,7 @@ impl Pass<'_> {
             repeat_since: repeat.map(|r| r.since.clone()),
             repeat_since_unix_ms: repeat.map(|r| r.since_ms),
             repeat_unsummarized: self.repeat_pending.clone(),
+            phase: Some(self.phase.to_owned()),
             journal_bytes: self.store.journal_bytes().ok(),
             sealed_segments: sealed_journal_count(dir),
             journal_max_bytes: self.store.journal_max_bytes(),
