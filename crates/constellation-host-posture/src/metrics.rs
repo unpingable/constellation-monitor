@@ -6,8 +6,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{HostPostureConfig, ProjectedStateV1, ReactorConditionV1, count_regular_store_entries};
 
@@ -46,6 +49,73 @@ pub(super) struct Metrics<'a> {
     custody_lost: Option<u64>,
     counter_dirty: bool,
     counted_latch: bool,
+    stores: Result<StoreCounts, String>,
+    failures: FailureLog,
+}
+
+struct StoreCounts {
+    intents: Arc<IntentCount>,
+    publications: u64,
+    temporary: u64,
+}
+
+pub(super) struct IntentCount {
+    value: AtomicU64,
+    valid: AtomicBool,
+}
+
+impl IntentCount {
+    pub(super) fn completed(&self, config: &HostPostureConfig, success: bool) {
+        if success && self.valid.load(Ordering::Relaxed) {
+            let _ = self
+                .value
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    Some(value.saturating_add(1))
+                });
+            return;
+        }
+        // A refused occurrence may already have written its intent. Reconcile
+        // only this exceptional path, on the acquisition worker, never render.
+        match count_regular_store_entries(
+            &config.intent_dir(),
+            config.maximum_occurrences,
+            "intents",
+        ) {
+            Ok(value) => {
+                self.value.store(value, Ordering::Relaxed);
+                self.valid.store(true, Ordering::Release);
+            }
+            Err(_) => self.valid.store(false, Ordering::Release),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum LogEvent {
+    Failed,
+    Recovered,
+}
+
+#[derive(Default)]
+struct FailureLog {
+    last_report: Option<Instant>,
+}
+
+impl FailureLog {
+    fn transition(&mut self, failed: bool, now: Instant) -> Option<LogEvent> {
+        match (failed, self.last_report) {
+            (true, Some(last)) if now.duration_since(last) < Duration::from_secs(600) => None,
+            (true, _) => {
+                self.last_report = Some(now);
+                Some(LogEvent::Failed)
+            }
+            (false, Some(_)) => {
+                self.last_report = None;
+                Some(LogEvent::Recovered)
+            }
+            (false, None) => None,
+        }
+    }
 }
 
 impl<'a> Metrics<'a> {
@@ -73,6 +143,73 @@ impl<'a> Metrics<'a> {
             custody_lost,
             counter_dirty,
             counted_latch: false,
+            stores: if config.metrics_textfile_dir.is_some() {
+                read_store_counts(config).map_err(|error| error.to_string())
+            } else {
+                // Disabled metrics must not inspect any stores.
+                Ok(StoreCounts {
+                    intents: Arc::new(IntentCount {
+                        value: AtomicU64::new(0),
+                        valid: AtomicBool::new(true),
+                    }),
+                    publications: 0,
+                    temporary: 0,
+                })
+            },
+            failures: FailureLog::default(),
+        }
+    }
+
+    pub(super) fn intent_count(&self) -> Option<Arc<IntentCount>> {
+        self.config.metrics_textfile_dir.as_ref()?;
+        self.stores
+            .as_ref()
+            .ok()
+            .map(|stores| Arc::clone(&stores.intents))
+    }
+
+    pub(super) fn publication_store_counts(&mut self, objects: u64, temporary: u64) {
+        // Reuse the publication path's existing capacity check, without adding
+        // scans to the projection cadence or using telemetry for admission.
+        if let Ok(stores) = &mut self.stores {
+            stores.publications = objects;
+            stores.temporary = temporary;
+        }
+    }
+
+    pub(super) fn object_exists(&self, artifact_id: &str) -> bool {
+        self.config.metrics_textfile_dir.is_some()
+            && self
+                .config
+                .publication_root
+                .join("objects")
+                .join(format!(
+                    "{}.json",
+                    artifact_id.trim_start_matches("sha256:")
+                ))
+                .exists()
+    }
+
+    pub(super) fn publication_finished(&mut self, existed: bool, success: bool) {
+        if self.config.metrics_textfile_dir.is_none() {
+            return;
+        }
+        if success {
+            if let Ok(stores) = &mut self.stores {
+                stores.publications = stores.publications.saturating_add(u64::from(!existed));
+            }
+        } else {
+            // Staging/commit failure can leave an object or temporary entry.
+            // Reconcile on failure only; keep the independently updated intents.
+            let counts = read_publication_counts(self.config);
+            match (&mut self.stores, counts) {
+                (Ok(stores), Ok((objects, temporary))) => {
+                    stores.publications = objects;
+                    stores.temporary = temporary;
+                }
+                (_, Err(error)) => self.stores = Err(error.to_string()),
+                _ => {}
+            }
         }
     }
 
@@ -104,8 +241,13 @@ impl<'a> Metrics<'a> {
         if self.config.metrics_textfile_dir.is_none() {
             return;
         }
-        if let Err(error) = self.write() {
-            report(error);
+        let result = self.write();
+        match self.failures.transition(result.is_err(), Instant::now()) {
+            Some(LogEvent::Failed) => report(result.expect_err("failed write")),
+            Some(LogEvent::Recovered) => {
+                let _ = writeln!(io::stderr().lock(), "host_posture_metrics_write_recovered");
+            }
+            None => {}
         }
     }
 
@@ -118,33 +260,27 @@ impl<'a> Metrics<'a> {
                 &self.config.state_root.join(COUNTER_FILE),
                 format!("{total}\n").as_bytes(),
                 0o600,
+                true,
             )?;
             self.counter_dirty = false;
         }
         let text = self.render()?;
         let directory = self.config.metrics_textfile_dir.as_ref().expect("enabled");
-        if !directory.is_absolute() {
-            return Err(io::Error::other("metrics_textfile_dir must be absolute"));
-        }
-        atomic_write(&directory.join(TEXTFILE), text.as_bytes(), 0o644)
+        atomic_write(&directory.join(TEXTFILE), text.as_bytes(), 0o644, false)
     }
 
     fn render(&self) -> io::Result<String> {
         let config = self.config;
-        let count = |path: &Path, bound, name| {
-            count_regular_store_entries(path, bound, name).map_err(io::Error::other)
-        };
-        let occurrences = count(&config.intent_dir(), config.maximum_occurrences, "intents")?;
-        let publications = count(
-            &config.publication_root.join("objects"),
-            config.maximum_publications,
-            "publications",
-        )?;
-        let temporary = count(
-            &config.publication_root.join("tmp"),
-            config.maximum_publications,
-            "publication temporary entries",
-        )?;
+        let stores = self
+            .stores
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))?;
+        if !stores.intents.valid.load(Ordering::Acquire) {
+            return Err(io::Error::other("intent store count is unavailable"));
+        }
+        let occurrences = stores.intents.value.load(Ordering::Relaxed);
+        let publications = stores.publications;
+        let temporary = stores.temporary;
         let mut text = String::new();
         family(
             &mut text,
@@ -195,7 +331,7 @@ impl<'a> Metrics<'a> {
             &mut text,
             "occurrences_total",
             "counter",
-            "Retained occurrence intents, including failed attempts.",
+            "Retained occurrence intents; drops on governed rotation (gauge in practice).",
             occurrences,
         );
         sample(
@@ -209,7 +345,7 @@ impl<'a> Metrics<'a> {
             &mut text,
             "publications_total",
             "counter",
-            "Retained immutable publication objects.",
+            "Retained immutable publication objects; drops on governed rotation (gauge in practice).",
             publications,
         );
         sample(
@@ -295,7 +431,7 @@ fn read_counter(path: &Path) -> io::Result<u64> {
 
 /// Same-directory replacement: scrapers see either complete generation. The
 /// temporary name never ends in .prom. chmod overrides the service's 0077 mask.
-fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+fn atomic_write(path: &Path, bytes: &[u8], mode: u32, durable: bool) -> io::Result<()> {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let parent = path
         .parent()
@@ -317,12 +453,84 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let result = (|| {
         file.write_all(bytes)?;
         file.set_permissions(fs::Permissions::from_mode(mode))?;
-        file.sync_all()?;
+        if durable {
+            file.sync_all()?;
+        }
         fs::rename(&temporary, path)?;
-        File::open(parent)?.sync_all()
+        if durable {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+fn read_publication_counts(config: &HostPostureConfig) -> io::Result<(u64, u64)> {
+    let objects = count_regular_store_entries(
+        &config.publication_root.join("objects"),
+        config.maximum_publications,
+        "publications",
+    )
+    .map_err(io::Error::other)?;
+    let temporary = count_regular_store_entries(
+        &config.publication_root.join("tmp"),
+        config.maximum_publications,
+        "publication temporary entries",
+    )
+    .map_err(io::Error::other)?;
+    Ok((objects, temporary))
+}
+
+fn read_store_counts(config: &HostPostureConfig) -> io::Result<StoreCounts> {
+    let intents =
+        count_regular_store_entries(&config.intent_dir(), config.maximum_occurrences, "intents")
+            .map_err(io::Error::other)?;
+    let (publications, temporary) = read_publication_counts(config)?;
+    Ok(StoreCounts {
+        intents: Arc::new(IntentCount {
+            value: AtomicU64::new(intents),
+            valid: AtomicBool::new(true),
+        }),
+        publications,
+        temporary,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_logs_transitions_and_at_most_one_repeat_per_ten_minutes() {
+        let mut log = FailureLog::default();
+        let start = Instant::now();
+        assert_eq!(log.transition(false, start), None);
+        assert_eq!(log.transition(true, start), Some(LogEvent::Failed));
+        for seconds in 1..600 {
+            assert_eq!(
+                log.transition(true, start + Duration::from_secs(seconds)),
+                None
+            );
+        }
+        assert_eq!(
+            log.transition(true, start + Duration::from_secs(600)),
+            Some(LogEvent::Failed)
+        );
+        assert_eq!(log.transition(true, start + Duration::from_secs(601)), None);
+        assert_eq!(
+            log.transition(false, start + Duration::from_secs(602)),
+            Some(LogEvent::Recovered)
+        );
+        assert_eq!(
+            log.transition(false, start + Duration::from_secs(603)),
+            None
+        );
+        assert_eq!(
+            log.transition(true, start + Duration::from_secs(604)),
+            Some(LogEvent::Failed)
+        );
+    }
 }

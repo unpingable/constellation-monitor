@@ -139,18 +139,36 @@ Set the top-level `metrics_textfile_dir` in `host-posture.toml` to an absolute
 directory to enable `host-posture.prom`. Omit the key to disable all metrics
 I/O; existing installed configurations keep working. The packaged example is
 `crates/constellation-host-posture/examples/host-posture.toml`, also rendered
-by `example-config`; its optional key is commented out.
+by `example-config`; its optional key is commented out. Adding the key changes
+the loaded configuration digest (it hashes the exact file bytes). Before or
+with any rollback to the `c767273` binary, remove `metrics_textfile_dir` from
+the configuration: that binary's `HostPostureConfig` uses
+`deny_unknown_fields`, so leaving the key makes preflight refuse the config.
 
-Pre-create the directory with write/search permission for the runner's service
-identity and read/search permission for node_exporter. The unit's
+Pre-create the directory with read/search permission for node_exporter. The
+deploy must grant the `nq` service identity write and search permission out of
+band, and set the sticky bit on this shared, root-owned directory:
+
+```sh
+setfacl -m u:nq:rwx /var/lib/prometheus/node-exporter
+chmod +t /var/lib/prometheus/node-exporter
+```
+
+The sticky bit prevents `nq` from removing or renaming the root-owned `.prom`
+files written by estate-collect and the apt/smartmon timers. Preserve root
+ownership and those files' existing write permissions. The unit's
 `ReadWritePaths` must include that directory: use an installation-specific
 systemd drop-in. The labelwatch island uses **`/var/lib/prometheus/node-exporter`**
 (Cartography `architecture/beta-observability/mvp/labelwatch-host/definitions/systemd/constellation-estate-collect.service`).
 For example, the drop-in's `[Service]` section can contain:
 
 ```ini
-ReadWritePaths=/var/lib/prometheus/node-exporter
+ReadWritePaths=-/var/lib/prometheus/node-exporter
 ```
+
+The leading `-` is required: a missing directory must not fail the whole unit
+with `226/NAMESPACE`. It does not create the directory or grant permissions;
+metrics writes will fail harmlessly until deployment provides both.
 
 The packaged unit is unchanged because the default configuration does not
 enable this output. Directory permissions and this sandbox exception are both
@@ -163,12 +181,14 @@ and returning from `run` after acquiring the state writer lock writes again.
 Refusals before the lock (including a concurrent writer), abrupt termination,
 panics, and a wedged shutdown cannot promise an exit write. The temporary file
 is created in the destination directory with a name that does not end in
-`.prom`, flushed with `sync_all`, chmodded to **0644** even under the unit's
-0077 umask, and atomically renamed; the directory is synced too. A failed
-metrics operation writes one escaped stderr line with
-`host_posture_metrics_write_failed` and returns to the runner. It does not
-alter publication results, reactor commands, or exit codes. A failed write can
-leave the previous complete textfile in place. No metrics values are read by
+`.prom`, written completely, chmodded to **0644** even under the unit's
+0077 umask, and atomically renamed. This ephemeral output does not sync the
+file or directory. A failing metrics write logs one escaped stderr line with
+`host_posture_metrics_write_failed` on entry into failure and at most once per
+ten minutes while failure persists; the first successful write logs
+`host_posture_metrics_write_recovered`. Logging errors are ignored. Metrics
+failures do not alter publication results, reactor commands, or exit codes.
+A failed write can leave the previous complete textfile in place. No metrics values are read by
 the projection or used to authorize action, and scraping triggers no work.
 
 All names have the prefix `constellation_host_posture_`. The exact families are:
@@ -179,9 +199,9 @@ All names have the prefix `constellation_host_posture_`. The exact families are:
 | `constellation_host_posture_reactor_condition` | gauge `{condition}` | One-hot last observed reactor condition before shutdown. Final observation can reflect deliberate shutdown blindness. |
 | `constellation_host_posture_custody_lost_total` | counter, no labels | Observed custody latches, at most once per process; deliberate final blindness does not increment it. |
 | `constellation_host_posture_process_start_timestamp_seconds` | gauge, no labels | Unix seconds at entry to this `run` invocation. |
-| `constellation_host_posture_occurrences_total` | counter, no labels | Retained intent entries, including failed/audit-only attempts; survives restart. |
+| `constellation_host_posture_occurrences_total` | counter on wire; gauge in practice, no labels | Retained intent entries, including failed/audit-only attempts; drops on governed rotation. |
 | `constellation_host_posture_last_acquisition_timestamp_seconds` | gauge, no labels | Unix seconds when this process last received a verified acquisition; zero until its first verified acquisition. |
-| `constellation_host_posture_publications_total` | counter, no labels | Retained immutable publication objects; survives restart. |
+| `constellation_host_posture_publications_total` | counter on wire; gauge in practice, no labels | Retained immutable publication objects; drops on governed rotation. |
 | `constellation_host_posture_publications_used` | gauge, no labels | Objects plus temporary publication entries, matching the capacity check. |
 | `constellation_host_posture_maximum_occurrences` | gauge, no labels | Configured aggregate occurrence ceiling. |
 | `constellation_host_posture_maximum_publications` | gauge, no labels | Configured aggregate publication ceiling. |
@@ -197,23 +217,38 @@ The `site`, `job`, and `instance` labels in queries come from ordinary scraping.
 
 The latch counter is a small decimal file, `state_root/metrics-custody-lost-total`,
 mode 0600, protected by the runner's existing writer lock and replaced with the
-same atomic protocol. It is saved before textfile exposure and retried on the
-next write if persistence fails. A missing file starts at zero; unreadable or
+same atomic protocol, with both file `sync_all` and directory fsync retained
+for this persisted state. It is saved before textfile exposure and retried on
+the next write if persistence fails. A missing file starts at zero; unreadable or
 corrupt state logs an error and omits only the custody counter for that process
 instead of inventing a reset. Other metrics can still be written. Repair such
 state explicitly with the runner stopped. This is best-effort telemetry:
 unwritable state, a kill before persistence, or lost storage can lose a latch.
 The counter records observed custody failures even if their projection fails
-to publish. It does not infer faults from the unknown publication store,
-because ordinary startup and clean shutdown also publish unknown.
+to publish, including a latch after another terminal/loop error has stopped
+periodic publication. The final observation checks for that latch before
+declaring deliberate shutdown blindness; deduplication still limits it to one
+increment per process. It does not infer faults from the unknown publication
+store, because ordinary startup and clean shutdown also publish unknown.
 
-Occurrence/publication counters reflect retained stores, not a new retention
-policy. Explicit governed rotation can reset them. `publications_used` also
-includes stranded temporary entries so headroom remains accurate after a
-publication failure. A store-count error leaves the prior textfile unchanged
-and logs a metrics error; metrics do not validate or repair the stores on a
-scrape. Last acquisition time is process-local and intentionally resets to
-zero on restart; it does not restore live support from retained evidence.
+`occurrences_total` and `publications_total` count retained entries and drop
+on governed rotation. Their mandated names and wire counter types remain,
+but treat them as gauges in practice for headroom, not monotonic event totals.
+Metrics count the stores once at startup and cache counts in memory. Successful
+occurrences increment the intent count; refused occurrences reconcile that
+count on the acquisition worker because an intent may already exist. Successful
+publication adds a new immutable object only once; publication metrics also
+reuse the existing capacity check's counts. A staging/commit failure reconciles
+object/temporary counts because it can strand entries. Metrics rendering never
+scans these stores. The original publication capacity checks remain unchanged
+and still scan independently of whether metrics are enabled.
+
+`publications_used` includes stranded temporary entries for headroom. A
+store-count error retains the prior textfile and logs through the same failure
+throttle. Rotate stores only with the runner stopped; startup recounts them.
+Metrics do not validate or repair stores on a scrape. Last acquisition time is
+process-local and intentionally resets to zero on restart; it does not restore
+live support from retained evidence.
 
 Suggested vmalert expressions (review thresholds and routing for the island;
 these are documentation, with no Cartography changes):
@@ -227,9 +262,6 @@ these are documentation, with no Cartography changes):
 # Repeated supervised custody exits: three or more observed latches/hour.
 (constellation_host_posture_custody_lost_total
  - constellation_host_posture_custody_lost_total offset 1h) >= 3
-
-# Process starts seen by scraping, including non-custody/manual restarts.
-changes(constellation_host_posture_process_start_timestamp_seconds[1h]) >= 3
 
 # Less than 20% remaining capacity; plan governed retention/re-enrollment.
 constellation_host_posture_occurrences_total
@@ -247,9 +279,11 @@ hour after a latch and survives a fast healthy restart. This coalesces latches
 into an active notice; the counter delta supplies their count. It does not
 promise one notification per event. Offset subtraction assumes retained counter
 state and history and cannot recover missing samples or a counter reset.
-Process-start changes can miss starts between scrapes, so the persisted latch
-delta is the stronger custody-storm signal. A final textfile remains after
-exit: pair these rules with textfile age/absence, node scrape health and
+The island forbids `increase()` and `changes()`: VictoriaMetrics counts a
+fresh series' first sample. Do not use a process-start `changes()` restart-storm
+rule here; the two offset custody deltas above remain the suggested signals.
+The process-start timestamp is still useful for inspection, but scrapes can
+miss intervening restarts. A final textfile remains after exit: pair these rules with textfile age/absence, node scrape health and
 existing unit/Attention checks. Scope absence queries to the intended scraped
 host using its existing scrape labels. Validate alert evaluation, routing and
 thresholds separately before deployment.

@@ -274,6 +274,14 @@ impl HostPostureConfig {
                 ));
             }
         }
+        if let Some(path) = &self.metrics_textfile_dir
+            && !path.is_absolute()
+        {
+            return Err(HostPostureError::new(
+                "relative_path",
+                "metrics_textfile_dir must be absolute",
+            ));
+        }
         if self.acquisition_interval_ms == 0
             || self.projection_interval_ms == 0
             || self.withdrawal_publication_tolerance_ms == 0
@@ -1254,6 +1262,7 @@ fn publish_projection(
     verified: Option<&VerifiedCorrespondenceV1>,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
+    metrics: &mut Metrics<'_>,
 ) -> Result<(String, ProjectedStateV1)> {
     let objects = count_regular_store_entries(
         &config.publication_root.join("objects"),
@@ -1271,6 +1280,7 @@ fn publish_projection(
             "configured aggregate publication capacity is exhausted",
         ));
     }
+    metrics.publication_store_counts(objects, temporary);
     let mut facts = Vec::new();
     let mut support = Vec::new();
     let mut details = Vec::new();
@@ -1304,10 +1314,11 @@ fn publish_projection(
     let artifact = project_with_details(policy, &facts, &support, &[], &details, moment)
         .map_err(|error| map_error("projection", error))?;
     let aggregate_state = artifact.aggregate_state;
-    let artifact_id = stage_publication(&config.publication_root, &artifact)
-        .map_err(|error| map_error("publication", error))?
-        .commit()
-        .map_err(|error| map_error("publication", error))?;
+    let existed = metrics.object_exists(&artifact.artifact_id);
+    let publication =
+        stage_publication(&config.publication_root, &artifact).and_then(|staged| staged.commit());
+    metrics.publication_finished(existed, publication.is_ok());
+    let artifact_id = publication.map_err(|error| map_error("publication", error))?;
     *last_published_unix_ms = generated_at;
     Ok((artifact_id, aggregate_state))
 }
@@ -1364,6 +1375,7 @@ fn projection_cycle(
         verified,
         nonce_sequence,
         last_published_unix_ms,
+        metrics,
     );
     metrics.observe(
         publication.as_ref().ok().map(|(_, state)| *state),
@@ -1376,6 +1388,49 @@ fn projection_cycle(
         state,
         custody_lost,
     })
+}
+
+struct FinalProjection {
+    blindness: Result<()>,
+    publication: Result<(String, ProjectedStateV1)>,
+}
+
+fn final_projection(
+    config: &HostPostureConfig,
+    reactor: &LocalCrashReactor,
+    policy: &ProjectionPolicyV1,
+    nonce_sequence: u64,
+    last_published_unix_ms: &mut u64,
+    metrics: &mut Metrics<'_>,
+) -> FinalProjection {
+    let custody_lost_before_shutdown = reactor_custody_lost(&reactor.snapshot()).is_some();
+    let blindness_result = reactor
+        .declare_blindness("host-posture runner is stopping")
+        .map(|_| ())
+        .map_err(|error| map_error("reactor_blindness", error));
+    let publication = publish_projection(
+        config,
+        reactor,
+        policy,
+        None,
+        nonce_sequence,
+        last_published_unix_ms,
+        metrics,
+    );
+    if let Ok((artifact, state)) = &publication {
+        println!("final_state={} artifact={artifact}", state.as_str());
+    }
+    // Count a late latch even after another error stopped periodic cycles;
+    // deliberate shutdown blindness itself is not a custody failure.
+    metrics.observe(
+        publication.as_ref().ok().map(|(_, state)| *state),
+        reactor.snapshot().condition,
+        custody_lost_before_shutdown,
+    );
+    FinalProjection {
+        blindness: blindness_result,
+        publication,
+    }
 }
 
 fn initial_publication_time(root: &Path) -> Result<u64> {
@@ -1436,6 +1491,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         None,
         nonce_sequence,
         &mut last_published,
+        &mut metrics,
     );
     metrics.observe(
         initial_result.as_ref().ok().map(|(_, state)| *state),
@@ -1484,6 +1540,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         let worker_port = &port;
         let worker_witness = &witness;
         let worker_reactor = &reactor;
+        let intent_count = metrics.intent_count();
         let worker = scope.spawn(move || {
             let mut coproducer = match Coproducer::begin(
                 worker_profile,
@@ -1509,7 +1566,11 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     break;
                 }
                 occurrences = occurrences.saturating_add(1);
-                let message = match coproducer.run_occurrence(worker_reactor) {
+                let result = coproducer.run_occurrence(worker_reactor);
+                if let Some(count) = &intent_count {
+                    count.completed(config, result.is_ok());
+                }
+                let message = match result {
                     Ok(result) => {
                         let sequence = result.sequence;
                         match result.outcome {
@@ -1642,25 +1703,16 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         Ok(())
     });
     let primary_error = worker_result.err().or(terminal_error);
-    let blindness_result = reactor
-        .declare_blindness("host-posture runner is stopping")
-        .map_err(|error| map_error("reactor_blindness", error));
-    let final_result = publish_projection(
+    let FinalProjection {
+        blindness: blindness_result,
+        publication: final_result,
+    } = final_projection(
         config,
         &reactor,
         &policy,
-        None,
         nonce_sequence,
         &mut last_published,
-    );
-    if let Ok((artifact, state)) = &final_result {
-        println!("final_state={} artifact={artifact}", state.as_str());
-    }
-    // This is deliberate shutdown blindness, not another custody failure.
-    metrics.observe(
-        final_result.as_ref().ok().map(|(_, state)| *state),
-        reactor.snapshot().condition,
-        false,
+        &mut metrics,
     );
     let shutdown_result = match reactor.shutdown() {
         Ok(snapshot) if snapshot.clean_shutdown => Ok(()),
@@ -1986,6 +2038,123 @@ mod tests {
     }
 
     #[test]
+    fn metrics_directory_must_be_absolute_during_config_validation() {
+        let mut config = toml::from_str::<HostPostureConfig>(&example_config()).unwrap();
+        config.metrics_textfile_dir = Some(PathBuf::from("relative/textfile"));
+        let error = config
+            .validate()
+            .expect_err("preflight must reject a relative directory");
+        assert_eq!(error.code, "relative_path");
+        assert!(error.detail.contains("metrics_textfile_dir"));
+        config.metrics_textfile_dir = Some(PathBuf::from("/missing/textfile"));
+        config
+            .validate()
+            .expect("directory availability is best-effort at write time");
+    }
+
+    #[test]
+    fn final_metrics_count_a_latch_after_publication_already_failed() {
+        for late_latch in [false, true] {
+            let root = ScratchDir::new("metrics-late-latch");
+            let (profile, reactor) = fixture_reactor(root.path(), "metrics-late-latch");
+            let mut config = metrics_config(&root);
+            config.maximum_publications = 1;
+            fs::create_dir(&config.publication_root).unwrap();
+            let policy = condition_policy(
+                live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap(),
+                "/",
+            );
+            let mut metrics = Metrics::new(&config, SystemTime::now());
+            let mut last_published = 0;
+            projection_cycle(
+                &config,
+                &reactor,
+                &policy,
+                None,
+                1,
+                &mut last_published,
+                &mut metrics,
+            )
+            .expect("initial publication fills capacity");
+            let error = projection_cycle(
+                &config,
+                &reactor,
+                &policy,
+                None,
+                2,
+                &mut last_published,
+                &mut metrics,
+            )
+            .err()
+            .expect("publication failure stops periodic cycles");
+            assert_eq!(error.code, "publication_capacity");
+            if late_latch {
+                reactor
+                    .declare_blindness("late fixture custody failure")
+                    .unwrap();
+            }
+            let final_result = final_projection(
+                &config,
+                &reactor,
+                &policy,
+                3,
+                &mut last_published,
+                &mut metrics,
+            );
+            assert!(final_result.blindness.is_ok());
+            assert_eq!(
+                final_result.publication.unwrap_err().code,
+                "publication_capacity"
+            );
+            drop(metrics);
+            assert_eq!(
+                fs::read_to_string(root.path().join("metrics-custody-lost-total")).unwrap(),
+                if late_latch { "1\n" } else { "0\n" },
+                "a late latch counts once; deliberate shutdown blindness never counts",
+            );
+            reactor.shutdown().unwrap();
+        }
+    }
+
+    #[test]
+    fn metrics_cache_counts_between_writes_and_reconcile_refused_intents() {
+        let root = ScratchDir::new("metrics-counts");
+        let config = metrics_config(&root);
+        fs::create_dir(config.intent_dir()).unwrap();
+        fs::write(config.intent_dir().join("retained"), b"intent").unwrap();
+        fs::create_dir_all(config.publication_root.join("tmp")).unwrap();
+        fs::write(config.publication_root.join("tmp/stranded"), b"partial").unwrap();
+        let mut metrics = Metrics::new(&config, SystemTime::now());
+        let intents = metrics.intent_count().unwrap();
+        fs::write(config.intent_dir().join("successful"), b"intent").unwrap();
+        intents.completed(&config, true);
+        metrics.publication_finished(false, true);
+        // Rendering must not touch the stores after initialization. An added
+        // non-regular entry would fail the old per-render scan.
+        fs::create_dir(config.intent_dir().join("not-regular")).unwrap();
+        fs::create_dir(config.publication_root.join("tmp/not-regular")).unwrap();
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        let path = config
+            .metrics_textfile_dir
+            .as_ref()
+            .unwrap()
+            .join("host-posture.prom");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("constellation_host_posture_occurrences_total 2\n"));
+        assert!(text.contains("constellation_host_posture_publications_total 1\n"));
+        assert!(text.contains("constellation_host_posture_publications_used 2\n"));
+        fs::remove_dir(config.intent_dir().join("not-regular")).unwrap();
+        fs::write(config.intent_dir().join("failed-after-intent"), b"intent").unwrap();
+        intents.completed(&config, false);
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("constellation_host_posture_occurrences_total 3\n")
+        );
+    }
+
+    #[test]
     fn metrics_disabled_has_no_filesystem_side_effects() {
         let root = ScratchDir::new("metrics-disabled");
         let mut config = metrics_config(&root);
@@ -2046,6 +2215,7 @@ mod tests {
         fs::create_dir_all(config.publication_root.join("tmp")).unwrap();
         fs::write(config.publication_root.join("tmp/stranded"), b"partial").unwrap();
         drop(metrics);
+        drop(Metrics::new(&config, SystemTime::now()));
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("constellation_host_posture_publications_total 0\n"));
         assert!(text.contains("constellation_host_posture_publications_used 1\n"));
