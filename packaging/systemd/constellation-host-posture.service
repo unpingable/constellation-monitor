@@ -2,6 +2,9 @@
 Description=Constellation filesystem-capacity observation profile
 After=local-fs.target
 RequiresMountsFor=/var/lib/nq /var/lib/constellation-host-posture
+# A runner that keeps losing reactor custody ends as a failed unit.
+StartLimitIntervalSec=1h
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -16,7 +19,14 @@ ExecStartPre=/bin/sh -ec 'if /usr/bin/systemctl is-active --quiet nqd.service; t
 ExecStartPre=/usr/bin/install -d -m 0711 /run/nq/helpers
 ExecStartPre=/usr/bin/constellation-host-posture preflight /etc/constellation-host-posture/host-posture.toml
 ExecStart=/usr/bin/constellation-host-posture run /etc/constellation-host-posture/host-posture.toml
+# One narrow recovery contract: only exit 75, a latched reactor custody
+# failure after unknown was published, is restarted, because only there is a
+# fresh process the known recovery. Preflight failures, refusals, panics and
+# OOM kills are not restarted and stay visible to the owner. Every restart
+# counts toward the start limit above.
 Restart=no
+RestartForceExitStatus=75
+RestartSec=30s
 TimeoutStopSec=90
 KillMode=control-group
 OOMPolicy=stop
