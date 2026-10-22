@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v6";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v7";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -196,7 +196,7 @@ pub struct Rule {
 const CARTOGRAPHY: &str = "cartography:architecture/beta-observability/docs/RUNBOOKS.md";
 const MONITOR: &str = "constellation-monitor:docs/ATTENTION.md";
 
-pub const RULES: [Rule; 13] = [
+pub const RULES: [Rule; 14] = [
     Rule {
         id: "host-posture-unknown",
         version: 1,
@@ -387,6 +387,27 @@ pub const RULES: [Rule; 13] = [
         disabled: None,
     },
     Rule {
+        id: "remediation-journal-critical",
+        version: 1,
+        default_class: Class::Page,
+        page_allowed: true,
+        response_class: ResponseClass::Page,
+        operator_action: "Take sealed journal segments of the remediation consumer into custody, oldest first, as its segment custody procedure says; one more seal and it refuses every pass.",
+        escalation_reason: "15 or more sealed journal segments for more than 600 s: the consumer refuses at 16, and then bounded remediation stops until someone acts.",
+        response_policy: ResponsePolicy::ObserveOnly,
+        severity: "critical",
+        component: Some("service"),
+        input: InputKind::Estate,
+        threshold_meaning: ThresholdMeaning::Persistence,
+        default_threshold_seconds: 600,
+        fixed_persistence_seconds: 0,
+        runbook_anchor: "remediation-journal-critical",
+        runbook_document: MONITOR,
+        operator_response: "Follow the remediation consumer's segment custody procedure (packaging/remediation/README.md, Segment custody and retention): verify each sealed segment against its sidecar and move it out of the state directory, oldest first.",
+        condition: "The estate row of service remediation-consumer carries its required concern remediation.journal.generations-critical ABSENT: 15 or more sealed journal segments, one below the consumer's refusal at 16.",
+        disabled: None,
+    },
+    Rule {
         id: "metric-alert-firing",
         version: 1,
         default_class: Class::Notice,
@@ -480,8 +501,11 @@ pub fn rule(id: &str) -> Option<&'static Rule> {
     RULES.iter().find(|rule| rule.id == id)
 }
 
-/// The rule anchors NQ 0.2.1 accepts in a v2 (`PagerDuty`) intent.
-pub const NQ_V2_RULES: [&str; 17] = [
+/// The rule anchors NQ accepts in a v2 (`PagerDuty`) intent: NQ 0.2.1's 17
+/// Cartography anchors, and `remediation-journal-critical`, which NQ must
+/// carry in its closed anchor set before that page can be delivered (NQ
+/// refuses a v2 submission naming any other rule).
+pub const NQ_V2_RULES: [&str; 18] = [
     "nq-no-fresh-acquisition",
     "host-posture-unknown",
     "nightshift-recurrence-missing",
@@ -499,6 +523,7 @@ pub const NQ_V2_RULES: [&str; 17] = [
     "docket-reconciliation-lag",
     "ag-repeated-refusals",
     "build-identity",
+    "remediation-journal-critical",
 ];
 
 /// The closed v2 component set.
@@ -550,6 +575,7 @@ mod tests {
                 "nq-no-fresh-acquisition",
                 "service-down",
                 "nightshift-recurrence-missing",
+                "remediation-journal-critical",
                 "docket-unsettled",
                 "ag-executor-unavailable",
             ]

@@ -10,6 +10,13 @@ whose inputs exist today.
 refuses every intent from this build before custody: nothing would be
 delivered. Do not install the evaluator against an NQ older than 0.2.2.
 
+**`remediation-journal-critical` needs NQ to carry its anchor.** NQ refuses
+a v2 (PagerDuty) submission whose rule is not in its closed anchor set (the
+17 Cartography anchors through at least NQ 0.2.6), before custody. Until NQ
+adds `remediation-journal-critical` to that set, this rule's notice copy
+reaches the notice route but its page is refused at every attempt
+(`command_error`, retried each pass, exit 3).
+
 ## Boundary
 
 The evaluator consumes qualified, current product state and produces
@@ -25,7 +32,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v6`).
+  compiled in and versioned (`constellation.attention_registry.v7`).
   Configuration may enable or disable a rule, change its one threshold, and
   move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
@@ -55,18 +62,21 @@ anchors marked (M) are below in this document.
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
+| `remediation-journal-critical` | page | page | persists 600 s | `service` | `remediation-consumer` | estate input: the `remediation-consumer` row's concern `remediation.journal.generations-critical` is `ABSENT` (15 or more sealed journal segments; the consumer refuses at 16); missing row, any other state or a stale document is unknown | (M) [`remediation-journal-critical`](#remediation-journal-critical) | Take sealed segments into custody, oldest first. |
 | `evaluator-input-unavailable` (v2) | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input, and its admission of each metric-alert definition | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
 | `ag-executor-unavailable` | page | page | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
 
 The response class is the registry's page eligibility, explicit per rule
 and closed (`informational`, `attention`, `page`; no rule is informational
-today). Only the six `page` rules can reach a PagerDuty route; configuration
+today). Only the seven `page` rules can reach a PagerDuty route; configuration
 may move a page rule down to `notice` but never moves another rule up, so
 `[rules.host-disk] class = "page"` is refused. NQ 0.2.1's v2 contract
 accepts 17 Cartography anchors (`host-disk` among them); `memory-pressure`,
 `io-pressure`, `sqlite-health` and `evaluator-input-unavailable` are not
-anchors at all.
+anchors at all. `remediation-journal-critical` is the evaluator's 18th
+page-capable anchor and needs an NQ that carries it (see the top of this
+document).
 `host-disk` is version 3: version 2 added NQ filesystem watchers, version 3
 made it attention-only. `evaluator-input-unavailable` is version 2: it gained
 the `rejected` class (per-definition admission, registry v6).
@@ -86,6 +96,7 @@ same `response_class`, `operator_action` and `escalation_reason`).
 | `io-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/io), the SQLite write-ahead logs under /var/lib and the processes in D state; this is full-stall share, not throughput. |
 | `nightshift-recurrence-missing` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 1800 s, then persists 300 s | No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale. | systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow. |
 | `sqlite-health` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Inspect the saved check's retained result (nq saved-check result) and the named SQLite file; do not edit the store. |
+| `remediation-journal-critical` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 600 s | 15 or more sealed journal segments for more than 600 s: the consumer refuses at 16, and then bounded remediation stops until someone acts. | Take sealed journal segments of the remediation consumer into custody, oldest first, as its segment custody procedure says; one more seal and it refuses every pass. |
 | `evaluator-input-unavailable` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 300 s | never (not page-eligible) | persists 300 s; persistence never escalates it to a page | Read report.json for the input's error; fix permissions, paths or the producing timer. Rules fed by the input hold their state meanwhile. |
 | `docket-unsettled` (disabled: input not deployed) | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 3600 s, then persists 300 s | The oldest accepted governed-loop attempt is older than 3600 s, then 300 s more: work is stuck unsettled. | Determine whether the executor is available or the observer never reported, then follow the Docket reconciliation procedure. |
 | `ag-executor-unavailable` (disabled: input not deployed) | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 300 s | AG effectd not ready for more than 300 s: governed actions cannot execute. | Check the ag-effectd unit; restart it only on a crash; an intentional stop is acknowledged for its declared window. |
@@ -480,6 +491,26 @@ one condition, `service:service-not-doing-its-job:<name>`:
 The rule is notice-only. Slack is the operator's channel, and the rule is not
 in NQ's page anchor set.
 
+One estate condition pages: `remediation-journal-critical`,
+`service:remediation-journal-critical:remediation-consumer`, over the same
+input. The remediation consumer's `--status` reports
+`remediation.journal.generations-headroom` `ABSENT` at 12 sealed journal
+segments and `remediation.journal.generations-critical` `ABSENT` at 15; it
+refuses at 16. At 12 the service is `DEGRADED` and only the
+`service-not-doing-its-job` notice goes out. At 15 the page rule reads the
+row's `generations-critical` concern itself:
+
+- `ABSENT` is present. After 600 s it pages (v2 on `page_route`, notice copy
+  on `notice_route`), and its text ends with the concern's reason, which names
+  the count (`Now: remediation-consumer: 15 sealed segments present
+  (threshold 15, refusal at 16); operator custody due.`).
+- `PRESENT` is clear; the page resolves after 120 s of it.
+- Unknown, holding an open page and never resolving it: no
+  `remediation-consumer` row, a row without that concern (the consumer is
+  down, so its status was not read), any other state (`STALE`, `UNKNOWN`,
+  `MISSING_REQUIRED_OBSERVATION`), or a stale document. A declared pause is
+  not a clear here: suspend the rule if the page is unwanted.
+
 ### service-not-doing-its-job
 
 Open the estate dashboard row or `estate.json` for the named service:
@@ -697,6 +728,18 @@ while a 1.6 GB SQLite write-ahead log was being re-read). Look at PSI, the
 grep '^D'`) and recent deploys. Do not tune the detector to silence it. The
 `some` figure is not used: one stalled task at a time is a busy disk, not a
 stalled machine.
+
+### remediation-journal-critical
+
+The remediation consumer holds 15 or more sealed journal segments, one below
+its refusal at 16; after the next seal it refuses every pass and bounded
+remediation stops. Follow the consumer's segment custody procedure
+(`packaging/remediation/README.md`, "Segment custody and retention") now,
+oldest segment first: check each segment's link count and its sidecar's
+length and digest, copy it off the host, and move it out of the state
+directory. The page resolves after the estate row shows
+`generations-critical` `PRESENT` (fewer than 15) for 120 s; the
+`generations-headroom` notice stays until fewer than 12 remain.
 
 ### sqlite-health
 

@@ -1261,6 +1261,11 @@ fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut Inputs
 
 const ESTATE_LIMIT: usize = 4 * 1024 * 1024;
 pub const ESTATE_LABEL: &str = "estate";
+/// The estate service whose journal `remediation-journal-critical` watches.
+pub const REMEDIATION_SERVICE: &str = "remediation-consumer";
+/// Its `project.ops.status/v1` concern that is `ABSENT` at 15 sealed journal
+/// segments (the consumer refuses at 16).
+pub const JOURNAL_CRITICAL_CONCERN: &str = "remediation.journal.generations-critical";
 
 /// `constellation.estate/v1`: one verdict per service. DOWN and DEGRADED are
 /// present; OK and a declared PAUSED are clear; UNKNOWN changes nothing. A
@@ -1373,6 +1378,100 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
             format!("{verdict}: {}", truncate(reason, 200)),
         );
     }
+    remediation_journal(
+        context,
+        read,
+        &services,
+        stale.as_deref(),
+        document.get("generated_at"),
+    );
+}
+
+/// `remediation-journal-critical`: the remediation consumer's own
+/// `generations-critical` concern, as the estate row carries it. `ABSENT` is
+/// present, `PRESENT` is clear; a missing row or concern, any other state
+/// (`STALE`, `UNKNOWN`, a missing required observation) and a stale document
+/// are unknown, which holds an open page and never resolves it.
+fn remediation_journal(
+    context: &Context<'_>,
+    read: &mut InputsRead,
+    services: &[Value],
+    stale: Option<&str>,
+    generated_at: Option<&Value>,
+) {
+    let row = services
+        .iter()
+        .find(|s| s.get("name").and_then(Value::as_str) == Some(REMEDIATION_SERVICE));
+    let concern = row
+        .and_then(|row| row.get("concerns"))
+        .and_then(Value::as_array)
+        .and_then(|concerns| {
+            concerns
+                .iter()
+                .find(|c| c.get("id").and_then(Value::as_str) == Some(JOURNAL_CRITICAL_CONCERN))
+        });
+    let state = concern.and_then(|c| c.get("state")).and_then(Value::as_str);
+    let reason = concern
+        .and_then(|c| c.get("reason"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let verdict = row
+        .and_then(|row| row.get("verdict"))
+        .and_then(Value::as_str);
+    let (observation, note) = match (stale, row, state) {
+        (Some(stale), _, _) => (Observation::Unknown, format!("unknown: {stale}")),
+        (None, None, _) => (
+            Observation::Unknown,
+            format!("unknown: the estate document has no {REMEDIATION_SERVICE} row"),
+        ),
+        (None, Some(_), None) => (
+            Observation::Unknown,
+            format!(
+                "unknown: {REMEDIATION_SERVICE} ({}) carries no {JOURNAL_CRITICAL_CONCERN}",
+                verdict.unwrap_or("no verdict")
+            ),
+        ),
+        (None, Some(_), Some("ABSENT")) => (
+            Observation::Present,
+            format!("{REMEDIATION_SERVICE}: {}", truncate(reason, 200)),
+        ),
+        (None, Some(_), Some("PRESENT")) => (
+            Observation::Clear,
+            format!("{REMEDIATION_SERVICE}: {}", truncate(reason, 200)),
+        ),
+        (None, Some(_), Some(other)) => (
+            Observation::Unknown,
+            format!(
+                "unknown: {JOURNAL_CRITICAL_CONCERN} is {other}: {}",
+                truncate(reason, 160)
+            ),
+        ),
+    };
+    // "15 sealed segments present (threshold 15, refusal at 16); ...".
+    let sealed = reason
+        .split_once(" sealed segments")
+        .and_then(|(count, _)| count.trim().parse::<u64>().ok());
+    let reference = json!({
+        "service": REMEDIATION_SERVICE,
+        "concern": JOURNAL_CRITICAL_CONCERN,
+        "state": state,
+        "verdict": verdict,
+        "sealed_segments": sealed,
+        "observed_at": concern.and_then(|c| c.get("observed_at")),
+        "reason": truncate(&note, 200),
+        "generated_at": generated_at,
+    });
+    push(
+        context,
+        read,
+        "remediation-journal-critical",
+        "service",
+        Some(REMEDIATION_SERVICE),
+        ESTATE_LABEL,
+        observation,
+        &reference,
+        note,
+    );
 }
 
 const METRIC_ALERTS_LIMIT: usize = 4 * 1024 * 1024;

@@ -136,10 +136,14 @@ fn summary(input: &IntentInput<'_>) -> String {
             // An estate verdict carries the service's own reason (unit state or the
             // required concerns that are not present), and a metric alert its own
             // summary per instance; say it, not just the rule.
-            // A rejected definition's input notice names the definition.
+            // A rejected definition's input notice names the definition; the
+            // journal page names the sealed segment count.
             if matches!(
                 input.rule.rule.id,
-                "service-not-doing-its-job" | "metric-alert-firing" | "evaluator-input-unavailable"
+                "service-not-doing-its-job"
+                    | "metric-alert-firing"
+                    | "evaluator-input-unavailable"
+                    | "remediation-journal-critical"
             ) && let Some(reason) = input.reference.get("reason").and_then(Value::as_str)
                 && !reason.is_empty()
             {

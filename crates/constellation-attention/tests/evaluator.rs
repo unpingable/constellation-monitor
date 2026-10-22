@@ -961,13 +961,14 @@ fn rules_lists_the_closed_registry() {
             "nightshift-recurrence-missing",
             "sqlite-health",
             "service-not-doing-its-job",
+            "remediation-journal-critical",
             "metric-alert-firing",
             "evaluator-input-unavailable",
             "docket-unsettled",
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][11]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][12]["disabled"], "input not deployed");
 }
 
 #[test]
@@ -4945,4 +4946,257 @@ fn a_rejected_definition_under_policy_drift_keeps_drift_semantics() {
         assert_eq!(condition(&report, swap).unwrap()["observation"], "unknown");
     }
     assert_eq!(harness.state()["conditions"][swap]["active"], true);
+}
+
+// ---- remediation-journal-critical (page before the journal ceiling) ----
+
+const JOURNAL_PAGE: &str =
+    "constellation:labelwatch:service:remediation-journal-critical:remediation-consumer";
+const CONSUMER_NOTICE: &str =
+    "constellation:labelwatch:service:service-not-doing-its-job:remediation-consumer";
+
+/// The estate document as the collector writes it for the remediation
+/// consumer with `sealed` sealed journal segments (its `--status` concerns:
+/// headroom ABSENT at 12, critical ABSENT at 15). `None` leaves the row out.
+fn write_journal_estate(
+    harness: &Harness,
+    at: i64,
+    sealed: Option<u64>,
+    critical_state: Option<&str>,
+) {
+    let mut services =
+        vec![json!({"name": "factsapi", "verdict": "OK", "reason": "running", "concerns": []})];
+    if let Some(sealed) = sealed {
+        let concern = |id: &str, bound: u64| {
+            let (state, reason) = if sealed < bound {
+                (
+                    "PRESENT",
+                    format!("{sealed} sealed segments present, below {bound}"),
+                )
+            } else {
+                (
+                    "ABSENT",
+                    format!(
+                        "{sealed} sealed segments present (threshold {bound}, refusal at 16); operator custody due"
+                    ),
+                )
+            };
+            json!({"id": id, "required": true, "state": state, "reason": reason,
+                   "observed_at": rfc3339(at - 5), "valid_for_seconds": 120})
+        };
+        let headroom = concern("remediation.journal.generations-headroom", 12);
+        let mut critical = concern("remediation.journal.generations-critical", 15);
+        if let Some(state) = critical_state {
+            critical["state"] = json!(state);
+        }
+        let failing: Vec<String> = [&headroom, &critical]
+            .iter()
+            .filter(|c| c["state"] != "PRESENT")
+            .map(|c| {
+                format!(
+                    "{} {}",
+                    c["id"].as_str().unwrap().split_once('.').unwrap().1,
+                    c["state"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let (verdict, reason) = if failing.is_empty() {
+            (
+                "OK".to_owned(),
+                "running, 5 required concerns present".to_owned(),
+            )
+        } else {
+            ("DEGRADED".to_owned(), failing.join("; "))
+        };
+        services.push(
+            json!({"name": "remediation-consumer", "verdict": verdict, "reason": reason,
+            "since": rfc3339(T0), "concerns": [headroom, critical]}),
+        );
+    }
+    let doc = json!({"schema": "constellation.estate/v1", "site": "labelwatch",
+        "generated_at": rfc3339(at), "services": services});
+    fs::write(
+        harness.path("estate.json"),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+}
+
+/// At 12 sealed segments only the existing notice goes out (the service is
+/// DEGRADED); the journal page stays clear.
+#[test]
+fn journal_headroom_at_12_is_only_the_service_notice() {
+    let harness = estate_harness();
+    for offset in (0..=720).step_by(60) {
+        write_journal_estate(&harness, T0 + offset, Some(12), None);
+        harness.evaluate(T0 + offset);
+    }
+    let report = harness.report();
+    assert_eq!(
+        condition(&report, JOURNAL_PAGE).unwrap()["observation"],
+        "clear"
+    );
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(
+        calls[0].starts_with(
+            "submit operations labelwatch-service-not-doing-its-job-remediation-consumer-trigger-"
+        ),
+        "{calls:?}"
+    );
+}
+
+/// At 15 sealed segments the page rule triggers after 600 s: a v2 page with
+/// `response_class: page` naming the segment count, and its notice copy; a
+/// missing row or a STALE or UNKNOWN concern holds it; recovery (custody
+/// back below 15) resolves it after the 120 s confirmation.
+#[test]
+fn journal_critical_at_15_pages_holds_on_unknown_and_resolves() {
+    let harness = estate_harness();
+    for offset in [0, 300, 600] {
+        write_journal_estate(&harness, T0 + offset, Some(15), None);
+        let report = harness.evaluate(T0 + offset);
+        assert!(
+            intents(&report).iter().all(|(id, _, _)| id != JOURNAL_PAGE),
+            "below the 600 s bound at +{offset}"
+        );
+    }
+    write_journal_estate(&harness, T0 + 660, Some(15), None);
+    let report = harness.evaluate(T0 + 660);
+    let page: Vec<_> = intents(&report)
+        .into_iter()
+        .filter(|(id, _, _)| id == JOURNAL_PAGE)
+        .collect();
+    assert_eq!(
+        page,
+        vec![
+            (
+                JOURNAL_PAGE.to_owned(),
+                "notice".to_owned(),
+                "trigger".to_owned()
+            ),
+            (
+                JOURNAL_PAGE.to_owned(),
+                "page".to_owned(),
+                "trigger".to_owned()
+            ),
+        ]
+    );
+    // The service notice fires on its own rule as before.
+    assert!(
+        intents(&report)
+            .iter()
+            .any(|(id, role, action)| id == CONSUMER_NOTICE
+                && role == "notice"
+                && action == "trigger")
+    );
+    let record = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == JOURNAL_PAGE && i["route_role"] == "page")
+        .unwrap()["notification_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(&record)).unwrap();
+    assert_eq!(sent["schema"], "nq.notification_delivery_intent.v2");
+    assert_eq!(sent["response_class"], "page");
+    assert_eq!(sent["severity"], "critical");
+    assert_eq!(
+        sent["condition"],
+        json!({"site": "labelwatch", "component": "service", "rule": "remediation-journal-critical", "target_class": "remediation-consumer"})
+    );
+    assert_eq!(
+        sent["inspection_reference"],
+        "constellation-monitor:docs/ATTENTION.md#remediation-journal-critical"
+    );
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("Now: remediation-consumer: 15 sealed segments present (threshold 15, refusal at 16); operator custody due."),
+        "{summary}"
+    );
+    assert_eq!(sent["details"]["input"]["sealed_segments"], 15);
+
+    // Unknown holds: a missing row, a STALE and an UNKNOWN concern, and a
+    // stale document neither resolve nor re-trigger, for longer than the
+    // confirmation window.
+    let held: [(i64, Option<u64>, Option<&str>); 4] = [
+        (720, None, None),
+        (780, Some(12), Some("STALE")),
+        (900, Some(12), Some("UNKNOWN")),
+        (960, None, None),
+    ];
+    for (offset, sealed, state) in held {
+        write_journal_estate(&harness, T0 + offset, sealed, state);
+        let report = harness.evaluate(T0 + offset);
+        let row = condition(&report, JOURNAL_PAGE).unwrap();
+        assert_eq!(row["observation"], "unknown", "+{offset}: {row}");
+        assert!(
+            intents(&report).iter().all(|(id, _, _)| id != JOURNAL_PAGE),
+            "+{offset}"
+        );
+    }
+    write_journal_estate(&harness, T0 + 1000, Some(12), None);
+    let report = harness.evaluate(T0 + 1000 + 601);
+    assert_eq!(
+        condition(&report, JOURNAL_PAGE).unwrap()["observation"],
+        "unknown",
+        "a stale estate document is unknown"
+    );
+    assert_eq!(harness.state()["conditions"][JOURNAL_PAGE]["active"], true);
+
+    // Custody: back below 15. Clear for 120 s resolves both routes.
+    let start = T0 + 1700;
+    for offset in [0, 60] {
+        write_journal_estate(&harness, start + offset, Some(12), None);
+        let report = harness.evaluate(start + offset);
+        assert_eq!(
+            condition(&report, JOURNAL_PAGE).unwrap()["observation"],
+            "clear"
+        );
+        assert!(intents(&report).iter().all(|(id, _, _)| id != JOURNAL_PAGE));
+    }
+    write_journal_estate(&harness, start + 120, Some(12), None);
+    let report = harness.evaluate(start + 120);
+    let resolved: Vec<_> = intents(&report)
+        .into_iter()
+        .filter(|(id, _, _)| id == JOURNAL_PAGE)
+        .collect();
+    assert_eq!(
+        resolved,
+        vec![
+            (
+                JOURNAL_PAGE.to_owned(),
+                "notice".to_owned(),
+                "resolve".to_owned()
+            ),
+            (
+                JOURNAL_PAGE.to_owned(),
+                "page".to_owned(),
+                "resolve".to_owned()
+            ),
+        ]
+    );
+}
+
+/// Without a remediation-consumer row from the start, the rule is unknown
+/// and never triggers.
+#[test]
+fn journal_critical_without_a_consumer_row_is_unknown() {
+    let harness = estate_harness();
+    for offset in (0..=900).step_by(300) {
+        write_journal_estate(&harness, T0 + offset, None, None);
+        let report = harness.evaluate(T0 + offset);
+        let row = condition(&report, JOURNAL_PAGE).unwrap();
+        assert_eq!(row["observation"], "unknown", "{row}");
+        assert!(
+            row["note"]
+                .as_str()
+                .unwrap()
+                .contains("has no remediation-consumer row"),
+            "{row}"
+        );
+    }
+    assert!(harness.calls().is_empty());
 }
