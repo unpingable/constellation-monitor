@@ -94,15 +94,13 @@ alert under a drifted definition set from one under the declared set. The
 shared vector `fixtures/vmalert-rules-runtime-v1.json` is consumed by
 `test_metric_alerts.py` and by the evaluator's tests.
 
-For rules labelled `attention: "true"` and
-`constellation_value_codes: "v1"`, numeric instance values are evidence codes:
-1 = threshold (present only when firing), 2 = warming history/counter reset,
-3 = missing, 4 = stale. Codes 2–4 are unknown and held even while pending;
-unsupported values/versions are also unknown. Inactive rules clear only when
-the usual freshness, health, evaluation and policy checks permit recovery.
-Unmarked rules keep their existing semantics. The marker was absent from the
-inspected Cartography P8/P9 files and must be adopted there; their probe
-code 2 (unreachable) and code 5 (invalid data) need reconciliation.
+Binding value-code contract (2026-10-22), verbatim:
+
+one alert identity per family; the alert value is a code: 1 = present (threshold met / violation), 2 = acquisition failed (exporter or producer unreachable), 3 = missing (no series), 4 = stale or future timestamp, 5 = invalid or warming (no history yet, counter reset, invalid limit). Every value-coded rule carries the static label `constellation_value_codes: "v1"` (this is the machine-readable marker; `description` annotations do not reach the reader, labels and `summary` do). The evaluator maps non-1 values to unknown-held ONLY for rules carrying that label, with the cause naming the code's meaning (2 acquisition_failed, 3 missing, 4 stale, 5 invalid_or_warming); unlabelled rules keep raw-value semantics exactly as today (their values may legitimately be 2 or 3). A labelled rule with a value outside 1-5 is an input fault for that rule (rejected-rule class, like the per-rule admission in 0.1.10), never present and never clear. The `summary` annotation of value-coded rules reads `evidence code={{ $value }} (<meaning>)`; the notice text for a present code should use that summary as today.
+
+Rules also carry `attention: "true"` to opt into the evaluator. Code 1 is
+present only when firing; pending retains vmalert's hold. Inactive rules clear
+only when freshness, health, evaluation and policy checks permit recovery.
 
 Rule labels and bounded instance values pass through unchanged. For marked
 rules the producer additionally writes `value_code_counts`, a complete list
@@ -110,8 +108,10 @@ of `{site, state, value, count}` rows for firing and pending instances,
 computed before the 32-instance detail bound (empty site means no label).
 This keeps unknown codes visible at high fan-out and across sites. Deploy
 the collector with the evaluator: a marked active rule missing that summary
-is unknown. The shared vector covers both producer bytes and evaluator
-meaning, including pending and unsupported codes.
+is rejected per rule, as are malformed values and unsupported versions. An
+open condition holds as `unreported`; other definitions keep evaluating.
+The shared vector covers both producer bytes and evaluator meaning,
+including pending and unsupported codes.
 
 Unknown-held conditions send no metric notice until they have been present.
 Their code and meaning appear immediately in the report and bounded digest;
@@ -133,7 +133,9 @@ declared policy the producer carries, with the evaluator's sites:
 
     metric-alerts-collect.py --check-targets --declared declared-vmalert-policy.json --key-site labelwatch
 
-The value-code marker is accepted without changing target derivation.
+The value-code marker is accepted without changing target derivation. Every
+labelled rule must have a `summary` containing `evidence code=`, including
+rules without attention opt-in. Description-only annotations fail this check.
 It reads nothing else, prints `constellation.metric_alert_admission/v1` (each
 attention rule with its admitted targets, its refusals per site and the
 longest derived byte count), names each refused rule and site on stderr and exits 1 if any rule would be rejected. A

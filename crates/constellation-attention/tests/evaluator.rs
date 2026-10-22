@@ -4347,6 +4347,15 @@ fn value_code_rule(doc: &mut Value, state: &str, value: &str) {
     rule["instances"].as_array_mut().unwrap().truncate(1);
     rule["instances"][0]["state"] = json!(state);
     rule["instances"][0]["value"] = json!(value);
+    let meaning = match value {
+        "1" => "present",
+        "2" => "acquisition_failed",
+        "3" => "missing",
+        "4" => "stale",
+        "5" => "invalid_or_warming",
+        _ => "invalid code",
+    };
+    rule["instances"][0]["summary"] = json!(format!("evidence code={value} ({meaning})"));
     rule["instance_count"] = json!(1);
     rule["value_code_counts"] = json!([{
         "site": "labelwatch", "state": state, "value": value, "count": 1
@@ -4366,6 +4375,20 @@ fn metric_value_codes_from_the_shared_vector() {
             doc["rules"] = json!([rule]);
         });
         let report = harness.evaluate(T0);
+        if case["observation"] == "rejected" {
+            assert!(condition(&report, SWAP).is_none(), "{case}: {report}");
+            let input = metric_input(&report);
+            assert!(causes(&input).contains(&"rejected".into()), "{input}");
+            assert!(
+                input["rejected_rules"][0]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains(case["meaning"].as_str().unwrap()),
+                "{input}"
+            );
+            assert!(alert_intents(&report).is_empty());
+            continue;
+        }
         let c = condition(&report, SWAP).unwrap();
         assert_eq!(c["observation"], case["observation"], "{case}: {c}");
         if let Some(meaning) = case["meaning"].as_str() {
@@ -4403,11 +4426,30 @@ fn value_codes_hold_an_open_condition_until_healthy_recovery() {
         let report = harness.evaluate(T0 + offset);
         assert_eq!(condition(&report, SWAP).unwrap()["observation"], "present");
         assert_eq!(alert_intents(&report).len(), usize::from(offset == 90));
+        if offset == 90 {
+            let record = report["intents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["condition_id"] == SWAP)
+                .unwrap()["notification_id"]
+                .as_str()
+                .unwrap();
+            let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+            assert!(
+                sent["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("evidence code=1 (present)"),
+                "{sent}"
+            );
+        }
     }
     for (offset, state, code) in [
         (150, "firing", "2"),
         (400, "pending", "3"),
         (650, "firing", "4"),
+        (700, "pending", "5"),
     ] {
         write_metric_alerts(&harness, T0 + offset, |doc| {
             value_code_rule(doc, state, code)
@@ -4467,7 +4509,7 @@ fn never_present_warming_surfaces_through_input_unavailable() {
     harness.raw("[digest]\nat_utc = \"12:05\"\n");
     for offset in [0, 299, 360] {
         write_metric_alerts(&harness, T0 + offset, |doc| {
-            value_code_rule(doc, "pending", "2")
+            value_code_rule(doc, "pending", "5")
         });
         let report = harness.evaluate(T0 + offset);
         assert!(alert_intents(&report).is_empty());
@@ -4487,7 +4529,7 @@ fn never_present_warming_surfaces_through_input_unavailable() {
                 report["digest"]["summary"]
                     .as_str()
                     .unwrap()
-                    .contains("value code 2 (warming / counter reset)")
+                    .contains("value code 5 (invalid_or_warming)")
             );
         }
     }
@@ -4535,9 +4577,61 @@ fn marked_active_rules_without_complete_values_never_guess() {
             metric_rule(doc, "HostSwapExhausted")["value_code_counts"] = malformed.clone();
         });
         let report = harness.evaluate(T0 + offset);
-        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+        assert!(condition(&report, SWAP).is_none(), "{report}");
+        assert!(causes(&metric_input(&report)).contains(&"rejected".into()));
         assert!(alert_intents(&report).is_empty());
     }
+}
+
+#[test]
+fn out_of_range_codes_reject_only_the_rule_and_hold_its_open_condition() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"labelwatch\"]\n");
+    let swap = format!("{SWAP}.labelwatch");
+    let other = "constellation:labelwatch:host_posture:metric-alert-firing:other-metric.labelwatch";
+    for (offset, bad_code) in [(0, false), (90, false), (150, true), (300, true)] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "1");
+            let mut healthy = metric_rule(doc, "HostSwapExhausted").clone();
+            healthy["name"] = json!("OtherMetric");
+            if bad_code {
+                let rule = metric_rule(doc, "HostSwapExhausted");
+                // The invalid code is beyond bounded instance detail and on
+                // another site. It still rejects the entire definition.
+                rule["value_code_counts"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({
+                        "site":"crow", "state":"pending", "value":"6", "count":1
+                    }));
+                healthy["state"] = json!("inactive");
+                healthy["instances"] = json!([]);
+                healthy["value_code_counts"] = json!([]);
+            }
+            doc["rules"].as_array_mut().unwrap().push(healthy);
+        });
+        let report = harness.evaluate(T0 + offset);
+        if bad_code {
+            let input = metric_input(&report);
+            assert!(causes(&input).contains(&"rejected".into()), "{input}");
+            assert!(causes(&input).contains(&"unreported".into()), "{input}");
+            assert_eq!(input["rejected_rules"].as_array().unwrap().len(), 1);
+            assert_eq!(harness.state()["conditions"][&swap]["active"], true);
+            assert!(alert_intents(&report).iter().all(|(id, _, _)| id == other));
+            assert_eq!(condition(&report, other).unwrap()["observation"], "clear");
+        } else {
+            assert_eq!(condition(&report, other).unwrap()["observation"], "present");
+            assert_eq!(
+                alert_intents(&report).len(),
+                if offset == 90 { 2 } else { 0 }
+            );
+        }
+    }
+    assert!(
+        harness.state()["conditions"]
+            .get(other)
+            .is_none_or(|c| c["active"] == false)
+    );
 }
 
 #[test]

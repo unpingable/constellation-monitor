@@ -214,12 +214,18 @@ def admit(name, sites=None):
 
 def check_targets(policy, sites=None):
     """Every attention-labelled alerting rule of a declared policy with its admitted targets and refusals, in policy
-    order. Rules that share a token are all refused, as the evaluator refuses them."""
+    order. Rules that share a token are all refused, as the evaluator refuses them.
+    Every value-coded rule must expose its evidence code in the summary."""
     named = []
     for group in policy.get("groups", []):
         for rule in group.get("rules", []):
-            if (rule.get("labels") or {}).get("attention") == "true":
-                named.append((group, rule.get("name", ""), admit(rule.get("name", ""), sites)))
+            labels = rule.get("labels") or {}
+            if labels.get("attention") == "true" or VALUE_CODES_LABEL in labels:
+                verdict = admit(rule.get("name", ""), sites)
+                if VALUE_CODES_LABEL in labels and "evidence code=" not in str((rule.get("annotations") or {}).get("summary", "")):
+                    verdict["rejected"].append((None, verdict["target"], "value-coded rule summary must contain evidence code="))
+                    verdict["summary_invalid"] = True
+                named.append((group, rule.get("name", ""), verdict))
     sharing = {}
     for _, name, verdict in named:
         if verdict["keyed"]:
@@ -232,6 +238,8 @@ def check_targets(policy, sites=None):
             rejected.append({"site": None, "target": verdict["target"], "bytes": len(verdict["target"].encode()),
                              "reason": "derived target %s is shared by alerts %s" % (
                                  json.dumps(verdict["target"]), ", ".join(json.dumps(n) for n in sharing[verdict["target"]]))})
+            keyed = []
+        if verdict.get("summary_invalid"):
             keyed = []
         derived = [t for _, t in keyed] + [r["target"] for r in rejected]
         rows.append({"rule": name, "group": group.get("name"), "file": group.get("file"), "admitted": not rejected,
@@ -272,8 +280,8 @@ def main(argv=None):
     parser.add_argument("--declared", help="declared-vmalert-policy.json; its identity is carried for the reader to compare")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--check-targets", action="store_true",
-                        help="admit the declared policy's attention rules as the evaluator will (needs --declared); "
-                             "print the verdict and exit 1 if any rule would be rejected; reads nothing else")
+                        help="check the declared policy's attention targets and value-coded summaries (needs --declared); "
+                             "print the verdict and exit 1 if any rule fails; reads nothing else")
     parser.add_argument("--key-site", action="append", dest="key_sites", metavar="SITE",
                         help="with --check-targets: a site the evaluator keys conditions by ([inputs.metric_alerts] sites); repeat")
     args = parser.parse_args(argv)

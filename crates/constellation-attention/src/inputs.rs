@@ -1647,11 +1647,12 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
         }
         let code = value.parse::<f64>().ok();
         let meaning = match code {
-            Some(1.0) => "threshold",
-            Some(2.0) => "warming / counter reset",
+            Some(1.0) => "present",
+            Some(2.0) => "acquisition_failed",
             Some(3.0) => "missing",
             Some(4.0) => "stale",
-            _ => "unsupported",
+            Some(5.0) => "invalid_or_warming",
+            _ => return Err(format!("value code {value:?} outside 1-5")),
         };
         if code == Some(1.0) {
             present |= state == "firing";
@@ -1684,8 +1685,8 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
 /// then: a changed definition's silence is not recovery.
 ///
 /// Rules marked `constellation_value_codes = "v1"` interpret active values
-/// through the producer's complete summary: 1 is threshold, 2 warming/reset,
-/// 3 missing, 4 stale. Unknown values hold the condition and fault the input.
+/// through the producer's complete summary: 1 is present, 2 acquisition_failed,
+/// 3 missing, 4 stale, 5 invalid_or_warming. Invalid codes reject the rule.
 ///
 /// With `sites`, each opted-in rule is one condition per listed site,
 /// `<alert-name>.<site>`, present when a firing instance carries that `site`
@@ -1844,6 +1845,14 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         if keyed.is_empty() {
             continue;
         }
+        // Validate the complete rule before considering any site. A bad value
+        // rejects this definition alone, so it can neither trigger nor recover
+        // a condition, including when the bad instance's detail was truncated.
+        let marked = rule["labels"].get(METRIC_VALUE_CODES_LABEL).is_some();
+        if marked && let Err(error) = metric_value_state(rule, None) {
+            report.reject(name, None, &admission.target, &error);
+            continue;
+        }
         let state = rule.get("state").and_then(Value::as_str).unwrap_or("");
         let health = rule.get("health").and_then(Value::as_str).unwrap_or("");
         let last_evaluation = rule
@@ -1938,7 +1947,6 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 },
                 None => state == "firing",
             };
-            let marked = rule["labels"].get(METRIC_VALUE_CODES_LABEL).is_some();
             let mut code_unknown = false;
             let code_note = if marked {
                 let note = match metric_value_state(rule, site) {

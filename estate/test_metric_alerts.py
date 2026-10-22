@@ -52,10 +52,29 @@ def test_check_targets_cli_accepts_the_value_code_marker(tmp_path, capsys):
     for group in policy["groups"]:
         for rule in group["rules"]:
             rule["labels"].update(VECTOR["value_code_marker"])
+            rule["annotations"]["summary"] = "evidence code={{ $value }} (present)"
     path = tmp_path / "declared.json"
     path.write_text(json.dumps(policy))
     assert m.main(["--check-targets", "--declared", str(path), "--key-site", "labelwatch"]) == 0
     assert json.loads(capsys.readouterr().out)["rejected"] == 0
+
+
+@pytest.mark.parametrize("summary", [None, "", "threshold met"])
+@pytest.mark.parametrize("attention", ["true", "false"])
+def test_check_targets_rejects_a_labelled_rule_without_summary_code(tmp_path, capsys, summary, attention):
+    policy = m._collector().vmalert_policy(copy.deepcopy(VECTOR["api"]))
+    rule = policy["groups"][0]["rules"][0]
+    rule["labels"].update(VECTOR["value_code_marker"], attention=attention)
+    rule["annotations"] = {"description": "evidence code={{ $value }} (present)"}
+    if summary is not None:
+        rule["annotations"]["summary"] = summary
+    path = tmp_path / "declared.json"
+    path.write_text(json.dumps(policy))
+    assert m.main(["--check-targets", "--declared", str(path)]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["rejected"] == 1
+    assert "summary must contain evidence code=" in captured.err
+    assert "rule_rejected:" + rule["name"] in captured.err
 
 
 def test_policy_identity_ignores_runtime_state_but_not_definitions():

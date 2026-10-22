@@ -61,7 +61,7 @@ anchors marked (M) are below in this document.
 | `io-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_io` version 1 evaluation of a non-stale watcher reports `io_pressure_stall` present | (M) [`io-pressure`](#io-pressure) | Check PSI, SQLite write-ahead logs and processes in D state. |
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
-| `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` (code 1 for value-coded rules; codes 2–4 hold unknown) | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
+| `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` (code 1 for value-coded rules; codes 2–5 hold unknown) | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
 | `remediation-journal-critical` | page | page | persists 600 s | `service` | `remediation-consumer` | estate input: the `remediation-consumer` row's concern `remediation.journal.generations-critical` is `ABSENT` (15 or more sealed journal segments; the consumer refuses at 16); missing row, any other state or a stale document is unknown | (M) [`remediation-journal-critical`](#remediation-journal-critical) | Take sealed segments into custody, oldest first. |
 | `evaluator-input-unavailable` (v2) | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input, and its admission of each metric-alert definition | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
@@ -136,8 +136,9 @@ and current are still evaluated.
   one. Each opted-in definition is admitted on its own: one whose condition
   target cannot be derived is rejected alone (`rejected`) and the input stays
   `ok` for the rest. Rules marked `constellation_value_codes: "v1"` interpret
-  1 as threshold, 2 as warming/reset, 3 as missing and 4 as stale. Codes 2–4
-  hold unknown; persistent unknown surfaces through `evaluator-input-unavailable`.
+  1 as present, 2 as acquisition_failed, 3 as missing, 4 as stale and 5 as
+  invalid_or_warming. Codes 2–5 hold unknown; persistent unknown surfaces
+  through `evaluator-input-unavailable`.
   See [Metric alerts](#metric-alerts-vmalert-as-an-input).
 
 ### NQ status sources
@@ -606,27 +607,23 @@ instances' sites, as above.
 
 ### Value-coded metric alerts
 
-In addition to `attention: "true"`, a rule opts in with the rule-level label
-`constellation_value_codes: "v1"`. This marker is proposed for the Cartography
-lanes: it was absent from the P8/P9 source rules inspected on 2026-10-22.
-The expression must emit one stable alert identity per family and scope,
-with no healthy fallback series. Its numeric `$value` means:
+Binding value-code contract (2026-10-22), verbatim:
 
-| Value | Meaning | Attention observation |
-| --- | --- | --- |
-| 1 | threshold / firing | Present when the instance is firing; pending retains vmalert's own hold and is clear. |
-| 2 | warming history / counter reset | Unknown and held, whether firing or pending. |
-| 3 | missing source data | Unknown and held, whether firing or pending. |
-| 4 | stale source data | Unknown and held, whether firing or pending. |
+one alert identity per family; the alert value is a code: 1 = present (threshold met / violation), 2 = acquisition failed (exporter or producer unreachable), 3 = missing (no series), 4 = stale or future timestamp, 5 = invalid or warming (no history yet, counter reset, invalid limit). Every value-coded rule carries the static label `constellation_value_codes: "v1"` (this is the machine-readable marker; `description` annotations do not reach the reader, labels and `summary` do). The evaluator maps non-1 values to unknown-held ONLY for rules carrying that label, with the cause naming the code's meaning (2 acquisition_failed, 3 missing, 4 stale, 5 invalid_or_warming); unlabelled rules keep raw-value semantics exactly as today (their values may legitimately be 2 or 3). A labelled rule with a value outside 1-5 is an input fault for that rule (rejected-rule class, like the per-rule admission in 0.1.10), never present and never clear. The `summary` annotation of value-coded rules reads `evidence code={{ $value }} (<meaning>)`; the notice text for a present code should use that summary as today.
+
+Rules also carry `attention: "true"` to opt into the evaluator. Code 1 is
+present when firing; pending retains vmalert's own hold and is clear. The
+expression emits no healthy fallback series.
 
 The condition note in `report.json`, the input's `identity.value_code_notes`,
 and the bounded daily digest name the code and meaning. The collector passes
 through rule labels and instance values and adds `value_code_counts`, complete
 counts of active `(site, state, value)` instances before truncating detail to
-32 instances. Marked active rules without this summary are unknown: update
-the collector along with the evaluator. Numeric encodings such as `1e0` and
-`2.0` are accepted. Unknown versions, missing/malformed values, and unsupported
-codes (including 5) are unknown and held, never present or clear.
+32 instances. Deploy the collector along with the evaluator. Numeric
+encodings such as `1e0` and `2.0` are accepted. Unknown versions,
+missing/malformed values or summaries, and unsupported codes are rejected
+per rule, never present or clear. A rejected rule is omitted from
+observations; an existing open condition holds as `unreported`.
 
 Unknown takes precedence over threshold when a condition's scope includes
 both. With `sites`, each site's values are interpreted independently;
@@ -645,11 +642,6 @@ warming for an hour will therefore be visible. Other healthy rules and sites
 continue to evaluate. The digest includes code meanings from the first pass,
 even for never-present conditions, within its existing 512-byte bound.
 
-Cartography adoption must reconcile two source conventions: P9 probes used
-2 for exporter unreachable (v1 here means warming/reset), and process/substrate
-rules used 5 for invalid limit/uptime (unsupported here, held unknown). Add
-the marker only after checking those expressions and annotations against this
-contract. Unmarked rules retain their previous interpretation of every value.
 This opt-in adapter adds no registry entry or policy-digest field; registry
 v7 and existing attention policy pins are unchanged.
 
@@ -711,7 +703,10 @@ keyed by site it becomes `service-metrics-observation-needs-attention.testbed`,
 [--key-site ...]` applies the same derivation to the declared policy the
 producer carries and exits 1, naming each rule, if any would be rejected
 (see `estate/README.md`). Run it with the evaluator's `sites` wherever a rule
-set is rendered or tested. `estate/fixtures/metric-alert-targets-v1.json`
+set is rendered or tested. Every rule carrying the value-code marker must
+also have a `summary` containing `evidence code=`; this check includes labelled
+rules without attention opt-in and refuses description-only annotations.
+`estate/fixtures/metric-alert-targets-v1.json`
 holds both implementations to the same derivation.
 
 The rule is notice-only and not in NQ's page anchor set. The condition's
