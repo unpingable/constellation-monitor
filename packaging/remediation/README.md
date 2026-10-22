@@ -115,8 +115,10 @@ authorization history and the replay fence are exactly what they were. The
 consumer itself never reads the journal back.
 
 At most 16 sealed generations are kept beside the live one, about 1.06 GiB in
-all; at the 2026-10 idle cadence (about 8.2 MB a day) that is roughly four
-months of history before custody is needed. When 16 are present and a seal is
+all. At the 2026-10 cadence, when every idle pass journaled three records
+(about 8.2 MB a day), that was roughly four months of history; idle passes no
+longer journal (see Journal contract), so the rate now depends on how many
+passes are not idle. When 16 are present and a seal is
 due at open, the pass is refused at open, before any external command, with
 `journal capacity exhausted ... sealed journal generations exhausted ...
 history preserved, operator custody required`, leaving the journal, state,
@@ -172,6 +174,63 @@ writes under arbitrary I/O failure, exclusion of uncooperating writers,
 automatic retirement or deletion, or history-safe reconciliation. The state
 schema and authority/remediation transitions are unchanged; the journal gains
 one event kind, `journal_sealed`.
+
+## Journal contract: idle passes and `last-pass.json`
+
+The journal is the durable record of what the consumer judged and did, not a
+heartbeat. A pass is *idle* when all of these hold, judged from `state.json`
+and the report alone before anything is journaled or run:
+
+- no episode is open (before the pass, and so after it: an idle pass opens
+  none);
+- in model mode, no Linear Accountant settlement is owed (the LA restart sweep
+  would run no command);
+- report selection abstains with `observation_not_present` and the enrolled
+  condition's `observation` is `clear`: a fresh, well-formed report whose NQ
+  inputs are all `ok` says the watched condition does not hold.
+
+An idle pass runs no external command and appends no `pass_started`,
+`abstained` or `pass_finished` record. Every other pass journals exactly as
+before. In particular these abstentions are not idle and stay journaled: an
+unreadable, malformed or stale report; an NQ input not `ok`
+(`nq_input_not_ok`); an `unknown` or `removed` observation; a condition missing
+from the report (the evaluator reports clear conditions explicitly, so absence
+means it is not watching); an enrolment or policy mismatch; a condition present
+but not held (`page_not_deferred`) or with too little window left; and every
+abstention after selection (attempted episode, previous window, plan,
+precondition, model key, prior campaign, LA recovery failure). Busy passes and
+refusals at open write nothing, as before.
+
+Episode transitions, decisions, attempted actions, outcomes and custody
+changes are all non-idle and journaled. Sealing is unaffected: an idle pass
+that opens a journal due for sealing (full, or an interrupted seal) seals it,
+so the live journal then holds only `journal_sealed`.
+
+Idle streaks reach the journal as `idle_summary` records (no episode fields):
+`trigger` (`hourly` or `streak_ended`), `count` (idle passes this record
+covers), `first_at`/`last_at` (and `_unix_ms`) of those passes, `last_reason`,
+`consecutive_idle_passes` and `idle_since` of the streak. One is appended
+during a streak when the oldest idle pass not yet summarized is at least an
+hour old (so at most one per hour; the first idle pass of a streak never
+summarizes), and one before `pass_started` of the first journaled pass after
+idle passes not yet summarized. A summary written by a later pass carries that
+pass's `pass` id and `at`.
+
+Every pass that holds the lock atomically replaces `last-pass.json` (0600,
+`constellation.remediation-consumer.last-pass/v1`) in the state directory:
+`pass`, `at`/`at_unix_ms`, `result` (the summary's result, or `fault` when the
+pass failed on its own state after taking the lock, with `error`),
+`abstain_reason`, `idle`, `consecutive_idle_passes`, `idle_since` (the `at` of
+the streak's first idle pass), `idle_unsummarized` (the idle passes not yet in
+a summary), `journal_bytes`, `sealed_segments`, `journal_max_bytes` and
+`max_sealed_journals`. It is the consumer's liveness and health surface: it
+distinguishes "nothing required action" (a recent idle or judged pass) from "I
+have not successfully checked" (a `fault`, or no recent pass at all). It is not
+history: it is overwritten every pass, and only the journal is evidence of what
+happened. Refusals at open (busy, a state directory that is not private, sealed
+generations exhausted) do not update it; the file then grows old, which is the
+signal. `state.json` and its schema are unchanged; streak state lives only in
+`last-pass.json`, and a missing or unreadable one starts a new streak.
 
 ## Model decider (v2, opt-in)
 

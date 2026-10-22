@@ -847,3 +847,239 @@ fn configuration_refuses_foreign_or_loose_enrolment() {
         );
     }
 }
+
+fn last_pass(harness: &Harness) -> Value {
+    serde_json::from_slice(&fs::read(harness.path("state/last-pass.json")).unwrap()).unwrap()
+}
+
+fn clear(harness: &Harness) {
+    harness.write_report(&Report {
+        observation: "clear",
+        page_deferred: false,
+        ..Report::default()
+    });
+}
+
+#[test]
+fn idle_pass_journals_nothing_and_rewrites_last_pass() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    assert!(harness.journal().is_empty(), "{:#?}", harness.journal());
+    assert!(harness.calls().is_empty(), "{:?}", harness.calls());
+    let first = last_pass(&harness);
+    assert_eq!(
+        first["schema"],
+        "constellation.remediation-consumer.last-pass/v1"
+    );
+    assert_eq!(first["result"], "abstained");
+    assert_eq!(first["abstain_reason"], "observation_not_present");
+    assert_eq!(first["idle"], true);
+    assert_eq!(first["consecutive_idle_passes"], 1);
+    assert_eq!(first["idle_since"], first["at"]);
+    assert_eq!(first["idle_unsummarized"]["count"], 1);
+    assert_eq!(first["journal_bytes"], 0);
+    assert_eq!(first["sealed_segments"], 0);
+    assert_eq!(first["journal_max_bytes"], 64 * 1024 * 1024);
+    assert_eq!(first["max_sealed_journals"], 16);
+    let mode = fs::metadata(harness.path("state/last-pass.json"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    assert_eq!(harness.result(), "abstained");
+    assert!(harness.journal().is_empty());
+    let second = last_pass(&harness);
+    assert_ne!(second["pass"], first["pass"]);
+    assert_eq!(second["consecutive_idle_passes"], 2);
+    assert_eq!(second["idle_since"], first["at"]);
+    assert_eq!(second["idle_unsummarized"]["count"], 2);
+    assert_eq!(
+        second["idle_unsummarized"]["first_at"],
+        first["idle_unsummarized"]["first_at"]
+    );
+    // state.json is neither created nor changed by idle passes.
+    assert!(!harness.path("state/state.json").exists());
+}
+
+#[test]
+fn condition_present_pass_journals_and_ends_the_idle_streak_with_a_summary() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    let idle = last_pass(&harness);
+    harness.write_report(&Report::default());
+    assert_eq!(harness.result(), "completed");
+    let journal = harness.journal();
+    assert_eq!(journal[0]["event"], "idle_summary");
+    let summary = &journal[0]["detail"];
+    assert_eq!(summary["trigger"], "streak_ended");
+    assert_eq!(summary["count"], 2);
+    assert_eq!(summary["first_at"], idle["idle_unsummarized"]["first_at"]);
+    assert_eq!(summary["last_at"], idle["at"]);
+    assert_eq!(summary["last_reason"], "observation_not_present");
+    assert_eq!(summary["consecutive_idle_passes"], 2);
+    assert_eq!(summary["idle_since"], idle["idle_since"]);
+    assert_eq!(journal[1]["event"], "pass_started");
+    assert!(
+        journal
+            .iter()
+            .any(|record| record["event"] == "episode_opened")
+    );
+    assert_eq!(journal.last().unwrap()["event"], "pass_finished");
+    assert_eq!(harness.events("idle_summary").len(), 1);
+    let after = last_pass(&harness);
+    assert_eq!(after["result"], "completed");
+    assert_eq!(after["idle"], false);
+    assert!(after["abstain_reason"].is_null());
+    assert_eq!(after["consecutive_idle_passes"], 0);
+    assert!(after["idle_since"].is_null());
+    assert!(after["idle_unsummarized"].is_null());
+    assert_eq!(
+        after["journal_bytes"],
+        fs::metadata(harness.path("state/journal.jsonl"))
+            .unwrap()
+            .len()
+    );
+
+    // A later streak starts afresh; the condition is clear again.
+    clear(&harness);
+    let length = harness.journal().len();
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.journal().len(), length);
+    assert_eq!(last_pass(&harness)["consecutive_idle_passes"], 1);
+}
+
+#[test]
+fn idle_streak_is_summarized_at_most_hourly() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    // Backdate the unsummarized window: its first pass an hour and a second
+    // ago, five passes in it.
+    let path = harness.path("state/last-pass.json");
+    let mut record = last_pass(&harness);
+    let first_ms = record["at_unix_ms"].as_u64().unwrap() - 3_601_000;
+    let first_at = rfc3339(i64::try_from(first_ms / 1000).unwrap());
+    record["consecutive_idle_passes"] = json!(5);
+    record["idle_since"] = json!(first_at);
+    record["idle_since_unix_ms"] = json!(first_ms);
+    record["idle_unsummarized"]["count"] = json!(5);
+    record["idle_unsummarized"]["first_at"] = json!(first_at);
+    record["idle_unsummarized"]["first_at_unix_ms"] = json!(first_ms);
+    fs::write(&path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+
+    assert_eq!(harness.result(), "abstained");
+    let journal = harness.journal();
+    assert_eq!(journal.len(), 1, "{journal:#?}");
+    assert_eq!(journal[0]["event"], "idle_summary");
+    let summary = &journal[0]["detail"];
+    assert_eq!(summary["trigger"], "hourly");
+    assert_eq!(summary["count"], 6);
+    assert_eq!(summary["first_at"], first_at);
+    assert_eq!(summary["consecutive_idle_passes"], 6);
+    assert_eq!(summary["idle_since"], first_at);
+    assert_eq!(summary["last_reason"], "observation_not_present");
+    let after = last_pass(&harness);
+    assert_eq!(after["consecutive_idle_passes"], 6);
+    assert_eq!(after["idle_since"], first_at);
+    assert!(after["idle_unsummarized"].is_null());
+
+    // Within the hour after a summary nothing more is journaled.
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.journal().len(), 1);
+    let next = last_pass(&harness);
+    assert_eq!(next["consecutive_idle_passes"], 7);
+    assert_eq!(next["idle_unsummarized"]["count"], 1);
+}
+
+#[test]
+fn abstentions_that_are_not_a_clear_condition_are_journaled() {
+    let cases = [
+        (
+            Report {
+                observation: "clear",
+                nq_status: "not_current",
+                ..Report::default()
+            },
+            "nq_input_not_ok",
+        ),
+        (
+            Report {
+                observation: "clear",
+                age: 130,
+                ..Report::default()
+            },
+            "report_stale",
+        ),
+        (
+            Report {
+                observation: "unknown",
+                ..Report::default()
+            },
+            "observation_not_present",
+        ),
+        (
+            Report {
+                observation: "removed",
+                ..Report::default()
+            },
+            "observation_not_present",
+        ),
+        (
+            Report {
+                page_deferred: false,
+                ..Report::default()
+            },
+            "page_not_deferred",
+        ),
+    ];
+    for (report, reason) in cases {
+        let harness = Harness::new();
+        clear(&harness);
+        assert_eq!(harness.result(), "abstained");
+        harness.write_report(&report);
+        assert_eq!(harness.result(), "abstained");
+        let events: Vec<String> = harness
+            .journal()
+            .iter()
+            .map(|record| record["event"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            events,
+            ["idle_summary", "pass_started", "abstained", "pass_finished"],
+            "{reason}"
+        );
+        assert_eq!(harness.abstentions(), [reason]);
+        let record = last_pass(&harness);
+        assert_eq!(record["idle"], false, "{reason}");
+        assert_eq!(record["abstain_reason"], reason);
+        assert_eq!(record["consecutive_idle_passes"], 0);
+    }
+    // An unreadable report is not idle either.
+    let harness = Harness::new();
+    fs::remove_file(harness.path("report.json")).unwrap();
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.abstentions(), ["report_unreadable"]);
+    assert_eq!(last_pass(&harness)["idle"], false);
+}
+
+#[test]
+fn a_store_fault_is_recorded_as_a_fault_in_last_pass() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    fs::write(harness.path("state/state.json"), b"{not json").unwrap();
+    let error = run_pass(&harness.config(), &|| 1_792_597_797_140).unwrap_err();
+    assert!(error.contains("state.json"), "{error}");
+    let record = last_pass(&harness);
+    assert_eq!(record["result"], "fault");
+    assert!(record["error"].as_str().unwrap().contains("state.json"));
+    assert_eq!(record["idle"], false);
+    assert_eq!(record["consecutive_idle_passes"], 0);
+    // The idle pass not yet summarized is kept for the next journaled pass.
+    assert_eq!(record["idle_unsummarized"]["count"], 1);
+    assert!(harness.journal().is_empty());
+}

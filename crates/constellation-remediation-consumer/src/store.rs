@@ -1,7 +1,8 @@
 //! Durable consumer state: a lock, one atomically replaced `state.json` (the
 //! open episode and the closed ones) and an append-only `journal.jsonl` with
-//! one line per event of every pass. Both are fsynced before the external
-//! step they describe, so a crash leaves a record of what may have started.
+//! one line per event of every pass that is not idle. Both are fsynced before
+//! the external step they describe, so a crash leaves a record of what may
+//! have started.
 //!
 //! The journal is kept in bounded generations. When the live journal reaches
 //! its bound it is sealed, never truncated: hard-linked to
@@ -9,6 +10,11 @@
 //! replaced by a fresh `journal.jsonl` whose first record (`journal_sealed`)
 //! names its predecessor's length and SHA-256. Sealing reads only the journal
 //! and never touches `state.json`, `episodes/` or the lock.
+//!
+//! Idle passes (nothing to do because the watched condition is clear) are not
+//! journaled one by one: every pass atomically replaces `last-pass.json`, the
+//! consumer's liveness and health surface (not history), and idle streaks
+//! reach the journal as `idle_summary` records.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -25,6 +31,7 @@ use time::format_description::well_known::Rfc3339;
 pub const STATE_SCHEMA: &str = "constellation.remediation-consumer.state/v1";
 pub const JOURNAL_SCHEMA: &str = "constellation.remediation-consumer.journal/v1";
 pub const SEAL_SCHEMA: &str = "constellation.remediation-consumer.journal-seal/v1";
+pub const LAST_PASS_SCHEMA: &str = "constellation.remediation-consumer.last-pass/v1";
 /// Maximum bytes in one consumer journal generation. A full generation is
 /// sealed, never truncated; it never discards existing history or resets an
 /// execution obligation.
@@ -34,6 +41,9 @@ pub const MAX_JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
 /// is refused as before, until an operator moves verified segments off-host.
 pub const MAX_SEALED_JOURNALS: usize = 16;
 const LIVE_JOURNAL: &str = "journal.jsonl";
+const LAST_PASS: &str = "last-pass.json";
+/// `last-pass.json` is a few hundred bytes; anything larger is not ours.
+const LAST_PASS_MAX_BYTES: u64 = 64 * 1024;
 const SEALED_PREFIX: &str = "journal.sealed.";
 /// Closed episodes kept in `state.json` (the journal keeps all of them).
 const CLOSED_KEPT: usize = 256;
@@ -162,6 +172,43 @@ impl State {
         }
         Some(episode)
     }
+}
+
+/// Idle passes not yet summarized in the journal.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdleWindow {
+    pub count: u64,
+    pub first_at: String,
+    pub first_at_unix_ms: u64,
+    pub last_at: String,
+    pub last_at_unix_ms: u64,
+    pub last_reason: String,
+}
+
+/// `last-pass.json`: what the newest pass that held the lock concluded, and
+/// the idle-streak bookkeeping. Rewritten atomically by every such pass; it
+/// is a liveness and health surface, never history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastPass {
+    pub schema: String,
+    pub pass: String,
+    pub at: String,
+    pub at_unix_ms: u64,
+    /// The pass summary's `result`, or `fault` for a pass that held the lock
+    /// and then failed on its own state (journal, state file, seal).
+    pub result: String,
+    pub abstain_reason: Option<String>,
+    pub error: Option<String>,
+    pub idle: bool,
+    pub consecutive_idle_passes: u64,
+    pub idle_since: Option<String>,
+    pub idle_since_unix_ms: Option<u64>,
+    /// Idle passes not yet carried by an `idle_summary` record.
+    pub idle_unsummarized: Option<IdleWindow>,
+    pub journal_bytes: Option<u64>,
+    pub sealed_segments: Option<usize>,
+    pub journal_max_bytes: u64,
+    pub max_sealed_journals: usize,
 }
 
 /// The locked state directory of one pass.
@@ -312,12 +359,7 @@ impl Store {
         // A journal under half full is never sealed for one oversized record.
         if self.seal_due || (crosses && used >= self.journal_max_bytes / 2) {
             let trigger = if self.seal_due { "open" } else { "append" };
-            if let Err(error) = self.seal(now_ms, trigger) {
-                let error = exhausted(&error, used, self.journal_max_bytes);
-                self.seal_failed = Some(error.clone());
-                return Err(error);
-            }
-            self.seal_due = false;
+            self.seal_or_fail(now_ms, trigger, used)?;
             used = self.used()?;
         }
         journal_capacity(used, required, self.journal_max_bytes)?;
@@ -325,6 +367,58 @@ impl Store {
             .write_all(&bytes)
             .and_then(|()| self.journal.sync_data())
             .map_err(|error| format!("journal: {error}"))
+    }
+
+    /// Finish a seal the open found due (a full journal, or an interrupted
+    /// seal) without appending anything else: an idle pass journals nothing of
+    /// its own, but never leaves a due seal for later.
+    pub fn seal_if_due(&mut self, now_ms: u64) -> Result<(), String> {
+        if let Some(error) = &self.seal_failed {
+            return Err(format!("journal unusable after a failed seal: {error}"));
+        }
+        if self.seal_due {
+            let used = self.used()?;
+            self.seal_or_fail(now_ms, "open", used)?;
+        }
+        Ok(())
+    }
+
+    fn seal_or_fail(&mut self, now_ms: u64, trigger: &str, used: u64) -> Result<(), String> {
+        if let Err(error) = self.seal(now_ms, trigger) {
+            let error = exhausted(&error, used, self.journal_max_bytes);
+            self.seal_failed = Some(error.clone());
+            return Err(error);
+        }
+        self.seal_due = false;
+        Ok(())
+    }
+
+    /// Bytes in the live journal now.
+    pub fn journal_bytes(&self) -> Result<u64, String> {
+        self.used()
+    }
+
+    #[must_use]
+    pub const fn journal_max_bytes(&self) -> u64 {
+        self.journal_max_bytes
+    }
+
+    #[must_use]
+    pub const fn max_sealed(&self) -> usize {
+        self.max_sealed
+    }
+
+    /// The previous pass's `last-pass.json`, if present and well formed.
+    #[must_use]
+    pub fn load_last_pass(&self) -> Option<LastPass> {
+        read_last_pass(&self.dir).ok()
+    }
+
+    /// Atomically replace `last-pass.json` (0600).
+    pub fn save_last_pass(&self, record: &LastPass) -> Result<(), String> {
+        let mut bytes = serde_json::to_vec_pretty(record).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        write_atomic(&self.dir.join(LAST_PASS), &bytes)
     }
 
     fn used(&self) -> Result<u64, String> {
@@ -497,6 +591,37 @@ pub fn sealed_journal_count(dir: &Path) -> Option<usize> {
     sealed_segments(dir)
         .ok()
         .map(|(segments, _)| segments.len())
+}
+
+/// Read `last-pass.json` from a state directory without locking or creating
+/// anything.
+pub fn read_last_pass(dir: &Path) -> Result<LastPass, String> {
+    let path = dir.join(LAST_PASS);
+    let file = File::open(&path).map_err(|error| format!("{LAST_PASS}: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(LAST_PASS_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{LAST_PASS}: {error}"))?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > LAST_PASS_MAX_BYTES {
+        return Err(format!(
+            "{LAST_PASS}: larger than {LAST_PASS_MAX_BYTES} bytes"
+        ));
+    }
+    let record: LastPass =
+        serde_json::from_slice(&bytes).map_err(|error| format!("{LAST_PASS}: {error}"))?;
+    if record.schema != LAST_PASS_SCHEMA {
+        return Err(format!("{LAST_PASS}: schema is not {LAST_PASS_SCHEMA}"));
+    }
+    Ok(record)
+}
+
+/// Length of the live journal in a state directory (`None` when it cannot be
+/// read). Never creates or opens anything for writing.
+#[must_use]
+pub fn live_journal_bytes(dir: &Path) -> Option<u64> {
+    fs::metadata(dir.join(LIVE_JOURNAL))
+        .ok()
+        .map(|metadata| metadata.len())
 }
 
 /// The sealed segment that is the live journal's own inode: an interrupted

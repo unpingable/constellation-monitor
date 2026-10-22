@@ -54,11 +54,13 @@ fn rehearsal_seals_a_copied_state_dir_and_resumes() {
     println!("source journal.jsonl bytes={journal_bytes} sha256={journal_sha}");
     println!("source state.json bytes={state_bytes} sha256={state_sha}");
 
-    // The fakes stand in for every external; an absent observation makes
-    // the pass an idle one, as production's passes are.
+    // The fakes stand in for every external; a clear observation (the
+    // evaluator's own word, page not held) makes the pass an idle one, as
+    // most of production's passes are.
     let harness = Harness::new();
     harness.write_report(&Report {
-        observation: "absent",
+        observation: "clear",
+        page_deferred: false,
         ..Report::default()
     });
     let state_dir = harness.path("state");
@@ -90,12 +92,6 @@ fn rehearsal_seals_a_copied_state_dir_and_resumes() {
     let pass_ms = started.elapsed().as_millis();
 
     let journal = harness.journal();
-    let sealed_at = journal[0]["at_unix_ms"].as_u64().unwrap();
-    let next_at = journal[2]["at_unix_ms"].as_u64().unwrap();
-    println!(
-        "seal duration ms (journal_sealed at -> next record at, upper bound)={}",
-        next_at - sealed_at
-    );
     println!("whole pass wall ms (includes seal)={pass_ms}");
     let sealed = state_dir.join("journal.sealed.0001.jsonl");
     let (sealed_bytes, sealed_sha) = digest(&sealed);
@@ -115,6 +111,8 @@ fn rehearsal_seals_a_copied_state_dir_and_resumes() {
             .collect::<Vec<_>>()
     );
     println!("pass summary: {}", summary.to_json());
+    let last_pass = fs::read_to_string(state_dir.join("last-pass.json")).unwrap();
+    println!("last-pass.json:\n{last_pass}");
     let state_after = fs::read(state_dir.join("state.json")).unwrap();
     println!(
         "state.json identical to source={}",
@@ -139,14 +137,17 @@ fn rehearsal_seals_a_copied_state_dir_and_resumes() {
         .iter()
         .map(|record| record["event"].as_str().unwrap())
         .collect();
+    // An idle pass journals nothing of its own; the first idle pass of a
+    // streak never summarizes (the hourly window starts with it).
+    assert_eq!(events, ["journal_sealed"]);
+    let last_pass: Value = serde_json::from_str(&last_pass).unwrap();
+    assert_eq!(last_pass["idle"], true);
+    assert_eq!(last_pass["abstain_reason"], "observation_not_present");
+    assert_eq!(last_pass["consecutive_idle_passes"], 1);
+    assert_eq!(last_pass["sealed_segments"], 1);
     assert_eq!(
-        events,
-        [
-            "journal_sealed",
-            "pass_started",
-            "abstained",
-            "pass_finished"
-        ]
+        last_pass["journal_bytes"],
+        fs::metadata(state_dir.join("journal.jsonl")).unwrap().len()
     );
     assert_eq!(state_after, source_state);
     assert_eq!(

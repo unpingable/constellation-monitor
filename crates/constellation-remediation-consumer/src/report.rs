@@ -83,6 +83,21 @@ fn abstain(reason: &'static str, detail: Value) -> Selection {
     Selection::Abstain { reason, detail }
 }
 
+/// An abstention that means the pass had nothing to check further: a fresh
+/// report, every NQ input `ok`, and the enrolled condition's observation
+/// `clear` (the evaluator's current qualified state says it does not hold).
+/// Every other abstention is not idle: an unreadable, malformed or stale
+/// report, an NQ input not `ok` (inputs not read), an `unknown` or `removed`
+/// observation, a missing condition (the evaluator reports clear conditions
+/// explicitly, so absence means it is not watching), an enrolment or policy
+/// mismatch, a condition present but not (or no longer) held for remediation,
+/// and every abstention after selection.
+#[must_use]
+pub fn idle(reason: &str, detail: &Value) -> bool {
+    reason == "observation_not_present"
+        && detail.get("observation").and_then(Value::as_str) == Some("clear")
+}
+
 fn parse_time(text: &str) -> Option<i64> {
     OffsetDateTime::parse(text, &Rfc3339)
         .ok()
