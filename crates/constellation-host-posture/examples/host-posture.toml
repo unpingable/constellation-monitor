@@ -10,6 +10,9 @@ nq_config = "/etc/nq/nq.toml"
 qualification_package_dir = "/usr/lib/constellation-host-posture/qualification/filesystem-capacity"
 state_root = "/var/lib/constellation-host-posture"
 publication_root = "/var/lib/constellation-host-posture/status"
+# Optional; absent disables metrics. Pre-create writable and add this directory
+# to the unit's ReadWritePaths (the labelwatch island path is shown here).
+# metrics_textfile_dir = "/var/lib/prometheus/node-exporter"
 receiver_id = "receiver:constellation-host-posture"
 mountpoint_label = "/data"
 acquisition_interval_ms = 60000

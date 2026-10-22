@@ -118,9 +118,8 @@ stay in the publication store and in the `CURRENT` history. The
 `reactor_custody_lost` stderr line stays in the unit journal, and the unit's
 `NRestarts` counter rises. Attention raises `host-posture-unknown` only if
 unknown persists past 600 s, so a latch followed by a quick recovery pages
-nobody. Per-latch operator visibility beyond this record is the open telemetry
-item Monitor #14 (host-posture runner metrics textfile); this change does not
-add it.
+nobody. The optional runner textfile below retains a per-latch counter for
+operator visibility through the ordinary metrics path (Monitor #14).
 
 Exit 75 is not guaranteed when the reactor actor itself is wedged, for
 example blocked in fsync. The final `reactor.shutdown()` joins the actor
@@ -133,3 +132,124 @@ The example's 2,048 occurrences at a 60-second cadence are a bounded
 qualification profile (about 34 hours), not a sustained-production retention
 claim. A production retention envelope requires an explicit owner-approved
 capacity and rotation/disposition procedure before deployment.
+
+## Optional operator metrics textfile
+
+Set the top-level `metrics_textfile_dir` in `host-posture.toml` to an absolute
+directory to enable `host-posture.prom`. Omit the key to disable all metrics
+I/O; existing installed configurations keep working. The packaged example is
+`crates/constellation-host-posture/examples/host-posture.toml`, also rendered
+by `example-config`; its optional key is commented out.
+
+Pre-create the directory with write/search permission for the runner's service
+identity and read/search permission for node_exporter. The unit's
+`ReadWritePaths` must include that directory: use an installation-specific
+systemd drop-in. The labelwatch island uses **`/var/lib/prometheus/node-exporter`**
+(Cartography `architecture/beta-observability/mvp/labelwatch-host/definitions/systemd/constellation-estate-collect.service`).
+For example, the drop-in's `[Service]` section can contain:
+
+```ini
+ReadWritePaths=/var/lib/prometheus/node-exporter
+```
+
+The packaged unit is unchanged because the default configuration does not
+enable this output. Directory permissions and this sandbox exception are both
+necessary. No directory, collector, scrape job, or alert rule is installed by
+the runner. Use the existing node_exporter textfile → island VictoriaMetrics
+→ vmalert path; there is no listener or new rule engine.
+
+Every initial/periodic/final projection attempt writes a complete generation,
+and returning from `run` after acquiring the state writer lock writes again.
+Refusals before the lock (including a concurrent writer), abrupt termination,
+panics, and a wedged shutdown cannot promise an exit write. The temporary file
+is created in the destination directory with a name that does not end in
+`.prom`, flushed with `sync_all`, chmodded to **0644** even under the unit's
+0077 umask, and atomically renamed; the directory is synced too. A failed
+metrics operation writes one escaped stderr line with
+`host_posture_metrics_write_failed` and returns to the runner. It does not
+alter publication results, reactor commands, or exit codes. A failed write can
+leave the previous complete textfile in place. No metrics values are read by
+the projection or used to authorize action, and scraping triggers no work.
+
+All names have the prefix `constellation_host_posture_`. The exact families are:
+
+| Metric | Type / labels | Meaning |
+|---|---|---|
+| `constellation_host_posture_projection_state` | gauge `{state}` | One-hot last successfully published state; unknown until a successful publication. |
+| `constellation_host_posture_reactor_condition` | gauge `{condition}` | One-hot last observed reactor condition before shutdown. Final observation can reflect deliberate shutdown blindness. |
+| `constellation_host_posture_custody_lost_total` | counter, no labels | Observed custody latches, at most once per process; deliberate final blindness does not increment it. |
+| `constellation_host_posture_process_start_timestamp_seconds` | gauge, no labels | Unix seconds at entry to this `run` invocation. |
+| `constellation_host_posture_occurrences_total` | counter, no labels | Retained intent entries, including failed/audit-only attempts; survives restart. |
+| `constellation_host_posture_last_acquisition_timestamp_seconds` | gauge, no labels | Unix seconds when this process last received a verified acquisition; zero until its first verified acquisition. |
+| `constellation_host_posture_publications_total` | counter, no labels | Retained immutable publication objects; survives restart. |
+| `constellation_host_posture_publications_used` | gauge, no labels | Objects plus temporary publication entries, matching the capacity check. |
+| `constellation_host_posture_maximum_occurrences` | gauge, no labels | Configured aggregate occurrence ceiling. |
+| `constellation_host_posture_maximum_publications` | gauge, no labels | Configured aggregate publication ceiling. |
+| `constellation_host_posture_textfile_write_timestamp_seconds` | gauge, no labels | Unix seconds of rendering, for detecting a frozen file despite fresh scrapes. |
+
+The closed `state` values are `healthy`, `degraded`, `partial_outage`,
+`major_outage`, `unknown`. The closed `condition` values are `starting`,
+`operational`, `mailbox_overloaded`, `explicit_blindness`, `wakeup_failure`,
+`actor_terminated`, `journal_failure`, `command_channel_closed`, `shutting_down`,
+`terminated`. All members are always emitted, exactly one per family set to
+1. There are no identity, path, artifact, detail, or acquisition labels.
+The `site`, `job`, and `instance` labels in queries come from ordinary scraping.
+
+The latch counter is a small decimal file, `state_root/metrics-custody-lost-total`,
+mode 0600, protected by the runner's existing writer lock and replaced with the
+same atomic protocol. It is saved before textfile exposure and retried on the
+next write if persistence fails. A missing file starts at zero; unreadable or
+corrupt state logs an error and omits only the custody counter for that process
+instead of inventing a reset. Other metrics can still be written. Repair such
+state explicitly with the runner stopped. This is best-effort telemetry:
+unwritable state, a kill before persistence, or lost storage can lose a latch.
+The counter records observed custody failures even if their projection fails
+to publish. It does not infer faults from the unknown publication store,
+because ordinary startup and clean shutdown also publish unknown.
+
+Occurrence/publication counters reflect retained stores, not a new retention
+policy. Explicit governed rotation can reset them. `publications_used` also
+includes stranded temporary entries so headroom remains accurate after a
+publication failure. A store-count error leaves the prior textfile unchanged
+and logs a metrics error; metrics do not validate or repair the stores on a
+scrape. Last acquisition time is process-local and intentionally resets to
+zero on restart; it does not restore live support from retained evidence.
+
+Suggested vmalert expressions (review thresholds and routing for the island;
+these are documentation, with no Cartography changes):
+
+```promql
+# Per-latch notice: retain visibility after a healthy restart. Requires a
+# sample an hour ago; a newly enabled series needs that baseline first.
+(constellation_host_posture_custody_lost_total
+ - constellation_host_posture_custody_lost_total offset 1h) > 0
+
+# Repeated supervised custody exits: three or more observed latches/hour.
+(constellation_host_posture_custody_lost_total
+ - constellation_host_posture_custody_lost_total offset 1h) >= 3
+
+# Process starts seen by scraping, including non-custody/manual restarts.
+changes(constellation_host_posture_process_start_timestamp_seconds[1h]) >= 3
+
+# Less than 20% remaining capacity; plan governed retention/re-enrollment.
+constellation_host_posture_occurrences_total
+ / constellation_host_posture_maximum_occurrences > 0.8
+constellation_host_posture_publications_used
+ / constellation_host_posture_maximum_publications > 0.8
+
+# Frozen output, even when node_exporter itself is scraped successfully.
+time() - constellation_host_posture_textfile_write_timestamp_seconds > 60
+absent(constellation_host_posture_textfile_write_timestamp_seconds)
+```
+
+The per-latch notice may use `for: 0s`; the subtraction remains positive for an
+hour after a latch and survives a fast healthy restart. This coalesces latches
+into an active notice; the counter delta supplies their count. It does not
+promise one notification per event. Offset subtraction assumes retained counter
+state and history and cannot recover missing samples or a counter reset.
+Process-start changes can miss starts between scrapes, so the persisted latch
+delta is the stronger custody-storm signal. A final textfile remains after
+exit: pair these rules with textfile age/absence, node scrape health and
+existing unit/Attention checks. Scope absence queries to the intended scraped
+host using its existing scrape labels. Validate alert evaluation, routing and
+thresholds separately before deployment.

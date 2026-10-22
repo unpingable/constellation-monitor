@@ -22,7 +22,9 @@ The repository does not implement or claim:
 - distributed persistent storage;
 - long-term metrics or pulse retention;
 - generic metrics, logging, tracing, event, or observability ingestion;
-- a Prometheus replacement or Prometheus compatibility;
+- a Prometheus replacement or general Prometheus compatibility (the installed
+  host-posture runner's optional bounded textfile export is documented in
+  [host-posture-runner.md](host-posture-runner.md#optional-operator-metrics-textfile));
 - OpenTelemetry compatibility;
 - Kubernetes-specific architecture or integration;
 - cloud-provider integration;
