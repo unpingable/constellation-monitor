@@ -177,6 +177,17 @@ pub fn summary(
         text.push_str(". Declared paused: ");
         text.push_str(&paused.join("; "));
     }
+    // An input whose only fault is a rejected definition is `ok` for every
+    // other one, but the rejection is never left out of the restatement.
+    let rejected: Vec<String> = inputs
+        .iter()
+        .filter(|input| !input.rejected_rules.is_empty())
+        .map(|input| format!("{} ({})", input.label, crate::engine::rejected_names(input)))
+        .collect();
+    if !rejected.is_empty() {
+        text.push_str(". Rejected definitions: ");
+        text.push_str(&rejected.join("; "));
+    }
     if not_current.is_empty() {
         text.push_str(". All inputs current.");
     } else {

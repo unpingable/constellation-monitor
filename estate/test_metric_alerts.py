@@ -93,9 +93,14 @@ def test_admission_matches_the_shared_target_vector():
     """The evaluator's inputs.rs tests the same vector: both sides derive and refuse the same targets."""
     for case in TARGETS["cases"]:
         verdict = m.admit(case["alert"], [case["site"]] if case["site"] else None)
-        admitted = not isinstance(verdict, tuple)
-        target = verdict[0][1] if admitted else verdict[1]
+        admitted = not verdict["rejected"]
+        target = verdict["keyed"][0][1] if admitted else verdict["rejected"][0][1]
         assert (admitted, target, len(target.encode())) == (case["admitted"], case["target"], case["bytes"]), case
+    for group in TARGETS["collisions"]:
+        policy = {"groups": [{"name": "g", "rules": [{"name": n, "labels": {"attention": "true"}} for n in group["alerts"]]}]}
+        rows = m.check_targets(policy)
+        assert [r["rule"] for r in rows if r["admitted"]] == group["admitted"], group
+        assert all(r["rejected"][-1]["target"] == group["target"] for r in rows), rows
 
 
 def _declared(tmp_path, names):
@@ -119,8 +124,9 @@ def test_check_targets_refuses_a_49_byte_derived_target(tmp_path, capsys):
     out = json.loads(captured.out)
     assert out["rejected"] == 1 and out["sites"] == ["crow"]
     bad = next(r for r in out["rules"] if not r["admitted"])
-    assert bad["rule"] == fits and bad["bytes"] == 49 and "is 49 bytes" in bad["reason"], bad
-    assert "rule_rejected:" + fits in captured.err
+    assert bad["rule"] == fits and bad["bytes"] == 49 and bad["targets"] == [], bad
+    assert bad["rejected"][0]["site"] == "crow" and "is 49 bytes" in bad["rejected"][0]["reason"], bad
+    assert "rule_rejected:" + fits + " (crow)" in captured.err
     assert next(r for r in out["rules"] if r["rule"] == "HostSwapExhausted")["targets"] == ["host-swap-exhausted.crow"]
     assert [r["rule"] for r in out["rules"]] == ["HostSwapExhausted", fits], "only attention-labelled rules are admitted"
 
@@ -141,7 +147,16 @@ def test_check_targets_refuses_two_rules_with_one_target(tmp_path, capsys):
     path = _declared(tmp_path, ["HostSwapExhausted", "host-swap-exhausted"])
     assert m.main(["--check-targets", "--declared", str(path)]) == 1
     out = json.loads(capsys.readouterr().out)
-    assert out["rules"][1]["reason"] == 'derived target "host-swap-exhausted" is already the target of alert "HostSwapExhausted"'
+    assert [r["admitted"] for r in out["rules"]] == [False, False], "both, not the first one in order"
+    assert out["rules"][1]["rejected"][0]["reason"] == 'derived target "host-swap-exhausted" is shared by alerts "HostSwapExhausted", "host-swap-exhausted"'
+
+
+def test_check_targets_refuses_only_the_site_that_overflows(tmp_path, capsys):
+    path = _declared(tmp_path, ["HostMetricsAcquisitionNeedsAttention"])
+    assert m.main(["--check-targets", "--declared", str(path), "--key-site", "testbed", "--key-site", "labelwatch"]) == 1
+    row = json.loads(capsys.readouterr().out)["rules"][0]
+    assert row["targets"] == ["host-metrics-acquisition-needs-attention.testbed"]
+    assert [(r["site"], r["bytes"]) for r in row["rejected"]] == [("labelwatch", 51)]
 
 
 def test_check_targets_needs_the_declared_policy():

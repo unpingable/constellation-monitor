@@ -1120,9 +1120,32 @@ fn input_fault_reference(report: &InputReport, cause: &str) -> Value {
                 .map(|rule| &rule["fault"])
                 .collect::<Vec<_>>()
         );
-        reference["reason"] = json!(truncate(&rejected_note(report), 400));
+        // Names first, so every rejected definition and the incident
+        // reference fit the notice; the byte detail is in report.json.
+        reference["reason"] = json!(truncate(&rejected_names(report), 400));
     }
     reference
+}
+
+/// `rejected rules: A, B (site); see report.json rejected_rules`.
+pub fn rejected_names(report: &InputReport) -> String {
+    let mut names: Vec<String> = report
+        .rejected_rules
+        .iter()
+        .map(|rule| {
+            let name = rule["rule"].as_str().unwrap_or_default();
+            match rule["site"].as_str() {
+                Some(site) => format!("{name} ({site})"),
+                None => name.to_owned(),
+            }
+        })
+        .collect();
+    names.dedup();
+    format!(
+        "rejected rules: {}; see report.json {}.rejected_rules",
+        names.join(", "),
+        report.label
+    )
 }
 
 /// `<fault>: <reason>` for every rejected definition of the input.

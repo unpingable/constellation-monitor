@@ -169,45 +169,57 @@ def token_error(value, maximum=TARGET_MAX):
 
 
 def admit(name, sites=None):
-    """One opted-in definition: [(site, target)] or a refusal ("rejected", target, reason)."""
+    """One opted-in definition: {"target", "keyed": [(site, target)], "rejected": [(site, target, reason)]}.
+
+    A token that is not a condition token refuses the definition everywhere (site None); a site-keyed target that
+    is not one refuses that (definition, site) only."""
     target = alert_target(name)
+    out = {"target": target, "keyed": [], "rejected": []}
     error = token_error(target)
     if error:
-        return ("rejected", target, "derived target is not a condition token: %s" % error)
-    keyed = []
+        out["rejected"].append((None, target, "derived target is not a condition token: %s" % error))
+        return out
     for site in sites or [None]:
         full = target if site is None else "%s.%s" % (target, site)
         if len(full.encode()) > TARGET_MAX:
-            return ("rejected", full, "derived target %s is %d bytes (%d-byte alert token, \".\", %d-byte site %s); "
-                    "the condition target bound is %d bytes" % (json.dumps(full), len(full.encode()), len(target.encode()),
-                                                                len(site.encode()), json.dumps(site), TARGET_MAX))
+            out["rejected"].append((site, full, "derived target %s is %d bytes (%d-byte alert token, \".\", %d-byte site %s); "
+                                    "the condition target bound is %d bytes" % (json.dumps(full), len(full.encode()),
+                                                                                len(target.encode()), len(site.encode()),
+                                                                                json.dumps(site), TARGET_MAX)))
+            continue
         error = token_error(full)
         if error:
-            return ("rejected", full, "derived target is not a condition token: %s" % error)
-        keyed.append((site, full))
-    return keyed
+            out["rejected"].append((site, full, "derived target is not a condition token: %s" % error))
+        else:
+            out["keyed"].append((site, full))
+    return out
 
 
 def check_targets(policy, sites=None):
-    """Every attention-labelled alerting rule of a declared policy, admitted or refused, in policy order."""
-    rows, seen = [], {}
+    """Every attention-labelled alerting rule of a declared policy with its admitted targets and refusals, in policy
+    order. Rules that share a token are all refused, as the evaluator refuses them."""
+    named = []
     for group in policy.get("groups", []):
         for rule in group.get("rules", []):
-            if (rule.get("labels") or {}).get("attention") != "true":
-                continue
-            name = rule.get("name", "")
-            row = {"rule": name, "group": group.get("name"), "file": group.get("file")}
-            verdict = admit(name, sites)
-            base = alert_target(name)
-            if isinstance(verdict, tuple):
-                row.update(admitted=False, target=verdict[1], bytes=len(verdict[1].encode()), reason=verdict[2])
-            elif base in seen:
-                row.update(admitted=False, target=base, bytes=len(base.encode()),
-                           reason="derived target %s is already the target of alert %s" % (json.dumps(base), json.dumps(seen[base])))
-            else:
-                seen[base] = name
-                row.update(admitted=True, targets=[t for _, t in verdict], bytes=max(len(t.encode()) for _, t in verdict))
-            rows.append(row)
+            if (rule.get("labels") or {}).get("attention") == "true":
+                named.append((group, rule.get("name", ""), admit(rule.get("name", ""), sites)))
+    sharing = {}
+    for _, name, verdict in named:
+        if verdict["keyed"]:
+            sharing.setdefault(verdict["target"], []).append(name)
+    rows = []
+    for group, name, verdict in named:
+        rejected = [{"site": s, "target": t, "bytes": len(t.encode()), "reason": r} for s, t, r in verdict["rejected"]]
+        keyed = verdict["keyed"]
+        if len(sharing.get(verdict["target"], [])) > 1:
+            rejected.append({"site": None, "target": verdict["target"], "bytes": len(verdict["target"].encode()),
+                             "reason": "derived target %s is shared by alerts %s" % (
+                                 json.dumps(verdict["target"]), ", ".join(json.dumps(n) for n in sharing[verdict["target"]]))})
+            keyed = []
+        derived = [t for _, t in keyed] + [r["target"] for r in rejected]
+        rows.append({"rule": name, "group": group.get("name"), "file": group.get("file"), "admitted": not rejected,
+                     "targets": [t for _, t in keyed], "rejected": rejected,
+                     "bytes": max(len(t.encode()) for t in derived)})
     return rows
 
 
@@ -258,7 +270,8 @@ def main(argv=None):
         print(json.dumps({"schema": "constellation.metric_alert_admission/v1", "declared_policy_sha256": declared_sha256(args.declared),
                           "sites": args.key_sites, "rules": rows, "rejected": len(rejected)}, indent=1, sort_keys=True))
         for r in rejected:
-            sys.stderr.write("rule_rejected:%s: %s\n" % (r["rule"], r["reason"]))
+            for x in r["rejected"]:
+                sys.stderr.write("rule_rejected:%s%s: %s\n" % (r["rule"], " (%s)" % x["site"] if x["site"] else "", x["reason"]))
         return 1 if rejected else 0
     if not args.site or not args.out:
         parser.error("--site and --out are required to collect")

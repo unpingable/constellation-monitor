@@ -599,24 +599,37 @@ instances' sites, as above.
 
 One invalid definition must not disable unrelated monitoring coverage. Each
 pass admits every opted-in definition on its own before evaluating it. A
-definition is **rejected** when its condition target cannot be derived: the
-alert-name token (cut at 48 bytes), or `<token>.<site>` for a listed site
-(never cut), is not 1..=48 bytes of `[a-z0-9._-]` starting with a letter or
-digit, looks like a per-event identity (date, digest, long digit run), or is
-already another definition's target (the first in document order keeps it).
+condition target is valid when it is 1..=48 bytes of `[a-z0-9._-]` starting
+with a letter or digit and does not look like a per-event identity (date,
+digest, long digit run).
+
+- An alert-name token (cut at 48 bytes) that is not valid rejects the
+  definition everywhere.
+- A site-keyed target `<token>.<site>` (never cut) that is not valid rejects
+  that (definition, site) only; the definition is still evaluated on every
+  listed site whose target fits.
+- Definitions whose tokens are equal are **all** rejected. Neither takes
+  over the target (document order decides nothing), so a condition one of
+  them had open is no longer reported: it is held unknown and the input is
+  `unreported` until the rule files are fixed.
 
 - A rejected definition is never a condition: it neither triggers nor clears
   anything, and it is never silent. The input's report lists it in
   `rejected_rules` (`{"fault": "metric_alerts.rule_rejected:<AlertName>",
-  "rule", "target", "reason"}`, the reason with the byte count) and carries
-  the class `rejected` in `causes`.
+  "rule", "site", "target", "reason"}`, `site` null for a whole-definition
+  refusal, the reason with the byte count) and carries the class `rejected`
+  in `causes`.
 - The class `rejected` is the condition
-  `evaluator-input-unavailable:{label}.rejected` (a notice after 300 s whose
-  text ends with `Now: <fault>: <reason>` for each rejected definition). It is
+  `evaluator-input-unavailable:{label}.rejected`: a notice after 300 s whose
+  text names every rejected definition first (`Now: rejected rules: A
+  (site), B; see report.json metric_alerts.rejected_rules.`), so the names
+  and the incident reference fit the notice bound; the byte detail is in the
+  condition's note and `rejected_rules`. The daily digest restates it under
+  "Rejected definitions" even when the input is otherwise current. It is
   one condition per input, not per definition: the very name that was
   rejected cannot be a bounded target. A second rejection while the first is
   open joins the same condition (and its report row and note) without a new
-  notice.
+  notice, and fixing one while another remains resolves nothing.
 - Every other definition is evaluated as usual. The input's `status` stays
   `ok` (`not_current` only for its own other faults), so its other fault
   classes clear and resolve normally.

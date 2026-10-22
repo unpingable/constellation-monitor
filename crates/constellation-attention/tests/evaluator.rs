@@ -4791,6 +4791,7 @@ fn an_overlong_metric_alert_is_rejected_alone() {
         rejected[0]["target"],
         "service-metrics-observation-needs-attention.testbed"
     );
+    assert_eq!(rejected[0]["site"], "testbed");
     assert!(
         rejected[0]["reason"]
             .as_str()
@@ -4863,7 +4864,7 @@ fn an_overlong_metric_alert_is_rejected_alone() {
     let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
     let summary = sent["summary"].as_str().unwrap();
     assert!(
-        summary.contains("Now: metric_alerts.rule_rejected:ServiceMetricsObservationNeedsAttention: derived target"),
+        summary.contains("Now: rejected rules: ServiceMetricsObservationNeedsAttention (testbed); see report.json metric_alerts.rejected_rules. Incident: inc-"),
         "{summary}"
     );
     // The host-pressure rule resolves on its own recovery while the
@@ -5199,4 +5200,188 @@ fn journal_critical_without_a_consumer_row_is_unknown() {
         );
     }
     assert!(harness.calls().is_empty());
+}
+
+/// Adds an opted-in, firing copy of the swap rule under `name` (site testbed).
+fn add_alert(doc: &mut Value, name: &str) {
+    let mut rule = metric_rule(doc, "HostSwapExhausted").clone();
+    rule["name"] = json!(name);
+    rule["instances"][0]["labels"]["site"] = json!("testbed");
+    rule["instances"][0]["labels"]["alertname"] = json!(name);
+    refresh_firing_sites(&mut rule);
+    doc["rules"].as_array_mut().unwrap().push(rule);
+}
+
+const SECOND_LONG: &str = "ServiceObservationCoverageNeedsAttentionNow";
+
+/// A second rejection joins the open `rejected` condition (no new notice),
+/// the notice text names every rejected rule before the byte detail so
+/// nothing is cut, fixing the first while the second remains resolves
+/// nothing, and the digest restates a rejected-only input.
+#[test]
+fn rejections_join_one_condition_and_name_every_rule() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\"]\n[digest]\nat_utc = \"12:10\"\n");
+    let one = |doc: &mut Value| p3_with_an_overlong_rule(doc, false);
+    let two = |doc: &mut Value| {
+        add_alert(doc, SECOND_LONG);
+        p3_with_an_overlong_rule(doc, false);
+    };
+    write_metric_alerts(&harness, T0, one);
+    harness.evaluate(T0);
+    write_metric_alerts(&harness, T0 + 360, one);
+    assert_eq!(
+        intents(&harness.evaluate(T0 + 360)),
+        vec![(
+            REJECTED_INPUT.to_owned(),
+            "notice".to_owned(),
+            "trigger".to_owned()
+        )]
+    );
+    // The second rejection joins: no new intent, both listed.
+    write_metric_alerts(&harness, T0 + 420, two);
+    let report = harness.evaluate(T0 + 420);
+    assert!(intents(&report).is_empty(), "{report}");
+    let input = metric_input(&report);
+    assert_eq!(input["status"], "ok");
+    assert_eq!(input["rejected_rules"].as_array().unwrap().len(), 2);
+    let row = condition(&report, REJECTED_INPUT).unwrap();
+    assert_eq!(row["observation"], "present");
+    assert!(row["note"].as_str().unwrap().contains(SECOND_LONG), "{row}");
+    assert_eq!(
+        row["reference"]["reason"],
+        format!(
+            "rejected rules: {SECOND_LONG} (testbed), ServiceMetricsObservationNeedsAttention (testbed); see report.json metric_alerts.rejected_rules"
+        )
+    );
+    // The daily digest (due at 12:10) restates the rejected-only input.
+    write_metric_alerts(&harness, T0 + 600, two);
+    let report = harness.evaluate(T0 + 600);
+    let digest = report["digest"]["summary"].as_str().unwrap();
+    assert!(
+        digest.contains(&format!("Rejected definitions: metric_alerts (rejected rules: {SECOND_LONG} (testbed), ServiceMetricsObservationNeedsAttention (testbed)")),
+        "{digest}"
+    );
+    // The first is fixed, the second remains: nothing resolves.
+    let second_only = |doc: &mut Value| {
+        two(doc);
+        doc["rules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|r| r["name"] != OBSERVATION_RULE);
+    };
+    for offset in [660, 900] {
+        write_metric_alerts(&harness, T0 + offset, second_only);
+        let report = harness.evaluate(T0 + offset);
+        assert!(intents(&report).is_empty(), "+{offset}: {report}");
+        assert_eq!(
+            condition(&report, REJECTED_INPUT).unwrap()["observation"],
+            "present"
+        );
+    }
+    assert_eq!(
+        harness.state()["conditions"][REJECTED_INPUT]["active"],
+        true
+    );
+}
+
+/// A notice for two rejections keeps both names and the incident reference
+/// inside the v1 summary bound.
+#[test]
+fn a_two_rejection_notice_keeps_both_names_and_the_incident() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\"]\n");
+    let two = |doc: &mut Value| {
+        add_alert(doc, SECOND_LONG);
+        p3_with_an_overlong_rule(doc, false);
+    };
+    write_metric_alerts(&harness, T0, two);
+    harness.evaluate(T0);
+    write_metric_alerts(&harness, T0 + 360, two);
+    let report = harness.evaluate(T0 + 360);
+    let record = report["intents"][0]["notification_id"].as_str().unwrap();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+    let summary = sent["summary"].as_str().unwrap();
+    assert!(summary.contains(OBSERVATION_RULE), "{summary}");
+    assert!(summary.contains(SECOND_LONG), "{summary}");
+    assert!(summary.contains(". Incident: inc-"), "{summary}");
+}
+
+/// A rule whose token another rule now shares is refused with it: neither
+/// takes over the target, and the open condition of the rule that was active
+/// is held (`unreported`), never resolved.
+#[test]
+fn a_shared_target_refuses_both_and_holds_the_open_condition() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\"]\n");
+    let swap =
+        "constellation:labelwatch:host_posture:metric-alert-firing:host-swap-exhausted.testbed";
+    let base = |doc: &mut Value| p3_with_an_overlong_rule(doc, true);
+    write_metric_alerts(&harness, T0, base);
+    harness.evaluate(T0);
+    write_metric_alerts(&harness, T0 + 90, base);
+    assert_eq!(alert_intents(&harness.evaluate(T0 + 90)).len(), 1);
+    // A new inactive rule whose token equals the active one's, sorted first.
+    let shared = |doc: &mut Value| {
+        p3_with_an_overlong_rule(doc, true);
+        add_alert(doc, "host-swap-exhausted");
+        let rule = metric_rule(doc, "host-swap-exhausted");
+        rule["state"] = json!("inactive");
+        rule["instances"] = json!([]);
+        refresh_firing_sites(rule);
+        doc["rules"].as_array_mut().unwrap().rotate_right(1);
+    };
+    for offset in [150, 400, 700] {
+        write_metric_alerts(&harness, T0 + offset, shared);
+        let report = harness.evaluate(T0 + offset);
+        assert!(alert_intents(&report).is_empty(), "+{offset}: {report}");
+        let row = condition(&report, swap).unwrap();
+        assert_eq!(row["observation"], "unknown", "{row}");
+        let input = metric_input(&report);
+        assert_eq!(input["status"], "not_current", "{input}");
+        assert!(causes(&input).contains(&"unreported".to_owned()), "{input}");
+        let rules: Vec<&str> = input["rejected_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["rule"].as_str().unwrap())
+            .filter(|r| r.contains("wap"))
+            .collect();
+        assert_eq!(
+            rules,
+            ["host-swap-exhausted", "HostSwapExhausted"],
+            "{input}"
+        );
+    }
+    assert_eq!(harness.state()["conditions"][swap]["active"], true);
+}
+
+/// One site's overflow refuses that site only; the rule is evaluated on the
+/// sites whose target fits.
+#[test]
+fn an_overflowing_site_keeps_the_rule_on_other_sites() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\", \"labelwatch\"]\n");
+    write_metric_alerts(&harness, T0, |doc| {
+        add_alert(doc, "HostMetricsAcquisitionNeedsAttention");
+    });
+    let report = harness.evaluate(T0);
+    assert_eq!(
+        condition(
+            &report,
+            "constellation:labelwatch:host_posture:metric-alert-firing:host-metrics-acquisition-needs-attention.testbed"
+        )
+        .unwrap()["observation"],
+        "present"
+    );
+    let input = metric_input(&report);
+    let rejected = input["rejected_rules"].as_array().unwrap();
+    assert_eq!(rejected.len(), 1, "{input}");
+    assert_eq!(rejected[0]["site"], "labelwatch");
+    assert!(
+        rejected[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("is 51 bytes")
+    );
 }

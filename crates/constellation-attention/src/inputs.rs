@@ -132,11 +132,12 @@ pub const REJECTED_CAUSE: &str = "rejected";
 pub const ADMISSION_KINDS: &[&str] = &["metric_alerts"];
 
 impl InputReport {
-    /// Refuse one definition the input carries: it is listed in
-    /// `rejected_rules` with its fault (`{label}.rule_rejected:<name>`) and
-    /// reason, and the class `rejected` is raised. `status` is left alone,
+    /// Refuse one definition the input carries, or one site of it: it is
+    /// listed in `rejected_rules` with its fault
+    /// (`{label}.rule_rejected:<name>`), site, target and reason, and the
+    /// class `rejected` is raised. `status` is left alone,
     /// so the input's other definitions stay current.
-    pub fn reject(&mut self, name: &str, target: &str, reason: &str) {
+    pub fn reject(&mut self, name: &str, site: Option<&str>, target: &str, reason: &str) {
         let name = truncate(name, 128);
         let fault = format!("{}.rule_rejected:{name}", self.label);
         if !self.causes.contains(&REJECTED_CAUSE) {
@@ -150,6 +151,7 @@ impl InputReport {
         self.rejected_rules.push(json!({
             "fault": fault,
             "rule": name,
+            "site": site,
             "target": target,
             "reason": reason,
         }));
@@ -1525,49 +1527,74 @@ pub const TARGET_MAX: usize = 48;
 /// One site's condition target of an admitted alert definition.
 pub type KeyedTarget<'s> = (Option<&'s str>, String);
 
+/// A derived condition target admission refused, for one site (or for the
+/// definition as a whole when `site` is `None` and no site could be keyed).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Rejection<'s> {
+    pub site: Option<&'s str>,
+    pub target: String,
+    pub reason: String,
+}
+
+/// The admission of one opted-in alert definition: the targets of the sites
+/// it may be evaluated for, and the refusals.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Admission<'s> {
+    /// The alert-name token (cut at 48 bytes).
+    pub target: String,
+    pub keyed: Vec<KeyedTarget<'s>>,
+    pub rejected: Vec<Rejection<'s>>,
+}
+
 /// Admission of one opted-in alert definition, before anything is evaluated:
 /// its condition target (`<alert-token>`, or `<alert-token>.<site>` for each
-/// listed site) must be a bounded condition token. On refusal, the offending
-/// target and the reason, with the byte count. `metric-alerts-collect.py
-/// --check-targets` applies the same derivation to a declared policy.
-///
-/// # Errors
-///
-/// A derived target that is not a bounded token of at most [`TARGET_MAX`]
-/// bytes.
-pub fn admit_metric_alert<'s>(
-    name: &str,
-    sites: &[Option<&'s str>],
-) -> Result<(String, Vec<KeyedTarget<'s>>), (String, String)> {
+/// listed site) must be a bounded condition token. A token that is not one
+/// refuses the definition everywhere; a site-keyed target that is not one
+/// refuses that (definition, site) only, and the definition is still
+/// evaluated on the sites whose target fits. Refusals name the offending
+/// target and the byte count. `metric-alerts-collect.py --check-targets`
+/// applies the same derivation to a declared policy.
+#[must_use]
+pub fn admit_metric_alert<'s>(name: &str, sites: &[Option<&'s str>]) -> Admission<'s> {
     let target = metric_alert_target(name);
+    let mut admission = Admission {
+        target: target.clone(),
+        keyed: Vec::with_capacity(sites.len()),
+        rejected: Vec::new(),
+    };
     if let Err(error) = validate_token("target_class", &target, TARGET_MAX) {
-        return Err((
-            target.clone(),
-            format!("derived target is not a condition token: {error}"),
-        ));
+        admission.rejected.push(Rejection {
+            site: None,
+            target,
+            reason: format!("derived target is not a condition token: {error}"),
+        });
+        return admission;
     }
-    let mut keyed = Vec::with_capacity(sites.len());
     for site in sites {
         match metric_alert_site_target(&target, *site) {
-            Ok(keyed_target) => keyed.push((*site, keyed_target)),
+            Ok(keyed_target) => admission.keyed.push((*site, keyed_target)),
             Err(error) => {
-                let site = site.unwrap_or_default();
-                let full = format!("{target}.{site}");
+                let name = site.unwrap_or_default();
+                let full = format!("{target}.{name}");
                 let reason = if full.len() > TARGET_MAX {
                     format!(
-                        "derived target {full:?} is {} bytes ({}-byte alert token, \".\", {}-byte site {site:?}); the condition target bound is {TARGET_MAX} bytes",
+                        "derived target {full:?} is {} bytes ({}-byte alert token, \".\", {}-byte site {name:?}); the condition target bound is {TARGET_MAX} bytes",
                         full.len(),
                         target.len(),
-                        site.len()
+                        name.len()
                     )
                 } else {
                     format!("derived target is not a condition token: {error}")
                 };
-                return Err((full, reason));
+                admission.rejected.push(Rejection {
+                    site: *site,
+                    target: full,
+                    reason,
+                });
             }
         }
     }
-    Ok((target, keyed))
+    admission
 }
 
 /// The `site` label of an alert instance.
@@ -1692,29 +1719,54 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     let listed = |instance: &Value| -> bool {
         instance_site(instance).is_some_and(|site| sites.contains(&Some(site)))
     };
-    let mut targets: BTreeMap<String, String> = BTreeMap::new();
+    // Per-definition admission: a definition (or one of its sites) whose
+    // condition target cannot be derived is refused alone, and named; every
+    // other definition is evaluated as usual. Definitions that share a token
+    // are all refused: neither may take over the other's condition, which an
+    // open condition then holds as `unreported`.
+    let admissions: Vec<(&str, Admission<'_>)> = opted
+        .iter()
+        .map(|rule| {
+            let name = rule.get("name").and_then(Value::as_str).unwrap_or_default();
+            (name, admit_metric_alert(name, &sites))
+        })
+        .collect();
+    let mut sharing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (name, admission) in &admissions {
+        if !admission.keyed.is_empty() {
+            sharing
+                .entry(admission.target.as_str())
+                .or_default()
+                .push(name);
+        }
+    }
     let mut observations = Vec::new();
-    for rule in &opted {
-        let name = rule.get("name").and_then(Value::as_str).unwrap_or_default();
-        // Per-definition admission: a definition whose condition target
-        // cannot be derived is refused alone, and named; every other
-        // definition is evaluated as usual.
-        let (target, keyed) = match admit_metric_alert(name, &sites) {
-            Ok(admitted) => admitted,
-            Err((target, reason)) => {
-                report.reject(name, &target, &reason);
-                continue;
-            }
-        };
-        if let Some(other) = targets.get(&target) {
+    for (rule, (name, admission)) in opted.iter().zip(&admissions) {
+        let name = *name;
+        for rejection in &admission.rejected {
+            report.reject(name, rejection.site, &rejection.target, &rejection.reason);
+        }
+        let shared = sharing
+            .get(admission.target.as_str())
+            .filter(|names| names.len() > 1);
+        if let Some(names) = shared {
+            let names: Vec<String> = names.iter().map(|n| format!("{n:?}")).collect();
             report.reject(
                 name,
-                &target,
-                &format!("derived target {target:?} is already the target of alert {other:?}"),
+                None,
+                &admission.target,
+                &format!(
+                    "derived target {:?} is shared by alerts {}",
+                    admission.target,
+                    names.join(", ")
+                ),
             );
             continue;
         }
-        targets.insert(target.clone(), name.to_owned());
+        let keyed = admission.keyed.clone();
+        if keyed.is_empty() {
+            continue;
+        }
         let state = rule.get("state").and_then(Value::as_str).unwrap_or("");
         let health = rule.get("health").and_then(Value::as_str).unwrap_or("");
         let last_evaluation = rule
@@ -1939,9 +1991,11 @@ mod metric_alert_tests {
         for case in vector["cases"].as_array().unwrap() {
             let alert = case["alert"].as_str().unwrap();
             let site = case["site"].as_str();
-            let (admitted, target) = match admit_metric_alert(alert, &[site]) {
-                Ok((_, keyed)) => (true, keyed[0].1.clone()),
-                Err((target, _)) => (false, target),
+            let admission = admit_metric_alert(alert, &[site]);
+            let admitted = admission.rejected.is_empty();
+            let target = match admission.rejected.first() {
+                Some(rejection) => rejection.target.clone(),
+                None => admission.keyed[0].1.clone(),
             };
             assert_eq!(case["admitted"].as_bool().unwrap(), admitted, "{case}");
             assert_eq!(case["target"].as_str().unwrap(), target, "{case}");
@@ -1953,16 +2007,58 @@ mod metric_alert_tests {
         }
     }
 
+    /// Definitions sharing a token are all refused (the evaluator's tests
+    /// show it end to end); the vector names groups that share one.
+    #[test]
+    fn shared_vector_collisions_share_a_token() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../estate/fixtures/metric-alert-targets-v1.json"
+        ))
+        .unwrap();
+        for group in vector["collisions"].as_array().unwrap() {
+            for alert in group["alerts"].as_array().unwrap() {
+                assert_eq!(
+                    metric_alert_target(alert.as_str().unwrap()),
+                    group["target"].as_str().unwrap(),
+                    "{group}"
+                );
+            }
+        }
+    }
+
+    /// One site's overflow refuses that site only.
+    #[test]
+    fn an_overflowing_site_is_refused_alone() {
+        let admission = admit_metric_alert(
+            "HostMetricsAcquisitionNeedsAttention",
+            &[Some("testbed"), Some("labelwatch")],
+        );
+        assert_eq!(
+            admission.keyed,
+            [(
+                Some("testbed"),
+                "host-metrics-acquisition-needs-attention.testbed".to_owned()
+            )]
+        );
+        assert_eq!(admission.rejected.len(), 1);
+        assert_eq!(admission.rejected[0].site, Some("labelwatch"));
+        assert!(admission.rejected[0].reason.contains("is 51 bytes"));
+        let admission = admit_metric_alert("-Leading", &[Some("crow")]);
+        assert!(admission.keyed.is_empty());
+        assert_eq!(admission.rejected[0].site, None);
+    }
+
     /// The 2026-10-22 testbed drill: the 43-byte token of
     /// `ServiceMetricsObservationNeedsAttention` keyed by `.testbed` is 51
     /// bytes, and the refusal says so.
     #[test]
     fn the_drill_rule_is_refused_with_its_byte_count() {
-        let (target, reason) = admit_metric_alert(
+        let admission = admit_metric_alert(
             "ServiceMetricsObservationNeedsAttention",
             &[Some("testbed")],
-        )
-        .unwrap_err();
+        );
+        assert!(admission.keyed.is_empty());
+        let (target, reason) = (&admission.rejected[0].target, &admission.rejected[0].reason);
         assert_eq!(
             target,
             "service-metrics-observation-needs-attention.testbed"

@@ -1,6 +1,6 @@
 {
  "schema": "constellation.metric_alert_targets/v1",
- "note": "Shared admission vector: the attention evaluator (inputs.rs admit_metric_alert) and metric-alerts-collect.py --check-targets derive the same condition target for each opted-in alert and refuse the same ones. target is the derived (site-keyed) target; admitted false means the definition is rejected.",
+ "note": "Shared admission vector: the attention evaluator (inputs.rs admit_metric_alert) and metric-alerts-collect.py --check-targets derive the same condition target for each opted-in alert and refuse the same ones. cases: one (alert, site); target is the derived (site-keyed) target; admitted false means that (alert, site) is rejected. collisions: alerts whose tokens are equal are all rejected (admitted lists none).",
  "cases": [
   {"alert": "ServiceMetricsObservationNeedsAttention", "site": "testbed", "target": "service-metrics-observation-needs-attention.testbed", "bytes": 51, "admitted": false},
   {"alert": "ServiceMetricsObservationNeedsAttention", "site": "labelwatch", "target": "service-metrics-observation-needs-attention.labelwatch", "bytes": 54, "admitted": false},
@@ -13,5 +13,8 @@
   {"alert": "ZzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzZ", "site": "cro", "target": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-z.cro", "bytes": 48, "admitted": true},
   {"alert": "-Leading", "site": null, "target": "-leading", "bytes": 8, "admitted": false},
   {"alert": "Check20261022", "site": null, "target": "check20261022", "bytes": 13, "admitted": false}
+ ],
+ "collisions": [
+  {"alerts": ["HostSwapExhausted", "host-swap-exhausted"], "target": "host-swap-exhausted", "admitted": []}
  ]
 }
