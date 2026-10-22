@@ -5,8 +5,8 @@ use std::error::Error;
 use std::path::Path;
 
 use constellation_host_posture::{
-    HostPostureConfig, build_information, enroll, example_config, preflight, prepare_qualification,
-    run,
+    HostPostureConfig, REACTOR_CUSTODY_EXIT_CODE, REACTOR_CUSTODY_LOST, build_information, enroll,
+    example_config, preflight, prepare_qualification, run,
 };
 
 fn usage() -> ! {
@@ -33,7 +33,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         [_, command, config] if command == "run" => {
             let config = HostPostureConfig::load(Path::new(config))?;
-            run(&config)?;
+            if let Err(error) = run(&config) {
+                // `run` has already published unknown, stopped the worker,
+                // shut the reactor down and logged the condition.
+                if error.code == REACTOR_CUSTODY_LOST {
+                    std::process::exit(REACTOR_CUSTODY_EXIT_CODE);
+                }
+                return Err(error.into());
+            }
         }
         [_, command, config, initial] if command == "enroll" => {
             let config = HostPostureConfig::load(Path::new(config))?;

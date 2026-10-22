@@ -21,5 +21,8 @@ serde_json.workspace = true
 serde_jcs.workspace = true
 toml.workspace = true
 
+[dev-dependencies]
+pulse-nq-load-correspondence = { path = "../pulse-nq-load-correspondence", features = ["synthetic-fixtures"] }
+
 [lints]
 workspace = true

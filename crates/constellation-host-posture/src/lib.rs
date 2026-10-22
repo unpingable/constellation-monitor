@@ -38,8 +38,8 @@ use pulse_nq_load_correspondence::{
 use pulse_runtime::{
     HistoricalJournal, JournalBoundsV1, JournalConfigV1, LocalCrashReactor,
     LocalQualificationInputsV1, MonotonicEpochV1, QualificationCorpusArtifactV1,
-    QualificationResultsArtifactV1, ReactorConditionV1, ReactorConfigV1, ReceiverSchedulerRuntime,
-    RuntimeBoundsV1, RuntimeConfigV1, build_local_qualification_package,
+    QualificationResultsArtifactV1, ReactorConditionV1, ReactorConfigV1, ReactorSnapshotV1,
+    ReceiverSchedulerRuntime, RuntimeBoundsV1, RuntimeConfigV1, build_local_qualification_package,
 };
 use pulse_types::{
     BuildIdentityV1, ClockId, DigestV1, IncarnationId, LocalActivationAcceptanceV1,
@@ -62,6 +62,16 @@ const CONDITION_OUTPUT: &str = "filesystem-capacity";
 const FACT_ID: &str = "fact.nq.host_filesystem_capacity.pressure";
 const BUILD_INFO_SCHEMA: &str = "constellation.host_posture.build_info.v1";
 const UNAVAILABLE: &str = "unavailable";
+
+/// Error code `run` returns when the Pulse reactor has latched a custody
+/// failure. The reactor never returns to `Operational` in the same process,
+/// so the runner publishes unknown, stops and leaves recovery to supervision.
+pub const REACTOR_CUSTODY_LOST: &str = "reactor_custody_lost";
+
+/// Process exit status for [`REACTOR_CUSTODY_LOST`] (`EX_TEMPFAIL`). It is
+/// distinct from usage faults (2) and every other runner error (1), so the
+/// service manager can restart this case and only this case.
+pub const REACTOR_CUSTODY_EXIT_CODE: i32 = 75;
 
 const SOURCE_REPOSITORY: &str = match option_env!("CONSTELLATION_HOST_POSTURE_SOURCE_REPOSITORY") {
     Some(value) => value,
@@ -1297,6 +1307,64 @@ fn publish_projection(
     Ok((artifact_id, aggregate_state))
 }
 
+/// The reactor latches every custody failure for the life of its process: no
+/// condition other than `Starting` ever returns to `Operational`. `Starting`
+/// precedes the first `Operational` snapshot and `run` waits it out before the
+/// loop, so it never ends the runner. Every other non-operational condition
+/// does, because live standing cannot come back without a fresh process.
+fn reactor_custody_lost(snapshot: &ReactorSnapshotV1) -> Option<HostPostureError> {
+    match snapshot.condition {
+        ReactorConditionV1::Starting | ReactorConditionV1::Operational => None,
+        ReactorConditionV1::MailboxOverloaded
+        | ReactorConditionV1::ExplicitBlindness
+        | ReactorConditionV1::WakeupFailure
+        | ReactorConditionV1::ActorTerminated
+        | ReactorConditionV1::JournalFailure
+        | ReactorConditionV1::CommandChannelClosed
+        | ReactorConditionV1::ShuttingDown
+        | ReactorConditionV1::Terminated => Some(HostPostureError::new(
+            REACTOR_CUSTODY_LOST,
+            format!(
+                "reactor condition is {:?}: {}",
+                snapshot.condition, snapshot.condition_detail
+            ),
+        )),
+    }
+}
+
+struct ProjectionCycle {
+    artifact: String,
+    state: ProjectedStateV1,
+    custody_lost: Option<HostPostureError>,
+}
+
+/// One periodic publication. The reactor condition is read before
+/// publishing, so when it reports a latched custody failure the artifact
+/// published in this same cycle is the unknown that records it.
+fn projection_cycle(
+    config: &HostPostureConfig,
+    reactor: &LocalCrashReactor,
+    policy: &ProjectionPolicyV1,
+    verified: Option<&VerifiedCorrespondenceV1>,
+    nonce_sequence: u64,
+    last_published_unix_ms: &mut u64,
+) -> Result<ProjectionCycle> {
+    let custody_lost = reactor_custody_lost(&reactor.snapshot());
+    let (artifact, state) = publish_projection(
+        config,
+        reactor,
+        policy,
+        verified,
+        nonce_sequence,
+        last_published_unix_ms,
+    )?;
+    Ok(ProjectionCycle {
+        artifact,
+        state,
+        custody_lost,
+    })
+}
+
 fn initial_publication_time(root: &Path) -> Result<u64> {
     match read_current_artifact(root) {
         Ok(artifact) => Ok(artifact.generated_at_unix_ms),
@@ -1495,8 +1563,17 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => worker_stopped = true,
             }
+            // Force the custody-exit publication only while publishing is
+            // still possible; after a publication error the cadence stops
+            // advancing and forcing it would spin until the worker stops.
+            if terminal_error.is_none()
+                && loop_error.is_none()
+                && reactor_custody_lost(&reactor.snapshot()).is_some()
+            {
+                next_projection = Instant::now();
+            }
             if Instant::now() >= next_projection && loop_error.is_none() {
-                match publish_projection(
+                match projection_cycle(
                     config,
                     &reactor,
                     &policy,
@@ -1504,8 +1581,23 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     nonce_sequence,
                     &mut last_published,
                 ) {
-                    Ok((artifact, state)) => {
-                        println!("projection state={} artifact={artifact}", state.as_str())
+                    Ok(cycle) => {
+                        println!(
+                            "projection state={} artifact={}",
+                            cycle.state.as_str(),
+                            cycle.artifact
+                        );
+                        if let Some(error) = cycle.custody_lost
+                            && terminal_error.is_none()
+                        {
+                            eprintln!(
+                                "{error}; published {} as {}; terminating for supervision with exit status {REACTOR_CUSTODY_EXIT_CODE}",
+                                cycle.artifact,
+                                cycle.state.as_str()
+                            );
+                            terminal_error = Some(error);
+                            stopping.store(true, Ordering::SeqCst);
+                        }
                     }
                     Err(error) => {
                         loop_error = Some(error);
@@ -1620,6 +1712,168 @@ mod tests {
             late_withdrawal.validate().unwrap_err().code,
             "invalid_projection_cadence"
         );
+    }
+
+    /// A private scratch directory removed when the test ends.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(label: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "host-posture-{label}-{}-{nanos}",
+                std::process::id()
+            ));
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&path)
+                .expect("create scratch directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture_reactor(root: &Path, label: &str) -> (CorrespondenceProfileV1, LocalCrashReactor) {
+        let profile = pulse_nq_load_correspondence::fixture::synthetic_profile_for(
+            QuestionV1::HostFilesystemCapacityPressureV1,
+        )
+        .expect("synthetic filesystem-capacity profile");
+        let reactor = pulse_nq_load_correspondence::fixture::start_reactor(
+            &profile,
+            IncarnationId::new(
+                pulse_nq_load_correspondence::fixture::SYNTHETIC_SUBJECT_INCARNATION,
+            ),
+            label,
+            &root.join(format!("{label}.journal")),
+        )
+        .expect("operational fixture reactor");
+        (profile, reactor)
+    }
+
+    #[test]
+    fn only_a_latched_reactor_condition_ends_the_runner() {
+        let root = ScratchDir::new("custody-classifier");
+        let (_, reactor) = fixture_reactor(root.path(), "custody-classifier");
+        let operational = reactor.snapshot();
+        assert_eq!(operational.condition, ReactorConditionV1::Operational);
+        assert!(reactor_custody_lost(&operational).is_none());
+
+        let mut starting = operational.clone();
+        starting.condition = ReactorConditionV1::Starting;
+        assert!(reactor_custody_lost(&starting).is_none());
+
+        for condition in [
+            ReactorConditionV1::MailboxOverloaded,
+            ReactorConditionV1::ExplicitBlindness,
+            ReactorConditionV1::WakeupFailure,
+            ReactorConditionV1::ActorTerminated,
+            ReactorConditionV1::JournalFailure,
+            ReactorConditionV1::CommandChannelClosed,
+            ReactorConditionV1::ShuttingDown,
+            ReactorConditionV1::Terminated,
+        ] {
+            let mut latched = operational.clone();
+            latched.condition = condition;
+            latched.condition_detail =
+                "command response timeout made timer custody unavailable".to_owned();
+            let error = reactor_custody_lost(&latched).expect("latched condition ends the runner");
+            assert_eq!(error.code, REACTOR_CUSTODY_LOST);
+            assert!(error.detail.contains(&format!("{condition:?}")));
+            assert!(error.detail.contains("timer custody unavailable"));
+        }
+        reactor.shutdown().expect("clean fixture shutdown");
+    }
+
+    #[test]
+    fn latched_reactor_publishes_unknown_in_the_cycle_that_ends_the_runner() {
+        let root = ScratchDir::new("custody-cycle");
+        let (profile, reactor) = fixture_reactor(root.path(), "custody-cycle");
+        let nq = pulse_nq_load_correspondence::fixture::FakeNq::new(
+            profile.clone(),
+            pulse_nq_load_correspondence::fixture::SyntheticOutcome::Present,
+        );
+        let witness = pulse_nq_load_correspondence::FixedSubjectIncarnation(IncarnationId::new(
+            pulse_nq_load_correspondence::fixture::SYNTHETIC_SUBJECT_INCARNATION,
+        ));
+        let intent_dir = root.path().join("intent");
+        let audit_dir = root.path().join("audit");
+        let mut coproducer = Coproducer::begin(&profile, &nq, &witness, &intent_dir, &audit_dir)
+            .expect("coproducer");
+        let verified = match coproducer
+            .run_occurrence(&reactor)
+            .expect("occurrence")
+            .outcome
+        {
+            OccurrenceOutcomeV1::Verified(verified) => *verified,
+            OccurrenceOutcomeV1::AuditOnly { refusal } => panic!("audit only: {refusal}"),
+        };
+
+        let mut config = toml::from_str::<HostPostureConfig>(&example_config())
+            .expect("packaged example decodes");
+        config.publication_root = root.path().join("status");
+        fs::create_dir(&config.publication_root).expect("publication root");
+        let selector =
+            live_support_selector(&reactor.snapshot(), &profile.consumer()).expect("selector");
+        let policy = condition_policy(selector, "/");
+        policy.validate().expect("runner policy");
+        let mut last_published = 0;
+
+        let healthy = projection_cycle(
+            &config,
+            &reactor,
+            &policy,
+            Some(&verified),
+            1,
+            &mut last_published,
+        )
+        .expect("operational cycle publishes");
+        assert!(healthy.custody_lost.is_none());
+        assert_ne!(healthy.state, ProjectedStateV1::Unknown);
+
+        reactor
+            .declare_blindness("fixture latch")
+            .expect("blindness is confirmed");
+        reactor
+            .wait_until(Duration::from_secs(5), |snapshot| {
+                snapshot.condition == ReactorConditionV1::ExplicitBlindness
+            })
+            .expect("reactor latches");
+
+        let latched = projection_cycle(
+            &config,
+            &reactor,
+            &policy,
+            Some(&verified),
+            2,
+            &mut last_published,
+        )
+        .expect("latched cycle still publishes");
+        let error = latched
+            .custody_lost
+            .expect("latched reactor ends the runner");
+        assert_eq!(error.code, REACTOR_CUSTODY_LOST);
+        assert!(error.detail.contains("ExplicitBlindness"));
+        assert_eq!(latched.state, ProjectedStateV1::Unknown);
+        let current = read_current_artifact(&config.publication_root).expect("current artifact");
+        assert_eq!(current.aggregate_state, ProjectedStateV1::Unknown);
+        assert_eq!(
+            current.artifact_id, latched.artifact,
+            "the latched cycle's unknown is the current publication"
+        );
+        assert_ne!(latched.artifact, healthy.artifact);
+        reactor.shutdown().expect("clean fixture shutdown");
     }
 
     #[test]

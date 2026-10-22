@@ -73,6 +73,62 @@ entry ceilings that survive restart and fail closed when exhausted. Retention
 or rotation is an explicit governed installation operation, not an automatic
 runner cleanup policy.
 
+## Reactor custody failure
+
+The Pulse reactor latches every custody failure for the life of its process.
+After a command response timeout, mailbox overload, wakeup or journal
+failure, actor termination or explicit blindness it never reports
+`Operational` again, and every live admission is refused. The runner does not
+retry, reset or rebuild the reactor in-process. It reads the reactor condition
+at least every 200 ms; the first time it sees any condition other than
+`Starting` or `Operational` it:
+
+1. publishes the projection in that cycle, which is unknown because live
+   admission is refused;
+2. writes one stderr line naming the condition, its detail, the unknown
+   artifact and that it is terminating for supervision;
+3. stops the acquisition worker, declares blindness, publishes the final
+   unknown and shuts the reactor down, as on any other terminal error;
+4. exits with status 75 (`EX_TEMPFAIL`). Status 2 is a usage fault and status
+   1 is every other runner refusal.
+
+The packaged unit restarts only this case: `Restart=no` with
+`RestartForceExitStatus=75` and `RestartSec=30s`. The owner asked for one
+narrow recovery contract, and only the latched-custody exit has evidence that
+a fresh process is the right recovery. Preflight failures, runner refusals
+(exit 1), usage faults (exit 2), panics and OOM kills are not restarted and
+stay visible to the owner. A restart is a fresh
+process occurrence and activation, as described above, so recovery comes from
+a new reactor and journal recovery, never from clearing the latch. The
+projection stays unknown from the latch until the new process verifies an
+occurrence. `StartLimitIntervalSec=1h` with `StartLimitBurst=5` bounds this:
+a sixth start within an hour leaves the unit failed, the runner stops
+publishing, and the stopped runner is reported through
+`nq-no-fresh-acquisition`, `host-posture-unknown` and any `service-down`
+watcher of the unit. Nothing restarts it automatically after that. An
+operator can start it manually once the one-hour interval has passed; inside
+the interval it needs `systemctl reset-failed` first. Each restart consumes occurrence and publication
+capacity: the intent/audit and publication stores persist across processes
+and count toward `maximum_occurrences` and `maximum_publications`, and each
+process adds at least an initial and a final unknown publication. A unit
+that exhausts either bound exits 1 and is not restarted.
+
+A latch that recovers by restart still leaves a record. The unknown artifacts
+stay in the publication store and in the `CURRENT` history. The
+`reactor_custody_lost` stderr line stays in the unit journal, and the unit's
+`NRestarts` counter rises. Attention raises `host-posture-unknown` only if
+unknown persists past 600 s, so a latch followed by a quick recovery pages
+nobody. Per-latch operator visibility beyond this record is the open telemetry
+item Monitor #14 (host-posture runner metrics textfile); this change does not
+add it.
+
+Exit 75 is not guaranteed when the reactor actor itself is wedged, for
+example blocked in fsync. The final `reactor.shutdown()` joins the actor
+thread without a time bound, so such a process stays active but publishes
+nothing more. Nothing turns into success: `host-posture-unknown` fires once
+`fresh_until` passes and `nq-no-fresh-acquisition` fires on the missing
+publications, and `TimeoutStopSec=90` bounds a stop request.
+
 The example's 2,048 occurrences at a 60-second cadence are a bounded
 qualification profile (about 34 hours), not a sustained-production retention
 claim. A production retention envelope requires an explicit owner-approved
