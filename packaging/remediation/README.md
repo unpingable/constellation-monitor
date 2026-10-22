@@ -130,23 +130,6 @@ failed passes remains the operator route. A full journal is not healthy and
 does not authorize a retry. Read-only incident inspection and AG/Docket
 inspection remain available.
 
-Custody procedure when sealed generations are exhausted (or earlier, to keep
-disk use low). Hold the consumer's lock for the whole procedure
-(`flock state/lock -c '...'` as the consumer's user) or stop
-`constellation-remediation-consumer.timer` and wait for any running pass to
-finish. Then, for each of the oldest sealed segments: skip it if it has no
-sidecar or its link count (`stat -c %h`) is above 1, since that is an
-interrupted seal the next pass will finish; check its length and digest against
-its sidecar (`stat -c %s` and `sha256sum` against the sidecar's `bytes` and
-`sha256`); copy the segment and sidecar off-host and verify the copy's digest
-there; then remove both from the state directory. Never edit, truncate or
-reorder a segment, never touch `journal.jsonl`, `state.json` or `episodes/`, and
-do not clear a campaign, discard an unresolved attempt or reset its fence to make
-space. Release the lock or restart the timer afterwards; the next pass seals
-normally once fewer than 16 segments are present. Incident provenance for
-episodes whose opening record left with a moved segment becomes unknown, as for
-any record past its read bound.
-
 Deploying this release against a full journal seals it on the first pass:
 a 67,108,673-byte journal (about 190 bytes short of the bound, less than the
 1 MiB open headroom) becomes `journal.sealed.0001.jsonl` with its sidecar, a
@@ -174,6 +157,68 @@ writes under arbitrary I/O failure, exclusion of uncooperating writers,
 automatic retirement or deletion, or history-safe reconciliation. The state
 schema and authority/remediation transitions are unchanged; the journal gains
 one event kind, `journal_sealed`.
+
+### Segment custody and retention
+
+Who and when: the operator. The prompt is `--status` reporting
+`remediation.journal.generations-headroom` `ABSENT` (12 sealed segments
+present), which the estate collector turns into a `DEGRADED`
+`remediation-consumer` and the `service-not-doing-its-job` notice;
+`generations-critical` joins it at 15, and the consumer refuses at 16. Custody
+may be done earlier at any time. Work oldest segment first, one segment and its
+sidecar at a time.
+
+What: a segment is ready for custody only when it has its sidecar and a link
+count of 1 (`stat -c %h` prints `1`); a link count above 1 is an interrupted
+seal that the next pass finishes, so leave it. Its length and digest must equal
+the sidecar's `bytes` and `sha256`. A segment that is ready is never written
+again, so checking and copying it need no lock. On labelwatch-host, as root, in
+`/var/lib/constellation-remediation/consumer`:
+
+```sh
+seg=journal.sealed.0001.jsonl; car=journal.sealed.0001.json
+verify() {  # verify DIR: the segment in DIR matches its sidecar
+  b=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bytes"])' "$1/$car")
+  h=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$1/$car")
+  [ "$(stat -c %h "$1/$seg")" = 1 ] && [ "$(stat -c %s "$1/$seg")" = "$b" ] &&
+    [ "sha256:$(sha256sum < "$1/$seg" | cut -d' ' -f1)" = "$h" ]
+}
+verify . && echo verified
+```
+
+Where: copy the segment and its sidecar to crow under
+`/data/git/backups/remediation-journal/<site>/` (`<site>` is
+`enrollment.site`, `labelwatch` today), for example from crow with
+`scp root@labelwatch-host:/var/lib/constellation-remediation/consumer/journal.sealed.0001.json{l,} /data/git/backups/remediation-journal/labelwatch/`.
+Verify again there with the same check (`verify /data/git/backups/remediation-journal/labelwatch`)
+and make both copies read-only (`chmod 0444`). A name that already exists on
+crow with different bytes is a conflict to resolve by hand, never overwrite.
+
+Then remove the on-host segment and its sidecar together, only after the crow
+copy verified, while holding the consumer's lock (or with
+`constellation-remediation-consumer.timer` stopped and no pass running), and
+re-verify inside the lock so nothing changed in between:
+
+```sh
+( flock -w 60 9 && verify . && rm -- "$seg" "$car" ) 9<lock
+```
+
+Never edit, truncate or reorder a segment, never touch `journal.jsonl`,
+`state.json`, `last-pass.json` or `episodes/`, and do not clear a campaign,
+discard an unresolved attempt or reset its fence to make space. What stays on
+the host is the chain: the live journal's first record (`journal_sealed`)
+names the newest sealed predecessor with its length and SHA-256, and every
+segment's own first record names its predecessor, so the off-host copies can
+be checked against the host and against each other. Sequences stay monotonic
+after removal. The next pass seals normally once fewer than 16 segments are
+present, and `--status` reports headroom again below 12. Incident provenance
+for episodes whose opening record left with a moved segment becomes unknown,
+as for any record past its read bound.
+
+Retention: sealed segments are retained off-host, on crow, indefinitely for
+now; the owner may set a limit later. Nothing is ever deleted on the host
+before a verified off-host copy exists, and the consumer itself never deletes
+or moves a segment.
 
 ## Journal contract: idle passes and `last-pass.json`
 
