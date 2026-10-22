@@ -58,7 +58,9 @@ The record binds the rule and effective policy at opening, not the original
 detection or a later resume. Resume never rewrites it from a newer report.
 The strict consumer state schema is unchanged, so previous consumers can still
 read it after rollback; the existing append-only journal retains the metadata.
-Incident sync reads at most the last 16 MiB of that journal and associates only
+Incident sync reads at most 16 MiB in total: the tail of the live journal, then
+the tails of the newest sealed generations (see Journal capacity) while that
+bound lasts. It associates only
 matching full episode, condition and first-seen identities. A missing, truncated,
 invalid, conflicting or older opening record leaves provenance unknown. Known
 bindings are copied once into `remediation-definition` timeline events,
@@ -74,34 +76,80 @@ atomicity, history-safe lost-ack reconciliation or exactly-once effects;
 
 ## Journal capacity
 
-Each consumer journal has a 64 MiB (67,108,864-byte) application ceiling.
-`--check-config` reports `journal_max_bytes` without creating or opening state;
-that value is a limit, not a journal-usage or service-health claim.
+Each consumer journal generation has a 64 MiB (67,108,864-byte) application
+ceiling. `--check-config` reports `journal_max_bytes`, `journal_max_sealed`
+(16) and `journal_sealed_present` (sealed segments now in the state directory,
+or null when it cannot be read) without creating, locking or opening state.
+These are limits and a count, not a journal-usage or service-health claim.
 
-The Store refuses a full or already oversized journal before a pass starts.
-Each append checks that the complete encoded record fits before writing any
-of it. Capacity refusal preserves existing journal bytes, state, episode IDs
-and dispatch fences. The consumer exits 2 through its existing store-fault path;
-the existing estate supervision of the consumer's failed passes remains the
-operator route. A full journal is not healthy and does not authorize a retry.
-Read-only incident inspection and AG/Docket inspection remain available.
+A full journal is sealed, not truncated. When a pass opens a journal with less
+than 1/64 of the bound (1 MiB) left, or when an append would carry a journal
+that is at least half full over the bound, the Store seals it before writing
+the record. Sealing hard-links `journal.jsonl` as `journal.sealed.NNNN.jsonl`
+(zero-padded sequence, 0001 first) and fsyncs the directory, atomically writes
+the sidecar `journal.sealed.NNNN.json` (byte length, SHA-256, newline-terminated
+record count, torn-tail bytes, first and last `at`, sealing pass and time),
+then atomically replaces `journal.jsonl` with a new file whose first record is
+`journal_sealed` carrying the same fields plus `predecessor`. Every intermediate
+state leaves a complete `journal.jsonl`; a crash after the link is resumed under
+the same sequence. The chain is replayable backwards from the live file: each
+generation's first record names and digests its predecessor. Sequences stay
+monotonic after segments are moved away, because the live journal's first
+record names its predecessor's sequence. Sealing reads only the journal: it does
+not read or write `state.json`, `episodes/` or the lock, so pending obligations
+(the active episode and its dispatch fence), completed outcomes, authorization
+history and the replay fence are exactly what they were. The consumer itself
+never reads the journal back. A single record that cannot fit in a journal under
+half full is refused as before rather than sealing a young generation.
 
-There is no automatic rotation, truncation or history deletion. Exhaustion needs
-operator custody and disposition under the existing recovery procedure. Do not
-clear a campaign, discard an unresolved attempt or reset its fence to make space.
-This bounds this journal only, not per-episode inputs or AG, Docket and NQ stores.
+At most 16 sealed generations are kept beside the live one, about 1.06 GiB in
+all; at the 2026-10 idle cadence (about 8.2 MB a day) that is roughly four
+months of history before custody is needed. When 16 are present a full journal
+is refused exactly as before: at open, before any external command, with
+`journal capacity exhausted ... sealed journal generations exhausted ...
+history preserved, operator custody required`, leaving the journal, state,
+episode IDs, dispatch fences and directory listing unchanged. The consumer exits
+2 through its existing store-fault path, and the estate supervision of failed
+passes remains the operator route. A full journal is not healthy and does not
+authorize a retry. Read-only incident inspection and AG/Docket inspection remain
+available.
+
+Custody procedure when sealed generations are exhausted (or earlier, to keep
+disk use low): for each of the oldest sealed segments, check its length and
+digest against its sidecar (`stat -c %s` and `sha256sum` against the sidecar's
+`bytes` and `sha256`), copy the segment and sidecar off-host, verify the copy's
+digest there, then remove both from the state directory. Never edit, truncate or
+reorder a segment, never touch `journal.jsonl`, `state.json` or `episodes/`, and
+do not clear a campaign, discard an unresolved attempt or reset its fence to make
+space. The next pass seals normally once fewer than 16 segments are present.
+Incident provenance for episodes whose opening record left with a moved segment
+becomes unknown, as for any record past its read bound.
+
+Deploying this release against a full journal seals it on the first pass:
+a 67,108,673-byte journal (about 190 bytes short of the bound, less than the
+1 MiB open headroom) becomes `journal.sealed.0001.jsonl` with its sidecar, a
+new `journal.jsonl` starts with `journal_sealed`, and the pass then proceeds
+from the unchanged `state.json` as an ordinary pass.
+
+This bounds the journal only, not per-episode inputs or AG, Docket and NQ stores.
 
 Formalization consideration (Monitor private-history #6 / finding 94-22;
 implementation Codex, owner unpingable): while cooperating writers hold the
 existing exclusive Store lock, admitted appends satisfy
-`used + encoded_record_bytes <= journal_max_bytes`, with overflow refused.
-Tests cover an exact-boundary append followed by byte-preserving refusal, an
-already-full journal preventing every external call while retaining a dispatch
-fence, and configuration inspection without state creation. Practical tests and
-checked arithmetic suffice for this bounded change. This does not establish
-atomic writes under arbitrary I/O failure, exclusion of uncooperating writers,
-automatic retirement, or history-safe reconciliation. Existing JSON schemas and
-authority/remediation transitions are unchanged.
+`used + encoded_record_bytes <= journal_max_bytes` within each generation, and
+at most `journal_max_sealed` sealed generations are present before refusal.
+Tests cover sealing on append and at open (byte-identical segments, sidecar and
+first-record digests, unchanged state and fence), an interrupted seal resuming
+under its own name, sequence continuity after segments are moved away, a
+production-shaped 67,108,673-byte journal sealing on an idle pass, a full
+journal with a dispatch fence sealing and then never dispatching again, refusal
+at the generation bound before every external call with nothing renamed, and
+configuration inspection without state creation. Practical tests and checked
+arithmetic suffice for this bounded change. This does not establish atomic
+writes under arbitrary I/O failure, exclusion of uncooperating writers,
+automatic retirement or deletion, or history-safe reconciliation. The state
+schema and authority/remediation transitions are unchanged; the journal gains
+one event kind, `journal_sealed`.
 
 ## Model decider (v2, opt-in)
 
