@@ -11,6 +11,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+use crate::report::INPUT_FAILURES;
 use crate::store::{
     LastPass, MAX_JOURNAL_BYTES, MAX_SEALED_JOURNALS, live_journal_bytes, read_last_pass,
     sealed_journal_count, stamp,
@@ -99,7 +100,14 @@ fn pass_succeeding(last: &Result<LastPass, String>, generated: &str) -> Observed
             let judged = last.result != "fault";
             Observed {
                 state: if judged { "PRESENT" } else { "ABSENT" },
-                reason: if judged {
+                reason: if let (true, Some(reason)) = (judged, &last.repeat_reason) {
+                    format!(
+                        "last pass judged: {} ({reason}, {} passes since {})",
+                        last.result,
+                        last.repeat_count,
+                        last.repeat_since.as_deref().unwrap_or("?")
+                    )
+                } else if judged {
                     format!("last pass judged: {}", last.result)
                 } else {
                     format!(
@@ -112,9 +120,67 @@ fn pass_succeeding(last: &Result<LastPass, String>, generated: &str) -> Observed
                     "result": last.result,
                     "abstain_reason": last.abstain_reason,
                     "idle": last.idle,
+                    "repeat_reason": last.repeat_reason,
+                    "repeat_count": last.repeat_count,
                 }),
             }
         }
+    }
+}
+
+fn inputs_ok(last: &Result<LastPass, String>, generated: &str) -> Observed {
+    let (state, reason, observed_at, facts) = match last {
+        Err(error) => (
+            "ABSENT",
+            format!("no readable last pass: {error}"),
+            generated.to_owned(),
+            json!({}),
+        ),
+        Ok(last) if last.result == "fault" => (
+            "UNKNOWN",
+            "last pass failed on its own state before judging its inputs".to_owned(),
+            last.at.clone(),
+            json!({"result": last.result}),
+        ),
+        Ok(last) => {
+            let failing = last
+                .abstain_reason
+                .as_deref()
+                .filter(|reason| last.result == "abstained" && INPUT_FAILURES.contains(reason));
+            let reason = match failing {
+                Some(failure) => format!(
+                    "inputs not read: {failure}{}",
+                    last.repeat_since
+                        .as_deref()
+                        .map_or_else(String::new, |since| format!(
+                            " since {since} ({} passes)",
+                            last.repeat_count
+                        ))
+                ),
+                None => "last pass read its report and NQ inputs".to_owned(),
+            };
+            (
+                if failing.is_some() {
+                    "ABSENT"
+                } else {
+                    "PRESENT"
+                },
+                reason,
+                last.at.clone(),
+                json!({
+                    "abstain_reason": last.abstain_reason,
+                    "repeat_reason": last.repeat_reason,
+                    "repeat_count": last.repeat_count,
+                    "repeat_since": last.repeat_since,
+                }),
+            )
+        }
+    };
+    Observed {
+        state,
+        reason,
+        observed_at,
+        facts,
     }
 }
 
@@ -177,6 +243,12 @@ pub fn document(dir: &Path, now_ms: u64, version: &str) -> Value {
             "Fewer than 15 sealed journal segments are present; the consumer refuses at 16.",
             generations(sealed, CRITICAL_SEGMENTS, &generated),
         ),
+        concern(
+            "remediation.consumer.inputs-ok",
+            "inputs-ok",
+            "The consumer's last pass read a fresh, well-formed report whose NQ inputs were ok.",
+            inputs_ok(&last, &generated),
+        ),
     ];
     let last_pass = last.as_ref().ok();
     json!({
@@ -195,6 +267,10 @@ pub fn document(dir: &Path, now_ms: u64, version: &str) -> Value {
                 "idle": last_pass.map(|l| l.idle),
                 "consecutive_idle_passes": last_pass.map(|l| l.consecutive_idle_passes),
                 "idle_since": last_pass.and_then(|l| l.idle_since.as_ref()),
+                "repeat_reason": last_pass.and_then(|l| l.repeat_reason.as_ref()),
+                "repeat_count": last_pass.map(|l| l.repeat_count),
+                "repeat_since": last_pass.and_then(|l| l.repeat_since.as_ref()),
+                "repeat_detail": last_pass.and_then(|l| l.repeat_detail.as_ref()),
                 "sealed_segments": sealed,
                 "journal_bytes": journal_bytes,
                 "journal_max_bytes": MAX_JOURNAL_BYTES,

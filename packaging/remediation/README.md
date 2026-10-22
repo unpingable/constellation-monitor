@@ -220,7 +220,7 @@ now; the owner may set a limit later. Nothing is ever deleted on the host
 before a verified off-host copy exists, and the consumer itself never deletes
 or moves a segment.
 
-## Journal contract: idle passes and `last-pass.json`
+## Journal contract: idle passes, repeated abstentions and `last-pass.json`
 
 The journal is the durable record of what the consumer judged and did, not a
 heartbeat. A pass is *idle* when all of these hold, judged from `state.json`
@@ -235,8 +235,7 @@ and the report alone before anything is journaled or run:
   inputs are all `ok` says the watched condition does not hold.
 
 An idle pass runs no external command and appends no `pass_started`,
-`abstained` or `pass_finished` record. Every other pass journals exactly as
-before. In particular these abstentions are not idle and stay journaled: an
+`abstained` or `pass_finished` record. These abstentions are not idle: an
 unreadable, malformed or stale report; an NQ input not `ok`
 (`nq_input_not_ok`); an `unknown` or `removed` observation; a condition missing
 from the report (the evaluator reports clear conditions explicitly, so absence
@@ -245,6 +244,28 @@ but not held (`page_not_deferred`) or with too little window left; and every
 abstention after selection (attempted episode, previous window, plan,
 precondition, model key, prior campaign, LA recovery failure). Busy passes and
 refusals at open write nothing, as before.
+
+A non-idle abstention can still be a *repeated abstention*: the pass meets the
+first two conditions above (so it runs no external command), and it abstains,
+before any command, with the same `reason` and the same normalized detail as
+the immediately preceding pass. That covers the report and NQ-input
+abstentions, every selection abstention, `episode_already_attempted` and
+`attempt_within_previous_window`; abstentions reached after a command (plan,
+precondition, model key, prior campaign, LA recovery) always journal in full.
+The first pass of such a streak journals exactly as before (`pass_started`,
+`abstained`, `pass_finished`), so the onset and its full detail are durable.
+Every later pass of the streak appends nothing of its own. The normalized
+detail is the abstention's detail without the keys that change from pass to
+pass for the same cause: `age_seconds` (`report_stale`), `remaining_seconds`
+(`window_too_short`) and `report_evaluated_at` (the candidate of
+`episode_already_attempted` and `attempt_within_previous_window`), at any
+depth. For `nq_input_not_ok` the failing inputs (`label` and `status` each)
+are compared as a set. Everything else is kept, including the report path and
+error of `report_unreadable`, the offending field of `report_malformed`, the
+stale report's own `evaluated_at` (a new stale report is a new cause), the
+input count, and the condition's observation, first seen, window end and held
+page. A different failing input, a different status or a different reason
+starts a new streak with a new full record.
 
 Episode transitions, decisions, attempted actions, outcomes and custody
 changes are all non-idle and journaled. Sealing is unaffected: an idle pass
@@ -261,13 +282,29 @@ summarizes), and one before `pass_started` of the first journaled pass after
 idle passes not yet summarized. A summary written by a later pass carries that
 pass's `pass` id and `at`.
 
+Repeated abstentions reach the journal as `abstention_summary` records (no
+episode fields): `trigger` (`hourly` or `streak_ended`), `reason`, the
+normalized `detail`, `count` (repeated passes this record covers; the
+journaled first pass is not counted), `first_at`/`last_at` (and `_unix_ms`) of
+those passes, `repeat_since` (the `at` of the streak's journaled first pass)
+and `repeat_count` (passes in the streak so far, first included; null when a
+fault ended the streak first). One is appended during a streak when the oldest
+repeat not yet summarized is at least an hour old, and one when the streak
+ends: the reason or normalized detail changes, an episode opens, a pass is not
+eligible (an episode open, a command run), or the pass is idle. A transition
+between an idle streak and a repeated-abstention streak ends one, with its
+summary, and starts the other.
+
 Every pass that holds the lock atomically replaces `last-pass.json` (0600,
 `constellation.remediation-consumer.last-pass/v1`) in the state directory:
 `pass`, `at`/`at_unix_ms`, `result` (the summary's result, or `fault` when the
 pass failed on its own state after taking the lock, with `error`),
 `abstain_reason`, `idle`, `consecutive_idle_passes`, `idle_since` (the `at` of
 the streak's first idle pass), `idle_unsummarized` (the idle passes not yet in
-a summary), `journal_bytes`, `sealed_segments`, `journal_max_bytes` and
+a summary), `repeat_reason`, `repeat_detail`, `repeat_count` and
+`repeat_since` (and `_unix_ms`) of the current repeated-abstention streak (null
+and 0 outside one), `repeat_unsummarized` (the repeats not yet in a summary),
+`journal_bytes`, `sealed_segments`, `journal_max_bytes` and
 `max_sealed_journals`. It is the consumer's liveness and health surface: it
 distinguishes "nothing required action" (a recent idle or judged pass) from "I
 have not successfully checked" (a `fault`, or no recent pass at all). It is not
@@ -294,11 +331,17 @@ Every concern is `required`, observed with `valid_for_seconds` 120:
 | `remediation.consumer.pass-succeeding` | that pass's `result` is a judged result, not `fault` (`observed_at` is the pass's own `at`, so the collector marks it `STALE` once older than 120 s) |
 | `remediation.journal.generations-headroom` | fewer than 12 sealed segments are present (custody due at 12) |
 | `remediation.journal.generations-critical` | fewer than 15 sealed segments are present (the consumer refuses at 16) |
+| `remediation.consumer.inputs-ok` | the last pass did not abstain for an input failure (`nq_input_not_ok`, `report_unreadable`, `report_malformed`, `report_stale`); `UNKNOWN` after a `fault`; `observed_at` is the pass's own `at` |
 
-A missing or unparsable `last-pass.json` makes both pass concerns `ABSENT`
-with the read error as the reason, never `PRESENT`. An unreadable state
+A missing or unparsable `last-pass.json` makes the pass and input concerns
+`ABSENT` with the read error as the reason, never `PRESENT`. A judged
+abstention keeps `pass-succeeding` `PRESENT` (its reason names the repeat
+reason, count and since), while an input outage makes `inputs-ok` `ABSENT` on
+the first pass that sees it, so the service row degrades within one collector
+run instead of staying silent. An unreadable state
 directory makes the generation concerns `UNKNOWN`. Informational fields (last
-result, `idle`, `consecutive_idle_passes`, `idle_since`, `sealed_segments`,
+result, `idle`, `consecutive_idle_passes`, `idle_since`, `repeat_reason`,
+`repeat_count`, `repeat_since`, `repeat_detail`, `sealed_segments`,
 `journal_bytes`, the bounds and thresholds) are under
 `extensions."constellation.remediation-consumer"`. The `manifest` member names
 the envelope's fixed `.ops/concerns.toml` path; this package ships no such file.

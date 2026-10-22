@@ -1154,11 +1154,12 @@ fn status_without_any_pass_reports_the_pass_concerns_absent() {
             "remediation.consumer.pass-succeeding",
             "remediation.journal.generations-headroom",
             "remediation.journal.generations-critical",
+            "remediation.consumer.inputs-ok",
         ]
     );
     assert_eq!(
         states(&document),
-        ["ABSENT", "ABSENT", "PRESENT", "PRESENT"]
+        ["ABSENT", "ABSENT", "PRESENT", "PRESENT", "ABSENT"]
     );
     assert!(found[0].2.contains("last-pass.json"), "{}", found[0].2);
     // Nothing is created.
@@ -1188,7 +1189,7 @@ fn status_after_an_idle_pass_is_present_and_changes_nothing() {
     lock.try_lock().unwrap();
     let document = status(&harness);
     drop(lock);
-    assert_eq!(states(&document), ["PRESENT"; 4]);
+    assert_eq!(states(&document), ["PRESENT"; 5]);
     let record = last_pass(&harness);
     let extension = &document["extensions"]["constellation.remediation-consumer"];
     assert_eq!(extension["idle_since"], record["idle_since"]);
@@ -1217,7 +1218,7 @@ fn status_reports_a_stale_or_failed_last_pass() {
     let document = status(&harness);
     assert_eq!(
         states(&document),
-        ["ABSENT", "PRESENT", "PRESENT", "PRESENT"]
+        ["ABSENT", "PRESENT", "PRESENT", "PRESENT", "PRESENT"]
     );
     assert!(concerns(&document)[0].2.contains("s ago"));
 
@@ -1226,7 +1227,7 @@ fn status_reports_a_stale_or_failed_last_pass() {
     let document = status(&harness);
     assert_eq!(
         states(&document),
-        ["PRESENT", "ABSENT", "PRESENT", "PRESENT"]
+        ["PRESENT", "ABSENT", "PRESENT", "PRESENT", "UNKNOWN"]
     );
     assert!(
         concerns(&document)[1].2.contains("state.json"),
@@ -1266,19 +1267,193 @@ fn status_counts_sealed_generations_against_custody_and_critical_thresholds() {
     for sequence in 1..=11 {
         seal(sequence);
     }
-    assert_eq!(states(&status(&harness))[2..], ["PRESENT", "PRESENT"]);
+    assert_eq!(states(&status(&harness))[2..4], ["PRESENT", "PRESENT"]);
     seal(12);
     let document = status(&harness);
-    assert_eq!(states(&document)[2..], ["ABSENT", "PRESENT"]);
+    assert_eq!(states(&document)[2..4], ["ABSENT", "PRESENT"]);
     assert!(concerns(&document)[2].2.contains("12 sealed segments"));
     seal(13);
     seal(14);
-    assert_eq!(states(&status(&harness))[2..], ["ABSENT", "PRESENT"]);
+    assert_eq!(states(&status(&harness))[2..4], ["ABSENT", "PRESENT"]);
     seal(15);
     let document = status(&harness);
-    assert_eq!(states(&document)[2..], ["ABSENT", "ABSENT"]);
+    assert_eq!(states(&document)[2..4], ["ABSENT", "ABSENT"]);
     assert_eq!(
         document["extensions"]["constellation.remediation-consumer"]["sealed_segments"],
         15
     );
+}
+
+fn events(harness: &Harness) -> Vec<String> {
+    harness
+        .journal()
+        .iter()
+        .map(|record| record["event"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn failing_inputs(harness: &Harness, status: &'static str) {
+    harness.write_report(&Report {
+        nq_status: status,
+        ..Report::default()
+    });
+}
+
+#[test]
+fn a_streak_of_identical_input_failures_journals_once_then_summarizes() {
+    let harness = Harness::new();
+    failing_inputs(&harness, "not_current");
+    for _ in 0..3 {
+        assert_eq!(harness.result(), "abstained");
+    }
+    // The onset is journaled in full; the repeats only rewrite last-pass.json.
+    assert_eq!(
+        events(&harness),
+        ["pass_started", "abstained", "pass_finished"]
+    );
+    assert!(harness.calls().is_empty(), "{:?}", harness.calls());
+    let record = last_pass(&harness);
+    assert_eq!(record["abstain_reason"], "nq_input_not_ok");
+    assert_eq!(record["idle"], false);
+    assert_eq!(record["repeat_reason"], "nq_input_not_ok");
+    assert_eq!(record["repeat_count"], 3);
+    assert_eq!(
+        record["repeat_detail"]["not_ok"],
+        json!([{"label": "nq-ops", "status": "not_current"}])
+    );
+    assert_eq!(record["repeat_unsummarized"]["count"], 2);
+    let since = record["repeat_since"].as_str().unwrap().to_owned();
+
+    // The judged abstention still succeeds; the inputs concern does not.
+    let document = status(&harness);
+    assert_eq!(
+        states(&document),
+        ["PRESENT", "PRESENT", "PRESENT", "PRESENT", "ABSENT"]
+    );
+    let extension = &document["extensions"]["constellation.remediation-consumer"];
+    assert_eq!(extension["repeat_reason"], "nq_input_not_ok");
+    assert_eq!(extension["repeat_count"], 3);
+    assert_eq!(extension["repeat_since"], since);
+    assert!(concerns(&document)[4].2.contains("nq_input_not_ok"));
+    assert!(concerns(&document)[1].2.contains("3 passes since"));
+
+    // At most hourly, a summary of the repeats.
+    let path = harness.path("state/last-pass.json");
+    let mut record = last_pass(&harness);
+    let old = record["at_unix_ms"].as_u64().unwrap() - 3_601_000;
+    record["repeat_unsummarized"]["first_at_unix_ms"] = json!(old);
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    assert_eq!(harness.result(), "abstained");
+    let journal = harness.journal();
+    assert_eq!(journal.len(), 4);
+    let summary = &journal[3];
+    assert_eq!(summary["event"], "abstention_summary");
+    assert!(summary["episode"].is_null());
+    assert_eq!(summary["detail"]["trigger"], "hourly");
+    assert_eq!(summary["detail"]["reason"], "nq_input_not_ok");
+    assert_eq!(summary["detail"]["count"], 3);
+    assert_eq!(summary["detail"]["repeat_count"], 4);
+    assert_eq!(summary["detail"]["repeat_since"], since);
+    assert_eq!(summary["detail"]["detail"], record["repeat_detail"]);
+    assert!(last_pass(&harness)["repeat_unsummarized"].is_null());
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.journal().len(), 4);
+
+    // The condition clears: the streak ends with a summary, the idle streak
+    // starts, and the inputs concern recovers.
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    let journal = harness.journal();
+    assert_eq!(journal.len(), 5);
+    assert_eq!(journal[4]["event"], "abstention_summary");
+    assert_eq!(journal[4]["detail"]["trigger"], "streak_ended");
+    assert_eq!(journal[4]["detail"]["count"], 1);
+    assert_eq!(journal[4]["detail"]["repeat_count"], 5);
+    let record = last_pass(&harness);
+    assert_eq!(record["idle"], true);
+    assert_eq!(record["consecutive_idle_passes"], 1);
+    assert!(record["repeat_reason"].is_null());
+    assert_eq!(record["repeat_count"], 0);
+    assert!(record["repeat_unsummarized"].is_null());
+    assert_eq!(states(&status(&harness)), ["PRESENT"; 5]);
+
+    // Back to failing inputs: the idle streak ends with its summary and the
+    // new abstention streak starts with a full record.
+    failing_inputs(&harness, "not_current");
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(
+        events(&harness)[5..],
+        ["idle_summary", "pass_started", "abstained", "pass_finished"]
+    );
+    assert_eq!(last_pass(&harness)["repeat_count"], 1);
+}
+
+#[test]
+fn a_changed_cause_starts_a_new_streak_with_a_full_record() {
+    let harness = Harness::new();
+    failing_inputs(&harness, "not_current");
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    failing_inputs(&harness, "failed");
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(
+        events(&harness),
+        [
+            "pass_started",
+            "abstained",
+            "pass_finished",
+            "abstention_summary",
+            "pass_started",
+            "abstained",
+            "pass_finished"
+        ]
+    );
+    let journal = harness.journal();
+    assert_eq!(journal[3]["detail"]["trigger"], "streak_ended");
+    assert_eq!(journal[3]["detail"]["count"], 1);
+    assert_eq!(
+        journal[5]["detail"]["detail"]["not_ok"],
+        json!([{"label": "nq-ops", "status": "failed"}])
+    );
+    let record = last_pass(&harness);
+    assert_eq!(record["repeat_count"], 1);
+    assert_eq!(
+        record["repeat_detail"]["not_ok"],
+        json!([{"label": "nq-ops", "status": "failed"}])
+    );
+    assert!(record["repeat_unsummarized"].is_null());
+
+    // Another reason is another cause; a growing report age is not.
+    harness.write_report(&Report {
+        age: 130,
+        ..Report::default()
+    });
+    assert_eq!(harness.result(), "abstained");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.abstentions().len(), 3);
+    assert_eq!(harness.abstentions()[2], "report_stale");
+    let record = last_pass(&harness);
+    assert_eq!(record["repeat_reason"], "report_stale");
+    assert_eq!(record["repeat_count"], 2);
+    assert!(record["repeat_detail"].get("age_seconds").is_none());
+    assert!(record["repeat_detail"]["evaluated_at"].is_string());
+    assert_eq!(states(&status(&harness))[4], "ABSENT");
+}
+
+#[test]
+fn an_opened_episode_ends_a_repeated_abstention_streak() {
+    let harness = Harness::new();
+    failing_inputs(&harness, "not_current");
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    harness.write_report(&Report::default());
+    assert_eq!(harness.result(), "completed");
+    let journal = harness.journal();
+    assert_eq!(journal[3]["event"], "abstention_summary");
+    assert_eq!(journal[3]["detail"]["trigger"], "streak_ended");
+    assert_eq!(journal[4]["event"], "pass_started");
+    let record = last_pass(&harness);
+    assert!(record["repeat_reason"].is_null());
+    assert_eq!(record["result"], "completed");
 }

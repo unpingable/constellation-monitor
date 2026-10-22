@@ -98,6 +98,51 @@ pub fn idle(reason: &str, detail: &Value) -> bool {
         && detail.get("observation").and_then(Value::as_str) == Some("clear")
 }
 
+/// Detail keys that vary from pass to pass without a change of cause.
+const TIME_VARYING: [&str; 3] = ["age_seconds", "remaining_seconds", "report_evaluated_at"];
+
+fn strip_time_varying(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for key in TIME_VARYING {
+                map.remove(key);
+            }
+            map.values_mut().for_each(strip_time_varying);
+        }
+        Value::Array(items) => items.iter_mut().for_each(strip_time_varying),
+        _ => {}
+    }
+}
+
+/// The part of an abstention's detail that identifies its cause, for
+/// deciding whether a pass repeats the previous one: the whole detail without
+/// `age_seconds` (`report_stale`), `remaining_seconds` (`window_too_short`)
+/// and `report_evaluated_at` (the candidate of `episode_already_attempted` and
+/// `attempt_within_previous_window`), at any depth; for `nq_input_not_ok` the
+/// failing inputs (`label`, `status`) are compared as a set. Everything else
+/// is kept: the report path and error of `report_unreadable`, the offending
+/// field of `report_malformed`, the stale report's own `evaluated_at`, and the
+/// condition fields (observation, first seen, window end, page held).
+#[must_use]
+pub fn abstention_key(reason: &str, detail: &Value) -> Value {
+    let mut key = detail.clone();
+    strip_time_varying(&mut key);
+    if reason == "nq_input_not_ok"
+        && let Some(Value::Array(failing)) = key.get_mut("not_ok")
+    {
+        failing.sort_by_key(Value::to_string);
+    }
+    key
+}
+
+/// Abstentions that mean the consumer could not read its inputs.
+pub const INPUT_FAILURES: [&str; 4] = [
+    "nq_input_not_ok",
+    "report_unreadable",
+    "report_malformed",
+    "report_stale",
+];
+
 fn parse_time(text: &str) -> Option<i64> {
     OffsetDateTime::parse(text, &Rfc3339)
         .ok()

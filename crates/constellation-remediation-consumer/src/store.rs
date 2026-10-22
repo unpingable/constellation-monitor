@@ -14,7 +14,8 @@
 //! Idle passes (nothing to do because the watched condition is clear) are not
 //! journaled one by one: every pass atomically replaces `last-pass.json`, the
 //! consumer's liveness and health surface (not history), and idle streaks
-//! reach the journal as `idle_summary` records.
+//! reach the journal as `idle_summary` records; so do repeats of an identical
+//! abstention after the journaled first one, as `abstention_summary`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
@@ -185,6 +186,22 @@ pub struct IdleWindow {
     pub last_reason: String,
 }
 
+/// Repeated identical abstentions not yet summarized: the passes after the
+/// journaled first one of a streak.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbstentionWindow {
+    pub reason: String,
+    /// The normalized detail that identifies the cause.
+    pub detail: Value,
+    pub count: u64,
+    pub first_at: String,
+    pub first_at_unix_ms: u64,
+    pub last_at: String,
+    pub last_at_unix_ms: u64,
+    /// `at` of the streak's journaled first pass.
+    pub repeat_since: Option<String>,
+}
+
 /// `last-pass.json`: what the newest pass that held the lock concluded, and
 /// the idle-streak bookkeeping. Rewritten atomically by every such pass; it
 /// is a liveness and health surface, never history.
@@ -205,6 +222,22 @@ pub struct LastPass {
     pub idle_since_unix_ms: Option<u64>,
     /// Idle passes not yet carried by an `idle_summary` record.
     pub idle_unsummarized: Option<IdleWindow>,
+    /// The repeated abstention streak this pass belongs to: its reason and
+    /// normalized detail, passes in it (the journaled first one included)
+    /// and the `at` of that first pass.
+    #[serde(default)]
+    pub repeat_reason: Option<String>,
+    #[serde(default)]
+    pub repeat_detail: Option<Value>,
+    #[serde(default)]
+    pub repeat_count: u64,
+    #[serde(default)]
+    pub repeat_since: Option<String>,
+    #[serde(default)]
+    pub repeat_since_unix_ms: Option<u64>,
+    /// Repeated passes not yet carried by an `abstention_summary` record.
+    #[serde(default)]
+    pub repeat_unsummarized: Option<AbstentionWindow>,
     pub journal_bytes: Option<u64>,
     pub sealed_segments: Option<usize>,
     pub journal_max_bytes: u64,
