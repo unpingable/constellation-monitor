@@ -232,6 +232,42 @@ generations exhausted) do not update it; the file then grows old, which is the
 signal. `state.json` and its schema are unchanged; streak state lives only in
 `last-pass.json`, and a missing or unreadable one starts a new streak.
 
+## Status (`--status`)
+
+`constellation-remediation-consumer --config PATH --status` prints one
+`project.ops.status/v1` document (schema-valid against
+`schemas/project.ops.status.v1.schema.json`) for the estate collector's
+`project-ops-status` status kind, and exits 0 whenever it printed one (2 only
+for a configuration fault). It takes no lock and opens nothing for writing: it
+reads `last-pass.json`, lists `journal.sealed.*` and stats `journal.jsonl`, so
+it answers while a pass holds the lock and never creates the state directory.
+Every concern is `required`, observed with `valid_for_seconds` 120:
+
+| Concern | `PRESENT` when |
+|---|---|
+| `remediation.consumer.pass-fresh` | the last pass that held the lock ended within 120 s |
+| `remediation.consumer.pass-succeeding` | that pass's `result` is a judged result, not `fault` (`observed_at` is the pass's own `at`, so the collector marks it `STALE` once older than 120 s) |
+| `remediation.journal.generations-headroom` | fewer than 12 sealed segments are present (custody due at 12) |
+| `remediation.journal.generations-critical` | fewer than 15 sealed segments are present (the consumer refuses at 16) |
+
+A missing or unparsable `last-pass.json` makes both pass concerns `ABSENT`
+with the read error as the reason, never `PRESENT`. An unreadable state
+directory makes the generation concerns `UNKNOWN`. Informational fields (last
+result, `idle`, `consecutive_idle_passes`, `idle_since`, `sealed_segments`,
+`journal_bytes`, the bounds and thresholds) are under
+`extensions."constellation.remediation-consumer"`. The `manifest` member names
+the envelope's fixed `.ops/concerns.toml` path; this package ships no such file.
+
+In the estate registry the `remediation-consumer` service declares
+`{"kind": "project-ops-status", "argv": ["/usr/bin/constellation-remediation-consumer",
+"--config", "/etc/constellation-remediation/consumer.toml", "--status"],
+"timeout_seconds": 10}` with no `user`: the collector runs as root, as the
+consumer does, and the state directory is root 0700. Any concern not
+`PRESENT` makes the service `DEGRADED`, which the attention rule
+`service-not-doing-its-job` turns into a Slack notice after 600 s. There is no
+separate page for the critical threshold: it adds a second named failing
+concern to the same notice.
+
 ## Model decider (v2, opt-in)
 
 `--decider model` (cartography `architecture/agentic-remediation-v2/DESIGN.md`

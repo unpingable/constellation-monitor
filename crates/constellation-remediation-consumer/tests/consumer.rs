@@ -1083,3 +1083,202 @@ fn a_store_fault_is_recorded_as_a_fault_in_last_pass() {
     assert_eq!(record["idle_unsummarized"]["count"], 1);
     assert!(harness.journal().is_empty());
 }
+
+fn status(harness: &Harness) -> Value {
+    let output =
+        std::process::Command::new(env!("CARGO_BIN_EXE_constellation-remediation-consumer"))
+            .arg("--config")
+            .arg(harness.path("consumer.toml"))
+            .arg("--status")
+            .output()
+            .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// `(local_state, reason)` per concern id, in document order.
+fn concerns(document: &Value) -> Vec<(String, String, String)> {
+    document["concerns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|concern| {
+            assert_eq!(concern["required"], true);
+            assert_eq!(concern["observation"]["observation_present"], true);
+            (
+                concern["id"].as_str().unwrap().to_owned(),
+                concern["observation"]["local_state"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                concern["observation"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn states(document: &Value) -> Vec<String> {
+    concerns(document)
+        .into_iter()
+        .map(|(_, state, _)| state)
+        .collect()
+}
+
+/// Every name in the state directory with its length and modification time.
+fn snapshot(dir: &std::path::Path) -> Vec<(String, u64, std::time::SystemTime)> {
+    listing(dir)
+        .into_iter()
+        .map(|name| {
+            let metadata = fs::symlink_metadata(dir.join(&name)).unwrap();
+            (name, metadata.len(), metadata.modified().unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn status_without_any_pass_reports_the_pass_concerns_absent() {
+    let harness = Harness::new();
+    let document = status(&harness);
+    assert_eq!(document["schema"], "project.ops.status/v1");
+    assert_eq!(document["project"], "constellation-remediation-consumer");
+    let found = concerns(&document);
+    let ids: Vec<&str> = found.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "remediation.consumer.pass-fresh",
+            "remediation.consumer.pass-succeeding",
+            "remediation.journal.generations-headroom",
+            "remediation.journal.generations-critical",
+        ]
+    );
+    assert_eq!(
+        states(&document),
+        ["ABSENT", "ABSENT", "PRESENT", "PRESENT"]
+    );
+    assert!(found[0].2.contains("last-pass.json"), "{}", found[0].2);
+    // Nothing is created.
+    assert!(!harness.path("state").exists());
+
+    fs::create_dir(harness.path("state")).unwrap();
+    fs::set_permissions(harness.path("state"), fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(harness.path("state/last-pass.json"), b"{\"schema\":").unwrap();
+    let document = status(&harness);
+    assert_eq!(&states(&document)[..2], ["ABSENT", "ABSENT"]);
+    assert!(concerns(&document)[1].2.contains("last-pass.json"));
+}
+
+#[test]
+fn status_after_an_idle_pass_is_present_and_changes_nothing() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    assert_eq!(harness.result(), "abstained");
+    let state_dir = harness.path("state");
+    let before = snapshot(&state_dir);
+    // No lock is taken: a pass holding it does not stop the status.
+    let lock = fs::OpenOptions::new()
+        .write(true)
+        .open(state_dir.join("lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    let document = status(&harness);
+    drop(lock);
+    assert_eq!(states(&document), ["PRESENT"; 4]);
+    let record = last_pass(&harness);
+    let extension = &document["extensions"]["constellation.remediation-consumer"];
+    assert_eq!(extension["idle_since"], record["idle_since"]);
+    assert_eq!(extension["consecutive_idle_passes"], 2);
+    assert_eq!(extension["sealed_segments"], 0);
+    assert_eq!(extension["journal_bytes"], 0);
+    assert_eq!(extension["last_result"], "abstained");
+    let succeeding = &document["concerns"][1]["observation"];
+    assert_eq!(succeeding["observed_at"], record["at"]);
+    assert_eq!(succeeding["valid_for_seconds"], 120);
+    assert_eq!(succeeding["facts"]["idle"], true);
+    assert_eq!(snapshot(&state_dir), before);
+}
+
+#[test]
+fn status_reports_a_stale_or_failed_last_pass() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    let path = harness.path("state/last-pass.json");
+    let mut record = last_pass(&harness);
+    let old = record["at_unix_ms"].as_u64().unwrap() - 200_000;
+    record["at_unix_ms"] = json!(old);
+    record["at"] = json!(rfc3339(i64::try_from(old / 1000).unwrap()));
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let document = status(&harness);
+    assert_eq!(
+        states(&document),
+        ["ABSENT", "PRESENT", "PRESENT", "PRESENT"]
+    );
+    assert!(concerns(&document)[0].2.contains("s ago"));
+
+    fs::write(harness.path("state/state.json"), b"{not json").unwrap();
+    run_pass(&harness.config(), &|| now_ms()).unwrap_err();
+    let document = status(&harness);
+    assert_eq!(
+        states(&document),
+        ["PRESENT", "ABSENT", "PRESENT", "PRESENT"]
+    );
+    assert!(
+        concerns(&document)[1].2.contains("state.json"),
+        "{:?}",
+        concerns(&document)[1]
+    );
+}
+
+fn now_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn status_counts_sealed_generations_against_custody_and_critical_thresholds() {
+    let harness = Harness::new();
+    clear(&harness);
+    assert_eq!(harness.result(), "abstained");
+    let state_dir = harness.path("state");
+    let seal = |sequence: usize| {
+        fs::write(
+            state_dir.join(format!("journal.sealed.{sequence:04}.jsonl")),
+            b"",
+        )
+        .unwrap();
+        fs::write(
+            state_dir.join(format!("journal.sealed.{sequence:04}.json")),
+            b"{}",
+        )
+        .unwrap();
+    };
+    for sequence in 1..=11 {
+        seal(sequence);
+    }
+    assert_eq!(states(&status(&harness))[2..], ["PRESENT", "PRESENT"]);
+    seal(12);
+    let document = status(&harness);
+    assert_eq!(states(&document)[2..], ["ABSENT", "PRESENT"]);
+    assert!(concerns(&document)[2].2.contains("12 sealed segments"));
+    seal(13);
+    seal(14);
+    assert_eq!(states(&status(&harness))[2..], ["ABSENT", "PRESENT"]);
+    seal(15);
+    let document = status(&harness);
+    assert_eq!(states(&document)[2..], ["ABSENT", "ABSENT"]);
+    assert_eq!(
+        document["extensions"]["constellation.remediation-consumer"]["sealed_segments"],
+        15
+    );
+}

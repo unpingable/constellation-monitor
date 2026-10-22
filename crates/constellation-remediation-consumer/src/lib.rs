@@ -36,6 +36,7 @@ pub mod la;
 pub mod pass;
 pub mod provider;
 pub mod report;
+pub mod status;
 pub mod store;
 
 pub use config::Config;

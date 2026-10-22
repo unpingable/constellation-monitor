@@ -3,6 +3,10 @@
 //! for every judged pass (acted, abstained, refused, escalated, pending,
 //! busy); 2 for a configuration or state-store fault. The model decider
 //! needs the configuration's `[model]` section; it is never the default.
+//!
+//! `--status` prints one `project.ops.status/v1` document about the state
+//! directory instead of running a pass: no lock, nothing opened for writing.
+//! Exit 0 whenever a document was printed; 2 for a configuration fault.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,7 +15,7 @@ use constellation_remediation_consumer::Config;
 use constellation_remediation_consumer::pass::{Decider, run_pass_with};
 
 const USAGE: &str = "usage: constellation-remediation-consumer --config PATH \
-[--decider deterministic|model] [--check-config]\n       constellation-remediation-consumer --build-info | --version | -V";
+[--decider deterministic|model] [--check-config | --status]\n       constellation-remediation-consumer --build-info | --version | -V";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -34,12 +38,14 @@ fn main() {
     }
     let mut config = None;
     let mut check_only = false;
+    let mut status = false;
     let mut decider = Decider::Deterministic;
     let mut arguments = std::env::args().skip(1);
     while let Some(flag) = arguments.next() {
         match flag.as_str() {
             "--config" => config = arguments.next().map(PathBuf::from),
             "--check-config" => check_only = true,
+            "--status" => status = true,
             "--decider" => match arguments.next().as_deref().map(Decider::parse) {
                 Some(Ok(chosen)) => decider = chosen,
                 Some(Err(error)) => {
@@ -68,6 +74,10 @@ fn main() {
         eprintln!("{USAGE}");
         std::process::exit(2);
     };
+    if status && check_only {
+        eprintln!("{USAGE}");
+        std::process::exit(2);
+    }
     let config = match Config::load(&path) {
         Ok(config) => config,
         Err(error) => {
@@ -75,6 +85,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if status {
+        println!(
+            "{}",
+            constellation_remediation_consumer::status::document(
+                &config.consumer.state_dir,
+                now_ms(),
+                constellation_remediation_consumer::build_info::VERSION_STRING,
+            )
+        );
+        return;
+    }
     if decider == Decider::Model
         && let Err(error) = config.model()
     {
