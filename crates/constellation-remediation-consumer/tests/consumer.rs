@@ -5,19 +5,132 @@
 mod common;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use common::*;
 use constellation_remediation_consumer::{Config, run_pass};
 use serde_json::{Value, json};
 
+/// Pad the live journal to the production bound without allocating it.
+fn fill_journal_sparsely(state_dir: &std::path::Path) {
+    use constellation_remediation_consumer::store::MAX_JOURNAL_BYTES;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(state_dir.join("journal.jsonl"))
+        .unwrap()
+        .set_len(MAX_JOURNAL_BYTES)
+        .unwrap();
+}
+
+fn listing(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
-fn full_journal_refuses_before_external_commands_and_preserves_dispatch_fence() {
-    use constellation_remediation_consumer::store::{Episode, MAX_JOURNAL_BYTES, State, Store};
+fn full_journal_seals_then_the_pass_honours_the_dispatch_fence() {
+    use constellation_remediation_consumer::store::MAX_JOURNAL_BYTES;
+    let harness = Harness::new();
+    harness.control("crash_in_dispatch", "");
+    assert!(harness.run().is_none(), "the pass should have been killed");
+    let state_dir = harness.path("state");
+    let fenced = harness.state()["active"].clone();
+    assert_eq!(fenced["dispatch_started"], true);
+    assert_eq!(harness.effects(), 1);
+    let history = fs::read(state_dir.join("journal.jsonl")).unwrap();
+    fill_journal_sparsely(&state_dir);
+    let state_before = fs::read(state_dir.join("state.json")).unwrap();
+    let episodes_before = listing(&state_dir.join("episodes"));
+
+    assert_eq!(harness.result(), "completed");
+    let sealed = state_dir.join("journal.sealed.0001.jsonl");
+    assert_eq!(fs::metadata(&sealed).unwrap().len(), MAX_JOURNAL_BYTES);
+    let mut prefix = vec![0; history.len()];
+    std::io::Read::read_exact(&mut fs::File::open(&sealed).unwrap(), &mut prefix).unwrap();
+    assert_eq!(prefix, history);
+    let sidecar: Value =
+        serde_json::from_slice(&fs::read(state_dir.join("journal.sealed.0001.json")).unwrap())
+            .unwrap();
+    assert_eq!(sidecar["bytes"], MAX_JOURNAL_BYTES);
+    let journal = harness.journal();
+    assert_eq!(journal[0]["event"], "journal_sealed");
+    assert_eq!(
+        journal[0]["detail"]["predecessor"],
+        "journal.sealed.0001.jsonl"
+    );
+    assert_eq!(journal[0]["detail"]["sha256"], sidecar["sha256"]);
+    assert_eq!(journal[0]["detail"]["trigger"], "open");
+    assert_eq!(journal[1]["event"], "pass_started");
+    // The sealing record precedes the pass: the pass read the state the crash
+    // left, and its fence held. Only the pass itself changed state.json.
+    assert_eq!(journal[1]["episode"], fenced["episode"]);
+    assert_ne!(
+        fs::read(state_dir.join("state.json")).unwrap(),
+        state_before
+    );
+    assert_eq!(harness.count("ag dispatch"), 1);
+    assert_eq!(harness.count("ag authorize"), 1);
+    assert_eq!(harness.effects(), 1);
+    let closed = &harness.state()["closed"][0];
+    assert_eq!(closed["episode"], fenced["episode"]);
+    assert_eq!(closed["dispatch_started"], true);
+    assert!(listing(&state_dir.join("episodes")).starts_with(&episodes_before));
+}
+
+#[test]
+fn production_shaped_full_journal_seals_on_an_idle_pass() {
+    // 2026-10-21: 67,108,673 bytes, closed episodes only, no active one; the
+    // first record of a pass no longer fits under the 64 MiB bound.
+    let harness = Harness::new();
+    assert_eq!(harness.result(), "completed");
+    let state_dir = harness.path("state");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(state_dir.join("journal.jsonl"))
+        .unwrap()
+        .set_len(67_108_673)
+        .unwrap();
+    let state_before = fs::read(state_dir.join("state.json")).unwrap();
+    let calls_before = harness.calls().len();
+    let result = harness.result();
+    assert_eq!(
+        fs::metadata(state_dir.join("journal.sealed.0001.jsonl"))
+            .unwrap()
+            .len(),
+        67_108_673
+    );
+    let journal = harness.journal();
+    assert_eq!(journal[0]["event"], "journal_sealed");
+    assert_eq!(journal[0]["detail"]["bytes"], 67_108_673);
+    assert_eq!(journal[1]["event"], "pass_started");
+    assert_eq!(journal.last().unwrap()["event"], "pass_finished");
+    assert_eq!(journal.last().unwrap()["detail"]["result"], result);
+    assert_eq!(harness.effects(), 1);
+    assert!(
+        harness.calls()[calls_before..]
+            .iter()
+            .all(|line| line != "ag dispatch" && line != "ag authorize")
+    );
+    let state: Value = serde_json::from_slice(&state_before).unwrap();
+    assert!(state["active"].is_null());
+    assert_eq!(harness.state()["closed"], state["closed"]);
+}
+
+#[test]
+fn exhausted_sealed_generations_refuse_before_external_commands() {
+    use constellation_remediation_consumer::store::{
+        Episode, MAX_JOURNAL_BYTES, MAX_SEALED_JOURNALS, State,
+    };
     let harness = Harness::new();
     let state_dir = harness.path("state");
-    let store = Store::open(&state_dir, "fixture".into())
-        .unwrap_or_else(|_| panic!("open private fixture"));
+    // Written directly: holding the Store lock in this process would race the
+    // pass's own lock against children forked by concurrent tests.
+    fs::create_dir(&state_dir).unwrap();
+    fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
     let state = State {
         active: Some(Episode {
             episode: "retained-episode".into(),
@@ -28,19 +141,30 @@ fn full_journal_refuses_before_external_commands_and_preserves_dispatch_fence() 
         }),
         ..State::default()
     };
-    store.save(&state).unwrap();
-    drop(store);
-    // Sparse local fixture: exercise the production bound without allocating
-    // the journal's capacity or inventing a usable history for this refusal.
-    fs::OpenOptions::new()
-        .write(true)
-        .open(state_dir.join("journal.jsonl"))
-        .unwrap()
-        .set_len(MAX_JOURNAL_BYTES)
+    fs::write(
+        state_dir.join("state.json"),
+        serde_json::to_vec_pretty(&state).unwrap(),
+    )
+    .unwrap();
+    fs::write(state_dir.join("journal.jsonl"), b"").unwrap();
+    fs::write(state_dir.join("lock"), b"").unwrap();
+    for sequence in 1..=MAX_SEALED_JOURNALS {
+        fs::write(
+            state_dir.join(format!("journal.sealed.{sequence:04}.jsonl")),
+            b"",
+        )
         .unwrap();
+    }
+    fill_journal_sparsely(&state_dir);
     let state_before = fs::read(state_dir.join("state.json")).unwrap();
+    let names_before = listing(&state_dir);
+    let inode = fs::metadata(state_dir.join("journal.jsonl")).unwrap().ino();
     let error = run_pass(&harness.config(), &|| 0).unwrap_err();
     assert!(error.contains("journal capacity exhausted"), "{error}");
+    assert!(
+        error.contains("sealed journal generations exhausted"),
+        "{error}"
+    );
     assert!(harness.calls().is_empty());
     assert_eq!(
         fs::read(state_dir.join("state.json")).unwrap(),
@@ -49,6 +173,11 @@ fn full_journal_refuses_before_external_commands_and_preserves_dispatch_fence() 
     assert_eq!(
         fs::metadata(state_dir.join("journal.jsonl")).unwrap().len(),
         MAX_JOURNAL_BYTES
+    );
+    assert_eq!(listing(&state_dir), names_before);
+    assert_eq!(
+        fs::metadata(state_dir.join("journal.jsonl")).unwrap().ino(),
+        inode
     );
 }
 
@@ -66,6 +195,8 @@ fn config_check_reports_journal_bound_without_opening_state() {
     assert!(output.status.success(), "{output:?}");
     let checked: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(checked["journal_max_bytes"], 64 * 1024 * 1024);
+    assert_eq!(checked["journal_max_sealed"], 16);
+    assert_eq!(checked["journal_sealed_present"], 0);
     assert!(!harness.path("state").exists());
     assert!(harness.calls().is_empty());
 }

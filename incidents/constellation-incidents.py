@@ -31,7 +31,7 @@ incident that was recovering is reopened (recovery was not seen here), and from 
 it closes only after this host's evaluator resolves the condition and it stays clear, and a condition this host never
 reports keeps it open for the operator. An unresolved incident already present for the same key is left alone.
 """
-import argparse, datetime, hashlib, json, os, sqlite3, subprocess, sys, tempfile, time
+import argparse, datetime, hashlib, json, os, re, sqlite3, subprocess, sys, tempfile, time
 
 SCHEMA = "constellation.incidents/v1"
 CONFIRM_SECONDS = 300
@@ -397,6 +397,56 @@ def read_intent_log(path, keep_seconds, now):
     return out
 
 
+CONSUMER_SEALED = re.compile(r"journal\.sealed\.([0-9]+)\.jsonl")
+
+
+def _read_tail(stream, budget):
+    size = os.fstat(stream.fileno()).st_size
+    offset = max(0, size - budget)
+    stream.seek(offset)
+    data = stream.read(budget)
+    lines = data.splitlines(keepends=True)
+    if offset and lines:
+        lines = lines[1:]
+    return len(data), lines
+
+
+def _consumer_journal_tails(directory, journal_limit):
+    """Complete lines from the tail of the live consumer journal and, while the
+    shared byte budget lasts, of its newest sealed generations
+    (journal.sealed.NNNN.jsonl, newest first). Unreadable files are skipped.
+    The live journal is opened before the directory is listed: a seal landing
+    in between leaves this descriptor on the newly sealed inode, which the
+    listing then also names, so no generation is skipped."""
+    try:
+        live = open(os.path.join(directory, "journal.jsonl"), "rb")
+    except OSError:
+        live = None
+    try:
+        sealed = [(int(m.group(1)), name) for name in os.listdir(directory) for m in [CONSUMER_SEALED.fullmatch(name)] if m]
+    except OSError:
+        sealed = []
+    budget = journal_limit
+    if live is not None:
+        try:
+            with live:
+                used, lines = _read_tail(live, budget)
+            budget -= used
+            yield lines
+        except OSError:
+            pass
+    for _, name in sorted(sealed, reverse=True):
+        if budget <= 0:
+            break
+        try:
+            with open(os.path.join(directory, name), "rb") as stream:
+                used, lines = _read_tail(stream, budget)
+        except OSError:
+            continue
+        budget -= used
+        yield lines
+
+
 def read_consumer(path, journal_limit=16 * 1024 * 1024):
     """Read state and bounded opening provenance without changing either.
 
@@ -408,15 +458,7 @@ def read_consumer(path, journal_limit=16 * 1024 * 1024):
     episodes = list(consumer.get("closed", [])) + ([consumer["active"]] if consumer.get("active") else [])
     wanted = {e["episode"]: e for e in episodes}
     revisions = {}
-    try:
-        with open(os.path.join(os.path.dirname(path), "journal.jsonl"), "rb") as stream:
-            size = os.fstat(stream.fileno()).st_size
-            offset = max(0, size - journal_limit)
-            stream.seek(offset)
-            data = stream.read(journal_limit)
-        lines = data.splitlines(keepends=True)
-        if offset and lines:
-            lines = lines[1:]
+    for lines in _consumer_journal_tails(os.path.dirname(path), journal_limit):
         for line in lines:
             if not line.endswith(b"\n"):
                 continue
@@ -449,8 +491,6 @@ def read_consumer(path, journal_limit=16 * 1024 * 1024):
                     revisions[eid] = revision
             except (ValueError, KeyError, TypeError, IndexError):
                 continue
-    except OSError:
-        return consumer
     for eid, revision in revisions.items():
         if revision is not None:
             wanted[eid]["rule_revision"] = revision

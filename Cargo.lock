@@ -117,6 +117,7 @@ dependencies = [
  "constellation-remediation-resolver",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "time",
  "toml",

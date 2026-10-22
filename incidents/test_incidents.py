@@ -211,6 +211,41 @@ def test_opening_journal_provenance_is_bounded_and_does_not_relabel_legacy_state
     assert "rule_revision" not in inc.read_consumer(str(state_path))["closed"][0]
 
 
+def test_opening_provenance_is_found_in_sealed_journal_generations_within_the_bound(tmp_path):
+    e = episode("sha256:sealed", "completed")
+    revision = {"rule": "service-down", "version": 2, "attention_policy_digest": "sha256:" + "b" * 64}
+    state_path = tmp_path / "state.json"
+    state_path.write_bytes(json.dumps({"active": None, "closed": [e]}).encode())
+    record = {"schema": "constellation.remediation-consumer.journal/v1", "event": "episode_opened", "episode": e["episode"],
+              "detail": {"episode": e["episode"], "condition_id": KEY, "first_seen": e["first_seen"], "rule_revision": revision}}
+    line = json.dumps(record).encode() + b"\n"
+    sealing = json.dumps({"schema": "constellation.remediation-consumer.journal/v1", "event": "journal_sealed",
+                          "episode": None, "detail": {"predecessor": "journal.sealed.0002.jsonl"}}).encode() + b"\n"
+    live = tmp_path / "journal.jsonl"
+    live.write_bytes(sealing)
+    filler = b"{}\n" * 100
+    newest = tmp_path / "journal.sealed.0002.jsonl"
+    newest.write_bytes(line + filler)
+    # The newest sealed generation's tail is read while the bound lasts.
+    assert inc.read_consumer(str(state_path))["closed"][0]["rule_revision"] == revision
+    assert inc.read_consumer(str(state_path), journal_limit=len(sealing) + len(line) + len(filler))["closed"][0]["rule_revision"] == revision
+    # Bytes beyond the shared bound are not read.
+    assert "rule_revision" not in inc.read_consumer(str(state_path), journal_limit=len(sealing) + len(filler))["closed"][0]
+    # Older generations follow newer ones; a conflict anywhere leaves it unknown.
+    newest.write_bytes(filler)
+    (tmp_path / "journal.sealed.0001.jsonl").write_bytes(line)
+    assert inc.read_consumer(str(state_path))["closed"][0]["rule_revision"] == revision
+    (tmp_path / "journal.sealed.0003.jsonl").write_bytes(line.replace(b'"version": 2', b'"version": 3'))
+    assert "rule_revision" not in inc.read_consumer(str(state_path))["closed"][0]
+    # Unreadable, missing and foreign names are tolerated, never required.
+    (tmp_path / "journal.sealed.0003.jsonl").unlink()
+    (tmp_path / "journal.sealed.0004.jsonl").mkdir()
+    (tmp_path / "journal.sealed.x.jsonl").write_bytes(line.replace(b'"version": 2', b'"version": 3'))
+    (tmp_path / "journal.sealed.0005.jsonl\n").write_bytes(line.replace(b'"version": 2', b'"version": 3'))
+    live.unlink()
+    assert inc.read_consumer(str(state_path))["closed"][0]["rule_revision"] == revision
+
+
 def test_definition_binding_can_arrive_after_the_attempt_without_losing_history(store):
     e = episode("sha256:late", "completed")
     consumer = {"active": None, "closed": [e]}
