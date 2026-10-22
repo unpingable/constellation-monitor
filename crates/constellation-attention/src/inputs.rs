@@ -1972,11 +1972,14 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             } else {
                 None
             };
-            let observation = if unknown || code_unknown {
+            let observation = if unknown {
                 Observation::Unknown
             } else if present {
+                // Coverage families share one condition across instances. A
+                // qualified code 1 proves presence even with partial coverage;
+                // other codes still fault the input above.
                 Observation::Present
-            } else if no_data || drift.is_some() {
+            } else if code_unknown || no_data || drift.is_some() {
                 Observation::Unknown
             } else {
                 Observation::Clear
@@ -2056,7 +2059,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 _ => format!("{name} unknown: {}", truncate(&unknown_why, 160)),
             };
             if let Some(code_note) = &code_note
-                && !code_unknown
+                && (!code_unknown || observation == Observation::Present)
             {
                 note.push_str(&format!("; {code_note}"));
             }

@@ -615,6 +615,9 @@ Rules also carry `attention: "true"` to opt into the evaluator. Code 1 is
 present when firing; pending retains vmalert's own hold and is clear. The
 expression emits no healthy fallback series.
 
+`--check-targets` accepts a context prefix in the summary:
+`<context>: evidence code={{ $value }} (<meaning>)`.
+
 The condition note in `report.json`, the input's `identity.value_code_notes`,
 and the bounded daily digest name the code and meaning. The collector passes
 through rule labels and instance values and adds `value_code_counts`, complete
@@ -625,9 +628,15 @@ missing/malformed values or summaries, and unsupported codes are rejected
 per rule, never present or clear. A rejected rule is omitted from
 observations; an existing open condition holds as `unreported`.
 
-Unknown takes precedence over threshold when a condition's scope includes
-both. With `sites`, each site's values are interpreted independently;
-without it, any unknown code holds the whole rule. An inactive marked rule,
+A firing code-1 row makes a qualified condition present even when other
+rows carry codes 2–5. Coverage families key several instances under one
+alert name, so another instance's warming or missing state must never mask
+a present measurement. Those unknown rows still raise the input's
+`indeterminate` fault and code/meaning note in `report.json` and the daily
+digest, showing partial coverage. Only when no firing code-1 row remains
+do codes 2–5 hold the condition unknown, never clear. With `sites`, each
+site's values are interpreted independently; without it, all instances
+share the rule's condition. An inactive marked rule,
 or a site with no active instances, is clear only under the same health,
 evaluation recency, document freshness, data-presence and declared-policy
 checks as plain rules. Labels and conditions remain stable across codes.

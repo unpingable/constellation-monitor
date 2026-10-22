@@ -47,12 +47,13 @@ def test_value_code_summary_includes_pending_and_truncated_instances():
         dict(site="testbed", state="pending", value="2", count=1)]
 
 
-def test_check_targets_cli_accepts_the_value_code_marker(tmp_path, capsys):
+@pytest.mark.parametrize("prefix", ["", "Host swap coverage: "])
+def test_check_targets_cli_accepts_the_value_code_marker(tmp_path, capsys, prefix):
     policy = m._collector().vmalert_policy(copy.deepcopy(VECTOR["api"]))
     for group in policy["groups"]:
         for rule in group["rules"]:
             rule["labels"].update(VECTOR["value_code_marker"])
-            rule["annotations"]["summary"] = "evidence code={{ $value }} (present)"
+            rule["annotations"]["summary"] = prefix + "evidence code={{ $value }} (present)"
     path = tmp_path / "declared.json"
     path.write_text(json.dumps(policy))
     assert m.main(["--check-targets", "--declared", str(path), "--key-site", "labelwatch"]) == 0

@@ -4337,6 +4337,10 @@ fn metric_alert_firing_from_the_shared_vector() {
 }
 
 fn value_code_rule(doc: &mut Value, state: &str, value: &str) {
+    value_code_rows(doc, state, &[value]);
+}
+
+fn value_code_rows(doc: &mut Value, state: &str, values: &[&str]) {
     doc["rules"]
         .as_array_mut()
         .unwrap()
@@ -4344,23 +4348,146 @@ fn value_code_rule(doc: &mut Value, state: &str, value: &str) {
     let rule = metric_rule(doc, "HostSwapExhausted");
     rule["labels"]["constellation_value_codes"] = json!("v1");
     rule["state"] = json!(state);
-    rule["instances"].as_array_mut().unwrap().truncate(1);
-    rule["instances"][0]["state"] = json!(state);
-    rule["instances"][0]["value"] = json!(value);
-    let meaning = match value {
-        "1" => "present",
-        "2" => "acquisition_failed",
-        "3" => "missing",
-        "4" => "stale",
-        "5" => "invalid_or_warming",
-        _ => "invalid code",
-    };
-    rule["instances"][0]["summary"] = json!(format!("evidence code={value} ({meaning})"));
-    rule["instance_count"] = json!(1);
-    rule["value_code_counts"] = json!([{
-        "site": "labelwatch", "state": state, "value": value, "count": 1
-    }]);
+    let template = rule["instances"][0].clone();
+    let mut counts = std::collections::BTreeMap::<&str, u64>::new();
+    let instances: Vec<Value> = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let mut instance = template.clone();
+            instance["labels"]["instance"] = json!(format!("instance-{index}"));
+            instance["state"] = json!(state);
+            instance["value"] = json!(value);
+            let meaning = match *value {
+                "1" => "present",
+                "2" => "acquisition_failed",
+                "3" => "missing",
+                "4" => "stale",
+                "5" => "invalid_or_warming",
+                _ => "invalid code",
+            };
+            instance["summary"] = json!(format!("evidence code={value} ({meaning})"));
+            *counts.entry(value).or_default() += 1;
+            instance
+        })
+        .collect();
+    rule["instances"] = json!(instances);
+    rule["instance_count"] = json!(values.len());
+    rule["value_code_counts"] = json!(
+        counts
+            .into_iter()
+            .map(|(value, count)| json!({
+                "site": "labelwatch", "state": state, "value": value, "count": count
+            }))
+            .collect::<Vec<_>>()
+    );
     refresh_firing_sites(rule);
+}
+
+#[test]
+fn mixed_value_codes_are_present_with_partial_coverage_in_report_and_digest() {
+    for scoped in [false, true] {
+        let mut harness = metric_alerts_harness();
+        if scoped {
+            harness.raw("sites = [\"labelwatch\"]\n");
+        }
+        harness.raw("[digest]\nat_utc = \"12:01\"\n");
+        let id = if scoped {
+            format!("{SWAP}.labelwatch")
+        } else {
+            SWAP.to_owned()
+        };
+        for offset in [0, 90] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rows(doc, "firing", &["1", "3"]);
+            });
+            let report = harness.evaluate(T0 + offset);
+            let c = condition(&report, &id).unwrap();
+            assert_eq!(c["observation"], "present", "{c}");
+            assert!(
+                c["note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("value code 3 (missing)")
+            );
+            let input = metric_input(&report);
+            assert_eq!(input["status"], "not_current");
+            assert_eq!(causes(&input), ["indeterminate"]);
+            assert!(
+                input["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("value code 3 (missing)")
+            );
+            assert_eq!(alert_intents(&report).len(), usize::from(offset == 90));
+            if offset == 90 {
+                let digest = report["digest"]["summary"].as_str().unwrap();
+                assert!(digest.contains("value code 3 (missing)"), "{digest}");
+                assert!(digest.contains("indeterminate"), "{digest}");
+                assert_eq!(harness.state()["conditions"][&id]["active"], true);
+            }
+        }
+    }
+}
+
+#[test]
+fn all_missing_value_code_rows_are_unknown_held() {
+    let harness = metric_alerts_harness();
+    for offset in [0, 360] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rows(doc, "firing", &["3", "3"]);
+        });
+        let report = harness.evaluate(T0 + offset);
+        let c = condition(&report, SWAP).unwrap();
+        assert_eq!(c["observation"], "unknown");
+        assert!(
+            c["note"]
+                .as_str()
+                .unwrap()
+                .contains("value code 3 (missing)")
+        );
+        assert_eq!(causes(&metric_input(&report)), ["indeterminate"]);
+        assert!(alert_intents(&report).is_empty());
+        assert!(
+            harness.state()["conditions"]
+                .get(SWAP)
+                .is_none_or(|c| c["active"] == false)
+        );
+    }
+}
+
+#[test]
+fn disappearing_present_row_with_warming_remaining_never_clears() {
+    let harness = metric_alerts_harness();
+    for offset in [0, 90, 150, 400] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rows(doc, "firing", &["1", "5"]);
+            if offset >= 150 {
+                let rule = metric_rule(doc, "HostSwapExhausted");
+                rule["instances"].as_array_mut().unwrap().remove(0);
+                rule["value_code_counts"].as_array_mut().unwrap().remove(0);
+                rule["instance_count"] = json!(1);
+                refresh_firing_sites(rule);
+            }
+        });
+        let report = harness.evaluate(T0 + offset);
+        let c = condition(&report, SWAP).unwrap();
+        assert_eq!(
+            c["observation"],
+            if offset < 150 { "present" } else { "unknown" }
+        );
+        assert!(
+            c["note"]
+                .as_str()
+                .unwrap()
+                .contains("value code 5 (invalid_or_warming)")
+        );
+        assert_eq!(causes(&metric_input(&report)), ["indeterminate"]);
+        assert_eq!(alert_intents(&report).len(), usize::from(offset == 90));
+        if offset >= 90 {
+            assert_eq!(harness.state()["conditions"][SWAP]["active"], true);
+        }
+    }
 }
 
 #[test]
@@ -4553,7 +4680,7 @@ fn value_codes_are_scoped_by_site_and_survive_truncated_detail() {
     });
     let report = harness.evaluate(T0);
     for (site, observation) in [
-        ("crow", "unknown"),
+        ("crow", "present"),
         ("testbed", "present"),
         ("labelwatch", "clear"),
     ] {
