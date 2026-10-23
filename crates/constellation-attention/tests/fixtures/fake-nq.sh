@@ -61,6 +61,10 @@ while [ $# -gt 0 ]; do
     *) echo "unexpected flag $1" >&2; exit 64;;
   esac
 done
+if [ -n "$intent" ] && grep -q '"runbook_url":"http://' "$intent"; then
+  echo "nq: notification runbook_url must be an https URL of at most 1024 bytes" >&2
+  exit 1
+fi
 if [ -e "$dir/crash" ]; then rm -f "$dir/crash"; kill -9 "$PPID"; sleep 2; exit 1; fi
 crash_after=false
 if [ -e "$dir/crash_after" ]; then rm -f "$dir/crash_after"; crash_after=true; fi

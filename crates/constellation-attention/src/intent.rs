@@ -254,7 +254,11 @@ pub fn v2(input: &IntentInput<'_>, route: &str) -> Value {
         "severity": input.rule.rule.severity,
         "details": details(input),
     });
-    if let Some(url) = input.config.runbook_url(input.rule.rule) {
+    if let Some(url) = input
+        .config
+        .runbook_url(input.rule.rule)
+        .filter(|url| url.starts_with("https://"))
+    {
         intent["runbook_url"] = json!(url);
     }
     intent
@@ -291,6 +295,13 @@ pub fn v1(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
         "inspection_reference": truncate(&inspection_reference(input), 1024),
         "response_class": response_class(input).as_str(),
     });
+    if let Some(url) = input
+        .config
+        .runbook_url(input.rule.rule)
+        .filter(|url| url.starts_with("https://"))
+    {
+        intent["runbook_url"] = json!(url);
+    }
     // JSON escaping and long configured locators count against the local
     // receiver's 4 KiB limit. Fall back to the original proven budget.
     if label == LOCAL_INBOX_LABEL && local_inbox_message_bytes(&intent) > LOCAL_INBOX_MESSAGE_MAX {

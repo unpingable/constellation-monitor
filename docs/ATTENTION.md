@@ -352,6 +352,12 @@ decimal port (1–65535) and a path, for example
 HTTP hostnames (including `localhost`), other addresses and userinfo are
 refused. Bases must be at most 900 bytes, contain no fragment, whitespace or
 control characters; the evaluator appends each rule's `#anchor`.
+NQ accepts only HTTPS in the optional `runbook_url` field. Both notice and
+page intents carry that field for HTTPS runbooks and omit it for loopback
+HTTP runbooks. The full link remains in `inspection_reference`, which NQ
+renders in the human-readable notice text. Each pass with a non-HTTPS
+runbook logs one `runbook_url_withheld` message; withholding the field is
+not a delivery error.
 
 ## Response policy (remediation window)
 
@@ -477,6 +483,16 @@ passes it. (Debug builds accept it, also on `reset-clock`, so the test suite
 can drive the clock.)
 
 ## Report
+
+Completed passes record `exit_code` (0 or 3), `exit_class` (`clean`,
+`input_error`, `delivery_error`, or `input_and_delivery_error`), and
+`first_error` (one line, or null on success). Status consumers can surface
+these fields alongside the report's `evaluated_at` freshness. The first
+failure follows report order: inputs, intents, dropped triggers, unresolved
+deliveries, digest, then `intent_log_error` (null unless the log append
+failed). A retry that succeeds clears the error. Fatal errors before a
+report can be written still exit 1 and leave the previous report unchanged;
+consumers must check freshness and the service result too.
 
 Every pass writes `report.json` beside the state file (atomically): rules
 with their effective class and thresholds, each input with its status

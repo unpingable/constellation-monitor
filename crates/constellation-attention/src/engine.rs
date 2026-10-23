@@ -274,6 +274,20 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         ));
     }
 
+    if [
+        &config.runbooks.cartography_url,
+        &config.runbooks.monitor_url,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|url| !url.starts_with("https://"))
+    {
+        eprintln!(
+            "runbook_url_withheld: non-HTTPS runbook URL withheld from NQ runbook_url; \
+             link retained in human-readable inspection_reference"
+        );
+    }
+
     let mut read = inputs::read_all(&Context {
         config,
         rules: &rules,
@@ -1070,6 +1084,29 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .reports
         .iter()
         .any(|report| report.status != InputStatus::Ok || !report.causes.is_empty());
+    // Include log failures in the same pass's durable outcome.
+    let intent_log_error = if !options.dry_run && !intent_reports.is_empty() {
+        append_intent_log(&state_dir, &format_seconds(now), &intent_reports)
+            .err()
+            .map(|error| format!("intent_log_unwritable {error}"))
+    } else {
+        None
+    };
+    if let Some(error) = &intent_log_error {
+        eprintln!("{error}");
+        delivery_problem = true;
+    }
+    let exit_code = if input_problem || delivery_problem {
+        3
+    } else {
+        0
+    };
+    let exit_class = match (input_problem, delivery_problem) {
+        (false, false) => "clean",
+        (true, false) => "input_error",
+        (false, true) => "delivery_error",
+        (true, true) => "input_and_delivery_error",
+    };
     let report = json!({
         "schema": REPORT_SCHEMA,
         "site": config.site,
@@ -1084,34 +1121,70 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "intents": intent_reports,
         "unresolved_deliveries": unresolved,
         "dropped_triggers": dropped_triggers,
+        "exit_code": exit_code,
+        "exit_class": exit_class,
+        "intent_log_error": intent_log_error,
     });
     let mut report = report;
     if let Some(attempt) = digest_attempt {
         report["digest"] = attempt;
     }
+    report["first_error"] = json!(first_pass_error(&report));
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;
     write_atomic(&output_dir.join("report.json"), &bytes)?;
-    // Every delivery outcome is also appended to a bounded log beside the state,
-    // so a consumer (constellation-incidents) sees a resolve even when the
-    // condition is forgotten in the same pass. A failed append is a delivery
-    // problem: the pass exits 3 and says so.
-    if !options.dry_run
-        && !intent_reports.is_empty()
-        && let Err(error) = append_intent_log(&state_dir, &format_seconds(now), &intent_reports)
-    {
-        eprintln!("intent_log_unwritable {error}");
-        delivery_problem = true;
+    Ok(PassResult { report, exit_code })
+}
+
+/// First failure in report order, reduced to one line for status consumers.
+fn first_pass_error(report: &Value) -> Option<String> {
+    if report["exit_code"] == 0 {
+        return None;
     }
-    Ok(PassResult {
-        report,
-        exit_code: if input_problem || delivery_problem {
-            3
-        } else {
-            0
-        },
-    })
+    let input = report["inputs"].as_array()?.iter().find(|input| {
+        input["status"] != "ok" || input["causes"].as_array().is_some_and(|c| !c.is_empty())
+    });
+    let error = input
+        .map(|input| {
+            format!(
+                "input {}: {}",
+                input["label"].as_str().unwrap_or("unknown"),
+                input["error"]
+                    .as_str()
+                    .map_or_else(|| input["causes"].to_string(), str::to_owned)
+            )
+        })
+        .or_else(|| {
+            ["intents", "dropped_triggers", "unresolved_deliveries"]
+                .into_iter()
+                .flat_map(|key| report[key].as_array().into_iter().flatten())
+                .find(|item| {
+                    !matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted"))
+                        && !(item["outcome"] == "refused" && report["network_enabled"] == false)
+                })
+                .map(|item| {
+                    format!(
+                        "delivery {}: {}",
+                        item["condition_id"].as_str().unwrap_or("unknown"),
+                        item["error"]
+                            .as_str()
+                            .unwrap_or_else(|| item["outcome"].as_str().unwrap_or("unknown"))
+                    )
+                })
+        })
+        .or_else(|| {
+            (report["digest"]["settled"] == false).then(|| {
+                format!(
+                    "digest: {}",
+                    report["digest"]["error"].as_str().unwrap_or_else(|| {
+                        report["digest"]["outcome"].as_str().unwrap_or("unsettled")
+                    })
+                )
+            })
+        })
+        .or_else(|| report["intent_log_error"].as_str().map(str::to_owned));
+    error.map(|error| error.lines().next().unwrap_or_default().to_owned())
 }
 
 /// Name rejected definitions or the metric rules held by non-1 codes.

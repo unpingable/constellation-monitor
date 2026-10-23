@@ -81,6 +81,7 @@ struct Harness {
     page_route: bool,
     network: bool,
     notice_transport: &'static str,
+    runbook_base: &'static str,
 }
 
 impl Harness {
@@ -94,6 +95,7 @@ impl Harness {
             page_route: true,
             network: true,
             notice_transport: "slack",
+            runbook_base: "https://docs.example.org/beta-observability/RUNBOOKS.md",
         }
     }
 
@@ -132,7 +134,7 @@ impl Harness {
              site = \"labelwatch\"\n\
              state_path = \"{state}\"\n\
              [runbooks]\n\
-             cartography_url = \"https://docs.example.org/beta-observability/RUNBOOKS.md\"\n\
+             cartography_url = \"{runbook_base}\"\n\
              [nq]\n\
              program = \"{nq}\"\n\
              config = \"/etc/nq/nqd-ops.toml\"\n\
@@ -146,6 +148,7 @@ impl Harness {
             nq = Path::new(FIXTURES).join("fake-nq.sh").display(),
             network = self.network,
             transport = self.notice_transport,
+            runbook_base = self.runbook_base,
             extra = self.extra_config,
         );
         let path = self.path("attention.toml");
@@ -694,6 +697,10 @@ fn golden_intents_trigger_and_resolve_v2_and_v1() {
     golden("trigger-page-v2.json", &harness.submitted_intent(&id(1)));
     golden("resolve-notice-v1.json", &harness.submitted_intent(&id(2)));
     golden("resolve-page-v2.json", &harness.submitted_intent(&id(3)));
+    for index in 0..4 {
+        let intent: Value = serde_json::from_slice(&harness.submitted_intent(&id(index))).unwrap();
+        assert_eq!(intent["runbook_url"], intent["inspection_reference"]);
+    }
     let trigger: Value = serde_json::from_slice(&harness.submitted_intent(&id(1))).unwrap();
     assert_eq!(trigger["condition"]["target_class"], "root");
     assert_eq!(trigger["destination_identity"], "pagerduty:pagerduty-ops");
@@ -706,6 +713,54 @@ fn golden_intents_trigger_and_resolve_v2_and_v1() {
         serde_jcs::to_vec(&trigger).unwrap(),
         harness.submitted_intent(&id(1))
     );
+}
+
+#[test]
+fn loopback_runbooks_reach_notice_and_page_without_nq_runbook_url() {
+    let mut harness = Harness::new();
+    harness.runbook_base = "http://127.0.0.1:8088/RUNBOOKS.md";
+    harness.host_posture("root");
+    // The fake NQ rejects any HTTP runbook_url before retaining the intent.
+    for offset in [0, 660, 720, 840] {
+        let state = if offset < 700 {
+            ProjectedStateV1::Unknown
+        } else {
+            ProjectedStateV1::Healthy
+        };
+        set(&harness, "root", state, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert_eq!(harness.report()["exit_code"], 0);
+        assert_eq!(harness.report()["exit_class"], "clean");
+        assert!(harness.report()["first_error"].is_null());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr)
+                .matches("runbook_url_withheld:")
+                .count(),
+            1
+        );
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    for (index, name) in [
+        "http-trigger-notice-v1.json",
+        "http-trigger-page-v2.json",
+        "http-resolve-notice-v1.json",
+        "http-resolve-page-v2.json",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let id = calls[index].split(' ').nth(3).unwrap();
+        let bytes = harness.submitted_intent(id);
+        golden(name, &bytes);
+        let intent: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(intent.get("runbook_url").is_none());
+        assert_eq!(
+            intent["inspection_reference"],
+            "http://127.0.0.1:8088/RUNBOOKS.md#host-posture-unknown"
+        );
+    }
 }
 
 #[test]
@@ -1154,12 +1209,74 @@ fn command_error_is_recorded_and_retried_with_the_same_bytes() {
         state["conditions"][UNKNOWN_ROOT]["last_intent"]["notice"]["outcome"],
         "command_error"
     );
+    let report = harness.report();
+    assert_eq!(report["exit_code"], 3);
+    assert_eq!(report["exit_class"], "delivery_error");
+    assert!(
+        report["first_error"]
+            .as_str()
+            .unwrap()
+            .contains("notification condition target_class is refused")
+    );
     fs::remove_file(harness.path("fake/command_error")).unwrap();
     set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1600);
     harness.evaluate(T0 + 1600);
     let calls = harness.calls();
     assert_eq!(calls.len(), 1);
     assert!(calls[0].contains("labelwatch-host-posture-unknown-root-trigger-1790943060"));
+    assert_eq!(harness.report()["exit_class"], "clean");
+    assert!(harness.report()["first_error"].is_null());
+}
+
+#[test]
+fn report_classifies_input_and_delivery_failures_and_keeps_one_error_line() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.host_posture("root");
+    let output = harness.evaluate_at(T0, &[]);
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(harness.report()["exit_code"], 3);
+    assert_eq!(harness.report()["exit_class"], "input_error");
+    assert!(
+        harness.report()["first_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("input root:")
+    );
+
+    harness.fake("command_error", "");
+    let output = harness.evaluate_at(T0 + 360, &[]);
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(harness.report()["exit_class"], "input_and_delivery_error");
+    assert_eq!(
+        harness.report()["first_error"]
+            .as_str()
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn report_includes_intent_log_failure_in_the_same_pass() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    fs::create_dir(harness.path("state/intents.jsonl")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+    let output = harness.evaluate_at(T0 + 660, &[]);
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(harness.report()["exit_code"], 3);
+    assert_eq!(harness.report()["exit_class"], "delivery_error");
+    assert!(
+        harness.report()["first_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("intent_log_unwritable")
+    );
 }
 
 #[test]
