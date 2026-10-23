@@ -497,7 +497,10 @@ can drive the clock.)
 f7b74cc, so rollback to that binary can load state after a new evaluator pass.
 Metric warming history lives only in the sibling `state-metric-alerts.json`,
 with its own `constellation.attention_metric_alerts_state.v1` schema, site,
-and `history` (`first_seen` and `warming_since`, stored as Unix seconds).
+`updated_at` (last tracked pass), and `history` (`first_seen` and
+`warming_since`, stored as Unix seconds). On a fresh install `history` is
+null until the first metric report is read; this records that startup is
+still waiting for that report rather than granting grace to an upgrade.
 Both structures reject unknown fields. An absent history file means no saved
 metric history; malformed, unreadable, or foreign-site history is an error
 and is never silently replaced.
@@ -507,8 +510,13 @@ state: mode 0600, exclusive temporary file, file fsync, rename and directory
 fsync. History is saved before lifecycle decisions and any NQ submission;
 the two files are individually atomic, not one transaction. Dry runs read
 saved history to simulate the pass and leave both state files untouched.
-The old binary ignores the sibling history file. `reset-clock` clamps future
-timestamps in both files under the same lock.
+The old binary ignores the sibling history file. If lifecycle `updated_at`
+has advanced beyond the sidecar's `updated_at`, loading prunes warming starts
+older than that lifecycle pass: continuity through rollback cannot be known.
+Sidecars written before `updated_at` was added use 0, causing this pruning
+once on upgrade. The host's `first_seen` remains unchanged. Every tracked
+pass advances sidecar `updated_at`, even when the report is unreadable.
+`reset-clock` clamps future timestamps in both files under the same lock.
 
 ## Report
 
@@ -725,14 +733,19 @@ In `[inputs.metric_alerts]`, both warming settings are integer seconds:
 The evaluator persists first observation and rule/site warming start times
 in `state-metric-alerts.json` (see State files). Missing, unreadable, stale or
 otherwise unqualified whole reports cannot renew grace or reset a remembered
-warming interval. A current qualified report prunes intervals for identities
-it no longer contains, so a returning identity starts a fresh interval.
+warming interval. A current qualified report with at least one opted-in rule
+prunes intervals for identities it no longer contains, so a returning identity
+starts a fresh interval. An empty attention roster is an `empty` fault and
+preserves intervals, including during a vmalert reload.
 A current, healthy observation with no unknown value codes resets that
 rule/site's interval; a per-rule fault retains a still-listed identity.
-For preexisting `state.json` with `updated_at > 0` but no history file,
-`first_seen` is seeded from that last saved pass, rather than the upgrade time;
-an already elapsed grace stays elapsed. On a fresh install it starts with the
-first metric report. Dry runs do not persist that history.
+With no history file, a preexisting `state.json` with `updated_at > 0`, any
+metric-alert condition, or any input-unavailable condition for the metric
+input seeds `first_seen` at least `warmup_grace` seconds before now: there is
+no acquisition grace on upgrade or after deleting a running site's sidecar.
+On a fresh install the sidecar records pending startup, and `first_seen`
+starts at now on the pass that first reads a metric report, even after earlier
+passes without one. Dry runs do not persist that history.
 
 Warming alone leaves the input `status: "ok"`, `causes: ["warming"]`, and
 no `error`. A pass with no other problem exits 0 with `exit_class: "clean"`

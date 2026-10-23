@@ -5652,7 +5652,10 @@ fn stale_or_unreadable_report_keeps_absent_rule_history() {
             });
         }
         harness.evaluate(T0 + 60);
-        assert_eq!(fs::read(&path).unwrap(), before);
+        let after: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let before: Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(after["history"], before["history"]);
+        assert_eq!(after["updated_at"], T0 + 60);
         write_metric_alerts(&harness, T0 + 25_200, |doc| {
             value_code_rule(doc, "firing", "5")
         });
@@ -5737,30 +5740,190 @@ fn metric_history_refuses_malformed_or_foreign_custody() {
 }
 
 #[test]
-fn upgrade_without_metric_history_seeds_grace_from_last_pass() {
+fn missing_metric_history_never_resolves_an_established_acquisition_fault() {
+    const FAULT: &str = "constellation:labelwatch:host_posture:evaluator-input-unavailable:metric_alerts.indeterminate";
+    for code in ["2", "3"] {
+        for condition_only in [false, true] {
+            let mut harness = metric_alerts_harness();
+            let original_config = harness.extra_config.clone();
+            harness.raw("warmup_grace = 0\n");
+            for offset in (0..=360).step_by(60) {
+                write_metric_alerts(&harness, T0 + offset, |doc| {
+                    value_code_rule(doc, "firing", code)
+                });
+                assert_eq!(harness.evaluate(T0 + offset)["exit_code"], 3);
+            }
+            let mut state = harness.state();
+            assert_eq!(state["conditions"][FAULT]["active"], true);
+            let transition = state["conditions"][FAULT]["transition_at"].clone();
+            // Upgrade from the old state shape, or deletion on a running site.
+            // Conditions must establish the input even without updated_at > 0.
+            if condition_only {
+                state["updated_at"] = json!(0);
+                state["conditions"]
+                    .as_object_mut()
+                    .unwrap()
+                    .retain(|id, _| id == FAULT);
+                fs::write(
+                    harness.path("state/state.json"),
+                    serde_json::to_vec(&state).unwrap(),
+                )
+                .unwrap();
+            }
+            fs::remove_file(harness.path("state/state-metric-alerts.json")).unwrap();
+            harness.extra_config = original_config;
+            for offset in (420..=1740).step_by(60) {
+                write_metric_alerts(&harness, T0 + offset, |doc| {
+                    value_code_rule(doc, "firing", code)
+                });
+                let output = harness.evaluate_at(T0 + offset, &[]);
+                assert_eq!(output.status.code(), Some(3), "{output:?}");
+                let report = harness.report();
+                let input = metric_input(&report);
+                assert_eq!(input["identity"]["first_seen"], rfc3339(T0 + 420 - 900));
+                assert_eq!(input["status"], "not_current");
+                assert_eq!(causes(&input), ["indeterminate"]);
+                assert_eq!(report["exit_code"], 3);
+                assert!(input["identity"].get("warming_rules").is_none());
+                assert!(intents(&report).is_empty(), "{report}");
+                let state = harness.state();
+                assert_eq!(state["conditions"][FAULT]["active"], true);
+                assert_eq!(state["conditions"][FAULT]["transition_at"], transition);
+                assert_eq!(state["conditions"][FAULT]["clear_since"], Value::Null);
+            }
+        }
+    }
+}
+
+#[test]
+fn missing_metric_history_with_a_last_pass_or_metric_condition_has_no_grace() {
+    for metric_condition in [false, true] {
+        let harness = metric_alerts_harness();
+        let mut state = if metric_condition {
+            write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "firing", "1"));
+            harness.evaluate(T0);
+            fs::remove_file(harness.path("state/state-metric-alerts.json")).unwrap();
+            let mut state = constellation_attention::state::State::load(
+                &harness.path("state/state.json"),
+                "labelwatch",
+            )
+            .unwrap();
+            state
+                .conditions
+                .retain(|_, condition| condition.key.rule == "metric-alert-firing");
+            assert!(!state.conditions.is_empty());
+            state
+        } else {
+            constellation_attention::state::State::empty("labelwatch")
+        };
+        state.updated_at = if metric_condition { 0 } else { T0 };
+        state.save(&harness.path("state/state.json")).unwrap();
+        write_metric_alerts(&harness, T0 + 60, |doc| value_code_rule(doc, "firing", "2"));
+        let report = harness.evaluate(T0 + 60);
+        assert_eq!(report["exit_code"], 3);
+        assert_eq!(
+            metric_input(&report)["identity"]["first_seen"],
+            rfc3339(T0 + 60 - 900)
+        );
+    }
+}
+
+#[test]
+fn fresh_install_grace_starts_when_the_first_report_appears() {
     for code in ["2", "3"] {
         let harness = metric_alerts_harness();
-        // Exactly the old State shape: no metric history on disk.
-        constellation_attention::state::State::empty("labelwatch")
-            .save(&harness.path("state/state.json"))
+        for offset in [0, 60, 600] {
+            harness.evaluate(T0 + offset);
+            let saved: Value = serde_json::from_slice(
+                &fs::read(harness.path("state/state-metric-alerts.json")).unwrap(),
+            )
             .unwrap();
-        let mut state = harness.state();
-        state["updated_at"] = json!(T0);
-        fs::write(
-            harness.path("state/state.json"),
-            serde_json::to_vec(&state).unwrap(),
-        )
-        .unwrap();
-        write_metric_alerts(&harness, T0 + 3600, |doc| {
-            value_code_rule(doc, "firing", code)
+            assert_eq!(saved["history"], Value::Null);
+            assert_eq!(saved["updated_at"], T0 + offset);
+        }
+        for offset in [660, 1559, 1560] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "firing", code)
+            });
+            let report = harness.evaluate(T0 + offset);
+            let input = metric_input(&report);
+            assert_eq!(input["identity"]["first_seen"], rfc3339(T0 + 660));
+            assert_eq!(
+                input["status"],
+                if offset < 1560 { "ok" } else { "not_current" }
+            );
+            assert_eq!(report["exit_code"], if offset < 1560 { 0 } else { 3 });
+        }
+    }
+}
+
+#[test]
+fn empty_attention_roster_preserves_the_warming_bound() {
+    for unlabelled in [false, true] {
+        let mut harness = metric_alerts_harness();
+        harness.raw("warming_bound = 100\n");
+        write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "firing", "5"));
+        harness.evaluate(T0);
+        for offset in [60, 90] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                if unlabelled {
+                    for rule in doc["rules"].as_array_mut().unwrap() {
+                        rule["labels"]["attention"] = json!("false");
+                    }
+                } else {
+                    doc["rules"] = json!([]);
+                }
+            });
+            let report = harness.evaluate(T0 + offset);
+            assert_eq!(causes(&metric_input(&report)), ["empty"]);
+        }
+        write_metric_alerts(&harness, T0 + 100, |doc| {
+            value_code_rule(doc, "firing", "5")
         });
-        let report = harness.evaluate(T0 + 3600);
-        let input = metric_input(&report);
-        assert_eq!(input["identity"]["first_seen"], rfc3339(T0));
-        assert_eq!(input["status"], "not_current");
-        assert_eq!(causes(&input), ["indeterminate"]);
+        let report = harness.evaluate(T0 + 100);
         assert_eq!(report["exit_code"], 3);
-        assert!(input["identity"].get("warming_rules").is_none());
+        let input = metric_input(&report);
+        let rule = &input["identity"]["warming_rules"][0];
+        assert_eq!(rule["since"], rfc3339(T0));
+        assert_eq!(rule["elapsed_seconds"], 100);
+        assert_eq!(rule["bound_exceeded"], true);
+    }
+}
+
+#[test]
+fn roll_forward_prunes_warming_from_before_untracked_passes() {
+    for legacy in [false, true] {
+        let harness = metric_alerts_harness();
+        write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "firing", "5"));
+        harness.evaluate(T0);
+        let path = harness.path("state/state-metric-alerts.json");
+        let mut old: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        if legacy {
+            old.as_object_mut().unwrap().remove("updated_at");
+        }
+        // The rollback binary can observe recovery and later warming without
+        // maintaining the sidecar. Restore its untouched pre-rollback bytes.
+        for (offset, code) in [(60, "1"), (120, "5")] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "firing", code)
+            });
+            harness.evaluate(T0 + offset);
+        }
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        for offset in [180, 240] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "firing", "5")
+            });
+            let report = harness.evaluate(T0 + offset);
+            let input = metric_input(&report);
+            assert_eq!(input["identity"]["first_seen"], rfc3339(T0));
+            assert_eq!(
+                input["identity"]["warming_rules"][0]["since"],
+                rfc3339(T0 + 180)
+            );
+            let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved["updated_at"], T0 + offset);
+        }
     }
 }
 

@@ -1844,7 +1844,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             (name, admit_metric_alert(name, &sites))
         })
         .collect();
-    if stale.is_none() && drift.is_none() {
+    if stale.is_none() && drift.is_none() && !opted.is_empty() {
         // A current qualified roster ends intervals for retired identities.
         // Per-rule faults retain an identity that is still in the roster;
         // whole-report faults cannot establish that an identity disappeared.

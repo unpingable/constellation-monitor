@@ -136,11 +136,17 @@ The sibling `state-metric-alerts.json` persists the host's first observation
 and each rule/site's warming start; `state.json` keeps the f7b74cc field set
 for rollback. Report refreshes, evaluator restarts, relabels and configuration
 applies do not renew grace. Missing or unqualified whole reports cannot reset
-warming; a current qualified roster prunes absent identities, and a qualified
-observation with no unknown value codes resets that rule/site's interval.
-Preexisting state with `updated_at > 0` and no metric history seeds first
-observation from `updated_at`; a fresh install starts at the first metric
-report read. Dry runs leave both state files untouched.
+warming; a current qualified nonempty attention roster prunes absent identities,
+and a qualified observation with no unknown value codes resets that rule/site's
+interval. An empty roster preserves intervals. With no sidecar, preexisting
+state with `updated_at > 0` or metric-input conditions gets no acquisition
+grace, including after sidecar deletion. Fresh installs record pending startup
+in the sidecar and start grace at now on the first metric-report pass.
+The sidecar's `updated_at` tracks every pass. When it is older than lifecycle
+`updated_at` (e.g. after rollback), warming starts older than that lifecycle
+pass are pruned on load; first observation is retained. Older sidecars without
+`updated_at` use 0 and undergo this pruning once on upgrade.
+Dry runs leave both state files untouched.
 `reset-clock` clamps their timestamps as it does other state timestamps.
 
 Faulting codes raise the existing input `indeterminate` fault and exit 3;

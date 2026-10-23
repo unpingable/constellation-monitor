@@ -321,16 +321,36 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     let _lock = lock(config, options.dry_run)?;
     let mut state = State::load(&config.state_path, &config.site)?;
     let metric_history_path = state_dir.join("state-metric-alerts.json");
-    let metric_history = MetricAlertsState::load(&metric_history_path, &config.site)?
-        .map(|state| state.history)
-        .or_else(|| {
-            // An established evaluator must not gain a new acquisition grace
-            // just because it has been upgraded to track metric history.
-            (state.updated_at > 0).then_some(MetricAlertsHistory {
-                first_seen: state.updated_at,
+    let metric_history = match MetricAlertsState::load(&metric_history_path, &config.site)? {
+        Some(mut metric_state) => {
+            if metric_state.updated_at < state.updated_at
+                && let Some(history) = &mut metric_state.history
+            {
+                // A rollback binary advances lifecycle state alone. It cannot
+                // attest that pre-rollback warming continued throughout.
+                history
+                    .warming_since
+                    .retain(|_, since| *since >= state.updated_at);
+            }
+            metric_state.history
+        }
+        None => config.inputs.metric_alerts.as_ref().and_then(|input| {
+            // Upgrade or deleted sidecar: never grant an established evaluator
+            // a new grace, even when its last pass was only one minute ago.
+            let established = state.updated_at > 0
+                || state.conditions.values().any(|condition| {
+                    condition.key.rule == "metric-alert-firing"
+                        || (condition.key.rule == INPUT_UNAVAILABLE
+                            && condition.key.target_class.as_ref().is_some_and(|target| {
+                                target.starts_with(&format!("{}.", input.label))
+                            }))
+                });
+            established.then_some(MetricAlertsHistory {
+                first_seen: options.now.saturating_sub(input.warmup_grace),
                 warming_since: BTreeMap::new(),
             })
-        });
+        }),
+    };
     let now = options.now;
     if now < state.updated_at {
         // Event identities carry the decision time; a pass earlier than the
@@ -371,7 +391,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     if let Some((label, roster)) = read.nq_watchers.take() {
         state.nq_watchers = BTreeMap::from([(label, roster)]);
     }
-    let metric_history = read.metric_alerts.take();
+    let metric_history = read.metric_alerts.take().or(metric_history);
     let mut observed: BTreeMap<String, Observed> = BTreeMap::new();
     // One condition fed by two inputs (a host-posture label equal to an NQ
     // filesystem watcher id): neither source may silently win.
@@ -1006,11 +1026,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Persist the decisions and written intents before any submission, so a
     // crash leaves `unknown` records that the next pass submits again.
     if !options.dry_run {
-        if let Some(history) = metric_history {
+        if config.inputs.metric_alerts.is_some() {
             MetricAlertsState {
                 schema: METRIC_ALERTS_STATE_SCHEMA.into(),
                 site: config.site.clone(),
-                history,
+                updated_at: now,
+                history: metric_history,
             }
             .save(&metric_history_path)?;
         }

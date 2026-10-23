@@ -34,7 +34,12 @@ pub struct State {
 pub struct MetricAlertsState {
     pub schema: String,
     pub site: String,
-    pub history: MetricAlertsHistory,
+    /// Last completed pass tracking this input, including unreadable reports.
+    #[serde(default)]
+    pub updated_at: i64,
+    /// Null until a fresh install first reads a metric report.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub history: Option<MetricAlertsHistory>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -213,9 +218,12 @@ impl MetricAlertsState {
 
     pub fn reset_clock(&mut self, now: i64) -> usize {
         let mut clamped = 0;
-        for at in std::iter::once(&mut self.history.first_seen)
-            .chain(self.history.warming_since.values_mut())
-        {
+        let mut timestamps = vec![&mut self.updated_at];
+        if let Some(history) = &mut self.history {
+            timestamps.push(&mut history.first_seen);
+            timestamps.extend(history.warming_since.values_mut());
+        }
+        for at in timestamps {
             if *at > now {
                 *at = now;
                 clamped += 1;
