@@ -423,6 +423,42 @@ class MonitoredTest(unittest.TestCase):
             self.assertEqual(m.main(self.argv + ['list']), 0)
         self.assertIn('unknown: malformed input structure', output.getvalue())
 
+    def test_rehearsal_nanosecond_evaluation_on_python310(self):
+        # Exact metric reference retained in the second rehearsal's attention
+        # report.json: HostClockOffsetHigh was clear, but its RULES row unknown.
+        rule = json.loads((HERE / 'fixtures/rehearsal2-metric-reference.json').read_text())
+
+        class Python310Datetime(m.dt.datetime):
+            @classmethod
+            def fromisoformat(cls, value):
+                fraction = re.search(r'\.(\d+)', value)
+                if fraction and len(fraction[1]) not in (3, 6):
+                    raise ValueError('Invalid isoformat string')
+                return super().fromisoformat(value)
+
+        now = m.stamp('2026-10-23T06:42:02Z')
+
+        def rehearsal_metrics(doc):
+            doc['generated_at'] = rule['generated_at']
+            for key in ('last_evaluation', 'health', 'state', 'last_samples', 'last_series_fetched'):
+                doc['rules'][0][key] = rule[key]
+
+        self.edit('metrics.json', rehearsal_metrics)
+        with mock.patch.object(m.dt, 'datetime', Python310Datetime):
+            state, usable = m.rule_state(rule, None, now, 300, 'rehearsal2')
+            self.assertTrue(usable, state)
+            self.assertIn('inactive (current healthy evaluation', state)
+            row = next(r for r in m.build(self.args, now)['rules'] if r['rule'] == 'HostIoPressureHigh')
+            self.assertTrue(row['_usable'], row['state'])
+            self.assertEqual(row['acquisition'], rule['last_evaluation'])
+            self.assertIn('stale', m.rule_state(rule, None, now + 600, 300, 'rehearsal2')[0])
+            self.assertEqual(m.stamp('2026-10-23T02:41:17.803143704-04:00'),
+                             m.stamp(rule['last_evaluation']))
+            self.assertEqual(m.stamp('2026-10-23T06:41:17.8Z'),
+                             m.stamp('2026-10-23T06:41:17.800000Z'))
+            for invalid in (None, '', 'not-a-time', '2026-10-23T06:41:17.803143704'):
+                self.assertIsNone(m.stamp(invalid))
+
     def test_duplicate_rule_identity_is_unknown(self):
         self.edit('metrics.json', lambda d: d['rules'].append(d['rules'][0]))
         self.assertTrue(any('duplicate' in str(r) for r in self.build()['sources']) or not self.build()['rules'])

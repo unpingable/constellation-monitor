@@ -132,6 +132,11 @@ ATTENTION_MEANINGS = {
 
 def stamp(value):
     try:
+        # vmalert emits nanoseconds. Python 3.10 (Ubuntu 22.04) accepts only
+        # three or six fractional digits; pad/truncate to microseconds.
+        if isinstance(value, str):
+            value = re.sub(r'\.(\d+)(?=Z|[+-]\d\d:\d\d$)',
+                           lambda match: '.' + (match[1] + '000000')[:6], value)
         parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00')) if isinstance(value, str) else None
         return parsed.timestamp() if parsed is not None and parsed.tzinfo is not None else None
     except (ValueError, OverflowError):
