@@ -486,10 +486,11 @@ with each new intent recorded as `unknown` without a notification id. Then:
 A pass exits 3 when any input was not readable or current or carries a
 rejected definition, any retained delivery is not accepted (other than
 deliberate refusals), or a trigger was dropped. This is a completed pass.
-The packaged oneshot uses `SuccessExitStatus=3`; status reads `exit_class`
-from a fresh `report.json`, rather than the unit's failed state. Exit 1
-still fails the unit when the pass could not complete. Delivery errors
-remain failures in the report even though systemd accepts exit 3.
+The packaged oneshot fails on exit 3, preserving the unit failed state for
+delivery problems. Status reads `exit_class` from a fresh `report.json`.
+After its own synchronous pass, the installer resets the failed state only
+when `exit_class` is `input_error`; delivery errors remain failed. Exit 1
+also fails the unit when the pass could not complete.
 
 ## Clock
 
@@ -528,34 +529,39 @@ can drive the clock.)
 
 `state.json` retains the `constellation.attention_state.v1` field set used by
 f7b74cc, so rollback to that binary can load state after a new evaluator pass.
-Metric warming history lives only in the sibling `state-metric-alerts.json`,
-with its own `constellation.attention_metric_alerts_state.v1` schema, site,
-`updated_at` (last tracked pass), optional top-level `first_seen` (first
-evaluator pass) and `reconfigured_at` (newest accepted installer timestamp),
-and `history` (`first_seen` and
-`warming_since`, stored as Unix seconds). On a fresh install `history` is
-null until the first metric report is read; this records that startup is
-still waiting for that report rather than granting grace to an upgrade.
-The sidecar is written even without a metric input so observation startup
-has durable first-pass timing. All timestamps are Unix seconds. Old sidecars
-without top-level `first_seen` on established hosts seed an expired startup
-window; upgrading or deleting the sidecar does not grant fresh grace.
-Both structures reject unknown fields. An absent history file means no saved
-metric history; malformed, unreadable, or foreign-site history is an error
-and is never silently replaced.
+Metric warming history lives in the sibling `state-metric-alerts.json`.
+Its exact release-compatible field set is `schema`, `site`, `updated_at`,
+and `history` (null or `{first_seen, warming_since}`), with schema
+`constellation.attention_metric_alerts_state.v1`. A copy of f60ed56's
+`deny_unknown_fields` reader accepts files written by this evaluator.
 
-The history uses the same state lock and atomic write custody as lifecycle
+Host and reconfiguration timing live in a second sibling,
+`state-attention-lifecycle.json`, with its own schema
+`constellation.attention_lifecycle.v1`. Its exact fields are `schema`, `site`,
+`updated_at`, `first_seen`, `reconfigured_at` (null until an accepted marker),
+and `identities`. The identities map is keyed by the metric condition target
+(including site when configured). Each entry contains `faulting` (boolean,
+last tracked pass), `grace_at` (Unix seconds or null, last granted grace), and
+`recovered_since_grace` (boolean, a qualified evaluation since that grant).
+All stored timestamps are Unix seconds. Both sidecars and their nested
+structures reject unknown fields. An absent file means no saved history;
+malformed, unreadable, or foreign-site history is an error and is never
+silently replaced. Without lifecycle history, an established host seeds an
+expired startup window and existing targets cannot attest pre-marker health;
+new targets can warm. A fresh install records pending metric startup with
+`history: null` until its first metric report.
+
+The sidecars use the same state lock and atomic write custody as condition
 state: mode 0600, exclusive temporary file, file fsync, rename and directory
-fsync. History is saved before lifecycle decisions and any NQ submission;
-the two files are individually atomic, not one transaction. Dry runs read
-saved history to simulate the pass and leave both state files untouched.
-The old binary ignores the sibling history file. If lifecycle `updated_at`
-has advanced beyond the sidecar's `updated_at`, loading prunes warming starts
-older than that lifecycle pass: continuity through rollback cannot be known.
-Sidecars written before `updated_at` was added use 0, causing this pruning
-once on upgrade. The host's `first_seen` remains unchanged. Every tracked
-pass advances sidecar `updated_at`, even when the report is unreadable.
-`reset-clock` clamps future timestamps in both files under the same lock.
+fsync. They are saved before marker removal, condition state and NQ
+submissions. Files are individually atomic, not one transaction. Dry runs
+leave all state files and markers untouched. Release binaries ignore the new
+lifecycle sibling. If condition state has advanced beyond metric history,
+warming starts older than that pass are pruned; if it has advanced beyond
+lifecycle history, existing identities cannot attest pre-marker health.
+Continuity through rollback cannot be known. Every tracked pass advances
+sidecar `updated_at`, including unreadable reports. `reset-clock` clamps
+future timestamps in all three files under the same lock.
 
 ## Report
 
@@ -783,9 +789,10 @@ With no history file, a preexisting `state.json` with `updated_at > 0`, any
 metric-alert condition, or any input-unavailable condition for the metric
 input seeds `first_seen` at least `warmup_grace` seconds before now: there is
 no acquisition grace on upgrade or after deleting a running site's sidecar.
-On a fresh install the sidecar records pending startup, and `first_seen`
-starts at now on the pass that first reads a metric report, even after earlier
-passes without one. Dry runs do not persist that history.
+On a fresh install the metric sidecar records pending startup. Metric
+history's `first_seen` starts at now on the pass that first reads a metric
+report, even after earlier passes without one. The lifecycle file separately
+records the evaluator's first pass for observation startup. Dry runs do not persist that history.
 
 Warming alone leaves the input `status: "ok"`, `causes: ["warming"]`, and
 no `error`. A pass with no other problem exits 0 with `exit_class: "clean"`
@@ -843,8 +850,10 @@ its rules or scrape targets, the installer atomically publishes
 Exactly these three fields are accepted, with a maximum document size of
 4096 bytes. `run_id` is the installer's nonblank apply identity (at most
 128 UTF-8 bytes). `at` is an RFC 3339 timestamp of the completed change,
-never a future time; attention stores whole Unix seconds. `reason` is
-exactly one of `vmalert restarted`, `rules changed`, or `scrapes changed`.
+up to 300 seconds ahead of the evaluator clock to tolerate off-host
+installer skew; attention stores whole Unix seconds. Greater future skew is
+invalid. `reason` is exactly one of `vmalert restarted`, `rules changed`, or
+`scrapes changed`.
 For multiple changes choose one applicable reason. Do not write a marker
 for a no-op apply or an attention-only restart. Publish after those changes
 complete and before the installer's synchronous attention pass.
@@ -861,20 +870,41 @@ and this contract, not the site installer.
 
 At the start of a pass, under the state lock, attention reads the marker
 and retains the newer of its `at` and saved `reconfigured_at`. It saves
-`reconfigured_at` in `state-metric-alerts.json` before removing the marker,
-before lifecycle decisions are saved or deliveries submitted. A crash
+`reconfigured_at` and per-identity eligibility in
+`state-attention-lifecycle.json` before removing the marker, before condition
+decisions are saved or deliveries submitted. A crash
 between save and removal replays the same timestamp without renewing grace.
 An unreadable metric report does not lose the accepted timestamp. Dry runs
 simulate acceptance but never save state or remove markers. A marker aged
 at least `warming_bound` is ignored with an `ignoring stale reconfiguration
-marker` log line and removed on a real pass. Malformed, unreadable, or future
-markers fail the pass (exit 1) and remain for correction.
+marker` log line and removed on a real pass. A malformed or unreadable
+marker, including a timestamp over 300 seconds in the future, grants no new
+grace. The pass continues with a reported input fault labelled
+`reconfiguration_marker`, error `invalid: <why>` (diagnostic
+`reconfiguration_marker: invalid: <why>`), and exits 3. On a real pass the
+marker is renamed `reconfigured.invalid-<ts>` (evaluation Unix seconds) for
+installer inspection. Dry runs retain it. The next pass evaluates normally
+without requiring someone to delete the invalid marker.
 
-While `now < reconfigured_at + warmup_grace`, rules with no valid
+Only identities that were not faulting at the last persisted pass before
+the marker can receive reconfiguration grace. New identities have no prior
+fault. Faulting identities keep reporting their faults, including missing
+`last_evaluation` and codes 2/3, while other identities warm. Eligibility is
+saved before the marker is consumed. Per identity, at most one grace is
+granted per `warming_bound` (default 6 h), unless a qualified healthy
+evaluation established recovery in between. Repeated markers within that
+window retain the original grant; they cannot stretch a 15-minute grace
+into six hours of warming. After the rate limit expires a nonfaulting
+identity can be granted another grace, still subject to its continuous bound.
+
+While `now < grace_at + warmup_grace`, eligible rules with no valid
 `last_evaluation`, and value-coded rules with code 2 or 3, warm
 informationally: input `status: "ok"`, `causes: ["warming"]`, no `error`,
 and exit 0 if nothing else fails. Missing evaluations hold conditions
-unknown; they establish neither presence nor recovery. Other faults,
+unknown; they establish neither presence nor recovery. During any warming
+(startup, reconfiguration or value-code), input fault classes absent from
+the current report are held unknown, so warming cannot resolve an open
+input incident. Fault classes currently observed remain present. Other faults,
 including code 4, query health errors, stale documents and policy drift,
 still fault. At the grace boundary these missing evaluations and codes
 fault normally. Neither accepting another marker nor restarting attention
@@ -882,15 +912,15 @@ resets a rule/site's continuous warming start: `warming_bound` still caps
 each interval. A qualified healthy observation ends it, including for a
 plain rule that was waiting for its first evaluation.
 
-For initial installation, a readable Nightshift store with no closed
-observation cycle (empty or with only open cycles) is also informational
-warming until `first_seen + warmup_grace`. This uses the earlier of the
-sidecar's evaluator first-pass time and metric history's `first_seen`,
+For initial installation, a missing or unreadable Nightshift store, or one
+with no closed observation cycle (empty or with only open cycles), is
+informational warming until `first_seen + warmup_grace`. This uses the earlier
+of the lifecycle file's evaluator first-pass time and metric history's `first_seen`,
 with the configured metric grace or 900 seconds if no metric input exists.
 Its input identity exposes `first_seen` and `warmup_grace`. After that
-boundary it faults with `no closed observation cycle` as before. Missing or
-unreadable stores still fault immediately. Reconfiguration does not renew
-this initial observation window.
+boundary empty/open stores fault with `no closed observation cycle` as before,
+and missing/unreadable stores report their underlying read error.
+Reconfiguration does not renew this initial observation window.
 
 Metric notice detail is bounded at 480 bytes; longer text ends at a word
 boundary with `…`. Instance summaries use the same bound. Code-1 rows are

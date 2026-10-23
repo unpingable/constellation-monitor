@@ -178,9 +178,10 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
 7. Watch `journalctl -u constellation-attention`, `report.json` and
    `constellation-attention state --config ...`. Read `exit_class` from a
    fresh `report.json`: exit 3 means an input is not current, a delivery was
-   not accepted or a trigger was dropped. The unit accepts completed passes
-   with `SuccessExitStatus=3`; status must use the report, not the unit's
-   failed state. Exit 1 means the pass could not run (state lock,
+   not accepted or a trigger was dropped. Exit 3 fails the unit. After its
+   own synchronous pass, the installer resets the failed state only when
+   `exit_class` is `input_error`. Delivery errors retain the failed state.
+   Exit 1 means the pass could not run (state lock,
    malformed state, clock moved backwards). After a corrected forward clock
    step, confirm the clock and run `sudo -u nq constellation-attention
    reset-clock --config /etc/constellation-attention/attention.toml`
