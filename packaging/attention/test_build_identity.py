@@ -60,6 +60,15 @@ class PackageIdentityTests(unittest.TestCase):
         for name, item in receipt["executables"].items():
             self.assertEqual(item["sha256"], hashlib.sha256((self.root/name).read_bytes()).hexdigest())
 
+    def test_capabilities_are_optional_and_preserved(self):
+        name = identity.BINARIES[0]
+        self.assertNotIn("capabilities", self.receipt()["executables"][name]["build_info"])
+        golden = Path(__file__).resolve().parents[2] / "crates/constellation-attention/tests/fixtures/golden/build-info-v1.json"
+        capabilities = json.loads(golden.read_text())["capabilities"]
+        self.info[name]["capabilities"] = capabilities
+        self.write_fixture(name)
+        self.assertEqual(self.receipt()["executables"][name]["build_info"]["capabilities"], capabilities)
+
     def test_missing_or_mismatched_executable_identity_is_refused(self):
         name = identity.BINARIES[-1]
         for field, value in [("source_commit", None), ("source_commit", "f"*40),

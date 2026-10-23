@@ -1,0 +1,21 @@
+{
+  "schema": "constellation.attention_build_info.v1",
+  "name": "constellation-attention",
+  "version": "0.1.10",
+  "source_commit": "unavailable",
+  "registry": "constellation.attention_registry.v7",
+  "minimum_nq": "0.2.2",
+  "rustc": "rustc <toolchain>",
+  "build_id": null,
+  "target": "<target>",
+  "debug_assertions": false,
+  "capabilities": [
+    "runbook_url_withheld_for_http",
+    "local_page_route_v1_copy",
+    "value_code_warming_informational",
+    "report_exit_fields",
+    "loopback_http_runbooks",
+    "metric_alert_admission_per_rule",
+    "value_codes_v1"
+  ]
+}

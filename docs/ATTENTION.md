@@ -17,6 +17,35 @@ adds `remediation-journal-critical` to that set, this rule's notice copy
 reaches the notice route but its page is refused at every attempt
 (`command_error`, retried each pass, exit 3).
 
+## Build-info
+
+`constellation-attention --build-info` prints JSON without loading runtime
+configuration. It retains schema `constellation.attention_build_info.v1` and
+adds an optional `capabilities` array of stable behaviour identifiers. Existing
+readers in this repository accept additional fields; the packaging reader
+checks known fields, and monitored, diagnostic and estate do not parse this
+build-info record. Older producers may omit the array.
+
+Installers should test membership in `capabilities` for required behaviours,
+rather than matching `source_commit` against a commit allow-list. A missing
+array or identifier means that support is not declared. Ignore unknown
+identifiers. Source and build identity fields still describe provenance;
+capabilities do not establish current health or authorize action.
+
+The identifiers are defined together in the crate's `build_info` module.
+A capability, once published, is never renamed or removed without a schema
+bump. New identifiers may be added within v1.
+
+| Capability | Behaviour | Introduced in |
+|---|---|---|
+| `runbook_url_withheld_for_http` | V2 intents omit non-HTTPS `runbook_url` while retaining the full inspection link. | `e314c94` |
+| `local_page_route_v1_copy` | A `local_file` page route receives a v1 page-tier copy through `deliver-local`. | `f7b74cc` |
+| `value_code_warming_informational` | Bounded value-code warming stays informational, never triggers or resolves conditions, and preserves existing faults across upgrade grace. | `f9fe6f2` |
+| `report_exit_fields` | Completed pass reports carry `exit_code`, `exit_class` and `first_error`. | `e314c94` |
+| `loopback_http_runbooks` | HTTP runbook bases accept literal loopback addresses with an explicit port and path. | `3ecf0bb` |
+| `metric_alert_admission_per_rule` | Invalid definitions or site targets, including shared targets, are rejected independently while admitted rules still evaluate. | `69eac29` |
+| `value_codes_v1` | Opted-in v1 value codes preserve code-1 presence amid unknown codes 2–5; unknown codes cannot establish recovery. | `a22f15e` |
+
 ## Boundary
 
 The evaluator consumes qualified, current product state and produces
