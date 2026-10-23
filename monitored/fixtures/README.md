@@ -8,6 +8,7 @@ restricted to HostIoPressureHigh and the marked HostSwapExhausted, with example
 site labels, fixed times, and acquisition-failed code 2. Canonical digests and
 the registry byte hash match these fixture bytes. No family is closed.
 
-The snapshot ledger is copied byte-for-byte from the read-only coverage
-integration worktree's architecture/beta-observability/docs/COVERAGE-FAMILIES.md.
-Its prose is development context, never a claim about this example host.
+The sample metric rules carry explicit `family` labels. The release receipts
+index at `receipts/index.json` is empty: all receipt-dependent coverage parts
+remain not demonstrated. Tests create temporary digest-bound receipt files;
+those are synthetic acceptance cases, never deployed coverage evidence.

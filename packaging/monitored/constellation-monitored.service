@@ -5,13 +5,32 @@ After=constellation-estate-collect.service constellation-attention.service const
 
 [Service]
 Type=oneshot
+# Same reader identity as attention and the existing status-site renderer.
+User=nq
+Group=nq
 # Reads only the local declarations and reports; never runs producers.
 ExecStart=/usr/bin/constellation-monitored render --out /var/www/constellation-status/monitored.html
 UMask=0022
 TimeoutStartSec=60
 NoNewPrivileges=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
 ReadWritePaths=/var/www/constellation-status
-# The site installer owns creation and exposure of the status directory.
+# The package creates the directory; the site installer owns exposure.

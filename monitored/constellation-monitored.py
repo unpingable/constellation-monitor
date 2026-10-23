@@ -32,6 +32,23 @@ CODES = {1: 'present (threshold met / violation)', 2: 'acquisition failed',
          3: 'missing (no series)', 4: 'stale or future timestamp',
          5: 'invalid or warming (no history, counter reset or invalid limit)'}
 GLOSSARY = {
+    'unknown-held': 'An active detector has unusable evidence; the condition stays unknown rather than proving a measured fault or recovery.',
+    'contract': 'The declared application concerns and their required observations.',
+    'timer': 'A systemd schedule that activates a unit; its existence does not prove successful work.',
+    'unit': 'A named systemd service, timer or other managed resource.',
+    'registry': 'The deployed inventory of services and definition identities.',
+    'pin': 'An expected content digest binding a declaration to exact bytes or canonical policy.',
+    'pinned': 'Bound to an expected content digest; this is identity, not approval.',
+    'threshold': 'The configured boundary at which an observation satisfies a detector condition.',
+    'network enabled': 'Configuration permits external notification transport; delivery still requires evidence.',
+    'Alertmanager': 'The alert routing component; a route label alone does not demonstrate delivery.',
+    'excluded': 'Explicitly outside the registry observation scope, with a stated reason.',
+    'drop': 'A destination that discards a notice and cannot establish operator delivery.',
+    'MISSING_REQUIRED_OBSERVATION': 'A required concern was not supplied; the service is degraded rather than assumed healthy.',
+    'host-loss witness': 'An independent observer able to report loss of this host; local timers alone cannot do that.',
+    'estate-coverage': 'The estate inventory comparison identifying undeclared and excluded runtime units.',
+    'dry run': 'An evaluation without real notification delivery; it cannot demonstrate routing.',
+    'not demonstrated': 'Required release evidence or current supporting observations are absent or do not match.',
     'ok': 'The current estate acquisition found its declared runtime and required concerns satisfied. This does not establish undeclared application health.',
     'degraded': 'A required concern is not satisfied, including a missing required observation.',
     'down': 'The acquired runtime was not up.',
@@ -66,7 +83,7 @@ GLOSSARY = {
     'verdict': 'The estate collector’s judgment: OK, DEGRADED, DOWN, PAUSED or UNKNOWN. It is shown only for a current, matching report.',
     'concern': 'An application obligation. PRESENT means its required observation holds; ABSENT means it does not. Missing required observations degrade the service.',
     'rule': 'A declared detector. Its summary says what it measures; its hold determines how long a fault must persist.',
-    'family': 'A coverage obligation from the committed coverage ledger. Similar rule names do not establish equivalence.',
+    'family': 'A coverage scope explicitly named by the rule family label. Similar rule names do not establish equivalence.',
     'route': 'A named notification destination. Configuration alone does not establish delivery or operator receipt.',
     'handler': 'The configured transport, such as Slack, Discord, PagerDuty or a local qualification inbox. Secrets are never read here.',
     'runbook': 'Instructions at a document anchor. A label alone does not prove that a published anchor is reachable.',
@@ -88,51 +105,12 @@ GLOSSARY = {
     'evidence': 'A source file, report entry or retained receipt supporting this row. Pointers are claims, not cryptographic verification.',
     'reason': 'The producer’s explanation or the cause of an unknown result.',
     'hold': 'How long a condition must persist before notification. Recovery also needs confirmation.',
-    'home': 'The usual observation mechanism named by the coverage ledger.',
-    'source-status': 'The ledger’s source-development status. This never establishes host coverage.',
+    'home': 'The observation mechanism for this family.',
+    'source-status': 'Where the family scope was declared. This never establishes host coverage.',
     'input': 'A local file used to build this page.',
     'path': 'The local input pathname; the page does not publish its raw contents.',
     'item': 'A workload, excluded unit pattern, missing observation or coverage gap.',
     'needs-you': 'An incident requires operator attention. Inspect it with constellation-incidents; this page authorizes no action.',
-}
-# Exact names from the deployed host-pressure/substrate policies. New families
-# use an explicit constellation_family label or the host evidence rule map.
-FAMILIES = {
-    'HostIoPressureHigh': 'block I/O pressure', 'HostIoPressureSevere': 'block I/O pressure',
-    'HostMemoryPressureHigh': 'OOM / memory pressure events',
-    'HostSwapExhausted': 'swap_thrashing (second-pass candidate)',
-    'HostClockUnsynchronised': 'clock skew / NTP failure',
-    'HostClockOffsetHigh': 'clock skew / NTP failure',
-    'HostNetworkErrorsHigh': 'network interface errors / drops',
-    'HostCpuBusyHigh': 'CPU saturation / scheduler pressure',
-    'HostCpuPressureHigh': 'CPU saturation / scheduler pressure',
-    'HostFilesystemSpaceLow': 'disk capacity (bytes)',
-    'HostFilesystemInodesLow': 'inode exhaustion',
-    'HostFilesystemReadOnly': 'mount state (ro/remount/missing)',
-    'HostConntrackHigh': 'conntrack / socket table pressure',
-    'HostRebooted': 'reboot / unexpected uptime reset',
-    'HostFileDescriptorsHigh': 'file descriptor exhaustion',
-    'HostClockUnsynced': 'clock skew / NTP failure',
-    'HostConntrackNearLimit': 'conntrack / socket table pressure',
-    'HostFileDescriptorsNearLimit': 'file descriptor exhaustion',
-    'HostFilesystemNearFull': 'disk capacity (bytes)',
-    'HostInodesNearExhausted': 'inode exhaustion',
-    'HostFilesystemDeviceError': 'mount state (ro/remount/missing)',
-    'HostInterfaceDrops': 'network interface errors / drops',
-    'HostInterfaceErrors': 'network interface errors / drops',
-    'HostLinkFlapping': 'network interface errors / drops',
-    'HostOomKill': 'OOM / memory pressure events',
-}
-
-
-ATTENTION_FAMILIES = {
-    'host-disk': 'disk capacity (bytes)',
-    'memory-pressure': 'OOM / memory pressure events',
-    'io-pressure': 'block I/O pressure',
-    'service-down': 'process presence',
-    'service-not-doing-its-job': 'coverage honesty (operational vs declared)',
-    'nq-no-fresh-acquisition': 'witness silence',
-    'nightshift-recurrence-missing': 'scheduled_job_freshness (candidate)',
 }
 ATTENTION_MEANINGS = {
     'host-posture-unknown': 'Host posture cannot supply a current recognized observation.',
@@ -216,24 +194,41 @@ def source_pointer(path, fragment):
     return '%s#%s' % (path, fragment)
 
 
-def ledger_rows(text):
-    found, result = False, []
-    for line in text.splitlines():
-        if line.startswith('| May audit family |'):
-            found = True
+def release_receipts(index, index_path, site, policy_digest, members, family):
+    """Read digest-bound, release-carried receipts for the exact labeled scope.
+
+    These are release attestations, not signature or authority verification.
+    No network reads or files outside the release receipt directory.
+    """
+    result = {}
+    scope = sorted([list(r['_key']) for r in members])
+    root = Path(index_path).resolve().parent
+    for entry in rows(index, 'receipts'):
+        part = entry.get('part')
+        if (entry.get('family') != family or part not in ('observed', 'routed', 'runbook', 'drilled')
+                or entry.get('site') != site or entry.get('policy_sha256') != policy_digest
+                or entry.get('rules') != scope):
             continue
-        if found:
-            if not line.startswith('|'):
-                break
-            cells = [x.strip() for x in line.strip().strip('|').split('|')]
-            if cells[0].startswith('---'):
-                continue
-            if len(cells) != 4:
-                raise ValueError('unsupported coverage ledger row')
-            result.append(dict(zip(('family', 'home', 'source_status', 'owner'), cells)))
-    if not result:
-        raise ValueError('coverage family table not found')
+        name = entry.get('path')
+        if not isinstance(name, str) or not name or Path(name).is_absolute():
+            continue
+        path = (root / name).resolve()
+        if not path.is_relative_to(root):
+            continue
+        receipt, error, raw = read(path, schema='constellation.monitored_receipt/v1')
+        if error or entry.get('sha256') != hashlib.sha256(raw).hexdigest():
+            continue
+        if (any(receipt.get(k) != entry.get(k) for k in ('family', 'part', 'site', 'policy_sha256', 'rules'))
+                or receipt.get('holds') is not True or not isinstance(receipt.get('evidence'), list)
+                or not receipt['evidence'] or not all(isinstance(x, str) and x.strip() for x in receipt['evidence'])):
+            continue
+        result[part] = {'holds': True, 'evidence': [str(path)] + receipt['evidence']}
     return result
+
+
+def observation_summary(value):
+    # The declared summary is a template, not an acquired instance value.
+    return re.sub(r'\{\{.*?\}\}', '[observed value/label]', str(value), flags=re.DOTALL)
 
 
 def keyed_rules(doc, declared=False):
@@ -308,8 +303,7 @@ def build(args, now):
         ('attention_report', args.attention_report, 'json', 'constellation.attention_report.v1'),
         ('policy', args.policy, 'json', 'constellation.vmalert_policy/v1'),
         ('metrics', args.metric_alerts, 'json', 'constellation.metric_alerts/v1'),
-        ('ledger', args.ledger, 'text', None),
-        ('evidence', args.coverage_evidence, 'json', 'constellation.monitored_coverage/v1'),
+        ('receipts', args.receipts_index, 'json', 'constellation.monitored_receipts/v1'),
     )
     for name, path, fmt, schema in specs:
         doc, error, content = read(path, fmt, schema)
@@ -349,6 +343,7 @@ def build(args, now):
     for svc in reg.get('services', []):
         if isinstance(svc.get('name'), str):
             services[svc['name']] = (svc, str(args.registry))
+    declaration_pins = {d.get('name'): d for d in rows(reg, 'service_declarations')}
     declaration_dir = Path(args.services_dir)
     try:
         files = sorted(declaration_dir.glob('*.toml')) if declaration_dir.is_dir() else []
@@ -356,17 +351,23 @@ def build(args, now):
             raise OSError('not a directory')
         sources.append({'input': 'declarations', 'path': str(declaration_dir), 'state': '%d optional declaration files' % len(files)})
         for path in files:
-            svc, error, _ = read(path, 'toml')
+            svc, error, content = read(path, 'toml')
             name = svc.get('name')
             if not error and not isinstance(name, str):
                 error = 'unknown: declaration has no service name'
             sources.append({'input': 'declaration', 'path': str(path), 'state': error or 'read'})
             if error:
                 services['unreadable declaration: ' + path.name] = ({'name': path.name, '_error': error}, str(path))
-            elif name in services and svc != services[name][0]:
-                # Display the local declaration, but never attach a registry acquisition to changed data.
-                svc['_error'] = 'unknown: declaration differs from acquired registry entry'
-                services[name] = (svc, str(path))
+            elif name in services:
+                pin = declaration_pins.get(name)
+                matches = (pin.get('sha256') == hashlib.sha256(content).hexdigest()
+                           and Path(pin.get('path', '')).name == path.name) if pin else svc == services[name][0]
+                if not matches:
+                    svc['_error'] = 'unknown: declaration differs from acquired registry entry'
+                    services[name] = (svc, str(path))
+                else:
+                    # Keep the collector-derived fields after verifying the raw declaration pin.
+                    services[name] = (services[name][0], str(path))
             else:
                 services[name] = (svc, str(path))
     except OSError:
@@ -422,10 +423,10 @@ def build(args, now):
                'runtime': ', '.join('%s=%s' % (k, v) for k, v in runtime.items()) or str(obs.get('runtime', 'unknown: runtime not declared')),
                'observation': observation, 'acquisition': estate.get('generated_at', 'unknown'),
                'verdict': error or concern_fault or obs.get('verdict', 'UNKNOWN'), 'reason': error or obs.get('reason', 'unknown'),
-               'concern': '\n'.join(concerns), 'route': tells, 'revision': str(contract.get('sha256', 'unknown: no contract revision pinned')),
+               'concern': '\n'.join(concerns), 'route': tells, 'revision': ('sha256:' + declaration_pins[name]['sha256']) if name in declaration_pins else str(contract.get('sha256', 'unknown: no declaration or contract revision pinned')),
                'supervision': 'timers: ' + ', '.join(t if isinstance(t, str) else t.get('unit', '?') for t in timers) if timers else 'runtime acquisition only; no timer declared',
                'evidence': source_pointer(pointer, name),
-               'state': fault['attention_report'] or '; '.join(str(c.get('observation', 'unknown')) + ': ' + str(c.get('note', '')) for c in condition) or 'unknown: no attention condition matched'}
+               'state': fault['attention_report'] or '; '.join(str(c.get('observation', 'unknown')) + ': ' + str(c.get('note', '')) for c in condition) or 'no active condition'}
         service_rows.append(row)
         if error:
             gaps.append({'item': name, 'reason': error, 'evidence': pointer})
@@ -463,20 +464,17 @@ def build(args, now):
         declared, running = {}, {}
         metric_fault = 'unknown: %s' % error
         fault['metrics'] = metric_fault
-    manifest = data['evidence']
-    manifest_ok = not fault['evidence'] and manifest.get('site') == site and manifest.get('policy_sha256') == expected
-    families_evidence = manifest.get('families', {}) if manifest_ok else {}
     rule_rows = []
     effective_metric_rule = next((r for r in rows(report, 'rules') if r.get('id') == 'metric-alert-firing'), {})
     metric_route_enabled = effective_metric_rule.get('enabled') is True and effective_metric_rule.get('input_configured') is True
     rejected = {r.get('name') or r.get('rule') for i in rows(report, 'inputs') for r in rows(i, 'rejected_rules')}
     for key in sorted(set(declared) | set(running)):
         definition, live = declared.get(key, {}), running.get(key, {})
-        labels = definition.get('labels') or live.get('labels') or {}
-        family = labels.get('constellation_family') or FAMILIES.get(key[2])
-        for family_name, entry in families_evidence.items():
-            if list(key) in entry.get('rules', []):
-                family = family_name
+        labels = definition.get('labels', {}) if definition else live.get('labels', {})
+        family = labels.get('family')
+        if not isinstance(family, str) or not family.strip():
+            family = None
+            gaps.append({'item': '/'.join(key), 'reason': 'not demonstrated: rule has no family label', 'evidence': str(args.policy)})
         state, usable = rule_state(live, metric_fault, now, (inputs.get('metric_alerts') or {}).get('max_evaluation_age_seconds', args.max_age), site)
         if definition and live and definition.get('labels', {}) != live.get('labels', {}):
             state, usable = 'unknown: acquired labels differ from declared rule', False
@@ -492,10 +490,17 @@ def build(args, now):
         if not metric_route_enabled and labels.get('attention') == 'true':
             route = 'unknown: effective metric-alert-firing rule disabled, unconfigured or missing from report; ' + route
         evidence = source_pointer(args.metric_alerts, '/'.join(key))
-        rule_rows.append({'rule': key[2], 'identity': '/'.join(key), 'family': family or 'unknown: no explicit family mapping', 'observation': definition.get('annotations', {}).get('summary', 'unknown: summary not acquired'), 'state': state, 'acquisition': live.get('last_evaluation') or 'unknown: never evaluated', 'route': route, 'handler': transport if labels.get('attention') == 'true' else 'unknown: Alertmanager config not an input', 'runbook': runbook, 'revision': '%s; registry pins %s' % (metrics.get('policy_sha256', 'unknown'), ', '.join(pins) or 'unknown'), 'hold': str(definition.get('duration_seconds', '?')) + 's vmalert hold; attention metric notice default 60s', 'value-code': ('v1: ' + '; '.join('%d=%s' % item for item in CODES.items()) if labels.get('constellation_value_codes') == 'v1' else 'unknown: unsupported marker ' + str(labels['constellation_value_codes'])) if 'constellation_value_codes' in labels else 'unmarked: raw numeric values', 'evidence': evidence, '_usable': usable, '_declared': bool(definition) and bool(live) and definition.get('labels', {}) == live.get('labels', {}) and policy_ok and not fault['metrics'], '_route': metric_route_enabled and report.get('network_enabled') is True and labels.get('attention') == 'true' and bool(inputs.get('metric_alerts')) and not fault['attention_config'] and not fault['attention_report'] and bool(routes.get('network_enabled')) and notice != 'drop' and transport != 'local_file', '_runbook': not runbook.startswith('unknown:')})
+        rule_rows.append({'rule': key[2], 'identity': '/'.join(key), 'family': family or 'not demonstrated: no family label', 'observation': observation_summary(definition.get('annotations', {}).get('summary', 'unknown: summary not acquired')), 'state': state, 'acquisition': live.get('last_evaluation') or 'unknown: never evaluated', 'route': route, 'handler': transport if labels.get('attention') == 'true' else 'unknown: Alertmanager config not an input', 'runbook': runbook, 'revision': '%s; registry pins %s' % (metrics.get('policy_sha256', 'unknown'), ', '.join(pins) or 'unknown'), 'hold': str(definition.get('duration_seconds', '?')) + 's vmalert hold; attention metric notice default 60s', 'value-code': ('v1: ' + '; '.join('%d=%s' % item for item in CODES.items()) if labels.get('constellation_value_codes') == 'v1' else 'unknown: unsupported marker ' + str(labels['constellation_value_codes'])) if 'constellation_value_codes' in labels else 'unmarked: raw numeric values', 'evidence': evidence, '_key': key, '_usable': usable, '_declared': bool(definition) and bool(live) and definition.get('labels', {}) == live.get('labels', {}) and policy_ok and not fault['metrics'], '_route': metric_route_enabled and report.get('network_enabled') is True and labels.get('attention') == 'true' and bool(inputs.get('metric_alerts')) and not fault['attention_config'] and not fault['attention_report'] and bool(routes.get('network_enabled')) and notice != 'drop' and transport != 'local_file', '_runbook': not runbook.startswith('unknown:')})
     attention_pins = [d.get('digest') for d in rows(reg, 'definitions') if d.get('kind') == 'attention-policy' and d.get('config') == str(args.attention_config)]
-    attention_revision = '%s; registry pin %s' % (report.get('attention_policy_digest', 'unknown'), ', '.join(attention_pins) or 'unknown: absent')
-    attention_revision += '; matched' if report.get('attention_policy_digest') in attention_pins else '; unknown: not verified against registry pin'
+    config_digest = 'sha256:' + hashlib.sha256(raw['attention_config']).hexdigest()
+    file_pins = [d.get('digest') for d in rows(reg, 'definitions')
+                 if d.get('kind') == 'file' and d.get('path') == str(args.attention_config)]
+    attention_verified = bool(attention_pins and report.get('attention_policy_digest') in attention_pins)
+    if attention_pins:
+        attention_revision = '%s; attention-policy registry pin %s; %s' % (report.get('attention_policy_digest', 'unknown'), ', '.join(attention_pins), 'matched' if attention_verified else 'unknown: mismatch')
+    else:
+        attention_verified = bool(file_pins and config_digest in file_pins)
+        attention_revision = '%s; file registry pin %s; %s; no attention-policy pin: effective policy digest unverified' % (config_digest, ', '.join(file_pins) or 'absent', 'matched configuration bytes' if attention_verified else 'unknown: configuration bytes unverified')
     # Compiled attention rules are described by the evaluator's own report.
     # Do not execute the evaluator or invent a missing report's rule roster.
     for rule in rows(report, 'rules'):
@@ -509,36 +514,24 @@ def build(args, now):
         state = fault['attention_report'] or '; '.join('%s: %s' % (c.get('observation', 'unknown'), c.get('note', '')) for c in conditions) or 'unknown: no acquired condition (absence is not clear)'
         if rule.get('enabled') is False or rule.get('input_configured') is False:
             state = 'not monitored: disabled or input not configured; ' + state
-        rule_rows.append({'rule': name, 'identity': 'attention/' + name, 'family': ATTENTION_FAMILIES.get(name, 'attention ' + str(rule.get('input', 'unknown'))), 'observation': ATTENTION_MEANINGS.get(name, 'unknown: rule summary absent from report') if report.get('registry') == 'constellation.attention_registry.v7' else 'unknown: unsupported attention registry meaning', 'state': state, 'acquisition': report.get('evaluated_at', 'unknown'), 'route': route, 'handler': transport + (' + pagerduty' if rule.get('class') == 'page' else ''), 'runbook': rb_link, 'revision': attention_revision, 'hold': '%ss persistence; threshold %s' % (rule.get('persistence_seconds', '?'), rule.get('threshold_seconds', '?')), 'value-code': 'not a value-coded metric rule', 'evidence': source_pointer(args.attention_report, 'rules/' + name), '_usable': not fault['attention_report'] and bool(conditions) and all(c.get('observation') in ('clear', 'present') for c in conditions), '_declared': not fault['registry'] and not fault['attention_config'] and not fault['attention_report'] and report.get('attention_policy_digest') in attention_pins, '_route': report.get('network_enabled') is True and not fault['attention_report'] and not fault['attention_config'] and bool(routes.get('network_enabled')) and notice != 'drop' and transport != 'local_file', '_runbook': bool(rb_base), '_attention': True, '_enabled': rule.get('enabled') is True and rule.get('input_configured') is True})
-    try:
-        families = ledger_rows(data['ledger'])
-    except ValueError as error:
-        families = []
-        fault['ledger'] = 'unknown: %s' % error
-        gaps.append({'item': 'coverage families', 'reason': fault['ledger'], 'evidence': str(args.ledger)})
+        rule_rows.append({'rule': name, 'identity': 'attention/' + name, 'family': 'not declared: compiled attention rule', 'observation': ATTENTION_MEANINGS.get(name, 'unknown: rule summary absent from report') if report.get('registry') == 'constellation.attention_registry.v7' else 'unknown: unsupported attention registry meaning', 'state': state, 'acquisition': report.get('evaluated_at', 'unknown'), 'route': route, 'handler': transport + (' + pagerduty' if rule.get('class') == 'page' else ''), 'runbook': rb_link, 'revision': attention_revision, 'hold': '%ss persistence; threshold %s' % (rule.get('persistence_seconds', '?'), rule.get('threshold_seconds', '?')), 'value-code': 'not a value-coded metric rule', 'evidence': source_pointer(args.attention_report, 'rules/' + name), '_usable': not fault['attention_report'] and bool(conditions) and all(c.get('observation') in ('clear', 'present') for c in conditions), '_declared': not fault['registry'] and not fault['attention_config'] and not fault['attention_report'] and attention_verified, '_route': report.get('network_enabled') is True and not fault['attention_report'] and not fault['attention_config'] and bool(routes.get('network_enabled')) and notice != 'drop' and transport != 'local_file', '_runbook': bool(rb_base), '_attention': True, '_enabled': rule.get('enabled') is True and rule.get('input_configured') is True})
+    families = sorted({r['family'] for r in rule_rows if '_key' in r and not r['family'].startswith('not demonstrated:')})
     coverage_rows = []
     for family in families:
-        members = [r for r in rule_rows if r['family'] == family['family'] and r.get('_enabled', True)]
-        receipt = families_evidence.get(family['family'], {})
-        if any(r.get('_attention') for r in members) and manifest.get('attention_policy_digest') != report.get('attention_policy_digest'):
-            receipt = {}
-        row = {'family': family['family'], 'home': family['home'], 'rule': ', '.join(r['rule'] for r in members) or 'none on this host', 'evidence': source_pointer(args.ledger, family['family']), 'source-status': family['source_status'] + ' (source only)'}
-        tests = {'observed': bool(members) and all(r['_usable'] for r in members), 'declared': bool(members) and all(r['_declared'] for r in members), 'routed': bool(members) and all(r['_route'] for r in members), 'runbook': bool(members) and all(r['_runbook'] for r in members), 'drilled': bool(members)}
-        # Receipts must cover the family scope, not just one conveniently working rule.
+        members = [r for r in rule_rows if r['family'] == family and '_key' in r]
+        receipt = release_receipts(data['receipts'], args.receipts_index, site, expected, members, family) if not fault['receipts'] else {}
+        row = {'family': family, 'home': 'labeled metric rules', 'rule': ', '.join(r['rule'] for r in members),
+               'evidence': str(args.receipts_index), 'source-status': 'derived from rule family labels; no source ledger claim'}
+        tests = {'observed': all(r['_usable'] for r in members), 'declared': all(r['_declared'] for r in members), 'routed': all(r['_route'] for r in members), 'runbook': all(r['_runbook'] for r in members), 'drilled': True}
         for part, holds in tests.items():
             evidence = receipt.get(part, {})
-            attested = isinstance(evidence, dict) and evidence.get('holds') is True and isinstance(evidence.get('evidence'), list) and bool(evidence['evidence']) and all(isinstance(p, str) and p.strip() for p in evidence['evidence'])
-            if part == 'declared':
-                attested = True  # mechanically verified from three matching identities
-            ok = holds and attested
-            detail = '; '.join(evidence.get('evidence', [])) if isinstance(evidence, dict) and isinstance(evidence.get('evidence'), list) else ''
+            ok = holds and (part == 'declared' or evidence.get('holds') is True)
+            detail = '; '.join(evidence.get('evidence', []))
             if part == 'declared' and holds:
-                detail = str(args.registry) + '; ' + '; '.join(r['evidence'] + '; ' + r['revision'] for r in members)
-            row[part] = ('yes: ' if ok else 'unknown: ') + (detail or ('no rule on this host' if not members else 'family scope receipt or current supporting input missing'))
+                detail = str(args.registry) + '; ' + '; '.join(r['revision'] for r in members)
+            row[part] = ('yes: ' if ok else 'not demonstrated: ') + (detail or 'family scope release receipt or current supporting input missing')
         row['coverage'] = 'closed on this host' if all(row[p].startswith('yes:') for p in tests) else 'open on this host'
         coverage_rows.append(row)
-        if not members:
-            gaps.append({'item': family['family'], 'reason': 'no mapped rule on this host; source status does not establish observation', 'evidence': str(args.ledger)})
     for item in sources:
         if fault.get(item['input']):
             item['state'] = fault[item['input']]
@@ -568,13 +561,17 @@ def terminal(doc, target=None):
     return '\n'.join(out) + '\n', found
 
 
+def glossary_id(term):
+    return term.replace(' ', '-')
+
+
 def cell(value):
     text = str(value)
     if text.startswith(('http://', 'https://')) and ' ' not in text:
         return '<a href="%s">%s</a>' % (html.escape(text, quote=True), html.escape(text))
     escaped = html.escape(text)
     terms = '|'.join(re.escape(k) for k in sorted(GLOSSARY, key=len, reverse=True))
-    escaped = re.sub(r'(?<![\w-])(' + terms + r')(?![\w-])', lambda m: '<a href="#g-%s">%s</a>' % (m.group().lower(), m.group()), escaped, flags=re.IGNORECASE)
+    escaped = re.sub(r'(?<![\w-])(' + terms + r')(?![\w-])', lambda m: '<a href="#g-%s">%s</a>' % (glossary_id(next(k for k in GLOSSARY if k.lower() == m.group().lower())), m.group()), escaped, flags=re.IGNORECASE)
     return escaped.replace('\n', '<br>')
 
 
@@ -618,7 +615,7 @@ def render(doc):
         out.append('</tbody></table></div></section>')
     out.append('<section id="glossary"><h2>Glossary</h2><dl>')
     for term, meaning in GLOSSARY.items():
-        out.append('<dt id="g-%s">%s</dt><dd>%s</dd>' % (term, html.escape(term.replace('-', ' ')), html.escape(meaning)))
+        out.append('<dt id="g-%s">%s</dt><dd>%s</dd>' % (glossary_id(term), html.escape(term.replace('-', ' ')), html.escape(meaning)))
     out.append('</dl></section></body></html>\n')
     return ''.join(out)
 
@@ -648,8 +645,7 @@ def parser():
     p.add_argument('--attention-report', default='/var/lib/constellation-attention/report.json')
     p.add_argument('--policy', default='/etc/constellation-metric-alerts/declared-vmalert-policy.json')
     p.add_argument('--metric-alerts', default='/var/lib/constellation-metric-alerts/metric-alerts.json')
-    p.add_argument('--ledger', default=str(HERE / 'COVERAGE-FAMILIES.md'))
-    p.add_argument('--coverage-evidence', default='/etc/constellation-monitored/coverage.json')
+    p.add_argument('--receipts-index', default='/usr/share/constellation/release/receipts/index.json')
     p.add_argument('--site', help='expected registry site (otherwise use the local registry)')
     p.add_argument('--max-age', type=int, default=600, help='report freshness in seconds; estate/metrics config bounds take precedence')
     p.add_argument('--now', help='RFC3339 time for reproducible offline inspection')

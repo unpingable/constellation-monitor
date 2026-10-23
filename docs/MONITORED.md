@@ -29,7 +29,8 @@ Start by answering these questions:
    declarations without acquisitions, missing required observations, and
    families with no mapped rule. An excluded unit is visible, not covered.
 5. Is the family covered on this host? All five coverage columns need evidence;
-   a source ledger saying “activated elsewhere” is insufficient.
+   a source-development claim is insufficient. Only labeled metric rule scopes
+   are enumerated; unlabeled rules remain visible as gaps.
 
 `DEGRADED` means a required observation does not hold. `DOWN` means the runtime
 was down. `PAUSED` is a declared pause, not a health assertion. `UNKNOWN` means
@@ -55,7 +56,13 @@ The command reads local files only. It executes no collectors or status
 commands, contacts no service, and never opens notification credential files.
 It publishes selected fields rather than entire configurations. Run it as an
 account that can read the declarations and reports. The supplied systemd unit
-uses root for those reads and writes only the status directory.
+runs as `nq`, the same account that owns the mode-0600 attention configuration,
+mode-0700 attention report directory, and existing status renderer. No root or
+capabilities are needed. Packaging sets the status directory owner to `nq:nq`.
+The unit empties its capability set, denies network access, restricts address
+families to AF_UNIX, and applies all attention-unit process/kernel/filesystem
+restrictions. Only the status directory is writable. Other release input paths
+must grant `nq` read access; an unreadable input stays unknown.
 
 | Input | Default |
 |---|---|
@@ -66,20 +73,23 @@ uses root for those reads and writes only the status directory.
 | Attention report | `/var/lib/constellation-attention/report.json` |
 | Declared metric policy | `/etc/constellation-metric-alerts/declared-vmalert-policy.json` |
 | Acquired metric alerts | `/var/lib/constellation-metric-alerts/metric-alerts.json` |
-| Coverage family table | Packaged `COVERAGE-FAMILIES.md` |
-| Optional host coverage receipts | `/etc/constellation-monitored/coverage.json` |
+| Release receipts index | `/usr/share/constellation/release/receipts/index.json` |
 
 Global options precede `list`, `show`, or `render`: `--registry`, `--estate`,
 `--services-dir`, `--attention-config`, `--attention-report`, `--policy`,
-`--metric-alerts`, `--ledger`, and `--coverage-evidence` override those paths.
+`--metric-alerts`, and `--receipts-index` override those paths.
 `--site` requires the expected site identifier; otherwise the local registry
 supplies it. `--max-age` defaults to 600 seconds for reports; estate and metrics
 use attention's configured bounds where supplied. `--now` takes an RFC3339 time
 for reproducible offline inspection. `--help` describes the source-defined flags.
 
 The estate acquisition must carry the SHA-256 of the exact registry bytes read.
-A local service declaration differing from that registry remains unknown until
-it is reconciled and acquired. Synthetic estate coverage/definition rows are
+Service declaration bytes are compared with the registry's `service_declarations`
+SHA-256 pins, keyed by service name and declaration filename. Matching pins keep
+the collector-derived fields (health/metrics/store declarations are normalized
+by that collector), and supply the displayed service revision. Without a pin,
+only an exactly equal declaration/registry entry can inherit the acquisition.
+A changed declaration remains unknown until reconciled and acquired. Synthetic estate coverage/definition rows are
 included. Probes and producers listed here are the registry's status producers,
 HTTP checks, declared timers, and configured attention inputs. The acquisition
 is the inventory authority: the page does not scan systemd, Docker, repositories,
@@ -90,7 +100,10 @@ host-loss notification are explicitly unverified from these local inputs.
 The effective metric policy must match both the canonical local declared policy
 digest and a registry `vmalert-policy` pin. Rules are joined by file, group and
 name. The attention policy's report digest and matching registry pin are shown
-separately. Neither identity authorizes action. Routes show the configured
+separately. When no `attention-policy` pin exists, the page shows the `file` pin
+for the attention config and compares its exact bytes; it explicitly says the
+effective policy digest is unverified. A matched file pin establishes that
+configuration declaration only. Neither identity authorizes action. Routes show the configured
 notice handler or page handler; Alertmanager delivery stays unknown because its
 configuration and delivery receipts are not inputs. Probe URLs omit userinfo and
 query parameters. Keep operational declarations free of secrets and apply the
@@ -104,61 +117,86 @@ input; use Python 3.11+ for the full TOML language.
 
 ## Coverage evidence
 
-The packaged table is an exact snapshot of Cartography's 46-row
-`COVERAGE-FAMILIES.md`, from coverage integration commit `c760f82` as read on
-2026-10-22. Its first table supplies family names and source context. Override
-`--ledger` with a newer committed copy when the site release updates it. The
-page never treats the ledger's development status as evidence about this host.
+Families come exclusively from the nonempty `family` label in each declared
+vmalert rule. Put the same label in the source YAML rule file so rendering and
+loaded policy retain it, for example:
 
-Existing host-pressure/substrate rule names have explicit family mappings.
-Additional rules can carry `constellation_family` with the exact ledger family
-name, or the host evidence file can map exact `[file, group, name]` triples.
-Unmapped rules remain visible with an unknown family. A rule mapped to a family
-is only a candidate: it does not establish the whole family's applicability or
-scope. This reader does not decide that an unobserved family is inapplicable.
+```yaml
+labels:
+  family: "block I/O pressure"
+  attention: "true"
+```
 
-The ledger does not contain host-specific history, delivery, published-anchor,
-or drill receipts. The site release can supply them in this additive document:
+Use a stable, case-sensitive family name and apply it to every rule needed for
+that scope. This is the `family` convention (not `constellation_family`); the
+Cartography re-cut owns adoption in its rule sources. Unlabeled rules render a
+family gap. No alert-name mapping, copied coverage ledger, manual host coverage
+file, or inferred family for compiled attention rules participates in closure.
+This page does not enumerate obligations absent from all supplied rule labels,
+and cannot establish whole-estate completeness from this list.
+
+Release assembly commits receipts and their index, ships them together under
+`/usr/share/constellation/release/receipts/`, and keeps them read-only at runtime.
+`--receipts-index` selects that release's index (also useful for offline review).
+The reader never creates or edits receipts. The index schema is:
 
 ```json
 {
-  "schema": "constellation.monitored_coverage/v1",
-  "site": "example",
-  "policy_sha256": "sha256:<exact canonical vmalert policy digest>",
-  "families": {
-    "block I/O pressure": {
-      "rules": [["host-pressure.rules.yml", "host-pressure", "HostIoPressureHigh"]],
-      "observed": {"holds": true, "evidence": ["receipts/history.json#io-pressure"]},
-      "routed": {"holds": true, "evidence": ["receipts/delivery.json#operator-receipt"]},
-      "runbook": {"holds": true, "evidence": ["receipts/published-anchors.json#host-pressure"]},
-      "drilled": {"holds": true, "evidence": ["receipts/drill.json#trigger-and-recovery"]}
-    }
-  }
+  "schema": "constellation.monitored_receipts/v1",
+  "receipts": [{
+    "family": "block I/O pressure",
+    "part": "observed",
+    "site": "example",
+    "policy_sha256": "sha256:<canonical vmalert policy digest>",
+    "rules": [["host-pressure.rules.yml", "host-pressure", "HostIoPressureHigh"]],
+    "path": "io-history.json",
+    "sha256": "<64 lowercase hex digits: exact receipt bytes>"
+  }]
 }
 ```
 
-These are explicit local release attestations covering the family's entire
-host scope. The reader displays their pointers but does not fetch them, verify
-signatures, or certify the contents. The release owner must retain the receipts
-and verify their claims. A changed host or policy digest invalidates the
-attestations. Families using compiled attention rules also require a matching
-`attention_policy_digest` at the document root. Never put credentials in this document. Missing receipts remain
-unknown. A family closes on this host only when all five hold:
+`part` is one of `observed`, `routed`, `runbook`, `drilled`. `rules` is the sorted
+list of exact `[file, group, name]` triples for **all** labeled rules in that
+family. `path` is relative to the index directory; absolute paths, traversal and
+symlinks escaping that directory cannot supply evidence. The reader checks the
+file SHA-256 before accepting this receipt schema:
 
-- **Observed:** each mapped rule has fresh, healthy, usable evidence on this
-  host, and the host/history scope receipt is present.
-- **Declared:** all mapped rules are in the local declaration, the effective
-  policy matches it, and the estate registry pins that exact identity.
-- **Routed:** attention is configured, its report is current and not a dry run,
-  network delivery is enabled through an external handler, and the delivery
-  receipt is present. Drop and local qualification inboxes cannot satisfy it.
-- **Runbook:** there is a safe published document URL with an anchor and a
-  published-anchor receipt. An unpublished label remains visibly unknown.
-- **Drilled:** the host/revision-scoped trigger and recovery receipt is present.
+```json
+{
+  "schema": "constellation.monitored_receipt/v1",
+  "family": "block I/O pressure",
+  "part": "observed",
+  "site": "example",
+  "policy_sha256": "sha256:<canonical vmalert policy digest>",
+  "rules": [["host-pressure.rules.yml", "host-pressure", "HostIoPressureHigh"]],
+  "holds": true,
+  "evidence": ["release history receipt identifier and retained scope explanation"]
+}
+```
 
-Closed here says nothing about other sites. No family is claimed closed by the
-committed sample. Update delivery and drill receipts through the site's existing
-release procedure; this page has no enrollment or mutation operation.
+The five scope fields must equal the index entry, `holds` must be true, and
+`evidence` must contain nonempty strings. The release owner attests that the
+retained material demonstrates the whole family scope on that site and revision.
+The page displays those evidence references; it does not fetch references,
+verify signatures, or certify the attestation's truth. A file digest binds bytes,
+not authority. Missing, modified, wrong-scope or wrong-revision receipts render
+**not demonstrated**. The committed sample index is empty and closes no family.
+
+Closure also requires current supporting inputs:
+
+- **Observed:** every rule has fresh, healthy, usable evidence plus a family
+  history receipt.
+- **Declared:** every rule is loaded with matching labels, and the effective
+  policy matches both the local declaration and registry pin. This part is
+  mechanically checked; no receipt can override a mismatch.
+- **Routed:** current attention inputs, enabled external transport, and a
+  family delivery receipt. Drop, dry run and local inboxes cannot satisfy it.
+- **Runbook:** safe published URL and anchor plus a published-anchor receipt.
+- **Drilled:** a release receipt of trigger and recovery for that family scope.
+
+Closed here says nothing about other sites or unlabeled obligations. Receipt
+production, commitment and release assembly remain with their owning lanes;
+source tests and fixture receipts never establish deployed host coverage.
 
 ## Install and refresh
 
@@ -168,14 +206,19 @@ Build the package from this source checkout without a Rust build:
 packaging/monitored/build-deb.sh 0.1.0 /tmp/monitored-debs
 ```
 
-The `all` package depends only on Python 3.10+, includes the command, ledger,
-glossary/operator documentation and systemd units. It installs no live
-configuration, enables no services, and changes no site exposure. The site
-installer owns activation and its output directory. On the target host:
+The `all` package requires Python 3.10+ and the existing `nq-ng` account/package,
+and includes the command, glossary/operator documentation and systemd units. It installs no live
+configuration, enables no services, and changes no site exposure. Its postinst
+only creates `/var/www/constellation-status` owned by `nq:nq` and reloads
+systemd unit definitions. The site installer owns activation and exposure. The status projection index links to
+`monitored.html` in both current and unavailable views. Cartography's separate
+Python status-site renderer needs the supplied
+[`status-site-monitored-link.patch`](../packaging/monitored/status-site-monitored-link.patch)
+in its re-cut; this lane validates the patch against a temporary copy of that
+read-only source without changing Cartography. On the target host:
 
 ```sh
 sudo apt install ./constellation-monitored_0.1.0_all.deb
-sudo install -d -m 0755 /var/www/constellation-status
 sudo constellation-monitored render --out /var/www/constellation-status/monitored.html
 sudo systemctl daemon-reload
 sudo systemctl enable --now constellation-monitored.timer
@@ -202,7 +245,7 @@ From this checkout:
 ```sh
 python3 monitored/sample.py --out /tmp/monitored-sample.html
 umask 022
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s monitored -v
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest monitored -q -p no:cacheprovider
 ```
 
 The sample uses the committed fixtures at the fixed time
@@ -215,12 +258,10 @@ report contracts. The attention declaration is copied from the testbed.
 
 The human acceptance session has not run. Have an unfamiliar operator find
 `web`, explain how it is observed, name the notification route, distinguish
-`worker` from an acquired service, explain code 2, and explain why a ledger row
+`worker` from an acquired service, explain code 2, and explain why a labeled family
 is still open. Score each step `obvious / reread docs / needed hint / blocked`.
 No test count substitutes for that session.
 
-Integration remains a site decision: should the status index link to
-`monitored.html`, or should the Operations Board embed/link that same page?
-This package supplies the standalone page without editing Cartography or the
-Board. Published runbook content, receipt production, external supervision and
-site activation remain with their owning release lanes.
+Published runbook content, committed release receipts, external supervision,
+and site activation remain with their owning release lanes. The status index
+links the standalone page; the Operations Board may consume the same page.

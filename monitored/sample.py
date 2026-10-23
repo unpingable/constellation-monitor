@@ -15,9 +15,9 @@ def main():
     parser.add_argument('--out', default='/tmp/monitored-sample.html')
     args = parser.parse_args()
     argv = []
-    for flag, name in [('registry', 'registry.json'), ('estate', 'estate.json'), ('services-dir', 'services.d'), ('attention-config', 'attention.toml'), ('attention-report', 'report.json'), ('policy', 'policy.json'), ('metric-alerts', 'metrics.json'), ('coverage-evidence', 'coverage.json')]:
+    for flag, name in [('registry', 'registry.json'), ('estate', 'estate.json'), ('services-dir', 'services.d'), ('attention-config', 'attention.toml'), ('attention-report', 'report.json'), ('policy', 'policy.json'), ('metric-alerts', 'metrics.json'), ('receipts-index', 'receipts/index.json')]:
         argv.extend(['--' + flag, str(HERE / 'fixtures' / name)])
-    argv.extend(['--ledger', str(HERE / 'COVERAGE-FAMILIES.md'), '--now', '2026-10-22T21:01:00Z', 'render', '--out', args.out])
+    argv.extend(['--now', '2026-10-22T21:01:00Z', 'render', '--out', args.out])
     return m.main(argv)
 
 

@@ -15,7 +15,8 @@
             "area": "host",
             "attention": "true",
             "runbook": "host-pressure",
-            "severity": "warn"
+            "severity": "warn",
+            "family": "block I/O pressure"
           },
           "annotations": {
             "summary": "I/O stall {{ $value | humanizePercentage }} of wall time on {{ $labels.site }} ({{ $labels.instance }}) for 15 min"
@@ -31,7 +32,8 @@
             "attention": "true",
             "constellation_value_codes": "v1",
             "runbook": "host-pressure",
-            "severity": "warn"
+            "severity": "warn",
+            "family": "swap_thrashing"
           },
           "annotations": {
             "summary": "evidence code={{ $value }} (present)"

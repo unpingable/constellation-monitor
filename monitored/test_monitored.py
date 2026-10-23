@@ -29,9 +29,9 @@ class MonitoredTest(unittest.TestCase):
         self.root = Path(self.temp.name) / 'inputs'
         shutil.copytree(HERE / 'fixtures', self.root)
         self.argv = []
-        for flag, filename in [('registry', 'registry.json'), ('estate', 'estate.json'), ('services-dir', 'services.d'), ('attention-config', 'attention.toml'), ('attention-report', 'report.json'), ('policy', 'policy.json'), ('metric-alerts', 'metrics.json'), ('coverage-evidence', 'coverage.json')]:
+        for flag, filename in [('registry', 'registry.json'), ('estate', 'estate.json'), ('services-dir', 'services.d'), ('attention-config', 'attention.toml'), ('attention-report', 'report.json'), ('policy', 'policy.json'), ('metric-alerts', 'metrics.json'), ('receipts-index', 'receipts/index.json')]:
             self.argv += ['--' + flag, str(self.root / filename)]
-        self.argv += ['--ledger', str(HERE / 'COVERAGE-FAMILIES.md'), '--now', '2026-10-22T21:01:00Z']
+        self.argv += ['--now', '2026-10-22T21:01:00Z']
         self.args = m.parser().parse_args(self.argv + ['list'])
 
     def edit(self, name, change):
@@ -53,9 +53,18 @@ class MonitoredTest(unittest.TestCase):
         return next(r for r in self.build()['coverage'] if r['family'] == 'block I/O pressure')
 
     def receipts(self):
-        def populate(doc):
-            doc['families']['block I/O pressure'] = {p: {'holds': True, 'evidence': ['fixture://example/history-trigger-recovery#' + p]} for p in ('observed', 'routed', 'runbook', 'drilled')}
-        self.edit('coverage.json', populate)
+        policy = m.digest(json.loads((self.root / 'policy.json').read_text()))
+        entries = []
+        for part in ('observed', 'routed', 'runbook', 'drilled'):
+            binding = {'family': 'block I/O pressure', 'part': part, 'site': 'example',
+                       'policy_sha256': policy,
+                       'rules': [['host-pressure.rules.yml', 'host-pressure', 'HostIoPressureHigh']]}
+            receipt = dict(binding, schema='constellation.monitored_receipt/v1', holds=True,
+                           evidence=['fixture://history-trigger-recovery#' + part])
+            path = self.root / 'receipts' / (part + '.json')
+            path.write_text(json.dumps(receipt))
+            entries.append(dict(binding, path=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+        (self.root / 'receipts/index.json').write_text(json.dumps({'schema': 'constellation.monitored_receipts/v1', 'receipts': entries}))
 
     def test_operator_finds_degraded_service_and_what_would_tell_them(self):
         row = self.service()
@@ -78,7 +87,7 @@ class MonitoredTest(unittest.TestCase):
             self.assertIn('id="%s"' % section.replace(' ', '-'), page)
         self.assertNotIn('<script', page)
         for term in m.GLOSSARY:
-            self.assertIn('id="g-' + term + '"', page)
+            self.assertIn('id="g-' + m.glossary_id(term) + '"', page)
         for link in re.findall(r'href="#([^"]+)"', page):
             self.assertIn('id="' + link + '"', page)
 
@@ -105,7 +114,7 @@ class MonitoredTest(unittest.TestCase):
 
     def test_gaps_include_units_declarations_and_uncovered_families(self):
         gaps = self.build()['not monitored']
-        for item in ('systemd:stray.service', 'local-only', 'worker', 'kernel filesystem errors'):
+        for item in ('systemd:stray.service', 'local-only', 'worker'):
             self.assertTrue(any(r['item'] == item for r in gaps), item)
         self.assertTrue(any('explicitly excluded' in r['reason'] for r in gaps))
         self.assertIn('declared but not acquired', self.service('worker')['verdict'])
@@ -243,40 +252,57 @@ class MonitoredTest(unittest.TestCase):
         self.edit('metrics.json', lambda d: d['rules'].append({**d['rules'][0], 'name': 'Undeclared'}))
         self.assertIn('absent from declared policy', self.rule('Undeclared')['state'])
 
-    def test_ledger_has_all_46_families_and_no_source_status_closes_one(self):
+    def test_families_come_only_from_rule_labels_and_missing_receipts_stay_open(self):
         coverage = self.build()['coverage']
-        self.assertEqual(len(coverage), 46)
+        self.assertEqual({r['family'] for r in coverage}, {'block I/O pressure', 'swap_thrashing'})
         self.assertTrue(all(r['coverage'] == 'open on this host' for r in coverage))
         row = self.family()
         self.assertTrue(row['declared'].startswith('yes:'))
         for part in ('observed', 'routed', 'runbook', 'drilled'):
-            self.assertTrue(row[part].startswith('unknown:'))
+            self.assertTrue(row[part].startswith('not demonstrated:'))
 
-    def test_closure_requires_all_five_host_revision_scoped_receipts(self):
+    def test_closure_requires_digest_bound_receipts_for_exact_site_revision_scope(self):
         self.receipts()
         self.assertEqual(self.family()['coverage'], 'closed on this host')
         for part in ('observed', 'routed', 'runbook', 'drilled'):
-            original = (self.root / 'coverage.json').read_bytes()
-            self.edit('coverage.json', lambda d: d['families']['block I/O pressure'][part].update(holds=False))
+            path = self.root / 'receipts' / (part + '.json')
+            original = path.read_bytes()
+            path.write_bytes(original + b' ')
             self.assertEqual(self.family()['coverage'], 'open on this host')
-            (self.root / 'coverage.json').write_bytes(original)
-        for field in ('site', 'policy_sha256'):
-            original = (self.root / 'coverage.json').read_bytes()
-            self.edit('coverage.json', lambda d: d.update({field: 'wrong'}))
+            path.write_bytes(original)
+        for field, value in [('site', 'wrong'), ('policy_sha256', 'wrong'), ('rules', []), ('path', '../policy.json')]:
+            original = (self.root / 'receipts/index.json').read_bytes()
+            self.edit('receipts/index.json', lambda d: d['receipts'][0].update({field: value}))
             self.assertEqual(self.family()['coverage'], 'open on this host')
-            (self.root / 'coverage.json').write_bytes(original)
+            (self.root / 'receipts/index.json').write_bytes(original)
 
     def test_receipt_cannot_override_failed_acquisition_or_dry_run(self):
         self.receipts()
         self.edit('metrics.json', lambda d: d['rules'][0].update(health='err'))
         self.assertEqual(self.family()['coverage'], 'open on this host')
         self.edit('report.json', lambda d: d.update(dry_run=True))
-        self.assertTrue(self.family()['routed'].startswith('unknown:'))
+        self.assertTrue(self.family()['routed'].startswith('not demonstrated:'))
 
-    def test_missing_receipt_pointer_cannot_close(self):
+    def test_valid_digest_cannot_rescue_negative_or_wrong_scope_receipt(self):
+        for change in ({'holds': False}, {'evidence': []}, {'site': 'wrong'}, {'rules': []}):
+            self.receipts()
+            path = self.root / 'receipts/observed.json'
+            self.edit('receipts/observed.json', lambda d: d.update(change))
+            self.edit('receipts/index.json', lambda d: d['receipts'][0].update(sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+            self.assertTrue(self.family()['observed'].startswith('not demonstrated:'))
+
+    def test_symlink_outside_release_cannot_supply_receipt(self):
         self.receipts()
-        self.edit('coverage.json', lambda d: d['families']['block I/O pressure']['drilled'].update(evidence=[]))
-        self.assertEqual(self.family()['coverage'], 'open on this host')
+        path = self.root / 'receipts/observed.json'
+        outside = self.root / 'outside.json'
+        path.rename(outside)
+        path.symlink_to(outside)
+        self.assertTrue(self.family()['observed'].startswith('not demonstrated:'))
+
+    def test_unlabeled_rule_has_no_invented_family(self):
+        self.edit('policy.json', lambda d: d['groups'][0]['rules'][0]['labels'].pop('family'))
+        self.assertIn('no family label', self.rule()['family'])
+        self.assertFalse(any(r['family'] == 'block I/O pressure' for r in self.build()['coverage']))
 
     def test_disabled_network_drop_and_local_inbox_never_close_route(self):
         self.receipts()
@@ -284,7 +310,7 @@ class MonitoredTest(unittest.TestCase):
         original = path.read_text()
         for text in (original.replace('network_enabled = true', 'network_enabled = false'), original.replace('"operations"', '"drop"'), original.replace('"slack"', '"local_file"')):
             path.write_text(text)
-            self.assertTrue(self.family()['routed'].startswith('unknown:'))
+            self.assertTrue(self.family()['routed'].startswith('not demonstrated:'))
         path.write_text(original)
 
     def test_unpublished_runbook_remains_unknown(self):
@@ -292,7 +318,7 @@ class MonitoredTest(unittest.TestCase):
         path = self.root / 'attention.toml'
         path.write_text(path.read_text().replace('https://operator.example/runbooks.html', ''))
         self.assertIn('unpublished runbook anchor host-pressure', self.rule()['runbook'])
-        self.assertTrue(self.family()['runbook'].startswith('unknown:'))
+        self.assertTrue(self.family()['runbook'].startswith('not demonstrated:'))
 
     def test_html_escapes_authored_text_and_only_uses_safe_links(self):
         self.edit('registry.json', lambda d: d['services'][0].update(role='<script>alert(1)</script>', status={'kind': 'http', 'url': 'https://user:password@local.test/health?token=secret'}))
@@ -316,31 +342,42 @@ class MonitoredTest(unittest.TestCase):
         self.assertEqual(out.stat().st_mode & 0o777, 0o644)
         self.assertEqual(list(out.parent.glob('.monitored-*')), [])
 
-    def test_attention_family_receipts_require_its_own_policy_revision(self):
-        report = json.loads((self.root / 'report.json').read_text())
-        rule = dict(report['rules'][0], id='host-disk')
-        report['rules'].append(rule)
-        report['conditions'].append({'id': 'constellation:example:host_posture:host-disk:root', 'rule': 'host-disk', 'observation': 'clear', 'note': 'current capacity observation'})
-        (self.root / 'report.json').write_text(json.dumps(report))
-        self.edit('registry.json', lambda d: d['definitions'].append({'kind': 'attention-policy', 'config': str(self.args.attention_config), 'digest': report['attention_policy_digest']}))
-        receipt = {p: {'holds': True, 'evidence': ['fixture://capacity-history-trigger-recovery#' + p]} for p in ('observed', 'routed', 'runbook', 'drilled')}
-        self.edit('coverage.json', lambda d: d['families'].update({'disk capacity (bytes)': receipt}))
-        def capacity():
-            return next(r for r in self.build()['coverage'] if r['family'] == 'disk capacity (bytes)')
-        self.assertEqual(capacity()['coverage'], 'open on this host')
-        self.edit('coverage.json', lambda d: d.update(attention_policy_digest=report['attention_policy_digest']))
-        self.assertEqual(capacity()['coverage'], 'closed on this host')
-        self.edit('report.json', lambda d: d.update(attention_policy_digest='sha256:other'))
-        self.assertEqual(capacity()['coverage'], 'open on this host')
+    def test_attention_revision_falls_back_to_config_file_pin_explicitly(self):
+        config_digest = 'sha256:' + hashlib.sha256(Path(self.args.attention_config).read_bytes()).hexdigest()
+        self.edit('registry.json', lambda d: d['definitions'].append({'kind': 'file', 'path': str(self.args.attention_config), 'digest': config_digest}))
+        row = self.rule('service-not-doing-its-job')
+        self.assertIn('matched configuration bytes', row['revision'])
+        self.assertIn('effective policy digest unverified', row['revision'])
+        self.assertTrue(row['_declared'])
+        Path(self.args.attention_config).write_text(Path(self.args.attention_config).read_text() + '\n')
+        self.assertFalse(self.rule('service-not-doing-its-job')['_declared'])
+
+    def test_healthy_service_and_template_summary_use_plain_language(self):
+        self.assertEqual(self.service('attention')['state'], 'no active condition')
+        self.assertNotIn('{{', self.rule()['observation'])
+        self.assertIn('observed value/label', self.rule()['observation'])
+
+    def test_pinned_declaration_matches_derived_registry_and_detects_byte_drift(self):
+        path = self.root / 'services.d/attention.toml'
+        declaration_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        def change(doc):
+            doc['service_declarations'] = [{'name': 'attention', 'path': '/etc/constellation/services.d/attention.toml', 'sha256': declaration_digest}]
+            next(s for s in doc['services'] if s['name'] == 'attention')['probes'] = {'derived': True}
+        self.edit('registry.json', change)
+        self.edit('estate.json', lambda d: d.update(registry_sha256=hashlib.sha256((self.root / 'registry.json').read_bytes()).hexdigest()))
+        self.assertEqual(self.service('attention')['verdict'], 'OK')
+        self.assertEqual(self.service('attention')['revision'], 'sha256:' + declaration_digest)
+        path.write_bytes(path.read_bytes() + b'\n')
+        self.assertIn('differs', self.service('attention')['verdict'])
 
     def test_disabled_metric_rule_and_report_network_disable_prevent_routing(self):
         self.receipts()
         self.edit('report.json', lambda d: d['rules'][1].update(enabled=False))
         self.assertIn('disabled', self.rule()['route'])
-        self.assertTrue(self.family()['routed'].startswith('unknown:'))
+        self.assertTrue(self.family()['routed'].startswith('not demonstrated:'))
         self.edit('report.json', lambda d: d['rules'][1].update(enabled=True))
         self.edit('report.json', lambda d: d.update(network_enabled=False))
-        self.assertTrue(self.family()['routed'].startswith('unknown:'))
+        self.assertTrue(self.family()['routed'].startswith('not demonstrated:'))
 
     def test_paused_down_and_unknown_estate_verdicts(self):
         for verdict in ('PAUSED', 'DOWN', 'UNKNOWN'):

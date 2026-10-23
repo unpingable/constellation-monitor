@@ -37,6 +37,7 @@ fn render_html(artifact: &StatusArtifactV1) -> String {
     let mut html = String::from(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Operator projection</title></head><body><main><h1>Operator projection</h1>",
     );
+    html.push_str("<nav><a href=\"monitored.html\">What is monitored</a></nav>");
     html.push_str("<p class=\"overall\">Overall projection: ");
     html.push_str(state_label(artifact.aggregate_state));
     html.push_str("</p><p class=\"as-of\">As of ");
@@ -105,6 +106,7 @@ fn unavailable_html(artifact: &StatusArtifactV1) -> String {
     let mut html = String::from(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Status unavailable</title></head><body><main><h1>Status unavailable</h1><p>No current conclusion is supported.</p>",
     );
+    html.push_str("<nav><a href=\"monitored.html\">What is monitored</a></nav>");
     let detailed = artifact
         .components
         .iter()

@@ -2,7 +2,7 @@
   "schema": "constellation.estate/v1",
   "site": "example",
   "generated_at": "2026-10-22T21:00:00Z",
-  "registry_sha256": "52ee350ad6b8d51407e01690ac7dbae4d5e541868d15b67d2a06bf7f906a6e06",
+  "registry_sha256": "3aa1bb62159b0307087eeaaaa953eb8a5d4f3a0e5bd891a1fd4041913613c276",
   "services": [
     {
       "name": "web",

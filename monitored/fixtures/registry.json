@@ -50,7 +50,7 @@
     {
       "id": "effective-policy",
       "kind": "vmalert-policy",
-      "digest": "sha256:d3b1df1b69a44fdf5c8e585a4953cb88e33170e7a90bc1f9e0ea2baa5d8dfa31"
+      "digest": "sha256:36c3aa2490e7cb8e2d134c52b9601e91181ae028a8e00bac5e4d760f94feae5b"
     }
   ],
   "unsupervised": {

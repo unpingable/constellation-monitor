@@ -1,0 +1,10 @@
+--- a/architecture/beta-observability/mvp/status-site/render_status.py
++++ b/architecture/beta-observability/mvp/status-site/render_status.py
+@@ -651,6 +651,7 @@
+     else:
+         w("<tr><th>TLS<td>%s</tr>" % _na(t))
+     w("<tr><th>Rendered at<td><code>%s</code></tr></table></div>" % E(s["rendered_at"]))
++    w('<p><a href="monitored.html">What is monitored on this host</a></p>')
+     w("<p class=mut>Machine-readable: <a href=status.json>status.json</a> (schema <code>%s</code>).</p>" % SCHEMA)
+     w("</body></html>\n")
+     return "".join(out)

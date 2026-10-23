@@ -2,8 +2,8 @@
   "schema": "constellation.metric_alerts/v1",
   "site": "example",
   "generated_at": "2026-10-22T21:00:00Z",
-  "policy_sha256": "sha256:d3b1df1b69a44fdf5c8e585a4953cb88e33170e7a90bc1f9e0ea2baa5d8dfa31",
-  "declared_policy_sha256": "sha256:d3b1df1b69a44fdf5c8e585a4953cb88e33170e7a90bc1f9e0ea2baa5d8dfa31",
+  "policy_sha256": "sha256:36c3aa2490e7cb8e2d134c52b9601e91181ae028a8e00bac5e4d760f94feae5b",
+  "declared_policy_sha256": "sha256:36c3aa2490e7cb8e2d134c52b9601e91181ae028a8e00bac5e4d760f94feae5b",
   "policy_matches_declared": true,
   "counts": {
     "groups": 1,
@@ -25,7 +25,8 @@
         "area": "host",
         "attention": "true",
         "runbook": "host-pressure",
-        "severity": "warn"
+        "severity": "warn",
+        "family": "block I/O pressure"
       },
       "last_samples": 0,
       "last_series_fetched": 2,
@@ -47,7 +48,8 @@
         "attention": "true",
         "constellation_value_codes": "v1",
         "runbook": "host-pressure",
-        "severity": "warn"
+        "severity": "warn",
+        "family": "swap_thrashing"
       },
       "last_samples": 1,
       "last_series_fetched": 6,
