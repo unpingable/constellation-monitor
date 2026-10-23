@@ -280,6 +280,14 @@ def sync(store, report, state, consumer, rules, now, intent_log=()):
         if live is None:
             continue
         inc_id = live["id"]
+        # Annotate the attention notice's lookup reference with the authoritative id.
+        # A new attention epoch during recovery is still the same incident.
+        has_notice = bool(last_intents.get(key)) or any(
+            i.get("condition_id") == key for i in report.get("intents", []))
+        if c and c.get("active") and c.get("first_seen") and has_notice:
+            reference = "%s@%s" % (key, c["first_seen"])
+            store.event(inc_id, at, "attention-reference", {"reference": reference, "incident_id": inc_id},
+                        dedup="attention-reference:%s:%s" % (inc_id, reference))
         for li in intent_log:
             if li.get("condition_id") == key and li.get("stable_event_id") and (li.get("at") or "") >= live["opened_at"][:10]:
                 store.event(inc_id, li.get("at") or at, "notified", {"route": li.get("route"), "role": li.get("route_role"),
@@ -581,7 +589,17 @@ def list_view(store, include_recent=True, now=None):
 
 
 def find(store, ref):
-    for i in sorted(store.incidents(unresolved_only=False), key=lambda i: i["opened_at"], reverse=True):
+    rows = sorted(store.incidents(unresolved_only=False), key=lambda i: i["opened_at"], reverse=True)
+    # Exact ids must never silently select a newer suffixed incident.
+    for i in rows:
+        if ref == i["id"]:
+            return i
+    for i in rows:
+        if "@" in ref:
+            if any(e["kind"] == "attention-reference" and json.loads(e["detail"]).get("reference") == ref
+                   for e in store.events(i["id"])):
+                return i
+            continue
         if ref in (i["id"], i["key"]) or i["id"].startswith(ref + "-") or i["id"] == ref:
             return i
     return None

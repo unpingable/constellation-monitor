@@ -172,9 +172,39 @@ def test_no_remediation_attempt_by_the_end_of_the_window_needs_the_operator(stor
     assert store.incidents()[0]["needs_operator"].startswith("systemctl status")
 
 
-def test_incident_id_matches_the_attention_notice_reference():
-    # constellation-attention intent::incident_ref pins the same value for the same key.
-    assert "inc-" + inc.key_hash(KEY) == "inc-e048fb3e"
+def test_notice_references_are_annotated_with_store_ids(store):
+    fixture = json.loads((HERE / "fixtures/repeated-notice.json").read_text())
+    reference = None
+    for step in fixture["steps"]:
+        now = fixture["start"] + step["offset"]
+        first_seen, active = step["first_seen"], step["active"]
+        if active:
+            reference = "%s@%s" % (fixture["key"], inc.iso(first_seen))
+        c = {"id": fixture["key"], "rule": "host-posture-unknown", "active": active,
+             "observation": "present" if step["state"] == "unknown" else "clear",
+             "first_seen": inc.iso(first_seen) if first_seen else None}
+        notice_state = {"conditions": {fixture["key"]: {"last_intent": {"notice": {"action": "trigger"}}}}} if active else {}
+        inc.sync(store, {"conditions": [c]}, notice_state, None, {}, now)
+        if reference:
+            row = inc.find(store, reference)
+            assert row["id"] == step["incident"]
+            annotations = [json.loads(e["detail"]) for e in store.events(row["id"]) if e["kind"] == "attention-reference"]
+            assert {"reference": reference, "incident_id": row["id"]} in annotations
+    # An exact old id must not resolve to its newer suffix.
+    base = fixture["steps"][1]["incident"]
+    assert inc.find(store, base)["id"] == base
+    assert inc.find(store, fixture["key"] + "@2099-01-01T00:00:00Z") is None
+
+
+def test_new_attention_epoch_inside_recovery_still_names_the_same_incident(store):
+    inc.sync(store, report("present", True), state(("notice", "ev-1", "trigger")), None, RULES, T0)
+    iid = store.current(KEY)["id"]
+    inc.sync(store, report("clear", False, first_seen=None), {}, None, RULES, T0 + 60)
+    since = inc.iso(T0 + 120)
+    inc.sync(store, report("present", True, first_seen=since), state(("notice", "ev-2", "trigger")), None, RULES, T0 + 180)
+    inc.sync(store, report("present", True, first_seen=since), state(("notice", "ev-2", "trigger")), None, RULES, T0 + 240)
+    assert inc.find(store, KEY + "@" + since)["id"] == iid
+    assert kinds(store, iid).count("attention-reference") == 2
 
 
 def test_remediation_history_keeps_the_opening_rule_revision(store):

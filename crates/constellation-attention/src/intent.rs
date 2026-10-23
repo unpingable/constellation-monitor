@@ -81,12 +81,15 @@ pub fn policy_digest_with(
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-/// `inc-` and the first 8 hex digits of sha256(condition id): the stable reference of
-/// the incident a condition belongs to, independent of any definition revision.
+/// Lookup reference annotated by constellation-incidents on sync. Attention
+/// cannot allocate an incident suffix: a resolve/retrigger may still be a flap
+/// inside the incident store's recovery window.
 #[must_use]
-pub fn incident_ref(condition_id: &str) -> String {
-    let digest = format!("{:x}", Sha256::digest(condition_id.as_bytes()));
-    format!("inc-{}", &digest[..8])
+pub fn incident_ref(condition_id: &str, first_seen: Option<i64>) -> String {
+    first_seen.map_or_else(
+        || condition_id.to_owned(),
+        |since| format!("{condition_id}@{}", format_seconds(since)),
+    )
 }
 
 /// `{site}-{rule}[-{target_class}]-{action}-{unix_seconds}`.
@@ -123,7 +126,7 @@ pub struct IntentInput<'a> {
 }
 
 fn summary(input: &IntentInput<'_>) -> String {
-    let id = input.key.id();
+    let id = incident_ref(&input.key.id(), input.first_seen);
     match input.action {
         Action::Trigger => {
             let mut text = format!(
@@ -151,9 +154,6 @@ fn summary(input: &IntentInput<'_>) -> String {
                 text.push_str(reason.trim_end_matches('.'));
                 text.push('.');
             }
-            // The incident this condition belongs to (constellation-incidents derives the
-            // same id from the condition key): `constellation-incidents show <id>`.
-            text.push_str(&format!(" Incident: {}.", incident_ref(&id)));
             text
         }
         Action::Resolve => match input.resolve_reason {
@@ -318,14 +318,6 @@ pub fn with_event_id(intent: &Value, stable_event_id: &str) -> Value {
 mod tests {
     use super::*;
 
-    /// The same id constellation-incidents derives (incidents/test_incidents.py pins it too).
-    #[test]
-    fn incident_ref_matches_the_incident_store() {
-        assert_eq!(
-            incident_ref("constellation:labelwatch:service:service-down:attention-canary.service"),
-            "inc-e048fb3e"
-        );
-    }
     use crate::condition::ConditionKey;
     use crate::config::Config;
 

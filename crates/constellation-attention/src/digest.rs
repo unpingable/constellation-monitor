@@ -125,10 +125,11 @@ pub fn summary(
                 class != Class::Page,
                 since,
                 format!(
-                    "{} {}{target} for {}",
+                    "{} {}{target} for {} ({})",
                     class.as_str(),
                     condition.key.rule,
-                    span(now - since)
+                    span(now - since),
+                    intent::incident_ref(&condition.key.id(), condition.first_seen),
                 ),
             )
         })

@@ -2911,7 +2911,7 @@ fn nq_filesystem_capacity_feeds_host_disk() {
         intent["summary"]
             .as_str()
             .unwrap()
-            .starts_with(&format!("TRIGGER {disk} [notice]"))
+            .starts_with(&format!("TRIGGER {disk}@{} [notice]", rfc3339(t + 3)))
     );
 }
 
@@ -3806,7 +3806,7 @@ fn estate_degraded_service_triggers_with_reason_and_pause_stays_quiet() {
     let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
     let summary = sent["summary"].as_str().unwrap();
     assert!(
-        summary.contains("Now: observation.loss DEGRADED. Incident: inc-"),
+        summary.contains("Now: observation.loss DEGRADED."),
         "{summary}"
     );
     let quiet = report["conditions"]
@@ -4314,7 +4314,7 @@ fn metric_alert_firing_from_the_shared_vector() {
     let summary = sent["summary"].as_str().unwrap();
     assert!(
         summary.contains(
-            "Now: HostSwapExhausted firing on labelwatch (127.0.0.1:19100): swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min. Incident: inc-"
+            "Now: HostSwapExhausted firing on labelwatch (127.0.0.1:19100): swap 5.369e+10% free on labelwatch (127.0.0.1:19100) for 30 min."
         ),
         "{summary}"
     );
@@ -5006,7 +5006,7 @@ fn metric_alerts_keyed_per_site() {
     let summary = sent["summary"].as_str().unwrap();
     assert!(
         summary.contains(
-            "Now: HostSwapExhausted firing on crow (10.0.0.2:19100): swap 1% free on crow (10.0.0.2:19100) for 30 min. Incident: inc-"
+            "Now: HostSwapExhausted firing on crow (10.0.0.2:19100): swap 1% free on crow (10.0.0.2:19100) for 30 min."
         ),
         "{summary}"
     );
@@ -5302,7 +5302,7 @@ fn an_overlong_metric_alert_is_rejected_alone() {
     let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
     let summary = sent["summary"].as_str().unwrap();
     assert!(
-        summary.contains("Now: rejected rules: ServiceMetricsObservationNeedsAttention (testbed); see report.json metric_alerts.rejected_rules. Incident: inc-"),
+        summary.contains("Now: rejected rules: ServiceMetricsObservationNeedsAttention (testbed); see report.json metric_alerts.rejected_rules."),
         "{summary}"
     );
     // The host-pressure rule resolves on its own recovery while the
@@ -5742,7 +5742,10 @@ fn a_two_rejection_notice_keeps_both_names_and_the_incident() {
     let summary = sent["summary"].as_str().unwrap();
     assert!(summary.contains(OBSERVATION_RULE), "{summary}");
     assert!(summary.contains(SECOND_LONG), "{summary}");
-    assert!(summary.contains(". Incident: inc-"), "{summary}");
+    assert!(
+        summary.contains(&format!("{REJECTED_INPUT}@{}", rfc3339(T0))),
+        "{summary}"
+    );
 }
 
 /// A rule whose token another rule now shares is refused with it: neither
@@ -5822,4 +5825,100 @@ fn an_overflowing_site_keeps_the_rule_on_other_sites() {
             .unwrap()
             .contains("is 51 bytes")
     );
+}
+
+/// Real evaluator notices, including its daily digest and resolves, are looked
+/// up by the incident authority after each sync (not by a second id allocator).
+#[test]
+fn repeated_notices_resolve_to_the_incident_store() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../incidents/fixtures/repeated-notice.json"
+    ))
+    .unwrap();
+    let mut harness = Harness::new();
+    harness
+        .host_posture("root")
+        .raw("[digest]\nat_utc = \"00:00\"\n");
+    let mut passes = Vec::new();
+    let mut reference = String::new();
+    for step in fixture["steps"].as_array().unwrap() {
+        let at = fixture["start"].as_i64().unwrap() + step["offset"].as_i64().unwrap();
+        let state = if step["state"] == "unknown" {
+            ProjectedStateV1::Unknown
+        } else {
+            ProjectedStateV1::Healthy
+        };
+        set(&harness, "root", state, at);
+        let report = harness.evaluate(at);
+        let expected_intents = if matches!(step["offset"].as_i64(), Some(660 | 840 | 2460 | 86580))
+        {
+            2
+        } else {
+            0
+        };
+        assert_eq!(
+            report["intents"].as_array().unwrap().len(),
+            expected_intents
+        );
+        let mut summaries = Vec::new();
+        for record in report["intents"].as_array().unwrap() {
+            let sent: Value = serde_json::from_slice(
+                &harness.submitted_intent(record["notification_id"].as_str().unwrap()),
+            )
+            .unwrap();
+            let summary = sent["summary"].as_str().unwrap().to_owned();
+            if record["action"] == "trigger" {
+                reference = summary.split_whitespace().nth(1).unwrap().to_owned();
+            }
+            assert!(summary.contains(&reference), "{summary}");
+            assert!(
+                !summary.contains("inc-"),
+                "attention must not allocate an id"
+            );
+            summaries.push(summary);
+        }
+        if step["offset"] == 86400 {
+            let summary = report["digest"]["summary"].as_str().unwrap();
+            assert!(summary.contains(&reference), "{summary}");
+            summaries.push(summary.to_owned());
+        }
+        passes.push(json!({"at": at, "report": report, "reference": reference,
+                          "expected": step["incident"], "summaries": summaries}));
+    }
+    let mut child = Command::new("python3")
+        .args([
+            "-c",
+            r#"
+import importlib.util, json, sys, tempfile
+spec = importlib.util.spec_from_file_location('inc', sys.argv[1])
+inc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(inc)
+with tempfile.TemporaryDirectory() as directory:
+    store = inc.SqliteStore(directory + '/incidents.sqlite')
+    for p in json.load(sys.stdin):
+        inc.sync(store, p['report'], {}, None, {}, p['at'])
+        if p['reference']:
+            row = inc.find(store, p['reference'])
+            assert row and row['id'] == p['expected'], (p, row)
+            assert all(p['reference'] in text for text in p['summaries'])
+"#,
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../incidents/constellation-incidents.py"
+            ),
+        ])
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&passes).unwrap())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
 }

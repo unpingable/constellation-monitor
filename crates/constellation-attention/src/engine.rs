@@ -430,6 +430,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .cloned()
         .chain(state.conditions.keys().cloned())
         .collect();
+    let mut resolved_first_seen = BTreeMap::new();
     let mut transitions: Vec<(String, Action, ResolveReason)> = Vec::new();
     // Conditions whose deferred page is due this pass (page route only).
     let mut deferred_pages: BTreeSet<String> = BTreeSet::new();
@@ -519,6 +520,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         // ended and when the clear began, to name the resolve reason.
         let (opened_at, cleared_at) = (condition.first_seen, condition.clear_since.unwrap_or(now));
         let transition = step(condition, observation, persistence, now);
+        if transition == Some(Action::Resolve) {
+            resolved_first_seen.insert(id.clone(), opened_at);
+        }
         let (policy, window) =
             config.response_policy(&condition.key.rule, condition.key.target_class.as_deref());
         let window_until =
@@ -648,7 +652,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             stable_event_id: &stable_event_id,
             transition_id: &transition_id,
             policy_digest: &digest,
-            first_seen: condition.first_seen,
+            first_seen: condition
+                .first_seen
+                .or_else(|| resolved_first_seen.get(id).copied().flatten()),
             persisted_seconds: persisted,
             reference: &reference,
         };

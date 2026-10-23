@@ -274,6 +274,16 @@ newest-only rule for `submit`, which NQ itself enforces only for `resubmit`.
 of the decision. `transition_id` is the event id of the transition and stays
 fixed across retries.
 
+Notice summaries identify an attention epoch as `condition-key@first_seen`
+(the UTC time of its first presence). Trigger, resolve and daily digest use
+that same lookup reference. Run `constellation-incidents show '<reference>'`
+after incidents sync to see the authoritative incident ID and timeline.
+Sync annotates the reference in that timeline; delivered notices are retained
+unchanged. Before sync observes the active condition, lookup returns no
+incident. Attention does not allocate `inc-…` suffixes: recovery flaps can
+continue one incident while a failure after closure opens the next suffix.
+See [incident continuity](../incidents/README.md) for retention and lookup scope.
+
 ## Routing
 
 Notification sinks are not semantically interchangeable. PagerDuty is an
