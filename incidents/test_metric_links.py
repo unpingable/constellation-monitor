@@ -2,6 +2,9 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
+import subprocess
+import sys
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -97,3 +100,57 @@ def test_malformed_optional_config_keeps_incident_inspection_available(tmp_path,
     entry = json.loads(capsys.readouterr().out)['incidents'][0]
     assert entry['metric_links'] == {}
     assert 'config could not be read' in entry['metric_links_status']
+
+
+def test_missing_config_keeps_show_and_inspect_available(tmp_path, capsys):
+    path = tmp_path / 'i.sqlite'
+    store = inc.SqliteStore(str(path))
+    identity = store.open_incident('site:demo:service:down:unit', FIRST, FIRST)
+    before = store.incidents(False)
+    args = ['--db', str(path), '--config', str(tmp_path / 'incidents.json')]
+    assert inc.main(args + ['inspect']) == 0
+    entry = json.loads(capsys.readouterr().out)['incidents'][0]
+    assert entry['metric_links'] == {}
+    assert entry['metric_links_status'] == 'links unavailable: no incidents.json'
+    assert inc.main(args + ['show', identity]) == 0
+    assert 'links unavailable: no incidents.json' in capsys.readouterr().out
+    assert store.incidents(False) == before
+    store.db.close()
+
+
+def test_single_file_install_supports_help_sync_show_and_inspect(tmp_path):
+    installed = tmp_path / 'installed'
+    installed.mkdir()
+    script = installed / 'constellation-incidents.py'
+    shutil.copyfile(Path(__file__).with_name(script.name), script)
+    assert list(installed.iterdir()) == [script]
+    db = tmp_path / 'incidents.sqlite'
+    config = tmp_path / 'incidents.json'
+    config.write_text(json.dumps(CONFIG))
+    command = [sys.executable, '-I', str(script), '--db', str(db), '--config', str(config)]
+
+    def run(*args):
+        result = subprocess.run(command + list(args), cwd=installed, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    assert 'usage:' in run('--help')
+    rules = tmp_path / 'rules'
+    rules.write_text('#!' + sys.executable + '\nprint(\'{"rules": [{"id": "down", "response_policy": "observe_only"}]}\')\n')
+    rules.chmod(0o755)
+    report = tmp_path / 'report.json'
+    report.write_text(json.dumps({'conditions': [{'id': 'site:demo:service:down:unit', 'rule': 'down',
+                       'first_seen': FIRST, 'observation': 'present', 'active': True}]}))
+    state = tmp_path / 'state.json'
+    state.write_text('{}')
+    run('sync', '--rules', str(rules), '--report', str(report), '--state', str(state),
+        '--consumer', str(tmp_path / 'no-consumer'), '--intent-log', str(tmp_path / 'no-intents'),
+        '--metrics', str(tmp_path / 'incidents.prom'))
+    doc = json.loads(run('inspect'))
+    assert doc['meta']['last_sync_ok'] == '1'
+    entry, = doc['incidents']
+    assert entry['metric_links'] == {}
+    assert entry['metric_links_status'] == 'unavailable: metric_links.py not installed'
+    assert entry['metric_links_status'] in run('show', entry['incident']['id'])
+    config.unlink()
+    assert json.loads(run('inspect'))['incidents'][0]['metric_links_status'] == entry['metric_links_status']

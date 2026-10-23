@@ -355,7 +355,33 @@ class MonitoredTest(unittest.TestCase):
     def test_healthy_service_and_template_summary_use_plain_language(self):
         self.assertEqual(self.service('attention')['state'], 'no active condition')
         self.assertNotIn('{{', self.rule()['observation'])
-        self.assertIn('observed value/label', self.rule()['observation'])
+        self.assertIn('value not available', self.rule()['observation'])
+
+    def test_template_summary_uses_local_condition_labels_and_values(self):
+        def change(doc):
+            rule = doc['rules'][0]
+            rule.update(state='firing', instances=[
+                {'state': 'firing', 'value': '0.3', 'labels': {'site': 'example', 'instance': 'node-a'}},
+                {'state': 'firing', 'value': '0.4', 'labels': {'site': 'example', 'instance': 'node-b'}},
+                {'state': 'firing', 'value': '0.9', 'labels': {'site': 'elsewhere', 'instance': 'other-node'}},
+            ])
+        self.edit('metrics.json', change)
+        text = self.rule()['observation']
+        self.assertEqual(text, 'I/O stall 30% of wall time on example (node-a) for 15 min; '
+                         'I/O stall 40% of wall time on example (node-b) for 15 min')
+        self.edit('metrics.json', lambda d: d.update(generated_at='2020-01-01T00:00:00Z'))
+        self.assertNotIn('node-a', self.rule()['observation'])
+        self.assertIn('value not available', self.rule()['observation'])
+
+    def test_summary_missing_fields_and_unsupported_templates_are_explicit(self):
+        template = '{{ $labels.site }} {{ $labels.missing }} {{ $value }} {{ arbitrary code }}'
+        self.assertEqual(m.observation_summary(template, {'labels': {'site': 'example'}, 'value': 0}),
+                         'example value not available 0 value not available')
+        self.assertEqual(m.observation_summary('{{ $value | humanizePercentage }}', {'value': 'bad'}),
+                         'value not available')
+        self.assertEqual(m.observation_summary('{{ $labels.instance }}', {'labels': {'instance': '<node>'}}), '<node>')
+        self.assertIn('&lt;node&gt;', m.cell(m.observation_summary('{{ $labels.instance }}',
+                                                               {'labels': {'instance': '<node>'}})))
 
     def test_pinned_declaration_matches_derived_registry_and_detects_byte_drift(self):
         path = self.root / 'services.d/attention.toml'

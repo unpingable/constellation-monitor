@@ -38,13 +38,20 @@ import argparse, datetime, hashlib, json, os, sqlite3, subprocess, sys, tempfile
 import importlib.util
 from pathlib import Path
 
-_metric_spec = importlib.util.spec_from_file_location('incident_metric_links', Path(__file__).resolve().with_name('metric_links.py'))
-_metric_links = importlib.util.module_from_spec(_metric_spec)
-_metric_spec.loader.exec_module(_metric_links)
+try:
+    _metric_spec = importlib.util.spec_from_file_location('incident_metric_links', Path(__file__).resolve().with_name('metric_links.py'))
+    _metric_links = importlib.util.module_from_spec(_metric_spec)
+    _metric_spec.loader.exec_module(_metric_links)
+except (OSError, ImportError):
+    _metric_links = None
 
 
 def metric_links(incident, config, now):
     """Presentation metadata only; never alter retained incident rows."""
+    if _metric_links is None:
+        return {'metric_links': {}, 'metric_links_status': 'unavailable: metric_links.py not installed'}
+    if config is None:
+        return {'metric_links': {}, 'metric_links_status': 'links unavailable: no incidents.json'}
     if isinstance(config, dict) and config.get('_metric_links_error'):
         return {'metric_links': {}, 'metric_links_status': config['_metric_links_error']}
     try:
@@ -66,7 +73,7 @@ def link_config(path):
             raise ValueError('incidents config must be an object')
         return config
     except FileNotFoundError:
-        return {}  # inspection and show remain available without graph configuration
+        return {'_metric_links_error': 'links unavailable: no incidents.json'}
     except (OSError, ValueError) as error:
         return {'_metric_links_error': 'unavailable: incidents graph config could not be read (%s)' % type(error).__name__}
 

@@ -226,9 +226,26 @@ def release_receipts(index, index_path, site, policy_digest, members, family):
     return result
 
 
-def observation_summary(value):
-    # The declared summary is a template, not an acquired instance value.
-    return re.sub(r'\{\{.*?\}\}', '[observed value/label]', str(value), flags=re.DOTALL)
+def observation_summary(value, condition=None):
+    # Substitute only acquired fields; do not evaluate arbitrary template code.
+    condition = condition or {}
+    def replace(match):
+        expression = match.group(1).strip()
+        label = re.fullmatch(r'\$labels\.([a-zA-Z_][a-zA-Z0-9_]*)', expression)
+        if label:
+            result = condition.get('labels', {}).get(label.group(1))
+        elif expression == '$value':
+            result = condition.get('value')
+        elif re.fullmatch(r'\$value\s*\|\s*humanizePercentage', expression):
+            try:
+                number = float(condition.get('value')) * 100
+                result = '%g%%' % number if math.isfinite(number) else None
+            except (ValueError, TypeError, OverflowError):
+                result = None
+        else:
+            result = None
+        return str(result) if result is not None and result != '' else 'value not available'
+    return re.sub(r'\{\{(.*?)\}\}', replace, str(value), flags=re.DOTALL)
 
 
 def keyed_rules(doc, declared=False):
@@ -490,7 +507,10 @@ def build(args, now):
         if not metric_route_enabled and labels.get('attention') == 'true':
             route = 'unknown: effective metric-alert-firing rule disabled, unconfigured or missing from report; ' + route
         evidence = source_pointer(args.metric_alerts, '/'.join(key))
-        rule_rows.append({'rule': key[2], 'identity': '/'.join(key), 'family': family or 'not demonstrated: no family label', 'observation': observation_summary(definition.get('annotations', {}).get('summary', 'unknown: summary not acquired')), 'state': state, 'acquisition': live.get('last_evaluation') or 'unknown: never evaluated', 'route': route, 'handler': transport if labels.get('attention') == 'true' else 'unknown: Alertmanager config not an input', 'runbook': runbook, 'revision': '%s; registry pins %s' % (metrics.get('policy_sha256', 'unknown'), ', '.join(pins) or 'unknown'), 'hold': str(definition.get('duration_seconds', '?')) + 's vmalert hold; attention metric notice default 60s', 'value-code': ('v1: ' + '; '.join('%d=%s' % item for item in CODES.items()) if labels.get('constellation_value_codes') == 'v1' else 'unknown: unsupported marker ' + str(labels['constellation_value_codes'])) if 'constellation_value_codes' in labels else 'unmarked: raw numeric values', 'evidence': evidence, '_key': key, '_usable': usable, '_declared': bool(definition) and bool(live) and definition.get('labels', {}) == live.get('labels', {}) and policy_ok and not fault['metrics'], '_route': metric_route_enabled and report.get('network_enabled') is True and labels.get('attention') == 'true' and bool(inputs.get('metric_alerts')) and not fault['attention_config'] and not fault['attention_report'] and bool(routes.get('network_enabled')) and notice != 'drop' and transport != 'local_file', '_runbook': not runbook.startswith('unknown:')})
+        conditions = [c for c in rows(live, 'instances') if c.get('labels', {}).get('site', site) in ('', site)] if not metric_fault and not state.startswith('unknown:') else []
+        summary = definition.get('annotations', {}).get('summary', 'unknown: summary not acquired')
+        observation = '; '.join(dict.fromkeys(observation_summary(summary, c) for c in conditions or [{}]))
+        rule_rows.append({'rule': key[2], 'identity': '/'.join(key), 'family': family or 'not demonstrated: no family label', 'observation': observation, 'state': state, 'acquisition': live.get('last_evaluation') or 'unknown: never evaluated', 'route': route, 'handler': transport if labels.get('attention') == 'true' else 'unknown: Alertmanager config not an input', 'runbook': runbook, 'revision': '%s; registry pins %s' % (metrics.get('policy_sha256', 'unknown'), ', '.join(pins) or 'unknown'), 'hold': str(definition.get('duration_seconds', '?')) + 's vmalert hold; attention metric notice default 60s', 'value-code': ('v1: ' + '; '.join('%d=%s' % item for item in CODES.items()) if labels.get('constellation_value_codes') == 'v1' else 'unknown: unsupported marker ' + str(labels['constellation_value_codes'])) if 'constellation_value_codes' in labels else 'unmarked: raw numeric values', 'evidence': evidence, '_key': key, '_usable': usable, '_declared': bool(definition) and bool(live) and definition.get('labels', {}) == live.get('labels', {}) and policy_ok and not fault['metrics'], '_route': metric_route_enabled and report.get('network_enabled') is True and labels.get('attention') == 'true' and bool(inputs.get('metric_alerts')) and not fault['attention_config'] and not fault['attention_report'] and bool(routes.get('network_enabled')) and notice != 'drop' and transport != 'local_file', '_runbook': not runbook.startswith('unknown:')})
     attention_pins = [d.get('digest') for d in rows(reg, 'definitions') if d.get('kind') == 'attention-policy' and d.get('config') == str(args.attention_config)]
     config_digest = 'sha256:' + hashlib.sha256(raw['attention_config']).hexdigest()
     file_pins = [d.get('digest') for d in rows(reg, 'definitions')

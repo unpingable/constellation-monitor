@@ -67,19 +67,44 @@ home. Release assembly must install that sibling beside
 `constellation-incidents.py` (including when the command is a symlink), and
 stop maintaining a separate Cartography implementation. It uses only stdlib.
 
-Set scrape labels and, optionally, the browser-facing Grafana URL in
+Packaging must ship these files together in the implementation directory
+(normally `/usr/local/lib/constellation-incidents/`):
+
+- `constellation-incidents.py`: the incident CLI and sync implementation.
+- `metric_links.py`: required sibling for Grafana links.
+
+Cartography's estate task, release `ASSETS`, day-two definition scripts and
+testbed installer must all include the sibling; Cartography adopts this in
+parallel. A single-file install still supports help, sync and incident queries,
+with empty links and `metric_links_status: "unavailable: metric_links.py not installed"`
+on inspection entries and the same explanation in `show`.
+
+The generic install does not generate presentation configuration. The
+Cartography installer should render scrape labels and, optionally, the
+browser-facing Grafana URL in
 `/etc/constellation-incidents/incidents.json`, or pass global `--config PATH`:
 
 ```json
 {"grafana": {"site": "example", "host": "machine-01", "base_url": "http://localhost:3100"}}
 ```
 
+The root must be a JSON object with these keys (maximum file size 64 KiB):
+
+| Key | Expected value |
+| --- | --- |
+| `grafana` | Object containing the link settings. |
+| `grafana.site` | Required nonempty string matching the metrics' `site` scrape label. |
+| `grafana.host` | Required nonempty string matching the metrics' `host` scrape label. |
+| `grafana.base_url` | Optional HTTP(S) browser endpoint, default `http://localhost:3100`. |
+
 `base_url` defaults to `http://localhost:3100`; site and host must match the
 installed dashboard scrape labels. They are never inferred from incident
 subjects or machine-id. A reverse-proxy path is supported. Credentials, query
 strings and fragments in the base URL are refused. This presentation config
 contains no secrets. Missing config keeps incident inspection available with
-empty links and an explicit `metric_links_status` explanation. Missing/invalid
+empty links and `metric_links_status: "links unavailable: no incidents.json"`
+(also printed by `show`). Invalid config likewise leaves queries available with
+an explicit explanation. Missing/invalid
 `first_seen` also leaves links unavailable; it never substitutes another time.
 
 The stable dashboard UIDs are `constellation-host`, `constellation-services`,
