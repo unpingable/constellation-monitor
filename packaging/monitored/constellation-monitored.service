@@ -1,0 +1,17 @@
+[Unit]
+Description=Explain this host's monitoring on the status site
+Documentation=file:///usr/share/doc/constellation-monitored/MONITORED.md
+After=constellation-estate-collect.service constellation-attention.service constellation-metric-alerts-collect.service
+
+[Service]
+Type=oneshot
+# Reads only the local declarations and reports; never runs producers.
+ExecStart=/usr/bin/constellation-monitored render --out /var/www/constellation-status/monitored.html
+UMask=0022
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/www/constellation-status
+# The site installer owns creation and exposure of the status directory.

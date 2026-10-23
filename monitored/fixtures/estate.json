@@ -1,0 +1,59 @@
+{
+  "schema": "constellation.estate/v1",
+  "site": "example",
+  "generated_at": "2026-10-22T21:00:00Z",
+  "registry_sha256": "52ee350ad6b8d51407e01690ac7dbae4d5e541868d15b67d2a06bf7f906a6e06",
+  "services": [
+    {
+      "name": "web",
+      "runtime": {
+        "kind": "systemd",
+        "target": "web.service",
+        "up": true,
+        "state": "active"
+      },
+      "verdict": "DEGRADED",
+      "reason": "web.http ABSENT",
+      "concerns": [
+        {
+          "id": "web.http",
+          "required": true,
+          "state": "ABSENT",
+          "reason": "HTTP 503",
+          "observed_at": "2026-10-22T20:59:58Z",
+          "valid_for_seconds": 300
+        }
+      ]
+    },
+    {
+      "name": "attention",
+      "verdict": "OK",
+      "reason": "running, required timer present",
+      "concerns": [
+        {
+          "id": "timer.constellation-attention.timer",
+          "required": true,
+          "state": "PRESENT",
+          "reason": "last exit 0"
+        }
+      ]
+    },
+    {
+      "name": "estate-coverage",
+      "role": "every workload supervised or explicitly excluded",
+      "verdict": "DEGRADED",
+      "reason": "stray.service unregistered",
+      "unregistered": [
+        "systemd:stray.service"
+      ],
+      "concerns": [
+        {
+          "id": "estate.coverage.complete",
+          "required": true,
+          "state": "DEGRADED",
+          "reason": "stray service"
+        }
+      ]
+    }
+  ]
+}

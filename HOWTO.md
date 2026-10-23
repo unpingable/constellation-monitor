@@ -119,3 +119,12 @@ campaign's recovery procedure.
 If a composed consumer is unavailable, retain the discovery/acquisition output
 and report that limited boundary. A binary, command, resolver, or tool being
 available does not establish current evidence, standing, or authority to act.
+
+## Explain this host's monitoring
+
+With `constellation-monitored` installed, use `constellation-monitored list`,
+`constellation-monitored show <service-or-rule>`, or
+`constellation-monitored render --out /var/www/constellation-status/monitored.html`.
+The reader shows acquired services, rules, producers, supervision, coverage and
+gaps, and leaves missing evidence unknown. See [the operator guide](docs/MONITORED.md)
+for inputs, packaging, the refresh timer and the offline sample.

@@ -1,0 +1,64 @@
+{
+  "schema": "constellation.estate_registry/v1",
+  "site": "example",
+  "services": [
+    {
+      "name": "web",
+      "role": "serves the local website",
+      "runtime": {
+        "systemd": "web.service"
+      },
+      "status": {
+        "kind": "http",
+        "url": "http://127.0.0.1:8080/health"
+      },
+      "timers": [
+        "web-refresh.timer"
+      ]
+    },
+    {
+      "name": "worker",
+      "role": "processes queued jobs",
+      "runtime": {
+        "systemd": "worker.service"
+      },
+      "status": {
+        "kind": "project-ops-status",
+        "argv": [
+          "/opt/worker/status"
+        ]
+      }
+    },
+    {
+      "name": "attention",
+      "role": "constellation: attention evaluator",
+      "runtime": {
+        "systemd": "constellation-attention.timer"
+      },
+      "timers": [
+        {
+          "unit": "constellation-attention.timer",
+          "ok_status": [
+            0,
+            3
+          ]
+        }
+      ]
+    }
+  ],
+  "definitions": [
+    {
+      "id": "effective-policy",
+      "kind": "vmalert-policy",
+      "digest": "sha256:d3b1df1b69a44fdf5c8e585a4953cb88e33170e7a90bc1f9e0ea2baa5d8dfa31"
+    }
+  ],
+  "unsupervised": {
+    "systemd": [
+      {
+        "match": "base.service",
+        "reason": "explicitly excluded base unit"
+      }
+    ]
+  }
+}

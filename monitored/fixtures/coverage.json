@@ -1,0 +1,6 @@
+{
+  "schema": "constellation.monitored_coverage/v1",
+  "site": "example",
+  "policy_sha256": "sha256:d3b1df1b69a44fdf5c8e585a4953cb88e33170e7a90bc1f9e0ea2baa5d8dfa31",
+  "families": {}
+}

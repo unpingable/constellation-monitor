@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the monitoring inventory page every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1s
+Unit=constellation-monitored.service
+
+[Install]
+WantedBy=timers.target
