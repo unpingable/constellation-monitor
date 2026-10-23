@@ -172,7 +172,8 @@ def test_no_remediation_attempt_by_the_end_of_the_window_needs_the_operator(stor
     assert store.incidents()[0]["needs_operator"].startswith("systemctl status")
 
 
-def test_notice_references_are_annotated_with_store_ids(store):
+@pytest.mark.parametrize("recorded_intent", [False, True])
+def test_attention_references_are_annotated_with_store_ids(store, recorded_intent):
     fixture = json.loads((HERE / "fixtures/repeated-notice.json").read_text())
     reference = None
     for step in fixture["steps"]:
@@ -183,7 +184,7 @@ def test_notice_references_are_annotated_with_store_ids(store):
         c = {"id": fixture["key"], "rule": "host-posture-unknown", "active": active,
              "observation": "present" if step["state"] == "unknown" else "clear",
              "first_seen": inc.iso(first_seen) if first_seen else None}
-        notice_state = {"conditions": {fixture["key"]: {"last_intent": {"notice": {"action": "trigger"}}}}} if active else {}
+        notice_state = {"conditions": {fixture["key"]: {"last_intent": {"notice": {"action": "trigger"}}}}} if active and recorded_intent else {}
         inc.sync(store, {"conditions": [c]}, notice_state, None, {}, now)
         if reference:
             row = inc.find(store, reference)
@@ -194,6 +195,14 @@ def test_notice_references_are_annotated_with_store_ids(store):
     base = fixture["steps"][1]["incident"]
     assert inc.find(store, base)["id"] == base
     assert inc.find(store, fixture["key"] + "@2099-01-01T00:00:00Z") is None
+
+
+def test_missing_reference_explains_sync_timing(store):
+    ref = KEY + "@2099-01-01T00:00:00Z"
+    assert inc.show_view(store, ref) == "no incident %s (sync has not run yet; last sync never)" % ref
+    store.heartbeat(inc.iso(T0), True, "ok")
+    assert inc.show_view(store, ref) == (
+        "no incident %s (sync may not have observed this reference yet; last sync %s)" % (ref, inc.iso(T0)))
 
 
 def test_new_attention_epoch_inside_recovery_still_names_the_same_incident(store):

@@ -58,6 +58,11 @@
         },
         {
           "at": "2026-10-16T12:00:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-9285e7e7\", \"reference\": \"site:demo:service:service-down:api-gateway@2026-10-16T12:00:00Z\"}"
+        },
+        {
+          "at": "2026-10-16T12:00:00Z",
           "kind": "needs-operator",
           "detail": "{\"action\": \"Inspect api-gateway; review runbook before acting\"}"
         },
@@ -97,6 +102,11 @@
         },
         {
           "at": "2026-10-16T12:00:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-11efa089\", \"reference\": \"site:demo:service:service-down:collector-observation-gap@2026-10-16T12:00:00Z\"}"
+        },
+        {
+          "at": "2026-10-16T12:00:00Z",
           "kind": "needs-operator",
           "detail": "{\"action\": \"Inspect collector-observation-gap; review runbook before acting\"}"
         },
@@ -132,6 +142,11 @@
           "at": "2026-10-16T12:00:00Z",
           "kind": "detected",
           "detail": "{\"first_seen\": \"2026-10-16T12:00:00Z\", \"note\": \"Deterministic fixture: failure condition observed\", \"observation\": \"present\", \"rule\": \"service-down\"}"
+        },
+        {
+          "at": "2026-10-16T12:00:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-d5d6b65a\", \"reference\": \"site:demo:service:service-down:worker-pool@2026-10-16T12:00:00Z\"}"
         },
         {
           "at": "2026-10-16T12:00:00Z",
@@ -199,6 +214,11 @@
         },
         {
           "at": "2026-10-16T12:58:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-c89de820\", \"reference\": \"site:demo:service:service-down:ingest-service@2026-10-16T12:00:00Z\"}"
+        },
+        {
+          "at": "2026-10-16T12:58:00Z",
           "kind": "needs-operator",
           "detail": "{\"action\": \"Inspect ingest-service; review runbook before acting\"}"
         },
@@ -253,6 +273,11 @@
         },
         {
           "at": "2026-10-16T12:58:40Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-c79509df\", \"reference\": \"site:demo:service:service-down:storage-maintenance@2026-10-16T12:00:00Z\"}"
+        },
+        {
+          "at": "2026-10-16T12:58:40Z",
           "kind": "needs-operator",
           "detail": "{\"action\": \"Inspect storage-maintenance; review runbook before acting\"}"
         },
@@ -291,6 +316,11 @@
         },
         {
           "at": "2026-10-16T12:56:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-f70f0b3b\", \"reference\": \"site:demo:service:service-down:queue-backlog@2026-10-16T12:00:00Z\"}"
+        },
+        {
+          "at": "2026-10-16T12:56:00Z",
           "kind": "needs-operator",
           "detail": "{\"action\": \"Inspect queue-backlog; review runbook before acting\"}"
         },
@@ -326,6 +356,11 @@
           "at": "2026-10-16T12:50:00Z",
           "kind": "detected",
           "detail": "{\"first_seen\": \"2026-10-16T12:00:00Z\", \"note\": \"Deterministic fixture: failure condition observed\", \"observation\": \"present\", \"rule\": \"service-down\"}"
+        },
+        {
+          "at": "2026-10-16T12:50:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-78ed7802\", \"reference\": \"site:demo:service:service-down:edge-cache@2026-10-16T12:00:00Z\"}"
         },
         {
           "at": "2026-10-16T12:50:00Z",
@@ -372,6 +407,11 @@
         },
         {
           "at": "2026-10-16T12:57:00Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-09754fde\", \"reference\": \"site:demo:service:service-down:retired-worker@2026-10-16T12:00:00Z\"}"
+        },
+        {
+          "at": "2026-10-16T12:57:00Z",
           "kind": "needs-operator",
           "detail": "{\"action\": \"Inspect retired-worker; review runbook before acting\"}"
         },
@@ -407,6 +447,11 @@
           "at": "2026-10-16T12:58:20Z",
           "kind": "detected",
           "detail": "{\"first_seen\": \"2026-10-16T12:00:00Z\", \"note\": \"Deterministic fixture: failure condition observed\", \"observation\": \"present\", \"rule\": \"service-down\"}"
+        },
+        {
+          "at": "2026-10-16T12:58:20Z",
+          "kind": "attention-reference",
+          "detail": "{\"incident_id\": \"inc-bec04f59\", \"reference\": \"site:demo:service:service-down:deployment-proposal@2026-10-16T12:00:00Z\"}"
         },
         {
           "at": "2026-10-16T12:58:20Z",

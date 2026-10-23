@@ -280,11 +280,9 @@ def sync(store, report, state, consumer, rules, now, intent_log=()):
         if live is None:
             continue
         inc_id = live["id"]
-        # Annotate the attention notice's lookup reference with the authoritative id.
+        # Annotate every active condition's lookup reference, including digest-only conditions.
         # A new attention epoch during recovery is still the same incident.
-        has_notice = bool(last_intents.get(key)) or any(
-            i.get("condition_id") == key for i in report.get("intents", []))
-        if c and c.get("active") and c.get("first_seen") and has_notice:
+        if c and c.get("active") and c.get("first_seen"):
             reference = "%s@%s" % (key, c["first_seen"])
             store.event(inc_id, at, "attention-reference", {"reference": reference, "incident_id": inc_id},
                         dedup="attention-reference:%s:%s" % (inc_id, reference))
@@ -605,10 +603,16 @@ def find(store, ref):
     return None
 
 
+def no_incident_message(store, ref):
+    last_sync = store.meta().get("last_sync_at")
+    pending = "sync may not have observed this reference yet" if last_sync else "sync has not run yet"
+    return "no incident %s (%s; last sync %s)" % (ref, pending, last_sync or "never")
+
+
 def show_view(store, ref):
     i = find(store, ref)
     if not i:
-        return "no incident %s" % ref
+        return no_incident_message(store, ref)
     out = ["%s  %s  [%s]" % (i["id"], i["key"], i["state"]),
            "opened %s; last observed %s (%s)%s" % (i["opened_at"], i["last_observed_at"], i["last_observation"],
                                                  "; resolved %s: %s" % (i["resolved_at"], i["resolution"]) if i["resolved_at"] else ""),
@@ -740,7 +744,7 @@ def main(argv=None):
             return 0
         inc = find(store, a.ref)
         if not inc:
-            print("no incident %s" % a.ref, file=sys.stderr); return 2
+            print(no_incident_message(store, a.ref), file=sys.stderr); return 2
         at = iso()
         with store.transaction():
             if cmd == "ack":

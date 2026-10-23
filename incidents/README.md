@@ -22,6 +22,9 @@ operator can ask one question:
   accepts that exact reference. After closure, the next reference resolves to
   `inc-…-2`; a new attention epoch inside incident recovery resolves to the
   original incident. Exact `inc-…` lookups always select that retained ID.
+  An exact pre-upgrade `inc-X` lookup therefore returns the base incident, even
+  when a later `inc-X-N` episode is open. Use `show inc-X-N` for that episode,
+  or `show '<condition-key>'` for the newest retained incident and its ID.
   Delivered messages remain unchanged: they contain a lookup reference, not
   a preallocated `inc-…` ID. Before sync observes the active condition, the
   lookup reports no incident; it never guesses the closed episode. References
