@@ -9,6 +9,7 @@ use crate::condition::ConditionKey;
 use crate::util::{read_bounded, write_atomic};
 
 pub const STATE_SCHEMA: &str = "constellation.attention_state.v1";
+pub const METRIC_ALERTS_STATE_SCHEMA: &str = "constellation.attention_metric_alerts_state.v1";
 const MAX_STATE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -25,9 +26,15 @@ pub struct State {
     /// operator lists it in `retired_instances`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nq_watchers: BTreeMap<String, BTreeMap<String, i64>>,
-    /// Host-local metric report history; survives relabels and evaluator restarts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metric_alerts: Option<MetricAlertsHistory>,
+}
+
+/// Separate custody preserves the lifecycle state's rollback compatibility.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricAlertsState {
+    pub schema: String,
+    pub site: String,
+    pub history: MetricAlertsHistory,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -103,7 +110,6 @@ impl State {
             updated_at: 0,
             conditions: BTreeMap::new(),
             nq_watchers: BTreeMap::new(),
-            metric_alerts: None,
         }
     }
 
@@ -146,12 +152,6 @@ impl State {
                 clamp(at);
             }
         }
-        if let Some(history) = &mut self.metric_alerts {
-            clamp(&mut history.first_seen);
-            for at in history.warming_since.values_mut() {
-                clamp(at);
-            }
-        }
         for condition in self.conditions.values_mut() {
             for value in [
                 &mut condition.first_seen,
@@ -171,6 +171,54 @@ impl State {
                 .chain(condition.pending_trigger.values_mut())
             {
                 clamp(&mut last.at);
+            }
+        }
+        clamped
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        write_atomic(path, &bytes)
+    }
+}
+
+impl MetricAlertsState {
+    /// Absence is no history; malformed, foreign-site or unreadable history
+    /// must never be silently replaced. Call under the lifecycle state lock.
+    pub fn load(path: &Path, site: &str) -> Result<Option<Self>, String> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = read_bounded(path, MAX_STATE_BYTES)?;
+        let state: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "metric history file {} is malformed: {error}",
+                path.display()
+            )
+        })?;
+        if state.schema != METRIC_ALERTS_STATE_SCHEMA {
+            return Err(format!(
+                "metric history schema is not {METRIC_ALERTS_STATE_SCHEMA}"
+            ));
+        }
+        if state.site != site {
+            return Err(format!(
+                "metric history belongs to site {:?}, configuration names {site:?}",
+                state.site
+            ));
+        }
+        Ok(Some(state))
+    }
+
+    pub fn reset_clock(&mut self, now: i64) -> usize {
+        let mut clamped = 0;
+        for at in std::iter::once(&mut self.history.first_seen)
+            .chain(self.history.warming_since.values_mut())
+        {
+            if *at > now {
+                *at = now;
+                clamped += 1;
             }
         }
         clamped

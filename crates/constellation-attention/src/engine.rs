@@ -22,7 +22,10 @@ use crate::registry::{
     UNKNOWN_GAP_SECONDS,
 };
 use crate::remediation::{self, PageDecision};
-use crate::state::{ConditionState, LastIntent, State};
+use crate::state::{
+    ConditionState, LastIntent, METRIC_ALERTS_STATE_SCHEMA, MetricAlertsHistory, MetricAlertsState,
+    State,
+};
 use crate::util::{format_seconds, read_bounded, truncate, write_atomic};
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
@@ -317,6 +320,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     };
     let _lock = lock(config, options.dry_run)?;
     let mut state = State::load(&config.state_path, &config.site)?;
+    let metric_history_path = state_dir.join("state-metric-alerts.json");
+    let metric_history = MetricAlertsState::load(&metric_history_path, &config.site)?
+        .map(|state| state.history)
+        .or_else(|| {
+            // An established evaluator must not gain a new acquisition grace
+            // just because it has been upgraded to track metric history.
+            (state.updated_at > 0).then_some(MetricAlertsHistory {
+                first_seen: state.updated_at,
+                warming_since: BTreeMap::new(),
+            })
+        });
     let now = options.now;
     if now < state.updated_at {
         // Event identities carry the decision time; a pass earlier than the
@@ -341,7 +355,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         rules: &rules,
         now,
         now_ms: options.now_ms,
-        metric_alerts: state.metric_alerts.as_ref(),
+        metric_alerts: metric_history.as_ref(),
         nq_watchers: config
             .inputs
             .nq_status
@@ -357,9 +371,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     if let Some((label, roster)) = read.nq_watchers.take() {
         state.nq_watchers = BTreeMap::from([(label, roster)]);
     }
-    if let Some(history) = read.metric_alerts.take() {
-        state.metric_alerts = Some(history);
-    }
+    let metric_history = read.metric_alerts.take();
     let mut observed: BTreeMap<String, Observed> = BTreeMap::new();
     // One condition fed by two inputs (a host-posture label equal to an NQ
     // filesystem watcher id): neither source may silently win.
@@ -994,6 +1006,14 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Persist the decisions and written intents before any submission, so a
     // crash leaves `unknown` records that the next pass submits again.
     if !options.dry_run {
+        if let Some(history) = metric_history {
+            MetricAlertsState {
+                schema: METRIC_ALERTS_STATE_SCHEMA.into(),
+                site: config.site.clone(),
+                history,
+            }
+            .save(&metric_history_path)?;
+        }
         state.updated_at = now;
         state.save(&config.state_path)?;
     }
@@ -1452,8 +1472,17 @@ pub fn rules_report(rules: &[EffectiveRule], config: &Config) -> Vec<Value> {
 pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
     let _lock = lock(config, false)?;
     let mut state = State::load(&config.state_path, &config.site)?;
+    let metric_history_path = config.state_dir().join("state-metric-alerts.json");
+    let mut metric_history = MetricAlertsState::load(&metric_history_path, &config.site)?;
     let previous = state.updated_at;
-    let clamped = state.reset_clock(now);
+    let mut clamped = state.reset_clock(now);
+    if let Some(history) = &mut metric_history {
+        let history_clamped = history.reset_clock(now);
+        if history_clamped > 0 {
+            history.save(&metric_history_path)?;
+        }
+        clamped += history_clamped;
+    }
     if clamped > 0 {
         state.save(&config.state_path)?;
     }

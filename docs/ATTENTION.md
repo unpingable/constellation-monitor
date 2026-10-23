@@ -491,6 +491,25 @@ builds refuse `--now` without `--dry-run`, and the packaged unit never
 passes it. (Debug builds accept it, also on `reset-clock`, so the test suite
 can drive the clock.)
 
+## State files
+
+`state.json` retains the `constellation.attention_state.v1` field set used by
+f7b74cc, so rollback to that binary can load state after a new evaluator pass.
+Metric warming history lives only in the sibling `state-metric-alerts.json`,
+with its own `constellation.attention_metric_alerts_state.v1` schema, site,
+and `history` (`first_seen` and `warming_since`, stored as Unix seconds).
+Both structures reject unknown fields. An absent history file means no saved
+metric history; malformed, unreadable, or foreign-site history is an error
+and is never silently replaced.
+
+The history uses the same state lock and atomic write custody as lifecycle
+state: mode 0600, exclusive temporary file, file fsync, rename and directory
+fsync. History is saved before lifecycle decisions and any NQ submission;
+the two files are individually atomic, not one transaction. Dry runs read
+saved history to simulate the pass and leave both state files untouched.
+The old binary ignores the sibling history file. `reset-clock` clamps future
+timestamps in both files under the same lock.
+
 ## Report
 
 Completed passes record `exit_code` (0 or 3), `exit_class` (`clean`,
@@ -704,12 +723,16 @@ In `[inputs.metric_alerts]`, both warming settings are integer seconds:
   the warming bound accepts 1–604800 seconds.
 
 The evaluator persists first observation and rule/site warming start times
-in its existing state file. Missing, rejected, stale or otherwise unqualified
-reports cannot renew grace or reset a remembered warming interval. A current,
-healthy observation with no unknown value codes resets that rule/site's interval;
-`reset-clock` clamps these timestamps along with the other state timestamps.
-For a preexisting state without metric history, the first pass reading a
-metric report starts the window. Dry runs do not persist that history.
+in `state-metric-alerts.json` (see State files). Missing, unreadable, stale or
+otherwise unqualified whole reports cannot renew grace or reset a remembered
+warming interval. A current qualified report prunes intervals for identities
+it no longer contains, so a returning identity starts a fresh interval.
+A current, healthy observation with no unknown value codes resets that
+rule/site's interval; a per-rule fault retains a still-listed identity.
+For preexisting `state.json` with `updated_at > 0` but no history file,
+`first_seen` is seeded from that last saved pass, rather than the upgrade time;
+an already elapsed grace stays elapsed. On a fresh install it starts with the
+first metric report. Dry runs do not persist that history.
 
 Warming alone leaves the input `status: "ok"`, `causes: ["warming"]`, and
 no `error`. A pass with no other problem exits 0 with `exit_class: "clean"`
@@ -722,7 +745,9 @@ sends the existing `evaluator-input-unavailable:<input>.indeterminate`
 notice. This persistence begins on the first faulting pass, after grace or
 the warming bound, rather than counting the preceding informational interval.
 The notice includes `Now: indeterminate rules: <alert name> (<condition
-target>): code N (meaning); ...`. Only faulting codes are listed; warming
+target>): code N (meaning); ...`. A bound breach appends
+`warming for Nh Nm (bound 6h)` to that rule entry (using the configured bound).
+Only faulting codes are listed; warming
 codes still within their bounds are excluded. It uses complete counts,
 scoped to configured sites, in sorted rule-identity and code order. At most
 eight rule/site identities appear within a 640-byte detail budget, followed
@@ -737,10 +762,11 @@ For installer/status consumers, read the completed `report.json` fields
 `evaluated_at`, `exit_code`, `exit_class` and `first_error`, and select the
 `inputs[]` entry with `kind: "metric_alerts"`. Its `status` and fault causes
 establish availability; `warming` alone must not become a failing concern.
-Its `identity.first_seen`, `identity.warmup_grace` and `identity.warming_bound`
-expose the host window and configured bounds. `identity.warming_rules[]`
-lists `rule`, keyed `target`, numeric `codes`, `since` (Unix seconds),
-`elapsed_seconds`, and `bound_exceeded`. Its length can be shown as
+Its `identity.first_seen` (RFC 3339), `identity.warmup_grace` and
+`identity.warming_bound` (integer seconds) expose the host window and
+configured bounds. `identity.warming_rules[]` lists `rule`, keyed `target`,
+numeric `codes`, `since` (RFC 3339), integer `elapsed_seconds`, and
+`bound_exceeded`. Its length can be shown as
 "N rules warming" (rule/site entries when keyed by site), as information.
 The list is absent when empty. Inspect `conditions[]` for the corresponding
 `metric-alert-firing` row's `observation: "unknown"` and retained `active`

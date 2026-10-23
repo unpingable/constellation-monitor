@@ -132,25 +132,29 @@ rule/site reaches the bound; it also caps codes 2/3 during grace if shorter.
 Code 4 faults immediately even during grace. These settings do not excuse
 unreadable/stale reports, unhealthy rule evaluations, drift or rejections.
 
-The existing state file persists the host's first observation and each
-rule/site's warming start. Report refreshes, evaluator restarts, relabels and
-configuration applies do not renew grace. Missing, rejected or unqualified
-reports cannot reset warming; a qualified observation with no unknown value codes
-resets that rule/site's interval. Preexisting state without metric history
-starts at the first metric report read; dry runs do not persist the timers.
+The sibling `state-metric-alerts.json` persists the host's first observation
+and each rule/site's warming start; `state.json` keeps the f7b74cc field set
+for rollback. Report refreshes, evaluator restarts, relabels and configuration
+applies do not renew grace. Missing or unqualified whole reports cannot reset
+warming; a current qualified roster prunes absent identities, and a qualified
+observation with no unknown value codes resets that rule/site's interval.
+Preexisting state with `updated_at > 0` and no metric history seeds first
+observation from `updated_at`; a fresh install starts at the first metric
+report read. Dry runs leave both state files untouched.
 `reset-clock` clamps their timestamps as it does other state timestamps.
 
 Faulting codes raise the existing input `indeterminate` fault and exit 3;
 once the fault persists more than the default 300 s, the existing
 `evaluator-input-unavailable` notice names the affected rules and codes.
+Bound breaches append `warming for Nh Nm (bound 6h)` (the configured bound).
 That persistence starts at the first faulting pass, after either warming
 bound, and excludes the preceding informational interval. In-bounds warming
 codes are excluded from the notice's fault list. The report's
 `inputs[].identity.warming_rules[]` lists each warming `rule`, keyed `target`,
-numeric `codes`, `since` (Unix seconds), `elapsed_seconds`, and
+numeric `codes`, `since` (RFC 3339), integer `elapsed_seconds`, and
 `bound_exceeded`; it is absent when empty. Status may display its length as
 "N rules warming" as information, without making it a failing concern.
-`identity.first_seen`, `identity.warmup_grace` and `identity.warming_bound`
+`identity.first_seen` (RFC 3339), `identity.warmup_grace` and `identity.warming_bound`
 expose the host window and bounds. Other faults retain their escalation.
 
 Plain `lastSamples = 0` with positive

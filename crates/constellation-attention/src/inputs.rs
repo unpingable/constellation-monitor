@@ -2,7 +2,7 @@
 //! three-valued observations. Nothing here decides attention; it only says
 //! whether each rule's underlying state is present, clear or not knowable now.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -1844,6 +1844,23 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             (name, admit_metric_alert(name, &sites))
         })
         .collect();
+    if stale.is_none() && drift.is_none() {
+        // A current qualified roster ends intervals for retired identities.
+        // Per-rule faults retain an identity that is still in the roster;
+        // whole-report faults cannot establish that an identity disappeared.
+        let identities: BTreeSet<_> = admissions
+            .iter()
+            .flat_map(|(name, admission)| {
+                admission
+                    .keyed
+                    .iter()
+                    .map(move |(_, target)| format!("{name} ({target})"))
+            })
+            .collect();
+        history
+            .warming_since
+            .retain(|identity, _| identities.contains(identity));
+    }
     let mut sharing: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (name, admission) in &admissions {
         if !admission.keyed.is_empty() {
@@ -2020,18 +2037,34 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                                 "rule": name,
                                 "target": keyed_target,
                                 "codes": warming_codes,
-                                "since": since,
+                                "since": format_seconds(since),
                                 "elapsed_seconds": context.now - since,
                                 "bound_exceeded": expired,
                             }));
                         }
-                        let fault_codes = value
+                        let mut fault_codes = value
                             .unknown_codes
                             .iter()
                             .filter(|(code, _)| expired || !warming_codes.contains(code))
                             .map(|(_, meaning)| meaning.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
+                        if expired && let Some(since) = warming_since {
+                            let elapsed = context.now - since;
+                            let bound = input.warming_bound;
+                            let bound_text = if bound % 3600 == 0 {
+                                format!("{}h", bound / 3600)
+                            } else if bound % 60 == 0 {
+                                format!("{}m", bound / 60)
+                            } else {
+                                format!("{bound}s")
+                            };
+                            fault_codes.push_str(&format!(
+                                "; warming for {}h {}m (bound {bound_text})",
+                                elapsed / 3600,
+                                elapsed % 3600 / 60,
+                            ));
+                        }
                         if !fault_codes.is_empty() {
                             report.fault(
                                 "indeterminate",
@@ -2172,7 +2205,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         report.causes.push("warming");
         report.identity["warming_rules"] = json!(warming_rules);
     }
-    report.identity["first_seen"] = json!(history.first_seen);
+    report.identity["first_seen"] = json!(format_seconds(history.first_seen));
     report.identity["warmup_grace"] = json!(input.warmup_grace);
     report.identity["warming_bound"] = json!(input.warming_bound);
     read.metric_alerts = Some(history);
