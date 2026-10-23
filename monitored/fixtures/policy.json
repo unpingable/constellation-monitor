@@ -1,0 +1,45 @@
+{
+  "schema": "constellation.vmalert_policy/v1",
+  "groups": [
+    {
+      "file": "host-pressure.rules.yml",
+      "name": "host-pressure",
+      "interval_seconds": 30,
+      "rules": [
+        {
+          "name": "HostIoPressureHigh",
+          "query": "rate(node_pressure_io_stalled_seconds_total[10m]) > 0.25",
+          "duration_seconds": 900,
+          "keep_firing_for_seconds": 0,
+          "labels": {
+            "area": "host",
+            "attention": "true",
+            "runbook": "host-pressure",
+            "severity": "warn",
+            "family": "block I/O pressure"
+          },
+          "annotations": {
+            "summary": "I/O stall {{ $value | humanizePercentage }} of wall time on {{ $labels.site }} ({{ $labels.instance }}) for 15 min"
+          }
+        },
+        {
+          "name": "HostSwapExhausted",
+          "query": "node_memory_SwapTotal_bytes > 0 and node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes < 0.05",
+          "duration_seconds": 1800,
+          "keep_firing_for_seconds": 0,
+          "labels": {
+            "area": "host",
+            "attention": "true",
+            "constellation_value_codes": "v1",
+            "runbook": "host-pressure",
+            "severity": "warn",
+            "family": "swap_thrashing"
+          },
+          "annotations": {
+            "summary": "evidence code={{ $value }} (present)"
+          }
+        }
+      ]
+    }
+  ]
+}

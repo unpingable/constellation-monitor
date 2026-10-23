@@ -1,0 +1,6 @@
+#!/bin/sh
+# Creates the shared renderer layout only; never starts or enables services.
+set -eu
+getent passwd nq >/dev/null 2>&1 || { echo 'nq account missing; install nq-ng first' >&2; exit 1; }
+install -d -o nq -g nq -m 0755 /var/www/constellation-status
+if [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi

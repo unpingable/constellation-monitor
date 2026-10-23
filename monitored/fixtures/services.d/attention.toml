@@ -1,0 +1,4 @@
+name = "attention"
+role = "constellation: attention evaluator"
+runtime = { systemd = "constellation-attention.timer" }
+timers = [{ unit = "constellation-attention.timer", ok_status = [0, 3] }]

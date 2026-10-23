@@ -24,7 +24,12 @@ Do not use `immutable=1` on a changing store: it would omit live WAL state.
 
 The envelope contains `schema`, `read_at`, `source` (kind, configured locator and
 implementation SHA-256), `meta`, `scope`, `missing_fields` and `incidents`.
-Each entry has `incident`, `events` and `attempts`. No UI-generated fields are
+Each entry has `incident`, `events`, `attempts` and additive `metric_links`
+(a `host`/`services`/`alerts` URL object). If unavailable, links are empty and
+`metric_links_status` explains why. These are derived presentation fields, never
+stored incident fields. The same decoration applies to handover inspection;
+its configured site/host must describe the original metrics scope. See
+[Grafana config and time-window semantics](README.md#incident-metric-links). No UI-generated fields are
 stored here. Bounds are 1000 incidents and 16 MiB encoded output: over-limit,
 missing, malformed or unsupported sources exit 3 with no successful JSON result.
 A successful empty inspection is a read of zero retained matching records,

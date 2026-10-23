@@ -1,0 +1,17 @@
+schema = "constellation.attention_config.v1"
+site = "example"
+[routes]
+notice_route = "operations"
+notice_transport = "slack"
+network_enabled = true
+[inputs.estate]
+path = "/var/lib/constellation-estate/estate.json"
+max_age_seconds = 600
+[inputs.metric_alerts]
+label = "metrics"
+path = "/var/lib/constellation-metric-alerts/metric-alerts.json"
+max_age_seconds = 300
+max_evaluation_age_seconds = 300
+[runbooks]
+cartography_url = "https://operator.example/runbooks.html"
+monitor_url = "https://operator.example/attention.html"

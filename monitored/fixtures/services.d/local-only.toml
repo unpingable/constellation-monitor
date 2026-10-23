@@ -1,0 +1,3 @@
+name = "local-only"
+role = "new local declaration; not yet acquired"
+runtime = { systemd = "local-only.service" }

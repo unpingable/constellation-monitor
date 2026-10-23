@@ -1,0 +1,72 @@
+{
+  "schema": "constellation.attention_report.v1",
+  "site": "example",
+  "evaluated_at": "2026-10-22T21:00:00Z",
+  "dry_run": false,
+  "registry": "constellation.attention_registry.v7",
+  "attention_policy_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "network_enabled": true,
+  "rules": [
+    {
+      "id": "service-not-doing-its-job",
+      "version": 1,
+      "enabled": true,
+      "disabled_reason": null,
+      "class": "notice",
+      "threshold_seconds": 600,
+      "threshold_meaning": "service fails its declared required concerns",
+      "persistence_seconds": 600,
+      "input": "estate",
+      "input_configured": true
+    },
+    {
+      "id": "metric-alert-firing",
+      "version": 1,
+      "enabled": true,
+      "class": "notice",
+      "threshold_seconds": 60,
+      "threshold_meaning": "vmalert rule is firing under the declared policy",
+      "persistence_seconds": 60,
+      "input": "metric_alerts",
+      "input_configured": true
+    }
+  ],
+  "inputs": [
+    {
+      "label": "estate",
+      "kind": "estate",
+      "component": "service",
+      "source": "estate.json",
+      "status": "ok",
+      "identity": {},
+      "causes": []
+    },
+    {
+      "label": "metrics",
+      "kind": "metric_alerts",
+      "component": "host_posture",
+      "source": "metrics.json",
+      "status": "not_current",
+      "error": "value code 2 acquisition_failed",
+      "identity": {},
+      "causes": [
+        "indeterminate"
+      ]
+    }
+  ],
+  "conditions": [
+    {
+      "id": "constellation:example:service:service-not-doing-its-job:web",
+      "rule": "service-not-doing-its-job",
+      "observation": "present",
+      "note": "HTTP 503",
+      "reference": {},
+      "active": true,
+      "persisted_seconds": 800,
+      "persistence_bound_seconds": 600
+    }
+  ],
+  "intents": [],
+  "unresolved_deliveries": [],
+  "dropped_triggers": []
+}
