@@ -4973,7 +4973,8 @@ fn value_code_rows(doc: &mut Value, state: &str, values: &[&str]) {
 
 #[test]
 fn indeterminate_metric_notice_names_rules_and_codes_without_instance_detail() {
-    let harness = metric_alerts_harness();
+    let mut harness = metric_alerts_harness();
+    harness.raw("warmup_grace = 0\n");
     for offset in [0, 360] {
         write_metric_alerts(&harness, T0 + offset, |doc| {
             value_code_rule(doc, "firing", "3");
@@ -5010,7 +5011,8 @@ fn indeterminate_metric_notice_names_rules_and_codes_without_instance_detail() {
 
 #[test]
 fn indeterminate_metric_notice_limits_sorted_identities_to_eight() {
-    let harness = metric_alerts_harness();
+    let mut harness = metric_alerts_harness();
+    harness.raw("warmup_grace = 0\n");
     for offset in [0, 360] {
         write_metric_alerts(&harness, T0 + offset, |doc| {
             value_code_rows(doc, "firing", &["1", "3", "2"]);
@@ -5076,7 +5078,7 @@ fn indeterminate_metric_notice_survives_disabled_metric_notices_and_scopes_codes
             let record = report["intents"][0]["notification_id"].as_str().unwrap();
             let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
             let summary = sent["summary"].as_str().unwrap();
-            assert!(summary.contains("Now: indeterminate rules: HostSwapExhausted (host-swap-exhausted.testbed): code 4 (stale), code 5 (invalid_or_warming)."), "{summary}");
+            assert!(summary.contains("Now: indeterminate rules: HostSwapExhausted (host-swap-exhausted.testbed): code 4 (stale)."), "{summary}");
             assert!(!summary.contains("code 2"));
             assert!(!summary.contains("code 3"));
         }
@@ -5175,6 +5177,7 @@ fn pid_table_notice_uses_instance_then_host_then_site() {
 fn mixed_value_codes_are_present_with_partial_coverage_in_report_and_digest() {
     for scoped in [false, true] {
         let mut harness = metric_alerts_harness();
+        harness.raw("warmup_grace = 0\n");
         if scoped {
             harness.raw("sites = [\"labelwatch\"]\n");
         }
@@ -5219,7 +5222,8 @@ fn mixed_value_codes_are_present_with_partial_coverage_in_report_and_digest() {
 
 #[test]
 fn all_missing_value_code_rows_are_unknown_held() {
-    let harness = metric_alerts_harness();
+    let mut harness = metric_alerts_harness();
+    harness.raw("warmup_grace = 0\n");
     for offset in [0, 360] {
         write_metric_alerts(&harness, T0 + offset, |doc| {
             value_code_rows(doc, "firing", &["3", "3"]);
@@ -5269,7 +5273,7 @@ fn disappearing_present_row_with_warming_remaining_never_clears() {
                 .unwrap()
                 .contains("value code 5 (invalid_or_warming)")
         );
-        assert_eq!(causes(&metric_input(&report)), ["indeterminate"]);
+        assert_eq!(causes(&metric_input(&report)), ["warming"]);
         assert_eq!(alert_intents(&report).len(), usize::from(offset == 90));
         if offset >= 90 {
             assert_eq!(harness.state()["conditions"][SWAP]["active"], true);
@@ -5282,6 +5286,7 @@ fn metric_value_codes_from_the_shared_vector() {
     let vector: Value = serde_json::from_slice(&fs::read(METRIC_ALERTS_VECTOR).unwrap()).unwrap();
     for case in vector["value_code_cases"].as_array().unwrap() {
         let mut harness = metric_alerts_harness();
+        harness.raw("warmup_grace = 0\n");
         harness.raw("[digest]\nat_utc = \"00:00\"\n");
         write_metric_alerts(&harness, T0, |doc| {
             let mut rule = case["document_rule"].clone();
@@ -5325,7 +5330,13 @@ fn metric_value_codes_from_the_shared_vector() {
                     .get(SWAP)
                     .is_none_or(|c| c["active"] == false)
             );
-            assert!(causes(&metric_input(&report)).contains(&"indeterminate".into()));
+            let input = metric_input(&report);
+            let expected = if c["note"].as_str().unwrap().contains("invalid_or_warming") {
+                "warming"
+            } else {
+                "indeterminate"
+            };
+            assert!(causes(&input).contains(&expected.into()), "{input}");
         }
     }
 }
@@ -5418,10 +5429,239 @@ fn value_codes_hold_an_open_condition_until_healthy_recovery() {
 }
 
 #[test]
+fn only_code_five_is_informational_across_fresh_passes() {
+    let harness = metric_alerts_harness();
+    for offset in [0, 360, 3660, 21_599] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "5");
+            let template = doc["rules"][0].clone();
+            doc["rules"] = json!([template.clone(), template]);
+            doc["rules"][0]["name"] = json!("HostLinkFlapping");
+            doc["rules"][1]["name"] = json!("HostOomKill");
+        });
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let report = harness.report();
+        assert_eq!(report["exit_code"], 0);
+        assert_eq!(report["exit_class"], "clean");
+        assert!(report["first_error"].is_null());
+        let input = metric_input(&report);
+        assert_eq!(input["status"], "ok");
+        assert_eq!(causes(&input), ["warming"]);
+        assert!(input.get("error").is_none());
+        assert_eq!(input["identity"]["first_seen"], T0);
+        assert_eq!(input["identity"]["warmup_grace"], 900);
+        assert_eq!(input["identity"]["warming_bound"], 21_600);
+        let rules = input["identity"]["warming_rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 2);
+        for rule in rules {
+            assert_eq!(rule["codes"], json!([5]));
+            assert_eq!(rule["since"], T0);
+            assert_eq!(rule["elapsed_seconds"], offset);
+            assert_eq!(rule["bound_exceeded"], false);
+        }
+        for target in ["host-link-flapping", "host-oom-kill"] {
+            let id = SWAP.replace("host-swap-exhausted", target);
+            assert_eq!(condition(&report, &id).unwrap()["observation"], "unknown");
+        }
+        assert!(intents(&report).is_empty());
+    }
+}
+
+#[test]
+fn acquisition_codes_warm_only_during_initial_grace() {
+    for code in ["2", "3"] {
+        let mut harness = metric_alerts_harness();
+        for offset in [0, 899, 900, 1199, 1200, 1201] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "pending", code);
+            });
+            let report = harness.evaluate(T0 + offset);
+            let input = metric_input(&report);
+            assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+            assert_eq!(
+                input["status"],
+                if offset < 900 { "ok" } else { "not_current" }
+            );
+            assert_eq!(
+                causes(&input),
+                [if offset < 900 {
+                    "warming"
+                } else {
+                    "indeterminate"
+                }]
+            );
+            assert_eq!(report["exit_code"], if offset < 900 { 0 } else { 3 });
+            assert_eq!(intents(&report).len(), usize::from(offset == 1201));
+            assert!(alert_intents(&report).is_empty());
+        }
+        // A missing report and an input relabel do not renew the host's grace.
+        fs::remove_file(harness.path("metric-alerts.json")).unwrap();
+        harness.evaluate(T0 + 1300);
+        harness.raw("label = \"renamed\"\n");
+        write_metric_alerts(&harness, T0 + 1400, |doc| {
+            value_code_rule(doc, "firing", code)
+        });
+        let report = harness.evaluate(T0 + 1400);
+        let input = metric_input(&report);
+        assert_eq!(input["status"], "not_current");
+        assert_eq!(input["identity"]["first_seen"], T0);
+    }
+}
+
+#[test]
+fn configurable_warming_bound_can_expire_inside_grace() {
+    for code in ["2", "3", "5"] {
+        let mut harness = metric_alerts_harness();
+        harness.raw("warmup_grace = 1000\nwarming_bound = 100\n");
+        for offset in [0, 99, 100, 400, 401] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "firing", code)
+            });
+            let report = harness.evaluate(T0 + offset);
+            let input = metric_input(&report);
+            assert_eq!(
+                input["status"],
+                if offset < 100 { "ok" } else { "not_current" }
+            );
+            assert_eq!(
+                input["identity"]["warming_rules"][0]["bound_exceeded"],
+                offset >= 100
+            );
+            assert_eq!(intents(&report).len(), usize::from(offset == 401));
+            if offset == 401 {
+                let record = report["intents"][0]["notification_id"].as_str().unwrap();
+                let sent: Value =
+                    serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+                assert!(sent["summary"].as_str().unwrap().contains(&format!(
+                    "HostSwapExhausted (host-swap-exhausted): code {code}"
+                )));
+            }
+        }
+    }
+}
+
+#[test]
+fn warming_interval_resets_only_on_qualified_nonwarming_observation() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("warming_bound = 100\n");
+    for offset in [0, 50, 60, 70, 80, 100, 150, 160, 250] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "5");
+            if offset == 70 {
+                value_code_rule(doc, "firing", "4");
+            }
+            if offset == 80 {
+                quiet(doc, "HostSwapExhausted");
+                metric_rule(doc, "HostSwapExhausted")["last_series_fetched"] = json!(0);
+            }
+            if matches!(offset, 50 | 150) {
+                quiet(doc, "HostSwapExhausted");
+                if offset == 50 {
+                    doc["generated_at"] = json!(rfc3339(T0 - 400));
+                }
+            }
+        });
+        let report = harness.evaluate(T0 + offset);
+        let input = metric_input(&report);
+        if offset == 100 {
+            assert_eq!(input["status"], "not_current");
+            assert_eq!(input["identity"]["warming_rules"][0]["since"], T0);
+        } else if offset >= 160 {
+            assert_eq!(input["status"], "ok");
+            assert_eq!(input["identity"]["warming_rules"][0]["since"], T0 + 160);
+        }
+    }
+}
+
+#[test]
+fn warming_history_obeys_dry_run_and_clock_reset() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("warming_bound = 100\n");
+    write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "firing", "5"));
+    let output = harness.evaluate_at(T0, &["--dry-run"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!harness.path("state/state.json").exists());
+    for offset in [50, 1000] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "5")
+        });
+        harness.evaluate(T0 + offset);
+    }
+    let output = harness.reset_clock_at(T0 + 20);
+    assert!(output.status.success(), "{output:?}");
+    let history = &harness.state()["metric_alerts"];
+    assert_eq!(history["first_seen"], T0 + 20);
+    assert_eq!(
+        history["warming_since"]["HostSwapExhausted (host-swap-exhausted)"],
+        T0 + 20
+    );
+    write_metric_alerts(&harness, T0 + 21, |doc| value_code_rule(doc, "firing", "5"));
+    let report = harness.evaluate(T0 + 21);
+    assert_eq!(metric_input(&report)["status"], "ok");
+}
+
+#[test]
+fn warming_does_not_mask_another_rules_acquisition_fault() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("warmup_grace = 0\n");
+    for offset in [0, 301] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "5");
+            let template = doc["rules"][0].clone();
+            doc["rules"] = json!([template.clone(), template]);
+            doc["rules"][0]["name"] = json!("HostLinkFlapping");
+            doc["rules"][1]["name"] = json!("ProbeDown");
+            doc["rules"][1]["value_code_counts"][0]["value"] = json!("2");
+        });
+        let report = harness.evaluate(T0 + offset);
+        let input = metric_input(&report);
+        assert_eq!(input["status"], "not_current");
+        assert_eq!(causes(&input), ["indeterminate", "warming"]);
+        assert_eq!(
+            input["identity"]["warming_rules"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(report["exit_code"], 3);
+        assert!(
+            report["first_error"]
+                .as_str()
+                .unwrap()
+                .contains("ProbeDown")
+        );
+        if offset == 301 {
+            let record = report["intents"][0]["notification_id"].as_str().unwrap();
+            let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+            let summary = sent["summary"].as_str().unwrap();
+            assert!(summary.contains("ProbeDown (probe-down): code 2 (acquisition_failed)"));
+            assert!(!summary.contains("HostLinkFlapping"));
+        }
+    }
+}
+
+#[test]
+fn warming_configuration_rejects_invalid_bounds() {
+    for setting in [
+        "warmup_grace = -1",
+        "warming_bound = 0",
+        "warming_bound = -1",
+    ] {
+        let mut harness = metric_alerts_harness();
+        harness.raw(setting);
+        let output = harness.command(&[
+            "check-config",
+            "--config",
+            harness.config_path().to_str().unwrap(),
+        ]);
+        assert_eq!(output.status.code(), Some(2), "{setting}: {output:?}");
+    }
+}
+
+#[test]
 fn never_present_warming_surfaces_through_input_unavailable() {
     let mut harness = metric_alerts_harness();
     harness.raw("[digest]\nat_utc = \"12:05\"\n");
-    for offset in [0, 299, 360] {
+    for offset in [0, 21_599, 21_600, 21_899, 21_900, 21_901] {
         write_metric_alerts(&harness, T0 + offset, |doc| {
             value_code_rule(doc, "pending", "5")
         });
@@ -5437,13 +5677,20 @@ fn never_present_warming_surfaces_through_input_unavailable() {
             .into_iter()
             .filter(|(id, _, _)| id.ends_with(":metric_alerts.indeterminate"))
             .count();
-        assert_eq!(input_intents, usize::from(offset == 360), "{report}");
-        if offset == 360 {
+        assert_eq!(input_intents, usize::from(offset == 21_901), "{report}");
+        let input = metric_input(&report);
+        assert_eq!(
+            input["status"],
+            if offset < 21_600 { "ok" } else { "not_current" }
+        );
+        assert_eq!(report["exit_code"], if offset < 21_600 { 0 } else { 3 });
+        if offset == 21_901 {
+            let record = report["intents"][0]["notification_id"].as_str().unwrap();
+            let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
             assert!(
-                report["digest"]["summary"]
-                    .as_str()
-                    .unwrap()
-                    .contains("value code 5 (invalid_or_warming)")
+                sent["summary"].as_str().unwrap().contains(
+                    "HostSwapExhausted (host-swap-exhausted): code 5 (invalid_or_warming)"
+                )
             );
         }
     }

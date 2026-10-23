@@ -25,6 +25,17 @@ pub struct State {
     /// operator lists it in `retired_instances`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nq_watchers: BTreeMap<String, BTreeMap<String, i64>>,
+    /// Host-local metric report history; survives relabels and evaluator restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_alerts: Option<MetricAlertsHistory>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricAlertsHistory {
+    pub first_seen: i64,
+    /// Continuous warming starts by alert name and keyed condition target.
+    pub warming_since: BTreeMap<String, i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -92,6 +103,7 @@ impl State {
             updated_at: 0,
             conditions: BTreeMap::new(),
             nq_watchers: BTreeMap::new(),
+            metric_alerts: None,
         }
     }
 
@@ -131,6 +143,12 @@ impl State {
         clamp(&mut self.updated_at);
         for roster in self.nq_watchers.values_mut() {
             for at in roster.values_mut() {
+                clamp(at);
+            }
+        }
+        if let Some(history) = &mut self.metric_alerts {
+            clamp(&mut history.first_seen);
+            for at in history.warming_since.values_mut() {
                 clamp(at);
             }
         }

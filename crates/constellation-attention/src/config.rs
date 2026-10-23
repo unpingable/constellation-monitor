@@ -259,6 +259,12 @@ pub struct MetricAlertsInput {
     /// the document: a rule vmalert stopped evaluating is unknown, not clear.
     #[serde(default = "default_metric_alerts_age")]
     pub max_evaluation_age_seconds: i64,
+    /// Seconds after first report observation during which codes 2/3 warm.
+    #[serde(default = "default_metric_warmup_grace")]
+    pub warmup_grace: i64,
+    /// Maximum continuous warming interval before an input fault.
+    #[serde(default = "default_metric_warming_bound")]
+    pub warming_bound: i64,
     /// Sites whose alert instances are keyed apart, when one vmalert
     /// evaluates rules for several sites: each opted-in rule is then one
     /// condition per listed site, `<alert-name>.<site>`, present when an
@@ -273,6 +279,14 @@ pub const METRIC_ALERTS_MAX_SITES: usize = 8;
 
 fn default_metric_alerts_label() -> String {
     "metric_alerts".to_owned()
+}
+
+const fn default_metric_warmup_grace() -> i64 {
+    900
+}
+
+const fn default_metric_warming_bound() -> i64 {
+    21_600
 }
 
 const fn default_metric_alerts_age() -> i64 {
@@ -566,6 +580,12 @@ impl Config {
                 "inputs.metric_alerts.max_evaluation_age_seconds",
                 input.max_evaluation_age_seconds,
             )?;
+            if !(0..=MAX_THRESHOLD_SECONDS).contains(&input.warmup_grace) {
+                return Err(format!(
+                    "inputs.metric_alerts.warmup_grace must be 0..={MAX_THRESHOLD_SECONDS}"
+                ));
+            }
+            age("inputs.metric_alerts.warming_bound", input.warming_bound)?;
             if let Some(sites) = &input.sites {
                 if sites.is_empty() || sites.len() > METRIC_ALERTS_MAX_SITES {
                     return Err(format!(

@@ -341,6 +341,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         rules: &rules,
         now,
         now_ms: options.now_ms,
+        metric_alerts: state.metric_alerts.as_ref(),
         nq_watchers: config
             .inputs
             .nq_status
@@ -355,6 +356,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     });
     if let Some((label, roster)) = read.nq_watchers.take() {
         state.nq_watchers = BTreeMap::from([(label, roster)]);
+    }
+    if let Some(history) = read.metric_alerts.take() {
+        state.metric_alerts = Some(history);
     }
     let mut observed: BTreeMap<String, Observed> = BTreeMap::new();
     // One condition fed by two inputs (a host-posture label equal to an NQ
@@ -1167,10 +1171,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // A rejected definition leaves its input `ok` but is still an input
     // problem: the pass exits 3, and the report tells the two apart (status
     // `ok`, cause `rejected`, `rejected_rules`).
-    let input_problem = read
-        .reports
-        .iter()
-        .any(|report| report.status != InputStatus::Ok || !report.causes.is_empty());
+    let input_problem = read.reports.iter().any(|report| {
+        report.status != InputStatus::Ok || report.causes.iter().any(|cause| *cause != "warming")
+    });
     // Include log failures in the same pass's durable outcome.
     let intent_log_error = if !options.dry_run && !intent_reports.is_empty() {
         append_intent_log(&state_dir, &format_seconds(now), &intent_reports)
@@ -1235,7 +1238,10 @@ fn first_pass_error(report: &Value) -> Option<String> {
         .into_iter()
         .flatten()
         .find(|input| {
-            input["status"] != "ok" || input["causes"].as_array().is_some_and(|c| !c.is_empty())
+            input["status"] != "ok"
+                || input["causes"]
+                    .as_array()
+                    .is_some_and(|c| c.iter().any(|cause| cause != "warming"))
         });
     let error = input
         .map(|input| {

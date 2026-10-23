@@ -94,7 +94,8 @@ alert under a drifted definition set from one under the declared set. The
 shared vector `fixtures/vmalert-rules-runtime-v1.json` is consumed by
 `test_metric_alerts.py` and by the evaluator's tests.
 
-Binding value-code contract (2026-10-22), verbatim:
+Binding value-code contract (value meanings, 2026-10-22; warming semantics
+updated 2026-10-23):
 
 one alert identity per family; the alert value is a code: 1 = present (threshold met / violation), 2 = acquisition failed (exporter or producer unreachable), 3 = missing (no series), 4 = stale or future timestamp, 5 = invalid or warming (no history yet, counter reset, invalid limit). Every value-coded rule carries the static label `constellation_value_codes: "v1"` (this is the machine-readable marker; `description` annotations do not reach the reader, labels and `summary` do). The evaluator maps non-1 values to unknown-held ONLY for rules carrying that label, with the cause naming the code's meaning (2 acquisition_failed, 3 missing, 4 stale, 5 invalid_or_warming); unlabelled rules keep raw-value semantics exactly as today (their values may legitimately be 2 or 3). A labelled rule with a value outside 1-5 is an input fault for that rule (rejected-rule class, like the per-rule admission in 0.1.10), never present and never clear. The `summary` annotation of value-coded rules reads `evidence code={{ $value }} (<meaning>)`; the notice text for a present code should use that summary as today.
 
@@ -114,10 +115,45 @@ The shared vector covers both producer bytes and evaluator meaning,
 including pending and unsupported codes.
 
 Unknown-held conditions send no metric notice until they have been present.
-Their code and meaning appear immediately in the report and bounded digest;
-lasting unknown codes surface through the existing input `indeterminate`
-fault and `evaluator-input-unavailable` notice after its default 300 s.
-No additional timer is introduced. Plain `lastSamples = 0` with positive
+Their code and meaning appear immediately in the report and bounded digest.
+Warming never triggers or resolves a condition; a non-1 row cannot establish
+presence or recovery (a separate firing code-1 row still proves presence in
+a mixed family). Code 5 is informational warming: alone it leaves the input
+`status: "ok"`, `causes: ["warming"]`, with no `error`, and the evaluator
+exits 0 (`exit_class: "clean"`, `first_error: null`) absent other problems.
+
+Two integer-second settings in `[inputs.metric_alerts]` bound warming:
+`warmup_grace = 900` (15 min, configurable 0–604800, 0 disables grace) treats
+codes 2/3 as warming only while elapsed time from the evaluator's first read
+of a metric-alerts-schema report on the host is less than this bound.
+At the bound codes 2/3 fault as before. `warming_bound = 21600` (6 h,
+configurable 1–604800) makes code 5 fault once continuous warming for that
+rule/site reaches the bound; it also caps codes 2/3 during grace if shorter.
+Code 4 faults immediately even during grace. These settings do not excuse
+unreadable/stale reports, unhealthy rule evaluations, drift or rejections.
+
+The existing state file persists the host's first observation and each
+rule/site's warming start. Report refreshes, evaluator restarts, relabels and
+configuration applies do not renew grace. Missing, rejected or unqualified
+reports cannot reset warming; a qualified observation with no unknown value codes
+resets that rule/site's interval. Preexisting state without metric history
+starts at the first metric report read; dry runs do not persist the timers.
+`reset-clock` clamps their timestamps as it does other state timestamps.
+
+Faulting codes raise the existing input `indeterminate` fault and exit 3;
+once the fault persists more than the default 300 s, the existing
+`evaluator-input-unavailable` notice names the affected rules and codes.
+That persistence starts at the first faulting pass, after either warming
+bound, and excludes the preceding informational interval. In-bounds warming
+codes are excluded from the notice's fault list. The report's
+`inputs[].identity.warming_rules[]` lists each warming `rule`, keyed `target`,
+numeric `codes`, `since` (Unix seconds), `elapsed_seconds`, and
+`bound_exceeded`; it is absent when empty. Status may display its length as
+"N rules warming" as information, without making it a failing concern.
+`identity.first_seen`, `identity.warmup_grace` and `identity.warming_bound`
+expose the host window and bounds. Other faults retain their escalation.
+
+Plain `lastSamples = 0` with positive
 `lastSeriesFetched` cannot reliably reveal missing comparison history;
 definitions needing that distinction must opt into explicit value codes.
 

@@ -137,8 +137,10 @@ and current are still evaluated.
   target cannot be derived is rejected alone (`rejected`) and the input stays
   `ok` for the rest. Rules marked `constellation_value_codes: "v1"` interpret
   1 as present, 2 as acquisition_failed, 3 as missing, 4 as stale and 5 as
-  invalid_or_warming. Codes 2–5 hold unknown; persistent unknown surfaces
-  through `evaluator-input-unavailable`.
+  invalid_or_warming. Codes 2–5 hold unknown. Code 5 is informational
+  warming until `warming_bound` (default 6 h); codes 2/3 are warming only
+  during the initial `warmup_grace` (default 15 min). Other unknown codes
+  surface through `evaluator-input-unavailable`.
   See [Metric alerts](#metric-alerts-vmalert-as-an-input).
 
 ### NQ status sources
@@ -569,7 +571,8 @@ registry, with a reason, rather than letting it alert.
 
 `[inputs.metric_alerts] path = "/var/lib/constellation-metric-alerts/metric-alerts.json"`
 (optional `label`, default `metric_alerts`; `max_age_seconds` and
-`max_evaluation_age_seconds`, default 300) reads the document
+`max_evaluation_age_seconds`, default 300; `warmup_grace`, default 900
+seconds; `warming_bound`, default 21600 seconds) reads the document
 `estate/metric-alerts-collect.py` writes from vmalert's `/api/v1/rules`: every
 loaded alerting rule with its definition identity, state (`firing`, `pending`,
 `inactive`), health, last evaluation time and alert instances. Conventional
@@ -681,21 +684,69 @@ evaluation recency, document freshness, data-presence and declared-policy
 checks as plain rules. Labels and conditions remain stable across codes.
 
 A condition that has never been present stays inactive while unknown and
-sends no `metric-alert-firing` notice. Each unknown value-code state also
-raises the existing input fault `indeterminate`. If that fault persists for
-300 s (the default), `evaluator-input-unavailable:<input>.indeterminate`
-sends a notice with `Now: indeterminate rules: <alert name> (<condition
-target>): code N (meaning); ...`. It lists non-1 codes from the complete
-counts, scoped to each configured site, in sorted rule-identity and code order.
-At most eight rule/site identities appear within a 640-byte detail budget,
-followed by `+N more` for omitted identities; identities are never cut in half.
+sends no `metric-alert-firing` notice. Warming never triggers or resolves a
+condition: a non-1 row cannot establish presence or recovery. An independent
+firing code-1 row still proves presence under the mixed-row semantics above.
+
+In `[inputs.metric_alerts]`, both warming settings are integer seconds:
+
+- `warmup_grace = 900` (15 min): codes 2 (acquisition_failed) and 3 (missing)
+  are treated as warming while elapsed time since the evaluator first read a
+  report with the metric-alerts schema on this host is less than this bound.
+  At the bound they become `indeterminate` input faults, as before. Setting
+  this to 0 disables the grace. This is one host startup window, not a new
+  window per rule, report refresh, configuration apply or evaluator restart.
+- `warming_bound = 21600` (6 h): code 5 (invalid_or_warming) is warming until
+  its continuous rule/site warming interval reaches this bound. At the bound
+  it becomes an `indeterminate` input fault. This bound also caps codes 2/3
+  during grace if configured shorter than the grace. Code 4 (stale) faults
+  immediately, including during grace. The grace accepts 0–604800 seconds;
+  the warming bound accepts 1–604800 seconds.
+
+The evaluator persists first observation and rule/site warming start times
+in its existing state file. Missing, rejected, stale or otherwise unqualified
+reports cannot renew grace or reset a remembered warming interval. A current,
+healthy observation with no unknown value codes resets that rule/site's interval;
+`reset-clock` clamps these timestamps along with the other state timestamps.
+For a preexisting state without metric history, the first pass reading a
+metric report starts the window. Dry runs do not persist that history.
+
+Warming alone leaves the input `status: "ok"`, `causes: ["warming"]`, and
+no `error`. A pass with no other problem exits 0 with `exit_class: "clean"`
+and `first_error: null`; it opens no input-unavailable notice. Other faults
+still change status and/or exit outcome even when warming coexists. Warming
+is informational and is not an `evaluator-input-unavailable` fault class.
+
+An actual `indeterminate` fault persisting **more than** 300 s (the default)
+sends the existing `evaluator-input-unavailable:<input>.indeterminate`
+notice. This persistence begins on the first faulting pass, after grace or
+the warming bound, rather than counting the preceding informational interval.
+The notice includes `Now: indeterminate rules: <alert name> (<condition
+target>): code N (meaning); ...`. Only faulting codes are listed; warming
+codes still within their bounds are excluded. It uses complete counts,
+scoped to configured sites, in sorted rule-identity and code order. At most
+eight rule/site identities appear within a 640-byte detail budget, followed
+by `+N more` for omitted identities; identities are never cut in half.
 Meanings are `acquisition_failed`, `missing`, `stale`, and
 `invalid_or_warming` for codes 2–5 respectively. Rejected-rule notices keep
-their existing text. This uses the existing persistence
-and recovery mechanism without a new warming timer or condition family;
-warming for an hour will therefore be visible. Other healthy rules and sites
-continue to evaluate. The digest includes code meanings from the first pass,
-even for never-present conditions, within its existing 512-byte bound.
+their existing text. Other healthy rules and sites continue to evaluate.
+The digest includes code meanings from the first pass, even for never-present
+conditions, within its existing 512-byte bound.
+
+For installer/status consumers, read the completed `report.json` fields
+`evaluated_at`, `exit_code`, `exit_class` and `first_error`, and select the
+`inputs[]` entry with `kind: "metric_alerts"`. Its `status` and fault causes
+establish availability; `warming` alone must not become a failing concern.
+Its `identity.first_seen`, `identity.warmup_grace` and `identity.warming_bound`
+expose the host window and configured bounds. `identity.warming_rules[]`
+lists `rule`, keyed `target`, numeric `codes`, `since` (Unix seconds),
+`elapsed_seconds`, and `bound_exceeded`. Its length can be shown as
+"N rules warming" (rule/site entries when keyed by site), as information.
+The list is absent when empty. Inspect `conditions[]` for the corresponding
+`metric-alert-firing` row's `observation: "unknown"` and retained `active`
+state, and its `reference.value_code_note` / `reference.value_code_counts`.
+A warming count alone does not establish overall host health; report recency,
+other inputs, real faults and delivery outcomes still matter.
 
 Metric notice detail is bounded at 480 bytes; longer text ends at a word
 boundary with `…`. Instance summaries use the same bound. Code-1 rows are
@@ -905,7 +956,9 @@ A configured input is not `ok`. Each fault class is its own condition,
 `{label}.{class}`, so a lasting fault of one class (a watched templated
 unit) never masks a later fault of another (nqd stops collecting). Input
 labels are therefore at most 34 bytes. The report lists an input's current
-classes in `causes` and the detail in `error`:
+fault classes in `causes` and the detail in `error`. Metric alerts may also
+list informational `warming` in `causes`; that entry is not a fault class
+and does not notify:
 
 | Class | Meaning |
 |---|---|

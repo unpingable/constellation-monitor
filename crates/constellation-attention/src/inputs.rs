@@ -16,6 +16,7 @@ use crate::config::{
     Config, EffectiveRule, EstateInput, HostPostureInput, MetricAlertsInput, NightshiftInput,
     NqStatusInput, NqStatusSource, SavedCheckInput,
 };
+use crate::state::MetricAlertsHistory;
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
     run_bounded, truncate, truncate_words,
@@ -98,7 +99,8 @@ pub struct InputReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub identity: Value,
-    /// Why the input is not `ok`, one class per kind of fault
+    /// Fault classes, plus informational `warming` (which is not a fault).
+    /// One class per kind of fault
     /// ([`INPUT_CAUSES`]). Each class is its own
     /// `evaluator-input-unavailable` condition, so a lasting fault of one
     /// class never masks a later fault of another.
@@ -178,6 +180,7 @@ pub struct InputsRead {
     pub observed: Vec<Observed>,
     /// Notice text independent of whether metric-alert-firing is enabled.
     pub metric_indeterminate_reason: Option<String>,
+    pub metric_alerts: Option<MetricAlertsHistory>,
     /// Evaluation-history mode: the NQ status input's label and its updated
     /// watcher roster, to be remembered in the state.
     pub nq_watchers: Option<(String, BTreeMap<String, i64>)>,
@@ -188,6 +191,7 @@ pub struct Context<'a> {
     pub rules: &'a [EffectiveRule],
     pub now: i64,
     pub now_ms: i64,
+    pub metric_alerts: Option<&'a MetricAlertsHistory>,
     /// The remembered NQ watcher roster of the NQ status input's label.
     pub nq_watchers: Option<&'a BTreeMap<String, i64>>,
 }
@@ -213,6 +217,7 @@ pub fn read_all(context: &Context<'_>) -> InputsRead {
         reports: Vec::new(),
         observed: Vec::new(),
         metric_indeterminate_reason: None,
+        metric_alerts: None,
         nq_watchers: None,
     };
     for input in &context.config.inputs.host_posture {
@@ -1618,7 +1623,7 @@ const METRIC_VALUE_CODES_LABEL: &str = "constellation_value_codes";
 struct MetricValueState {
     present: bool,
     unknown: bool,
-    unknown_note: String,
+    unknown_codes: BTreeMap<u8, String>,
     note: String,
 }
 
@@ -1643,7 +1648,7 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
         return Ok(MetricValueState {
             present: false,
             unknown: false,
-            unknown_note: String::new(),
+            unknown_codes: BTreeMap::new(),
             note: "no active value codes".into(),
         });
     }
@@ -1688,10 +1693,7 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
     Ok(MetricValueState {
         present,
         unknown,
-        unknown_note: unknown_meanings
-            .into_values()
-            .collect::<Vec<_>>()
-            .join(", "),
+        unknown_codes: unknown_meanings,
         note: if meanings.is_empty() {
             "no active value codes for this site".into()
         } else {
@@ -1748,6 +1750,15 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         read.reports.push(report);
         return;
     }
+    let mut history = context
+        .metric_alerts
+        .cloned()
+        .unwrap_or(MetricAlertsHistory {
+            first_seen: context.now,
+            warming_since: BTreeMap::new(),
+        });
+    let in_grace = context.now - history.first_seen < input.warmup_grace;
+    let mut warming_rules = Vec::new();
     let generated = document
         .get("generated_at")
         .and_then(Value::as_str)
@@ -1979,9 +1990,55 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                     Ok(value) => {
                         present = value.present;
                         code_unknown = value.unknown;
-                        if value.unknown {
-                            indeterminate_rules
-                                .insert(format!("{name} ({keyed_target})"), value.unknown_note);
+                        let identity = format!("{name} ({keyed_target})");
+                        let warming_codes: Vec<_> = value
+                            .unknown_codes
+                            .iter()
+                            .filter(|(code, _)| {
+                                **code == 5 || (in_grace && matches!(**code, 2 | 3))
+                            })
+                            .map(|(code, _)| *code)
+                            .collect();
+                        let warming_since = if warming_codes.is_empty() {
+                            // An unqualified report cannot reset a warming interval.
+                            if !unknown && !value.unknown && !no_data && drift.is_none() {
+                                history.warming_since.remove(&identity);
+                            }
+                            None
+                        } else {
+                            Some(
+                                *history
+                                    .warming_since
+                                    .entry(identity.clone())
+                                    .or_insert(context.now),
+                            )
+                        };
+                        let expired = warming_since
+                            .is_some_and(|since| context.now - since >= input.warming_bound);
+                        if let Some(since) = warming_since {
+                            warming_rules.push(json!({
+                                "rule": name,
+                                "target": keyed_target,
+                                "codes": warming_codes,
+                                "since": since,
+                                "elapsed_seconds": context.now - since,
+                                "bound_exceeded": expired,
+                            }));
+                        }
+                        let fault_codes = value
+                            .unknown_codes
+                            .iter()
+                            .filter(|(code, _)| expired || !warming_codes.contains(code))
+                            .map(|(_, meaning)| meaning.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if !fault_codes.is_empty() {
+                            report.fault(
+                                "indeterminate",
+                                InputStatus::NotCurrent,
+                                &format!("alert {identity}: value {fault_codes}"),
+                            );
+                            indeterminate_rules.insert(identity, fault_codes);
                         }
                         value.note
                     }
@@ -1990,13 +2047,6 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                         error
                     }
                 };
-                if code_unknown {
-                    report.fault(
-                        "indeterminate",
-                        InputStatus::NotCurrent,
-                        &format!("alert {name} ({keyed_target}): {note}"),
-                    );
-                }
                 value_code_notes.push(format!("{keyed_target}: {}", truncate(&note, 160)));
                 Some(note)
             } else {
@@ -2007,7 +2057,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             } else if present {
                 // Coverage families share one condition across instances. A
                 // qualified code 1 proves presence even with partial coverage;
-                // other codes still fault the input above.
+                // other codes remain visible as warming or input faults.
                 Observation::Present
             } else if code_unknown || no_data || drift.is_some() {
                 Observation::Unknown
@@ -2118,6 +2168,14 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             observations.push((keyed_target, observation, reference, note));
         }
     }
+    if !warming_rules.is_empty() {
+        report.causes.push("warming");
+        report.identity["warming_rules"] = json!(warming_rules);
+    }
+    report.identity["first_seen"] = json!(history.first_seen);
+    report.identity["warmup_grace"] = json!(input.warmup_grace);
+    report.identity["warming_bound"] = json!(input.warming_bound);
+    read.metric_alerts = Some(history);
     if !indeterminate_rules.is_empty() {
         // Whole identities only: cap both fan-out and bytes, reserving room
         // for the omitted count. Complete counts survive truncated instances.
