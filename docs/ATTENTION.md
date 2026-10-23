@@ -41,6 +41,7 @@ bump. New identifiers may be added within v1.
 | `runbook_url_withheld_for_http` | V2 intents omit non-HTTPS `runbook_url` while retaining the full inspection link. | `e314c94` |
 | `local_page_route_v1_copy` | A `local_file` page route receives a v1 page-tier copy through `deliver-local`. | `f7b74cc` |
 | `value_code_warming_informational` | Bounded value-code warming stays informational, never triggers or resolves conditions, and preserves existing faults across upgrade grace. | `f9fe6f2` |
+| `reconfiguration_grace` | Installer markers re-arm bounded metric acquisition/evaluation grace; initial empty Nightshift cycles warm during host startup. | This build |
 | `report_exit_fields` | Completed pass reports carry `exit_code`, `exit_class` and `first_error`. | `e314c94` |
 | `loopback_http_runbooks` | HTTP runbook bases accept literal loopback addresses with an explicit port and path. | `3ecf0bb` |
 | `metric_alert_admission_per_rule` | Invalid definitions or site targets, including shared targets, are rejected independently while admitted rules still evaluate. | `69eac29` |
@@ -168,7 +169,7 @@ and current are still evaluated.
   1 as present, 2 as acquisition_failed, 3 as missing, 4 as stale and 5 as
   invalid_or_warming. Codes 2–5 hold unknown. Code 5 is informational
   warming until `warming_bound` (default 6 h); codes 2/3 are warming only
-  during the initial `warmup_grace` (default 15 min). Other unknown codes
+  during the initial or installer-signalled `warmup_grace` (default 15 min). Other unknown codes
   surface through `evaluator-input-unavailable`.
   See [Metric alerts](#metric-alerts-vmalert-as-an-input).
 
@@ -484,8 +485,11 @@ with each new intent recorded as `unknown` without a notification id. Then:
 
 A pass exits 3 when any input was not readable or current or carries a
 rejected definition, any retained delivery is not accepted (other than
-deliberate refusals), or a trigger was dropped, so the systemd unit shows failed and the condition stays visible in
-`systemctl --failed` without a recursive notification.
+deliberate refusals), or a trigger was dropped. This is a completed pass.
+The packaged oneshot uses `SuccessExitStatus=3`; status reads `exit_class`
+from a fresh `report.json`, rather than the unit's failed state. Exit 1
+still fails the unit when the pass could not complete. Delivery errors
+remain failures in the report even though systemd accepts exit 3.
 
 ## Clock
 
@@ -526,10 +530,16 @@ can drive the clock.)
 f7b74cc, so rollback to that binary can load state after a new evaluator pass.
 Metric warming history lives only in the sibling `state-metric-alerts.json`,
 with its own `constellation.attention_metric_alerts_state.v1` schema, site,
-`updated_at` (last tracked pass), and `history` (`first_seen` and
+`updated_at` (last tracked pass), optional top-level `first_seen` (first
+evaluator pass) and `reconfigured_at` (newest accepted installer timestamp),
+and `history` (`first_seen` and
 `warming_since`, stored as Unix seconds). On a fresh install `history` is
 null until the first metric report is read; this records that startup is
 still waiting for that report rather than granting grace to an upgrade.
+The sidecar is written even without a metric input so observation startup
+has durable first-pass timing. All timestamps are Unix seconds. Old sidecars
+without top-level `first_seen` on established hosts seed an expired startup
+window; upgrading or deleting the sidecar does not grant fresh grace.
 Both structures reject unknown fields. An absent history file means no saved
 metric history; malformed, unreadable, or foreign-site history is an error
 and is never silently replaced.
@@ -751,7 +761,8 @@ In `[inputs.metric_alerts]`, both warming settings are integer seconds:
   report with the metric-alerts schema on this host is less than this bound.
   At the bound they become `indeterminate` input faults, as before. Setting
   this to 0 disables the grace. This is one host startup window, not a new
-  window per rule, report refresh, configuration apply or evaluator restart.
+  window per rule, report refresh or evaluator restart. An installer marker
+  explicitly opens another window as specified below.
 - `warming_bound = 21600` (6 h): code 5 (invalid_or_warming) is warming until
   its continuous rule/site warming interval reaches this bound. At the bound
   it becomes an `indeterminate` input fault. This bound also caps codes 2/3
@@ -806,15 +817,80 @@ For installer/status consumers, read the completed `report.json` fields
 establish availability; `warming` alone must not become a failing concern.
 Its `identity.first_seen` (RFC 3339), `identity.warmup_grace` and
 `identity.warming_bound` (integer seconds) expose the host window and
-configured bounds. `identity.warming_rules[]` lists `rule`, keyed `target`,
+configured bounds. Optional `identity.reconfigured_at` (RFC 3339) identifies
+the newest accepted reconfiguration. `identity.warming_rules[]` lists `rule`, keyed `target`,
 numeric `codes`, `since` (RFC 3339), integer `elapsed_seconds`, and
-`bound_exceeded`. Its length can be shown as
+`bound_exceeded`. Entries warmed by reconfiguration also carry
+`since_reconfiguration: true`; `codes` is empty for an unevaluated plain
+rule. Its length can be shown as
 "N rules warming" (rule/site entries when keyed by site), as information.
 The list is absent when empty. Inspect `conditions[]` for the corresponding
 `metric-alert-firing` row's `observation: "unknown"` and retained `active`
 state, and its `reference.value_code_note` / `reference.value_code_counts`.
 A warming count alone does not establish overall host health; report recency,
 other inputs, real faults and delivery outcomes still matter.
+
+### Installer-facing reconfiguration contract
+
+After a successful configuration apply that restarted vmalert or changed
+its rules or scrape targets, the installer atomically publishes
+`/var/lib/constellation-attention/reconfigured` as `nq:nq`, mode **0640**:
+
+```json
+{"run_id":"apply-20261023-1","at":"2026-10-23T18:32:00Z","reason":"vmalert restarted"}
+```
+
+Exactly these three fields are accepted, with a maximum document size of
+4096 bytes. `run_id` is the installer's nonblank apply identity (at most
+128 UTF-8 bytes). `at` is an RFC 3339 timestamp of the completed change,
+never a future time; attention stores whole Unix seconds. `reason` is
+exactly one of `vmalert restarted`, `rules changed`, or `scrapes changed`.
+For multiple changes choose one applicable reason. Do not write a marker
+for a no-op apply or an attention-only restart. Publish after those changes
+complete and before the installer's synchronous attention pass.
+
+The path is the sibling `reconfigured` of the configured `state_path`;
+the absolute path above is the packaged default. Serialize publication
+with evaluation using an exclusive lock on the sibling `state.json.lock`
+(or `<state filename>.lock` for a custom state path). Set ownership and
+mode on a temporary file in that directory, fsync it, rename it to
+`reconfigured`, and fsync the directory before releasing the lock. This
+prevents the evaluator from removing a newer apply's marker while consuming
+an earlier one. The installer owns publication; Monitor supplies the reader
+and this contract, not the site installer.
+
+At the start of a pass, under the state lock, attention reads the marker
+and retains the newer of its `at` and saved `reconfigured_at`. It saves
+`reconfigured_at` in `state-metric-alerts.json` before removing the marker,
+before lifecycle decisions are saved or deliveries submitted. A crash
+between save and removal replays the same timestamp without renewing grace.
+An unreadable metric report does not lose the accepted timestamp. Dry runs
+simulate acceptance but never save state or remove markers. A marker aged
+at least `warming_bound` is ignored with an `ignoring stale reconfiguration
+marker` log line and removed on a real pass. Malformed, unreadable, or future
+markers fail the pass (exit 1) and remain for correction.
+
+While `now < reconfigured_at + warmup_grace`, rules with no valid
+`last_evaluation`, and value-coded rules with code 2 or 3, warm
+informationally: input `status: "ok"`, `causes: ["warming"]`, no `error`,
+and exit 0 if nothing else fails. Missing evaluations hold conditions
+unknown; they establish neither presence nor recovery. Other faults,
+including code 4, query health errors, stale documents and policy drift,
+still fault. At the grace boundary these missing evaluations and codes
+fault normally. Neither accepting another marker nor restarting attention
+resets a rule/site's continuous warming start: `warming_bound` still caps
+each interval. A qualified healthy observation ends it, including for a
+plain rule that was waiting for its first evaluation.
+
+For initial installation, a readable Nightshift store with no closed
+observation cycle (empty or with only open cycles) is also informational
+warming until `first_seen + warmup_grace`. This uses the earlier of the
+sidecar's evaluator first-pass time and metric history's `first_seen`,
+with the configured metric grace or 900 seconds if no metric input exists.
+Its input identity exposes `first_seen` and `warmup_grace`. After that
+boundary it faults with `no closed observation cycle` as before. Missing or
+unreadable stores still fault immediately. Reconfiguration does not renew
+this initial observation window.
 
 Metric notice detail is bounded at 480 bytes; longer text ends at a word
 boundary with `…`. Instance summaries use the same bound. Code-1 rows are
@@ -1058,7 +1134,8 @@ These are operator acceptance items.
   the operator noticing a missing daily digest. A pass that cannot run (a malformed
   `state.json`, which is never replaced; the lock; a clock that moved
   backwards) exits 1 with no report and no notification, every minute,
-  indefinitely; exit 3 is likewise only a failed oneshot unit. An NQ
+  indefinitely. Exit 3 completes the oneshot but records its problems in
+  `report.json` (`exit_class` and `first_error`). An NQ
   `nq.systemd_unit` watcher cannot see it, because the unit is inactive
   between passes. The liveness signal is the age of `report.json`
   (`evaluated_at`, rewritten by every completed pass): the status site or

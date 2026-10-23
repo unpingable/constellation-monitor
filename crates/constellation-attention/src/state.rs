@@ -37,6 +37,12 @@ pub struct MetricAlertsState {
     /// Last completed pass tracking this input, including unreadable reports.
     #[serde(default)]
     pub updated_at: i64,
+    /// First evaluator pass, independent of metric report availability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen: Option<i64>,
+    /// Newest accepted installer marker timestamp (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconfigured_at: Option<i64>,
     /// Null until a fresh install first reads a metric report.
     #[serde(deserialize_with = "Option::deserialize")]
     pub history: Option<MetricAlertsHistory>,
@@ -219,6 +225,8 @@ impl MetricAlertsState {
     pub fn reset_clock(&mut self, now: i64) -> usize {
         let mut clamped = 0;
         let mut timestamps = vec![&mut self.updated_at];
+        timestamps.extend(self.first_seen.iter_mut());
+        timestamps.extend(self.reconfigured_at.iter_mut());
         if let Some(history) = &mut self.history {
             timestamps.push(&mut history.first_seen);
             timestamps.extend(history.warming_since.values_mut());

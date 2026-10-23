@@ -4927,6 +4927,336 @@ fn value_code_rule(doc: &mut Value, state: &str, value: &str) {
     value_code_rows(doc, state, &[value]);
 }
 
+fn write_reconfiguration(harness: &Harness, at: i64) {
+    fs::write(
+        harness.path("state/reconfigured"),
+        serde_json::to_vec(&json!({
+            "run_id": "apply-1", "at": rfc3339(at), "reason": "vmalert restarted",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn first_pass_without_a_closed_cycle_warms_then_faults() {
+    for open in [false, true] {
+        let mut harness = Harness::new();
+        let store = harness.path("nightshift.db");
+        let connection = rusqlite::Connection::open(&store).unwrap();
+        connection
+            .execute_batch(
+                &fs::read_to_string(Path::new(FIXTURES).join("nightshift-schema.sql")).unwrap(),
+            )
+            .unwrap();
+        if open {
+            connection.execute_batch(
+                "INSERT INTO canonical_recurrence_slots VALUES ('s', 'c', 'done', '{}', 'd', '2026-10-02T12:00:00Z');
+                 INSERT INTO canonical_observation_cycles VALUES ('c', 's', 1, 'open', 'd', '{}', '2026-10-02T12:00:00Z');"
+            ).unwrap();
+        }
+        drop(connection);
+        harness.raw(&format!(
+            "[inputs.nightshift]\nlabel = \"observation\"\nstore_path = {:?}\n",
+            store
+        ));
+        for offset in [0, 899, 900] {
+            let report = harness.evaluate(T0 + offset);
+            let input = &report["inputs"][0];
+            assert_eq!(
+                input["status"],
+                if offset < 900 { "ok" } else { "unavailable" }
+            );
+            assert_eq!(
+                causes(input),
+                [if offset < 900 { "warming" } else { "empty" }]
+            );
+            assert_eq!(report["exit_code"], if offset < 900 { 0 } else { 3 });
+            if offset < 900 {
+                assert!(input.get("error").is_none());
+                assert_eq!(report["exit_class"], "clean");
+            } else {
+                assert_eq!(input["error"], "no closed observation cycle");
+            }
+        }
+    }
+}
+
+#[test]
+fn observation_grace_uses_the_earlier_metric_first_seen() {
+    let mut harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+    harness.evaluate(T0);
+    let path = harness.path("state/state-metric-alerts.json");
+    let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["first_seen"] = json!(T0 + 600);
+    fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let store = harness.path("nightshift.db");
+    let connection = rusqlite::Connection::open(&store).unwrap();
+    connection
+        .execute_batch(
+            &fs::read_to_string(Path::new(FIXTURES).join("nightshift-schema.sql")).unwrap(),
+        )
+        .unwrap();
+    drop(connection);
+    harness.raw(&format!(
+        "[inputs.nightshift]\nlabel = \"observation\"\nstore_path = {:?}\n",
+        store
+    ));
+    write_metric_alerts(&harness, T0 + 900, |doc| {
+        value_code_rule(doc, "inactive", "1")
+    });
+    let report = harness.evaluate(T0 + 900);
+    let input = report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|input| input["kind"] == "nightshift")
+        .unwrap();
+    assert_eq!(input["status"], "unavailable");
+    assert_eq!(causes(input), ["empty"]);
+}
+
+#[test]
+fn reconfiguration_warms_unevaluated_and_new_missing_rules_for_one_grace() {
+    for code in ["2", "3"] {
+        let harness = metric_alerts_harness();
+        write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+        harness.evaluate(T0);
+        let at = T0 + 3600;
+        write_reconfiguration(&harness, at);
+        for offset in [0, 899, 900] {
+            write_metric_alerts(&harness, at + offset, |doc| {
+                value_code_rule(doc, "firing", code);
+                let mut new = doc["rules"][0].clone();
+                new["name"] = json!("ProbeDown");
+                let rule = &mut doc["rules"][0];
+                rule["labels"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("constellation_value_codes");
+                rule["last_evaluation"] = Value::Null;
+                doc["rules"].as_array_mut().unwrap().push(new);
+            });
+            let report = harness.evaluate(at + offset);
+            let input = metric_input(&report);
+            assert_eq!(input["identity"]["reconfigured_at"], rfc3339(at));
+            assert_eq!(input["identity"]["first_seen"], rfc3339(T0));
+            assert_eq!(
+                input["status"],
+                if offset < 900 { "ok" } else { "not_current" }
+            );
+            assert_eq!(report["exit_code"], if offset < 900 { 0 } else { 3 });
+            assert!(alert_intents(&report).is_empty());
+            assert_eq!(condition(&report, SWAP).unwrap()["observation"], "unknown");
+            if offset < 900 {
+                assert_eq!(causes(&input), ["warming"]);
+                let warming = input["identity"]["warming_rules"].as_array().unwrap();
+                assert_eq!(warming.len(), 2);
+                for rule in warming {
+                    assert_eq!(rule["since_reconfiguration"], true);
+                    assert_eq!(rule["since"], rfc3339(at));
+                    assert_eq!(rule["bound_exceeded"], false);
+                }
+            } else {
+                assert!(
+                    input["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("has no valid last_evaluation")
+                );
+                assert!(
+                    input["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("value code {code}"))
+                );
+            }
+            assert!(!harness.path("state/reconfigured").exists());
+        }
+        let saved: Value = serde_json::from_slice(
+            &fs::read(harness.path("state/state-metric-alerts.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["reconfigured_at"], at);
+    }
+}
+
+#[test]
+fn reconfiguration_marker_dry_run_and_stale_custody() {
+    for stale in [false, true] {
+        let harness = metric_alerts_harness();
+        write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+        harness.evaluate(T0);
+        let at = T0 + 21_600;
+        write_reconfiguration(&harness, if stale { T0 } else { at });
+        let marker = harness.path("state/reconfigured");
+        let before = fs::read(&marker).unwrap();
+        let history_path = harness.path("state/state-metric-alerts.json");
+        let history = fs::read(&history_path).unwrap();
+        write_metric_alerts(&harness, at, |doc| value_code_rule(doc, "firing", "3"));
+        let output = harness.evaluate_at(at, &["--dry-run"]);
+        assert_eq!(
+            output.status.code(),
+            Some(if stale { 3 } else { 0 }),
+            "{output:?}"
+        );
+        assert_eq!(fs::read(&marker).unwrap(), before);
+        assert_eq!(fs::read(&history_path).unwrap(), history);
+        let output = harness.evaluate_at(at, &[]);
+        assert_eq!(
+            output.status.code(),
+            Some(if stale { 3 } else { 0 }),
+            "{output:?}"
+        );
+        assert!(!marker.exists());
+        if stale {
+            assert!(
+                String::from_utf8(output.stderr)
+                    .unwrap()
+                    .contains("ignoring stale reconfiguration marker")
+            );
+            assert!(
+                metric_input(&harness.report())["identity"]
+                    .get("reconfigured_at")
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[test]
+fn reconfiguration_survives_an_unreadable_metric_report() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+    harness.evaluate(T0);
+    let at = T0 + 3600;
+    fs::remove_file(harness.path("metric-alerts.json")).unwrap();
+    write_reconfiguration(&harness, at);
+    let report = harness.evaluate(at);
+    assert_eq!(report["exit_code"], 3);
+    assert_eq!(
+        metric_input(&report)["identity"]["reconfigured_at"],
+        rfc3339(at)
+    );
+    assert!(!harness.path("state/reconfigured").exists());
+    write_metric_alerts(&harness, at + 60, |doc| value_code_rule(doc, "firing", "3"));
+    let report = harness.evaluate(at + 60);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(
+        metric_input(&report)["identity"]["reconfigured_at"],
+        rfc3339(at)
+    );
+}
+
+#[test]
+fn reconfiguration_never_resets_a_rules_warming_bound() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "firing", "5"));
+    harness.evaluate(T0);
+    let at = T0 + 21_600;
+    write_reconfiguration(&harness, at);
+    write_metric_alerts(&harness, at, |doc| {
+        value_code_rule(doc, "firing", "3");
+        doc["rules"][0]["last_evaluation"] = Value::Null;
+    });
+    let report = harness.evaluate(at);
+    let input = metric_input(&report);
+    assert_eq!(report["exit_code"], 3);
+    let warming = &input["identity"]["warming_rules"][0];
+    assert_eq!(warming["since"], rfc3339(T0));
+    assert_eq!(warming["bound_exceeded"], true);
+    assert_eq!(warming["since_reconfiguration"], true);
+}
+
+#[test]
+fn unevaluated_rules_obey_the_bound_and_reset_after_healthy_evaluation() {
+    for marked in [false, true] {
+        let mut harness = metric_alerts_harness();
+        harness.raw("warming_bound = 100\n");
+        write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+        harness.evaluate(T0);
+        let at = T0 + 3600;
+        write_reconfiguration(&harness, at);
+        for (offset, missing, clean) in [
+            (0, true, true),
+            (100, true, false),
+            (101, false, true),
+            (102, true, true),
+        ] {
+            write_metric_alerts(&harness, at + offset, |doc| {
+                value_code_rule(doc, "inactive", "1");
+                if !marked {
+                    doc["rules"][0]["labels"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("constellation_value_codes");
+                }
+                if missing {
+                    doc["rules"][0]["last_evaluation"] = Value::Null;
+                }
+            });
+            let report = harness.evaluate(at + offset);
+            let input = metric_input(&report);
+            assert_eq!(report["exit_code"], if clean { 0 } else { 3 }, "{input}");
+            if missing {
+                let rule = &input["identity"]["warming_rules"][0];
+                assert_eq!(rule["codes"], json!([]));
+                assert_eq!(rule["since_reconfiguration"], true);
+                assert_eq!(rule["bound_exceeded"], !clean);
+                assert_eq!(
+                    rule["since"],
+                    rfc3339(if offset == 102 { at + 102 } else { at })
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn reconfiguration_does_not_hide_other_faults() {
+    for fault in ["stale", "drift", "health", "code4"] {
+        let harness = metric_alerts_harness();
+        write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+        harness.evaluate(T0);
+        let at = T0 + 3600;
+        write_reconfiguration(&harness, at);
+        write_metric_alerts(&harness, at, |doc| {
+            value_code_rule(doc, "firing", if fault == "code4" { "4" } else { "3" });
+            match fault {
+                "stale" => doc["generated_at"] = json!(rfc3339(at - 400)),
+                "drift" => doc["declared_policy_sha256"] = json!("different"),
+                "health" => doc["rules"][0]["health"] = json!("err"),
+                _ => {}
+            }
+        });
+        assert_eq!(harness.evaluate(at)["exit_code"], 3, "{fault}");
+    }
+}
+
+#[test]
+fn invalid_reconfiguration_markers_are_preserved_and_refused() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+    harness.evaluate(T0);
+    let history_path = harness.path("state/state-metric-alerts.json");
+    let before = fs::read(&history_path).unwrap();
+    for marker in [
+        json!({"run_id": "a", "at": rfc3339(T0 + 1), "reason": "rules changed"}),
+        json!({"run_id": "", "at": rfc3339(T0), "reason": "rules changed"}),
+        json!({"run_id": "a", "at": "invalid", "reason": "rules changed"}),
+        json!({"run_id": "a", "at": rfc3339(T0), "reason": "other"}),
+        json!({"at": rfc3339(T0)}),
+    ] {
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        fs::write(harness.path("state/reconfigured"), &bytes).unwrap();
+        let output = harness.evaluate_at(T0, &[]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(fs::read(harness.path("state/reconfigured")).unwrap(), bytes);
+        assert_eq!(fs::read(&history_path).unwrap(), before);
+    }
+}
+
 fn value_code_rows(doc: &mut Value, state: &str, values: &[&str]) {
     doc["rules"]
         .as_array_mut()

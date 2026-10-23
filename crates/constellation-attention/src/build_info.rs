@@ -32,6 +32,8 @@ pub const METRIC_ALERT_ADMISSION_PER_RULE: &str = "metric_alert_admission_per_ru
 /// Interpret opted-in v1 value codes: code 1 proves presence even amid unknown
 /// codes 2–5, which cannot establish recovery; introduced in a22f15e.
 pub const VALUE_CODES_V1: &str = "value_codes_v1";
+/// Installer-signalled grace for rule evaluation and acquisition after apply.
+pub const RECONFIGURATION_GRACE: &str = "reconfiguration_grace";
 
 /// Supported behaviours. Published identifiers are never renamed or removed
 /// without a build-info schema bump.
@@ -43,6 +45,7 @@ pub const CAPABILITIES: &[&str] = &[
     LOOPBACK_HTTP_RUNBOOKS,
     METRIC_ALERT_ADMISSION_PER_RULE,
     VALUE_CODES_V1,
+    RECONFIGURATION_GRACE,
 ];
 
 #[derive(Debug, Serialize)]

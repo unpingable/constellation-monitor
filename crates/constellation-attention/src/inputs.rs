@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::condition::{ConditionKey, validate_token};
 use crate::config::{
     Config, EffectiveRule, EstateInput, HostPostureInput, MetricAlertsInput, NightshiftInput,
-    NqStatusInput, NqStatusSource, SavedCheckInput,
+    NqStatusInput, NqStatusSource, SavedCheckInput, default_metric_warmup_grace,
 };
 use crate::state::MetricAlertsHistory;
 use crate::util::{
@@ -192,6 +192,8 @@ pub struct Context<'a> {
     pub now: i64,
     pub now_ms: i64,
     pub metric_alerts: Option<&'a MetricAlertsHistory>,
+    pub first_seen: i64,
+    pub reconfigured_at: Option<i64>,
     /// The remembered NQ watcher roster of the NQ status input's label.
     pub nq_watchers: Option<&'a BTreeMap<String, i64>>,
 }
@@ -1092,11 +1094,27 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
         }
     };
     let Some((cycle_id, closed_at)) = newest else {
-        report.fault(
-            "empty",
-            InputStatus::NotCurrent,
-            "no closed observation cycle",
-        );
+        let first_seen = context.metric_alerts.map_or(context.first_seen, |history| {
+            context.first_seen.min(history.first_seen)
+        });
+        let grace = context
+            .config
+            .inputs
+            .metric_alerts
+            .as_ref()
+            .map_or_else(default_metric_warmup_grace, |input| input.warmup_grace);
+        if context.now.saturating_sub(first_seen) < grace {
+            report.status = InputStatus::Ok;
+            report.causes.push("warming");
+            report.identity =
+                json!({"first_seen": format_seconds(first_seen), "warmup_grace": grace});
+        } else {
+            report.fault(
+                "empty",
+                InputStatus::NotCurrent,
+                "no closed observation cycle",
+            );
+        }
         read.reports.push(report);
         push(
             context,
@@ -1757,7 +1775,10 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             first_seen: context.now,
             warming_since: BTreeMap::new(),
         });
-    let in_grace = context.now - history.first_seen < input.warmup_grace;
+    let reconfiguration_grace = context
+        .reconfigured_at
+        .is_some_and(|at| context.now.saturating_sub(at) < input.warmup_grace);
+    let in_grace = context.now - history.first_seen < input.warmup_grace || reconfiguration_grace;
     let mut warming_rules = Vec::new();
     let generated = document
         .get("generated_at")
@@ -1913,6 +1934,8 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             .get("last_evaluation")
             .and_then(Value::as_str)
             .map(rfc3339_seconds);
+        let missing_evaluation = !matches!(last_evaluation, Some(Ok(_)));
+        let evaluation_warming = missing_evaluation && reconfiguration_grace;
         let mut problems: Vec<String> = Vec::new();
         if health != "ok" {
             let error = rule
@@ -1931,6 +1954,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 "last evaluated {} s before the document",
                 at - evaluated
             )),
+            (Some(_), _) if evaluation_warming => {}
             _ => problems.push("has no valid last_evaluation".to_owned()),
         }
         if !matches!(state, "firing" | "pending" | "inactive") {
@@ -1974,15 +1998,46 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         // truncates instance detail; instances alone could omit a site's firing
         // instance at high fan-out.
         let firing_sites = rule.get("firing_sites").and_then(Value::as_object);
-        let unknown = stale.is_some() || !problems.is_empty();
+        let unknown = stale.is_some() || !problems.is_empty() || missing_evaluation;
+        let evaluation_note = evaluation_warming
+            .then(|| "has no valid last_evaluation; warming after reconfiguration".to_owned());
         let unknown_why = stale
             .iter()
             .chain(problems.iter())
             .chain(drift.iter())
+            .chain(evaluation_note.iter())
             .cloned()
             .collect::<Vec<_>>()
             .join("; ");
         for (index, (site, keyed_target)) in keyed.into_iter().enumerate() {
+            if !marked && !unknown && !no_data && drift.is_none() {
+                history
+                    .warming_since
+                    .remove(&format!("{name} ({keyed_target})"));
+            }
+            if evaluation_warming {
+                let since = *history
+                    .warming_since
+                    .entry(format!("{name} ({keyed_target})"))
+                    .or_insert(context.now);
+                let expired = context.now - since >= input.warming_bound;
+                if expired {
+                    report.fault(
+                        "indeterminate",
+                        InputStatus::NotCurrent,
+                        &format!(
+                            "alert {name} ({keyed_target}): has no valid last_evaluation; warming bound exceeded"
+                        ),
+                    );
+                }
+                if !marked {
+                    warming_rules.push(json!({
+                        "rule": name, "target": keyed_target, "codes": [],
+                        "since": format_seconds(since), "elapsed_seconds": context.now - since,
+                        "bound_exceeded": expired, "since_reconfiguration": true,
+                    }));
+                }
+            }
             let mine: Vec<&Value> = match site {
                 Some(site) => firing
                     .iter()
@@ -2016,7 +2071,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                             })
                             .map(|(code, _)| *code)
                             .collect();
-                        let warming_since = if warming_codes.is_empty() {
+                        let warming_since = if warming_codes.is_empty() && !evaluation_warming {
                             // An unqualified report cannot reset a warming interval.
                             if !unknown && !value.unknown && !no_data && drift.is_none() {
                                 history.warming_since.remove(&identity);
@@ -2033,14 +2088,21 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                         let expired = warming_since
                             .is_some_and(|since| context.now - since >= input.warming_bound);
                         if let Some(since) = warming_since {
-                            warming_rules.push(json!({
+                            let mut warming = json!({
                                 "rule": name,
                                 "target": keyed_target,
                                 "codes": warming_codes,
                                 "since": format_seconds(since),
                                 "elapsed_seconds": context.now - since,
                                 "bound_exceeded": expired,
-                            }));
+                            });
+                            if reconfiguration_grace
+                                && (evaluation_warming
+                                    || warming_codes.iter().any(|code| matches!(code, 2 | 3)))
+                            {
+                                warming["since_reconfiguration"] = json!(true);
+                            }
+                            warming_rules.push(warming);
                         }
                         let mut fault_codes = value
                             .unknown_codes
@@ -2049,7 +2111,10 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                             .map(|(_, meaning)| meaning.as_str())
                             .collect::<Vec<_>>()
                             .join(", ");
-                        if expired && let Some(since) = warming_since {
+                        if expired
+                            && !fault_codes.is_empty()
+                            && let Some(since) = warming_since
+                        {
                             let elapsed = context.now - since;
                             let bound = input.warming_bound;
                             let bound_text = if bound % 3600 == 0 {

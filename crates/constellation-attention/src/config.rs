@@ -281,11 +281,11 @@ fn default_metric_alerts_label() -> String {
     "metric_alerts".to_owned()
 }
 
-const fn default_metric_warmup_grace() -> i64 {
+pub(crate) const fn default_metric_warmup_grace() -> i64 {
     900
 }
 
-const fn default_metric_warming_bound() -> i64 {
+pub(crate) const fn default_metric_warming_bound() -> i64 {
     21_600
 }
 

@@ -26,8 +26,9 @@ StateDirectoryMode=0700
 # reads, stores or prints the values.
 EnvironmentFile=-/etc/constellation-attention/nq-routes.env
 ExecStart=/usr/bin/constellation-attention evaluate --config /etc/constellation-attention/attention.toml
-# Exit 3 (an input not current, or a delivery not accepted) is left as a
-# failure so it shows in `systemctl --failed` without a recursive notice.
+# Exit 3 is a completed pass: status reads exit_class from the fresh report.
+# Exit 1 still fails the unit when the pass could not complete.
+SuccessExitStatus=3
 # Every child a pass runs is bounded by command_timeout_seconds (T, 90 s by
 # default): the command inputs (I: an nq_status command plus each saved-check
 # command) and one nq call per submission (S). Budget:

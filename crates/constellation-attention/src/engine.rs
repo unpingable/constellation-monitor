@@ -6,11 +6,13 @@ use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::condition::ConditionKey;
-use crate::config::{Config, EffectiveRule};
+use crate::config::{
+    Config, EffectiveRule, default_metric_warming_bound, default_metric_warmup_grace,
+};
 use crate::inputs::{
     self, ADMISSION_KINDS, Context, INPUT_CAUSES, InputReport, InputStatus, Observation, Observed,
     REJECTED_CAUSE,
@@ -26,7 +28,7 @@ use crate::state::{
     ConditionState, LastIntent, METRIC_ALERTS_STATE_SCHEMA, MetricAlertsHistory, MetricAlertsState,
     State,
 };
-use crate::util::{format_seconds, read_bounded, truncate, write_atomic};
+use crate::util::{format_seconds, read_bounded, rfc3339_seconds, truncate, write_atomic};
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
 const INPUT_UNAVAILABLE: &str = "evaluator-input-unavailable";
@@ -304,6 +306,42 @@ fn ensure_dir(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("cannot create {}: {error}", path.display()))
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reconfiguration {
+    run_id: String,
+    at: String,
+    reason: String,
+}
+
+/// Read under the state lock. Removal waits for durable sidecar custody.
+fn reconfiguration(path: &Path, now: i64, bound: i64) -> Result<Option<i64>, String> {
+    let bytes = read_bounded(path, 4096)?;
+    let marker: Reconfiguration = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("invalid reconfiguration marker: {error}"))?;
+    if marker.run_id.trim().is_empty()
+        || marker.run_id.len() > 128
+        || !matches!(
+            marker.reason.as_str(),
+            "vmalert restarted" | "rules changed" | "scrapes changed"
+        )
+    {
+        return Err("invalid reconfiguration marker run_id or reason".into());
+    }
+    let at = rfc3339_seconds(&marker.at)?;
+    if at > now {
+        return Err("reconfiguration marker is from the future".into());
+    }
+    if now.saturating_sub(at) >= bound {
+        eprintln!(
+            "ignoring stale reconfiguration marker: at={} warming_bound={bound}",
+            marker.at
+        );
+        return Ok(None);
+    }
+    Ok(Some(at))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "The pass is one ordered sequence: read, reconcile, persist, submit, report."
@@ -321,7 +359,40 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     let _lock = lock(config, options.dry_run)?;
     let mut state = State::load(&config.state_path, &config.site)?;
     let metric_history_path = state_dir.join("state-metric-alerts.json");
-    let metric_history = match MetricAlertsState::load(&metric_history_path, &config.site)? {
+    let saved_metric_state = MetricAlertsState::load(&metric_history_path, &config.site)?;
+    let warmup_grace = config
+        .inputs
+        .metric_alerts
+        .as_ref()
+        .map_or_else(default_metric_warmup_grace, |input| input.warmup_grace);
+    let first_seen = saved_metric_state
+        .as_ref()
+        .and_then(|saved| saved.first_seen)
+        .unwrap_or_else(|| {
+            if state.updated_at > 0 {
+                options.now.saturating_sub(warmup_grace)
+            } else {
+                options.now
+            }
+        });
+    let mut reconfigured_at = saved_metric_state
+        .as_ref()
+        .and_then(|saved| saved.reconfigured_at);
+    let marker_path = state_dir.join("reconfigured");
+    let marker_present = marker_path
+        .try_exists()
+        .map_err(|error| format!("cannot inspect reconfiguration marker: {error}"))?;
+    if marker_present {
+        let bound = config
+            .inputs
+            .metric_alerts
+            .as_ref()
+            .map_or_else(default_metric_warming_bound, |input| input.warming_bound);
+        if let Some(at) = reconfiguration(&marker_path, options.now, bound)? {
+            reconfigured_at = Some(reconfigured_at.map_or(at, |saved| saved.max(at)));
+        }
+    }
+    let metric_history = match saved_metric_state {
         Some(mut metric_state) => {
             if metric_state.updated_at < state.updated_at
                 && let Some(history) = &mut metric_state.history
@@ -376,6 +447,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         now,
         now_ms: options.now_ms,
         metric_alerts: metric_history.as_ref(),
+        first_seen,
+        reconfigured_at,
         nq_watchers: config
             .inputs
             .nq_status
@@ -388,6 +461,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     .or_else(|| state.nq_watchers.values().next())
             }),
     });
+    if let Some(at) = reconfigured_at {
+        for report in read
+            .reports
+            .iter_mut()
+            .filter(|report| report.kind == "metric_alerts")
+        {
+            if !report.identity.is_object() {
+                report.identity = json!({});
+            }
+            report.identity["reconfigured_at"] = json!(format_seconds(at));
+        }
+    }
     if let Some((label, roster)) = read.nq_watchers.take() {
         state.nq_watchers = BTreeMap::from([(label, roster)]);
     }
@@ -1026,14 +1111,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Persist the decisions and written intents before any submission, so a
     // crash leaves `unknown` records that the next pass submits again.
     if !options.dry_run {
-        if config.inputs.metric_alerts.is_some() {
-            MetricAlertsState {
-                schema: METRIC_ALERTS_STATE_SCHEMA.into(),
-                site: config.site.clone(),
-                updated_at: now,
-                history: metric_history,
-            }
-            .save(&metric_history_path)?;
+        MetricAlertsState {
+            schema: METRIC_ALERTS_STATE_SCHEMA.into(),
+            site: config.site.clone(),
+            updated_at: now,
+            first_seen: Some(first_seen),
+            reconfigured_at,
+            history: metric_history,
+        }
+        .save(&metric_history_path)?;
+        if marker_present {
+            fs::remove_file(&marker_path)
+                .map_err(|error| format!("cannot remove reconfiguration marker: {error}"))?;
         }
         state.updated_at = now;
         state.save(&config.state_path)?;
