@@ -177,10 +177,13 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
    `sudo systemctl enable --now constellation-attention.timer`.
 7. Watch `journalctl -u constellation-attention`, `report.json` and
    `constellation-attention state --config ...`. Read `exit_class` from a
-   fresh `report.json`: exit 3 means an input is not current, a delivery was
-   not accepted or a trigger was dropped. Exit 3 fails the unit. After its
-   own synchronous pass, the installer resets the failed state only when
-   `exit_class` is `input_error`. Delivery errors retain the failed state.
+   fresh `report.json`: exit 3 means an input error; exit 4 means required
+   delivery failed (`delivery_failed` or `delivery_partial`). Both fail the
+   unit. `delivery` gives each route's outcome; `delivery_class` preserves
+   delivery failure when an input error takes precedence at exit 3. After its
+   own synchronous pass, the installer may reset-failed only for `input_error`
+   with `delivery_class: "clean"` (or an older input-only report). Delivery
+   errors retain the failed state. The unit has no restart or OnFailure hook.
    Exit 1 means the pass could not run (state lock,
    malformed state, clock moved backwards). After a corrected forward clock
    step, confirm the clock and run `sudo -u nq constellation-attention
@@ -197,8 +200,9 @@ cannot run fails every minute with no report and no notification, and an
 NQ `nq.systemd_unit` watcher cannot see a oneshot unit. The liveness signal
 is the age of `/var/lib/constellation-attention/report.json`; the status site
 or renderer that reads it is responsible for flagging a report older than a
-few minutes. The unit has a commented `OnFailure=` for an optional local
-handler.
+few minutes. Estate names a declared attention timer's status-4 failure;
+monitored and diagnostic surface the report's delivery classes and routes.
+The unit has no restart or OnFailure notification hook.
 
 Input labels are at most 34 bytes (they form `{label}.{fault class}` input
 notice keys).

@@ -35,6 +35,9 @@ pub const VALUE_CODES_V1: &str = "value_codes_v1";
 /// Installer-signalled grace for rule evaluation and acquisition after apply.
 pub const RECONFIGURATION_GRACE: &str = "reconfiguration_grace";
 
+/// Distinguish required delivery failure from input failure in completed reports.
+pub const DELIVERY_EXIT_CODE: &str = "delivery_exit_code";
+
 /// Supported behaviours. Published identifiers are never renamed or removed
 /// without a build-info schema bump.
 pub const CAPABILITIES: &[&str] = &[
@@ -46,6 +49,7 @@ pub const CAPABILITIES: &[&str] = &[
     METRIC_ALERT_ADMISSION_PER_RULE,
     VALUE_CODES_V1,
     RECONFIGURATION_GRACE,
+    DELIVERY_EXIT_CODE,
 ];
 
 #[derive(Debug, Serialize)]

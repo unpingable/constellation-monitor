@@ -15,7 +15,8 @@ a v2 (PagerDuty) submission whose rule is not in its closed anchor set (the
 17 Cartography anchors through at least NQ 0.2.6), before custody. Until NQ
 adds `remediation-journal-critical` to that set, this rule's notice copy
 reaches the notice route but its page is refused at every attempt
-(`command_error`, retried each pass, exit 3).
+(`command_error`, retried each pass, exit 4 unless an input error takes
+precedence).
 
 ## Build-info
 
@@ -42,6 +43,7 @@ bump. New identifiers may be added within v1.
 | `local_page_route_v1_copy` | A `local_file` page route receives a v1 page-tier copy through `deliver-local`. | `f7b74cc` |
 | `value_code_warming_informational` | Bounded value-code warming stays informational, never triggers or resolves conditions, and preserves existing faults across upgrade grace. | `f9fe6f2` |
 | `reconfiguration_grace` | Installer markers re-arm bounded metric acquisition/evaluation grace; initial empty Nightshift cycles warm during host startup. | This build |
+| `delivery_exit_code` | Required delivery failures exit 4; reports distinguish partial/failed delivery and summarize outcomes per route. | This build |
 | `report_exit_fields` | Completed pass reports carry `exit_code`, `exit_class` and `first_error`. | `e314c94` |
 | `loopback_http_runbooks` | HTTP runbook bases accept literal loopback addresses with an explicit port and path. | `3ecf0bb` |
 | `metric_alert_admission_per_rule` | Invalid definitions or site targets, including shared targets, are rejected independently while admitted rules still evaluate. | `69eac29` |
@@ -471,26 +473,65 @@ with each new intent recorded as `unknown` without a notification id. Then:
   kept as `pending_trigger` and submitted again (same bytes) before the
   resolve in the same pass. If NQ still does not retain it, the trigger is
   reported in `dropped_triggers` and on stderr (`dropped_trigger ...`), the
-  pass exits 3, and the trigger is never sent after its resolve.
+  pass exits 4 for an enabled transport (3 if an input also failed), and the
+  trigger is never sent after its resolve.
 - A resolve that replaces a trigger NQ retained but never accepted (for
   example a PagerDuty trigger still `failed` after its resubmits) is also
-  reported in `dropped_triggers` with exit 3: the destination may never
-  have opened the incident that resolve closes.
+  reported in `dropped_triggers` with exit 4 for an enabled transport: the
+  destination may never have opened the incident that resolve closes.
 - A retained intent file that is missing or unreadable fails only its own
-  follow-up (`intent_unreadable` in the report and on stderr, exit 3); the
-  rest of the pass, including new conditions, goes on.
+  follow-up (`intent_unreadable` in the report and on stderr, exit 4 for an
+  enabled transport); the rest of the pass, including new conditions, goes on.
 - With `network_enabled = false`, NQ retains each network intent as the
   refusal `network_dispatch_not_explicitly_enabled` and sends nothing; those
   are not retried and are not counted as failures.
 
-A pass exits 3 when any input was not readable or current or carries a
-rejected definition, any retained delivery is not accepted (other than
-deliberate refusals), or a trigger was dropped. This is a completed pass.
-The packaged oneshot fails on exit 3, preserving the unit failed state for
-delivery problems. Status reads `exit_class` from a fresh `report.json`.
-After its own synchronous pass, the installer resets the failed state only
-when `exit_class` is `input_error`; delivery errors remain failed. Exit 1
-also fails the unit when the pass could not complete.
+A completed pass exits **3** (`input_error`) when an input is unreadable,
+not current or carries a rejected definition. A failed **required delivery
+obligation** exits **4**, with `exit_class: "delivery_partial"` if at least
+one other required route is accepted, or `"delivery_failed"` if none is.
+Code 4 is the first unused attention CLI code: 0 is success, 1 is an
+incomplete/fatal pass, 2 is usage/configuration refusal, and 3 is input
+failure. It collides with none of those contracts; callers must not interpret
+it as an observation failure. The remediation consumer starts the evaluator
+through systemctl and treats any nonzero command result as failure; it has
+no allow-list that could swallow 4.
+
+Required means an emitted or retained unsettled obligation on a configured,
+enabled transport: `notice_route` with `notice_transport = "local_file"`
+always delivers; a `page_route` whose NQ transport is `local_file` also always
+delivers. Other routes require `network_enabled = true`. There is no separate
+optional/required handler flag. `page_route` is optional: omitting it creates
+no page obligation. Disabled network routes and dry runs are `skipped` and
+cannot cause exit 4, even if the NQ command fails rather than returning the
+expected qualification refusal. Disabled rules emit no new obligations.
+Existing unsettled obligations remain subject to the existing follow-up rules.
+A configured daily digest is a notice-route obligation; an omitted digest
+creates none. The outcome log is required custody for enabled route outcomes,
+so an unwritable `intents.jsonl` fails those routes even if NQ accepted them.
+
+Each planned obligation gets one bounded NQ call per pass, bounded by
+`command_timeout_seconds` (default 90 s). The existing retry policy remains:
+unretained intents retry the identical bytes next pass; retained pages wait
+120 s, and definite notice failures wait 900 s. Uncertain notices are not
+resent. There is no configured finite retry-count limit to exhaust. Exit 4
+records failure after the bounded attempt, and remains visible during the
+retry pause; it does not add attempts or a retry loop. Acceptance clears the
+outstanding failure. NQ's existing event/route idempotent dedup remains the
+custody boundary. Evaluation, conditions, incident/transition identities and
+intent generation are unchanged by this exit/report classification.
+
+If input and delivery both fail, **exit 3 and `exit_class: "input_error"`
+win** because the evaluator's observation failure is more fundamental.
+`delivery` and `delivery_class` still record the independent delivery failure.
+The packaged oneshot fails on both 3 and 4; neither is in `SuccessExitStatus`.
+It has no `Restart=` or `OnFailure=` notification hook. Its timer may run the
+next ordinary pass. Status reads a fresh `report.json`; monitored and diagnostic
+surface the named classes and routes, while estate names status 4 as attention
+`delivery_failed` or `delivery_partial` and directs the reader to the report.
+After its synchronous pass, an installer may reset-failed only for
+`input_error` with `delivery_class: "clean"` (or an older input-only report).
+Exit 1 also fails the unit when the pass could not complete.
 
 ## Clock
 
@@ -567,15 +608,31 @@ future timestamps in all three files under the same lock.
 
 ## Report
 
-Completed passes record `exit_code` (0 or 3), `exit_class` (`clean`,
-`input_error`, `delivery_error`, or `input_and_delivery_error`), and
-`first_error` (one line, or null on success). Status consumers can surface
-these fields alongside the report's `evaluated_at` freshness. The first
-failure follows report order: inputs, intents, dropped triggers, unresolved
-deliveries, digest, then `intent_log_error` (null unless the log append
-failed). A retry that succeeds clears the error. Fatal errors before a
-report can be written still exit 1 and leave the previous report unchanged;
-consumers must check freshness and the service result too.
+Completed passes retain schema `constellation.attention_report.v1` and record:
+
+- `exit_code`: 0, 3 or 4.
+- `exit_class`: `clean`, `input_error`, `delivery_partial` or `delivery_failed`.
+- `delivery`: an object keyed by exact route reference, for example
+  `{"operations": "accepted", "pagerduty-ops": "failed"}`. Values are
+  `accepted`, `refused` (NQ explicitly refused a required obligation), `failed`
+  (command error, timeout, pending/unknown, unreadable intent, dropped trigger
+  or outcome-log failure), or `skipped` (disabled, dry run, or no obligation).
+  Configured routes are included even when idle; an omitted page route has
+  no entry. Multiple obligations on one route reduce conservatively:
+  `failed` > `refused` > `accepted` > `skipped`. Partial means one route failed
+  or refused and a different required route is accepted; skipped routes do
+  not count as successes. Per-intent raw NQ outcomes remain in `intents`.
+- `delivery_class`: `clean`, `delivery_partial` or `delivery_failed`, including
+  when `input_error` takes precedence in `exit_class`.
+- `first_error`: one line, or null on success. Inputs precede required delivery
+  errors (intents, dropped triggers, unresolved deliveries, digest, then
+  `intent_log_error`). `intent_log_error` is null unless the log append failed.
+
+Status consumers must check `evaluated_at` freshness alongside these fields.
+A retry that succeeds clears its route's error. Fatal errors before a report
+can be written still exit 1 and leave the previous report unchanged; consumers
+must check freshness and the service result too. A digest failure remains in
+`delivery` during its retry pause even when no `digest` attempt occurs that pass.
 
 Every pass writes `report.json` beside the state file (atomically): rules
 with their effective class and thresholds, each input with its status
@@ -1054,8 +1111,10 @@ or not) is also appended to `intents.jsonl` beside the state, stamped with the
 pass time. The newest 1 MiB is kept, with one rotated `.1` file. A condition
 that settles is forgotten in the same pass that sends its resolve. The log is
 how a consumer, such as constellation-incidents, still sees that resolve. A
-failed append is a delivery problem: the pass exits 3 with
-`intent_log_unwritable`.
+failed append is a required delivery problem for enabled routes: the pass
+exits 4 (3 if an input also failed), with `intent_log_unwritable` and the
+affected routes `failed` in `delivery`. Disabled routes alone cannot cause
+exit 4.
 
 ## Daily digest
 
@@ -1171,14 +1230,16 @@ These are operator acceptance items.
   the operator noticing a missing daily digest. A pass that cannot run (a malformed
   `state.json`, which is never replaced; the lock; a clock that moved
   backwards) exits 1 with no report and no notification, every minute,
-  indefinitely. Exit 3 completes the oneshot but records its problems in
-  `report.json` (`exit_class` and `first_error`). An NQ
+  indefinitely. Exits 3 and 4 complete evaluation and record their problems in
+  `report.json` (`exit_class`, `delivery_class`, `delivery` and `first_error`),
+  while failing the oneshot. An NQ
   `nq.systemd_unit` watcher cannot see it, because the unit is inactive
   between passes. The liveness signal is the age of `report.json`
   (`evaluated_at`, rewritten by every completed pass): the status site or
   renderer that reads it is responsible for flagging a report older than a
-  few minutes, and the operator must name who watches that. The unit
-  carries a commented `OnFailure=` for an optional local handler.
+  few minutes, and the operator must name who watches that. Estate can name
+  a failed timer result when declared; monitored and diagnostic read the report.
+  The unit has no restart or OnFailure notification hook.
 - Configuration removal (rule disabled, input kind removed, a label-keyed
   input removed) resolves open conditions at once without observed
   recovery. Restoring the configuration re-pages as a new incident after the

@@ -66,6 +66,20 @@ class MonitoredTest(unittest.TestCase):
             entries.append(dict(binding, path=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
         (self.root / 'receipts/index.json').write_text(json.dumps({'schema': 'constellation.monitored_receipts/v1', 'receipts': entries}))
 
+    def test_attention_delivery_failure_is_named_without_changing_conditions(self):
+        for code, exit_class in [(4, 'delivery_failed'), (4, 'delivery_partial'), (3, 'input_error')]:
+            with self.subTest(exit_class=exit_class):
+                self.edit('report.json', lambda d: d.update(exit_code=code, exit_class=exit_class,
+                          delivery_class='delivery_partial', delivery={'operations': 'failed', 'page': 'accepted'},
+                          first_error='delivery route unavailable'))
+                doc = self.build()
+                row = next(r for r in doc['components'] if r['service'] == 'constellation-attention.timer')
+                self.assertIn(exit_class, row['state'])
+                self.assertIn('delivery_partial', row['state'])
+                self.assertIn('operations', row['state'])
+                self.assertIn('failed', row['state'])
+                self.assertIn('delivery_partial', m.render(doc))
+
     def test_operator_finds_degraded_service_and_what_would_tell_them(self):
         row = self.service()
         self.assertEqual(row['verdict'], 'DEGRADED')

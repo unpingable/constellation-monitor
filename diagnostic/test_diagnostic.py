@@ -79,6 +79,21 @@ class DiagnosticTest(unittest.TestCase):
         self.assertTrue(result["bins"]["unknown"])
         self.assertFalse(result["bins"]["checked_not_wrong_within_scope"])
 
+    def test_attention_delivery_failure_is_named_independently_of_conditions(self):
+        for code, exit_class in [(4, "delivery_failed"), (4, "delivery_partial"), (3, "input_error")]:
+            with self.subTest(exit_class=exit_class):
+                self.write("attention.json", {"schema": "constellation.attention_report.v1", "evaluated_at": "2026-10-20T00:00:00Z",
+                                             "conditions": [], "exit_code": code, "exit_class": exit_class,
+                                             "delivery_class": "delivery_partial", "delivery": {"operations": "failed", "page": "accepted"}})
+                result = self.run_diagnostic()
+                finding = next(f for f in result["bins"]["probably_wrong"] if f["subject"].startswith("attention."))
+                self.assertIn(exit_class, finding["statement"])
+                self.assertIn("delivery_partial", finding["statement"])
+                self.assertIn("operations", finding["statement"])
+                self.assertIn("failed", finding["statement"])
+                self.assertFalse(result["bins"]["wrong"])
+                (self.root / "record.json").unlink()
+
     def test_attention_pending_present_does_not_clear(self):
         self.write("attention.json", {"schema": "constellation.attention_report.v1", "evaluated_at": "2026-10-20T00:00:00Z",
                                      "conditions": [{"id": "site:test", "active": False, "observation": "present"}]})

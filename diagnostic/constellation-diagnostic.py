@@ -209,6 +209,13 @@ class Investigation:
                             "--since=@" + str(int(self.now - args.window)), "--unit=" + u]))
         attention = self.document("attention", args.attention, "constellation.attention_report.v1", "evaluated_at")
         if attention:
+            if attention.get("exit_code") in (3, 4):
+                self.finding("probably_wrong", "attention.delivery" if attention.get("exit_code") == 4 else "attention.input",
+                             "Attention %s (exit %s); delivery_class=%s; delivery=%s; %s" % (
+                                 attention.get("exit_class", "unknown"), attention["exit_code"],
+                                 attention.get("delivery_class", "unknown"), json.dumps(attention.get("delivery", {}), sort_keys=True),
+                                 attention.get("first_error") or ""),
+                             ["attention"], "Inspect report.json and the evaluator unit result; delivery does not change condition observations.")
             matched = False
             for condition in attention.get("conditions", [])[:1000]:
                 identity = condition.get("id")

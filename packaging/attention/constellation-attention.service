@@ -7,9 +7,8 @@ Documentation=file:/usr/share/doc/constellation-attention/ATTENTION.md
 After=local-fs.target network-online.target time-sync.target
 Wants=network-online.target
 ConditionPathExists=/etc/constellation-attention/attention.toml
-# Nothing in the estate watches this unit (ATTENTION.md, Known limits). A
-# failed pass can optionally start a local handler the operator provides:
-#OnFailure=constellation-attention-failed.service
+# Failures remain observable in report.json and the unit result. No Restart=
+# or OnFailure= handler: a failed notification must not trigger another one.
 
 [Service]
 Type=oneshot
@@ -26,9 +25,10 @@ StateDirectoryMode=0700
 # reads, stores or prints the values.
 EnvironmentFile=-/etc/constellation-attention/nq-routes.env
 ExecStart=/usr/bin/constellation-attention evaluate --config /etc/constellation-attention/attention.toml
-# Exit 3 fails the unit for input or delivery problems. Status reads
-# exit_class from the fresh report. The installer may reset-failed after
-# its synchronous pass only when exit_class is input_error.
+# Exit 3 is an input error; exit 4 is required delivery failure. Both fail
+# the unit. Status reads exit_class and delivery_class from the fresh report.
+# The installer may reset-failed after its synchronous pass only for an
+# input_error with delivery_class=clean (or an older input-only report).
 # Every child a pass runs is bounded by command_timeout_seconds (T, 90 s by
 # default): the command inputs (I: an nq_status command plus each saved-check
 # command) and one nq call per submission (S). Budget:

@@ -73,8 +73,13 @@ fi
 if [ -e "$dir/crash" ]; then rm -f "$dir/crash"; kill -9 "$PPID"; sleep 2; exit 1; fi
 crash_after=false
 if [ -e "$dir/crash_after" ]; then rm -f "$dir/crash_after"; crash_after=true; fi
-if [ -e "$dir/command_error" ]; then echo "notification condition target_class is refused" >&2; exit 1; fi
-state=$(cat "$dir/next_state" 2>/dev/null || echo accepted)
+attempt_event="$event"
+if [ -n "$intent" ]; then
+  attempt_event=$(sed -n 's/.*"stable_event_id":"\([^"]*\)".*/\1/p' "$intent")
+fi
+echo "$sub $route $attempt_event" >> "$dir/attempts.log"
+if [ -e "$dir/command_error" ] || [ -e "$dir/command_error-$route" ]; then echo "notification condition target_class is refused" >&2; exit 1; fi
+state=$(cat "$dir/state-$route" 2>/dev/null || cat "$dir/next_state" 2>/dev/null || echo accepted)
 mkdir -p "$dir/records" "$dir/intents"
 # NQ 0.2.2 retains a PagerDuty (v2) intent that is not a page as a refused
 # record (reason response_class_not_page) and sends nothing; a resubmit of

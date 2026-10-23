@@ -469,7 +469,12 @@ def build(args, now):
             gaps.append({'item': kind + ':' + exclusion.get('match', '?'), 'reason': 'explicitly excluded: ' + exclusion.get('reason', 'unknown'), 'evidence': str(args.registry)})
     # These components can fail without appearing as registered services.
     for name, producer in (('estate', 'constellation-estate-collect.timer'), ('attention_report', 'constellation-attention.timer'), ('metrics', 'constellation-metric-alerts-collect.timer')):
-        components.append({'service': producer, 'supervision': 'acquired output freshness; independent host-loss witness unknown', 'state': fault[name] or 'output current (does not prove independent notification)', 'evidence': sources[[s[0] for s in specs].index(name)]['path']})
+        state = fault[name] or 'output current (does not prove independent notification)'
+        if name == 'attention_report' and not fault[name] and report.get('exit_code') in (3, 4):
+            state = '%s (exit %s); delivery_class=%s; delivery=%s; %s' % (
+                report.get('exit_class', 'unknown'), report['exit_code'], report.get('delivery_class', 'unknown'),
+                json.dumps(report.get('delivery', {}), sort_keys=True), report.get('first_error') or '')
+        components.append({'service': producer, 'supervision': 'acquired output freshness; independent host-loss witness unknown', 'state': state, 'evidence': sources[[s[0] for s in specs].index(name)]['path']})
     for kind, entries in inputs.items():
         for entry in entries if isinstance(entries, list) else [entries]:
             if not isinstance(entry, dict):

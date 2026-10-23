@@ -31,6 +31,8 @@ use crate::state::{
 use crate::util::{format_seconds, read_bounded, rfc3339_seconds, truncate, write_atomic};
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
+/// Completed evaluation with an unmet required delivery obligation.
+pub const DELIVERY_EXIT_CODE: i32 = 4;
 const INPUT_UNAVAILABLE: &str = "evaluator-input-unavailable";
 
 pub struct PassOptions {
@@ -42,7 +44,7 @@ pub struct PassOptions {
 
 pub struct PassResult {
     pub report: Value,
-    /// 0 clean; 3 an input was not current/readable or a delivery was not accepted.
+    /// 0 clean; 3 input error (takes precedence); 4 required delivery failure.
     pub exit_code: i32,
 }
 
@@ -83,6 +85,38 @@ impl DeliveryRoutes<'_> {
 
     fn delivers(&self, schema: &str, route: &str) -> bool {
         self.config.routes.network_enabled || self.local(schema, route)
+    }
+
+    /// Summarize obligations without changing NQ outcomes or retry decisions.
+    /// Disabled transports and dry runs have no required delivery obligation.
+    fn record(
+        &self,
+        delivery: &mut BTreeMap<String, &'static str>,
+        route: &str,
+        outcome: &str,
+        dry_run: bool,
+    ) {
+        let required = self.delivers(INTENT_V1, route) && !dry_run;
+        let outcome = if !required {
+            "skipped"
+        } else {
+            match outcome {
+                "accepted" => "accepted",
+                "refused" => "refused",
+                _ => "failed",
+            }
+        };
+        // A route with multiple obligations fails if any of them fails.
+        let rank = |value| match value {
+            "failed" => 3,
+            "refused" => 2,
+            "accepted" => 1,
+            _ => 0,
+        };
+        let current = delivery.entry(route.to_owned()).or_insert("skipped");
+        if rank(outcome) > rank(*current) {
+            *current = outcome;
+        }
     }
 
     /// Earlier builds wrote intents NQ could not retain. Repair only those
@@ -1220,7 +1254,6 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             dropped["outcome"].as_str().unwrap_or_default(),
         );
     }
-    let mut delivery_problem = !unreadable.is_empty() || !superseded.is_empty();
     let mut intent_reports = unreadable;
     let mut withheld_count = 0;
     let mut dropped_triggers = superseded;
@@ -1285,17 +1318,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     "outcome": outcome,
                     "error": error,
                 }));
-                delivery_problem = true;
             }
         }
         if !options.dry_run {
             state.save(&config.state_path)?;
-        }
-        // A refusal of a submission made without --enable-network is the
-        // configured qualification mode, not a delivery failure.
-        let deliberate_refusal = outcome == "refused" && !last.network;
-        if !options.dry_run && outcome != "accepted" && !deliberate_refusal {
-            delivery_problem = true;
         }
         if let Some(error) = &error {
             eprintln!(
@@ -1361,6 +1387,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                             json!({
                                 "condition_id": id,
                                 "route_role": role,
+                                "route": last.route,
                                 "stable_event_id": last.stable_event_id,
                                 "outcome": last.outcome,
                                 "notification_id": last.notification_id,
@@ -1371,16 +1398,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             })
             .collect()
     };
-    delivery_problem |= !unresolved.is_empty();
     // After the state is saved: a failed digest never holds a transition back.
     let digest_attempt = if options.dry_run {
         None
     } else {
         crate::digest::send_if_due(config, &state, &rules, &read.reports, &digest, now)?
     };
-    if let Some(attempt) = &digest_attempt {
-        delivery_problem |= !attempt["settled"].as_bool().unwrap_or(false);
-    }
     // A rejected definition leaves its input `ok` but is still an input
     // problem: the pass exits 3, and the report tells the two apart (status
     // `ok`, cause `rejected`, `rejected_rules`).
@@ -1397,18 +1420,59 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     };
     if let Some(error) = &intent_log_error {
         eprintln!("{error}");
-        delivery_problem = true;
     }
-    let exit_code = if input_problem || delivery_problem {
+    let mut delivery = BTreeMap::from([(config.routes.notice_route.clone(), "skipped")]);
+    if let Some(page) = &config.routes.page_route {
+        delivery.insert(page.clone(), "skipped");
+    }
+    for condition in state.conditions.values() {
+        for last in condition.last_intent.values() {
+            delivery_routes.record(&mut delivery, &last.route, &last.outcome, options.dry_run);
+        }
+    }
+    for item in &intent_reports {
+        delivery_routes.record(&mut delivery, &item.route, &item.outcome, options.dry_run);
+        // The intent log is required custody for each enabled route's outcome,
+        // including resolves forgotten from state after acceptance.
+        if intent_log_error.is_some() {
+            delivery_routes.record(&mut delivery, &item.route, "failed", options.dry_run);
+        }
+    }
+    for item in &dropped_triggers {
+        if let Some(route) = item["route"].as_str() {
+            delivery_routes.record(&mut delivery, route, "failed", options.dry_run);
+        }
+    }
+    if let Some(outcome) = crate::digest::current_outcome(config, now) {
+        delivery_routes.record(
+            &mut delivery,
+            &config.routes.notice_route,
+            &outcome,
+            options.dry_run,
+        );
+    }
+    let delivery_problem = delivery
+        .values()
+        .any(|outcome| matches!(*outcome, "refused" | "failed"));
+    let delivery_class = if !delivery_problem {
+        "clean"
+    } else if delivery.values().any(|outcome| *outcome == "accepted") {
+        "delivery_partial"
+    } else {
+        "delivery_failed"
+    };
+    // Observation failure is fundamental even when notification also fails.
+    let exit_code = if input_problem {
         3
+    } else if delivery_problem {
+        DELIVERY_EXIT_CODE
     } else {
         0
     };
-    let exit_class = match (input_problem, delivery_problem) {
-        (false, false) => "clean",
-        (true, false) => "input_error",
-        (false, true) => "delivery_error",
-        (true, true) => "input_and_delivery_error",
+    let exit_class = if input_problem {
+        "input_error"
+    } else {
+        delivery_class
     };
     let report = json!({
         "schema": REPORT_SCHEMA,
@@ -1427,6 +1491,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "dropped_triggers": dropped_triggers,
         "exit_code": exit_code,
         "exit_class": exit_class,
+        "delivery": delivery,
+        "delivery_class": delivery_class,
         "intent_log_error": intent_log_error,
     });
     let mut report = report;
@@ -1471,10 +1537,13 @@ fn first_pass_error(report: &Value) -> Option<String> {
                 .into_iter()
                 .flat_map(|key| report[key].as_array().into_iter().flatten())
                 .find(|item| {
-                    item["error"].is_string()
-                        || (!matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted"))
-                            && !(item["outcome"] == "refused"
-                                && report["network_enabled"] == false))
+                    matches!(
+                        item["route"]
+                            .as_str()
+                            .and_then(|route| report["delivery"][route].as_str()),
+                        Some("refused" | "failed")
+                    ) && (item["error"].is_string()
+                        || !matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted")))
                 })
                 .map(|item| {
                     format!(
@@ -1710,8 +1779,8 @@ mod tests {
     fn log_failure_is_reported_even_without_input_or_delivery_rows() {
         assert_eq!(
             first_pass_error(&json!({
-                "exit_code": 3,
-                "exit_class": "delivery_error",
+                "exit_code": 4,
+                "exit_class": "delivery_failed",
                 "intent_log_error": "intent_log_unwritable: permission denied\nmore detail",
             }))
             .as_deref(),
@@ -1723,10 +1792,12 @@ mod tests {
     fn delivery_error_is_not_hidden_by_network_disabled() {
         assert_eq!(
             first_pass_error(&json!({
-                "exit_code": 3,
+                "exit_code": 4,
                 "network_enabled": false,
                 "inputs": [],
+                "delivery": {"local-page": "failed"},
                 "dropped_triggers": [{
+                    "route": "local-page",
                     "condition_id": "page-condition",
                     "outcome": "refused",
                     "error": "superseded by a resolve before it was accepted",

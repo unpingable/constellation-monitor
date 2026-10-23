@@ -282,6 +282,15 @@ pub fn send_if_due(
     })))
 }
 
+/// Keep today's digest obligation visible between bounded retry attempts.
+/// An omitted digest configuration creates no obligation.
+pub fn current_outcome(config: &Config, now: i64) -> Option<String> {
+    config.digest.as_ref()?;
+    read_record(&config.state_dir().join(RECORD_FILE))
+        .filter(|record| record.day == day(now))
+        .map(|record| record.outcome)
+}
+
 fn read_record(path: &Path) -> Option<Record> {
     read_bounded(path, 64 * 1024)
         .ok()

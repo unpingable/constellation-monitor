@@ -608,3 +608,12 @@ def test_metrics_observation_limit_survives_absent_application(tmp_path, monkeyp
     text = c.render_service_limits(reg, now=100)
     assert 'service_metrics_observation_age_seconds_limit{service="demo"} 60' in text
     assert 'service_observation_timestamp_seconds{' not in text  # acquisition is not app progress
+
+
+def test_attention_delivery_exit_is_named_and_not_an_allowed_input_status(monkeypatch):
+    monkeypatch.setattr(c, "run", fake_run({
+        "systemctl show constellation-attention.timer": (0, "ActiveState=active\nUnit=constellation-attention.service\n"),
+        "systemctl show constellation-attention.service": (0, "Result=exit-code\nExecMainStatus=4\nActiveState=failed\n")}))
+    out = c.timer_concern({"unit": "constellation-attention.timer", "ok_status": [0, 3]}, 10)
+    assert out["state"] == "DEGRADED"
+    assert "delivery_failed or delivery_partial" in out["reason"]

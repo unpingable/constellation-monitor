@@ -259,7 +259,7 @@ impl Harness {
     fn evaluate(&self, at: i64) -> Value {
         let output = self.evaluate_at(at, &[]);
         assert!(
-            matches!(output.status.code(), Some(0 | 3)),
+            matches!(output.status.code(), Some(0 | 3 | 4)),
             "pass failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
@@ -945,6 +945,10 @@ fn dry_run_with_loopback_runbooks_does_not_log_withholding() {
         serde_json::from_slice(&fs::read(harness.path("state/dry-run/report.json")).unwrap())
             .unwrap();
     assert_eq!(report["intents"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        report["delivery"],
+        json!({"operations": "skipped", "pagerduty-ops": "skipped"})
+    );
     assert!(harness.calls().is_empty());
 }
 
@@ -988,7 +992,7 @@ fn sink_failure_keeps_semantic_state_and_resends_newest_later() {
     let output = harness.evaluate_at(T0 + 720, &[]);
     assert_eq!(
         output.status.code(),
-        Some(3),
+        Some(4),
         "a failed delivery stays visible"
     );
     assert_eq!(harness.calls().len(), 2, "not yet: 60 s after the attempt");
@@ -1402,6 +1406,141 @@ fn network_disabled_retains_refusals_without_resending() {
     assert!(calls.iter().all(|call| call.contains(" refused ")));
 }
 
+/// All configured, enabled transports are required when they have an obligation.
+#[test]
+fn required_route_failures_are_distinct_and_partial_delivery_is_explicit() {
+    for outcome in ["failed", "refused", "unknown", "pending"] {
+        for partial in [false, true] {
+            let mut harness = Harness::new();
+            harness.host_posture("root");
+            harness.fake("state-operations", outcome);
+            harness.fake(
+                "state-pagerduty-ops",
+                if partial { "accepted" } else { outcome },
+            );
+            set(&harness, "root", ProjectedStateV1::Unknown, T0);
+            harness.evaluate(T0);
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+            let output = harness.evaluate_at(T0 + 660, &[]);
+            assert_eq!(output.status.code(), Some(4));
+            let report = harness.report();
+            assert_eq!(report["exit_code"], 4);
+            assert_eq!(
+                report["exit_class"],
+                if partial {
+                    "delivery_partial"
+                } else {
+                    "delivery_failed"
+                }
+            );
+            assert_eq!(report["delivery_class"], report["exit_class"]);
+            assert_eq!(
+                report["delivery"]["operations"],
+                if outcome == "refused" {
+                    "refused"
+                } else {
+                    "failed"
+                }
+            );
+            assert_eq!(
+                report["delivery"]["pagerduty-ops"],
+                if partial {
+                    "accepted"
+                } else if outcome == "refused" {
+                    "refused"
+                } else {
+                    "failed"
+                }
+            );
+            assert_eq!(harness.state()["conditions"][UNKNOWN_ROOT]["active"], true);
+            assert_eq!(harness.calls().len(), 2);
+        }
+    }
+}
+
+#[test]
+fn disabled_route_failure_does_not_count_but_local_delivery_is_required() {
+    let mut harness = Harness::new();
+    harness.network = false;
+    harness.notice_transport = "local_file";
+    harness.host_posture("root");
+    harness.fake("command_error-pagerduty-ops", "");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0));
+    }
+    let report = harness.report();
+    assert_eq!(report["exit_class"], "clean");
+    assert_eq!(
+        report["delivery"],
+        json!({"operations": "accepted", "pagerduty-ops": "skipped"})
+    );
+    assert!(report["first_error"].is_null());
+    // An omitted (optional) page route has no obligation or report entry.
+    let mut fresh = Harness::new();
+    fresh.page_route = false;
+    fresh.network = false;
+    fresh.host_posture("root");
+    fresh.fake("command_error", "");
+    for offset in [0, 660] {
+        set(&fresh, "root", ProjectedStateV1::Unknown, T0 + offset);
+        assert_eq!(fresh.evaluate_at(T0 + offset, &[]).status.code(), Some(0));
+    }
+    assert_eq!(fresh.report()["delivery"], json!({"operations": "skipped"}));
+}
+
+#[test]
+fn consecutive_failing_passes_attempt_each_identity_once_without_multiplying() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    let mut identities = Vec::new();
+    for offset in [660, 720] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        assert_eq!(harness.evaluate_at(T0 + offset, &[]).status.code(), Some(4));
+        let report = harness.report();
+        let pass: Vec<_> = report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|intent| (intent["route"].clone(), intent["stable_event_id"].clone()))
+            .collect();
+        assert_eq!(pass.len(), 2);
+        identities.push(pass);
+    }
+    assert_eq!(identities[0], identities[1]);
+    let attempts = fs::read_to_string(harness.path("fake/attempts.log")).unwrap();
+    let attempts: Vec<_> = attempts.lines().collect();
+    assert_eq!(attempts.len(), 4);
+    assert_eq!(attempts[..2], attempts[2..]);
+    assert_ne!(attempts[0], attempts[1]);
+    assert!(
+        harness.state()["conditions"][UNKNOWN_ROOT]
+            .get("pending_trigger")
+            .is_none()
+    );
+}
+
+#[test]
+fn packaged_unit_keeps_delivery_failure_visible_without_a_notification_loop() {
+    let unit = include_str!("../../../packaging/attention/constellation-attention.service");
+    let directives: Vec<_> = unit
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    for name in ["SuccessExitStatus=", "Restart=", "OnFailure="] {
+        assert!(
+            !directives
+                .iter()
+                .any(|line| line.trim_start().starts_with(name)),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn command_error_is_recorded_and_retried_with_the_same_bytes() {
     let mut harness = Harness::new();
@@ -1418,8 +1557,8 @@ fn command_error_is_recorded_and_retried_with_the_same_bytes() {
         "command_error"
     );
     let report = harness.report();
-    assert_eq!(report["exit_code"], 3);
-    assert_eq!(report["exit_class"], "delivery_error");
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(report["exit_class"], "delivery_failed");
     assert!(
         report["first_error"]
             .as_str()
@@ -1455,7 +1594,9 @@ fn report_classifies_input_and_delivery_failures_and_keeps_one_error_line() {
     harness.fake("command_error", "");
     let output = harness.evaluate_at(T0 + 360, &[]);
     assert_eq!(output.status.code(), Some(3));
-    assert_eq!(harness.report()["exit_class"], "input_and_delivery_error");
+    assert_eq!(harness.report()["exit_class"], "input_error");
+    assert_eq!(harness.report()["delivery_class"], "delivery_failed");
+    assert_eq!(harness.report()["delivery"]["operations"], "failed");
     assert_eq!(
         harness.report()["first_error"]
             .as_str()
@@ -1476,9 +1617,9 @@ fn report_includes_intent_log_failure_in_the_same_pass() {
     fs::create_dir(harness.path("state/intents.jsonl")).unwrap();
     set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
     let output = harness.evaluate_at(T0 + 660, &[]);
-    assert_eq!(output.status.code(), Some(3));
-    assert_eq!(harness.report()["exit_code"], 3);
-    assert_eq!(harness.report()["exit_class"], "delivery_error");
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(harness.report()["exit_code"], 4);
+    assert_eq!(harness.report()["exit_class"], "delivery_failed");
     assert!(
         harness.report()["first_error"]
             .as_str()
@@ -1962,7 +2103,7 @@ fn never_retained_trigger_is_reported_as_dropped() {
     for offset in [720, 840] {
         set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
         let output = harness.evaluate_at(T0 + offset, &[]);
-        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.status.code(), Some(4));
     }
     let report = harness.report();
     let dropped = report["dropped_triggers"].as_array().unwrap();
@@ -2013,7 +2154,7 @@ fn missing_intent_file_fails_only_its_follow_up() {
         set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
         set(&harness, "data", ProjectedStateV1::Unknown, T0 + offset);
         let output = harness.evaluate_at(T0 + offset, &[]);
-        assert_eq!(output.status.code(), Some(3), "+{offset}");
+        assert_eq!(output.status.code(), Some(4), "+{offset}");
         last = Some(output);
     }
     let stderr = String::from_utf8_lossy(&last.unwrap().stderr).into_owned();
@@ -2359,7 +2500,7 @@ fn local_file_notices_use_deliver_local() {
     let output = harness.evaluate_at(T0 + 840, &[]);
     assert_eq!(
         output.status.code(),
-        Some(3),
+        Some(4),
         "a failed local delivery counts"
     );
     harness.fake("next_state", "accepted");
@@ -2691,7 +2832,7 @@ fn resolve_superseding_an_unaccepted_trigger_is_reported() {
         set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
         codes.push(harness.evaluate_at(T0 + offset, &[]).status.code());
     }
-    assert_eq!(codes[2], Some(3));
+    assert_eq!(codes[2], Some(4));
     let report = harness.report();
     assert_eq!(intents(&report).len(), 2, "the resolve went out");
     let dropped = report["dropped_triggers"].as_array().unwrap();
@@ -4310,7 +4451,11 @@ fn daily_digest_restates_active_conditions_once_a_day() {
     };
     // Retried no sooner than the resend interval.
     set(&harness, "root", ProjectedStateV1::Unknown, at + 300);
-    assert!(harness.evaluate(at + 300).get("digest").is_none());
+    let waiting = harness.evaluate(at + 300);
+    assert!(waiting.get("digest").is_none());
+    assert_eq!(waiting["exit_code"], 4);
+    assert_eq!(waiting["delivery"]["operations"], "failed");
+    assert_eq!(waiting["exit_class"], "delivery_partial");
     harness.fake("next_state", "accepted");
     set(&harness, "root", ProjectedStateV1::Unknown, at + 900);
     assert_eq!(harness.evaluate(at + 900)["digest"]["settled"], true);
