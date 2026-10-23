@@ -8,12 +8,13 @@ use sha2::{Digest as _, Sha256};
 use crate::condition::ConditionKey;
 use crate::config::{Config, EffectiveRule, RemediationTarget};
 use crate::registry::{REGISTRY_VERSION, ResponseClass};
-use crate::util::{format_seconds, truncate};
+use crate::util::{format_seconds, truncate, truncate_words};
 
 pub const INTENT_V1: &str = "nq.notification_delivery_intent.v1";
 pub const INTENT_V2: &str = "nq.notification_delivery_intent.v2";
 pub const ATTENTION_POLICY_ID: &str = "constellation-attention";
 const V1_SUMMARY_MAX: usize = 512;
+const METRIC_SUMMARY_MAX: usize = 1024;
 const V2_SUMMARY_MAX: usize = 1024;
 const DETAILS_MAX: usize = 4096;
 
@@ -125,17 +126,36 @@ pub struct IntentInput<'a> {
     pub reference: &'a Value,
 }
 
+fn metric_notice(input: &IntentInput<'_>) -> bool {
+    input.action == Action::Trigger
+        && (input.rule.rule.id == "metric-alert-firing"
+            || (input.rule.rule.id == "evaluator-input-unavailable"
+                && input.reference["kind"] == "metric_alerts"
+                && input.reference["cause"] == "indeterminate"))
+}
+
 fn summary(input: &IntentInput<'_>) -> String {
     let id = incident_ref(&input.key.id(), input.first_seen);
     match input.action {
         Action::Trigger => {
-            let mut text = format!(
-                "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
-                input.rule.class.as_str(),
-                input.rule.rule.condition,
-                input.persisted_seconds,
-                input.rule.persistence_seconds(),
-            );
+            let mut text = if metric_notice(input) {
+                // The Now detail explains these metric notices. Leave room
+                // for whole rule identities and mixed-row code meanings.
+                format!(
+                    "TRIGGER {id} [{}]: Persisted {} s (bound {} s).",
+                    input.rule.class.as_str(),
+                    input.persisted_seconds,
+                    input.rule.persistence_seconds(),
+                )
+            } else {
+                format!(
+                    "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
+                    input.rule.class.as_str(),
+                    input.rule.rule.condition,
+                    input.persisted_seconds,
+                    input.rule.persistence_seconds(),
+                )
+            };
             // An estate verdict carries the service's own reason (unit state or the
             // required concerns that are not present), and a metric alert its own
             // summary per instance; say it, not just the rule.
@@ -244,16 +264,21 @@ pub fn v2(input: &IntentInput<'_>, route: &str) -> Value {
 pub const LOCAL_INBOX_MESSAGE_MAX: usize = 4096;
 pub const LOCAL_INBOX_LABEL: &str = "local-inbox";
 /// Longest `local_file` notice route the configuration admits. With the
-/// summary (512 bytes), inspection reference (1024) and event id bounds,
-/// this keeps every rendered local message under
-/// [`LOCAL_INBOX_MESSAGE_MAX`].
+/// summary (512 bytes, or 1024 for metric notices), inspection reference
+/// and event id bounds, plus the rendered-size check in [`v1`], this keeps
+/// every rendered local message under [`LOCAL_INBOX_MESSAGE_MAX`].
 pub const LOCAL_ROUTE_MAX: usize = 128;
 
 /// A v1 intent for a Slack, Discord or local inbox route. `label` is the
 /// destination label (`slack`, `discord`, `local-inbox`).
 #[must_use]
 pub fn v1(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
-    json!({
+    let summary = if metric_notice(input) {
+        truncate_words(&summary(input), METRIC_SUMMARY_MAX)
+    } else {
+        truncate(&summary(input), V1_SUMMARY_MAX)
+    };
+    let mut intent = json!({
         "schema": INTENT_V1,
         "attention_kind": "operator_assertion",
         "stable_event_id": input.stable_event_id,
@@ -262,10 +287,16 @@ pub fn v1(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
         "transition_id": input.transition_id,
         "route_reference": route,
         "destination_identity": format!("{label}:{route}"),
-        "summary": truncate(&summary(input), V1_SUMMARY_MAX),
+        "summary": summary,
         "inspection_reference": truncate(&inspection_reference(input), 1024),
         "response_class": response_class(input).as_str(),
-    })
+    });
+    // JSON escaping and long configured locators count against the local
+    // receiver's 4 KiB limit. Fall back to the original proven budget.
+    if label == LOCAL_INBOX_LABEL && local_inbox_message_bytes(&intent) > LOCAL_INBOX_MESSAGE_MAX {
+        intent["summary"] = json!(truncate_words(&summary, V1_SUMMARY_MAX));
+    }
+    intent
 }
 
 /// The response class of a notice: `page` for a decision that also pages,
@@ -366,7 +397,11 @@ mod tests {
                     policy_digest: &policy_digest(&rules, &[]),
                     first_seen: Some(1_790_942_400),
                     persisted_seconds: 660,
-                    reference: &Value::Null,
+                    reference: &json!({
+                        "reason": "\" ".repeat(480),
+                        "kind": "metric_alerts",
+                        "cause": "indeterminate",
+                    }),
                 };
                 let intent = v1(&input, &config.routes.notice_route, LOCAL_INBOX_LABEL);
                 let bytes = local_inbox_message_bytes(&intent);

@@ -195,3 +195,13 @@ pub fn truncate(value: &str, maximum: usize) -> String {
     }
     value[..end].to_owned()
 }
+
+/// Truncate at a word boundary, including an ellipsis within the byte bound.
+pub fn truncate_words(value: &str, maximum: usize) -> String {
+    if value.len() <= maximum {
+        return value.to_owned();
+    }
+    let prefix = truncate(value, maximum.saturating_sub('…'.len_utf8()));
+    let end = prefix.rfind(char::is_whitespace).unwrap_or(0);
+    format!("{}{}", prefix[..end].trim_end(), truncate("…", maximum))
+}

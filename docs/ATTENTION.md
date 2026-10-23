@@ -661,11 +661,32 @@ A condition that has never been present stays inactive while unknown and
 sends no `metric-alert-firing` notice. Each unknown value-code state also
 raises the existing input fault `indeterminate`. If that fault persists for
 300 s (the default), `evaluator-input-unavailable:<input>.indeterminate`
-sends a notice naming the rule and code. This uses the existing persistence
+sends a notice with `Now: indeterminate rules: <alert name> (<condition
+target>): code N (meaning); ...`. It lists non-1 codes from the complete
+counts, scoped to each configured site, in sorted rule-identity and code order.
+At most eight rule/site identities appear within a 640-byte detail budget,
+followed by `+N more` for omitted identities; identities are never cut in half.
+Meanings are `acquisition_failed`, `missing`, `stale`, and
+`invalid_or_warming` for codes 2–5 respectively. Rejected-rule notices keep
+their existing text. This uses the existing persistence
 and recovery mechanism without a new warming timer or condition family;
 warming for an hour will therefore be visible. Other healthy rules and sites
 continue to evaluate. The digest includes code meanings from the first pass,
 even for never-present conditions, within its existing 512-byte bound.
+
+Metric notice detail is bounded at 480 bytes; longer text ends at a word
+boundary with `…`. Instance summaries use the same bound. Code-1 rows are
+described as `firing on`; non-1 rows as `held unknown (code N: meaning) on`.
+Locations use `site (instance)`, falling back to `site (host)`, then just
+`site` when neither label is present.
+
+Metric trigger notices and their indeterminate-input notices omit the static
+condition description from the prefix and allow up to 1024 bytes in the final
+summary, retaining the action, condition identity, class, persistence, and
+`Now:` detail. Other notices keep their existing summary bound and text.
+For a local inbox, if JSON escaping and configured locators would exceed the
+4 KiB receiver limit, the summary falls back to 512 bytes at a word boundary
+with `…`.
 
 This opt-in adapter adds no registry entry or policy-digest field; registry
 v7 and existing attention policy pins are unchanged.

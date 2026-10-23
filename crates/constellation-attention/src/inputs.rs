@@ -18,7 +18,7 @@ use crate::config::{
 };
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
-    run_bounded, truncate,
+    run_bounded, truncate, truncate_words,
 };
 
 const STATUS_EXPORT_LIMIT: usize = 16 * 1024 * 1024;
@@ -176,6 +176,8 @@ impl InputReport {
 pub struct InputsRead {
     pub reports: Vec<InputReport>,
     pub observed: Vec<Observed>,
+    /// Notice text independent of whether metric-alert-firing is enabled.
+    pub metric_indeterminate_reason: Option<String>,
     /// Evaluation-history mode: the NQ status input's label and its updated
     /// watcher roster, to be remembered in the state.
     pub nq_watchers: Option<(String, BTreeMap<String, i64>)>,
@@ -210,6 +212,7 @@ pub fn read_all(context: &Context<'_>) -> InputsRead {
     let mut read = InputsRead {
         reports: Vec::new(),
         observed: Vec::new(),
+        metric_indeterminate_reason: None,
         nq_watchers: None,
     };
     for input in &context.config.inputs.host_posture {
@@ -1481,6 +1484,14 @@ pub const METRIC_ALERTS_SCHEMA: &str = "constellation.metric_alerts/v1";
 /// The rule label that opts a vmalert alerting rule into evaluation.
 pub const METRIC_ALERTS_OPT_IN_LABEL: &str = "attention";
 const METRIC_ALERTS_INSTANCES_IN_NOTE: usize = 4;
+const METRIC_ALERTS_DETAIL_BYTES: usize = 480;
+const METRIC_INDETERMINATE_RULES_IN_NOTICE: usize = 8;
+const METRIC_INDETERMINATE_NOTICE_BYTES: usize = 640;
+
+/// Keep metric notice details within a byte bound without cutting a word.
+fn metric_detail(value: &str) -> String {
+    truncate_words(value, METRIC_ALERTS_DETAIL_BYTES)
+}
 
 /// A vmalert alert name as a condition target: `HostSwapExhausted` is
 /// `host-swap-exhausted`. Anything outside `[a-z0-9._-]` becomes `-`.
@@ -1607,7 +1618,19 @@ const METRIC_VALUE_CODES_LABEL: &str = "constellation_value_codes";
 struct MetricValueState {
     present: bool,
     unknown: bool,
+    unknown_note: String,
     note: String,
+}
+
+fn metric_value_meaning(value: &str) -> Option<&'static str> {
+    match value.parse::<f64>().ok()? {
+        1.0 => Some("present"),
+        2.0 => Some("acquisition_failed"),
+        3.0 => Some("missing"),
+        4.0 => Some("stale"),
+        5.0 => Some("invalid_or_warming"),
+        _ => None,
+    }
 }
 
 /// The producer counts every active instance before bounding detail. Never
@@ -1620,6 +1643,7 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
         return Ok(MetricValueState {
             present: false,
             unknown: false,
+            unknown_note: String::new(),
             note: "no active value codes".into(),
         });
     }
@@ -1627,6 +1651,7 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
         .as_array()
         .ok_or("missing complete value_code_counts; update the metric-alerts collector")?;
     let mut meanings = BTreeMap::new();
+    let mut unknown_meanings = BTreeMap::new();
     let mut present = false;
     let mut unknown = false;
     let mut active = false;
@@ -1646,18 +1671,14 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
             continue;
         }
         let code = value.parse::<f64>().ok();
-        let meaning = match code {
-            Some(1.0) => "present",
-            Some(2.0) => "acquisition_failed",
-            Some(3.0) => "missing",
-            Some(4.0) => "stale",
-            Some(5.0) => "invalid_or_warming",
-            _ => return Err(format!("value code {value:?} outside 1-5")),
-        };
+        let meaning = metric_value_meaning(value)
+            .ok_or_else(|| format!("value code {value:?} outside 1-5"))?;
         if code == Some(1.0) {
             present |= state == "firing";
         } else {
             unknown = true;
+            let number = code.unwrap() as u8;
+            unknown_meanings.insert(number, format!("code {number} ({meaning})"));
         }
         meanings.insert(value.to_owned(), format!("value code {value} ({meaning})"));
     }
@@ -1667,6 +1688,10 @@ fn metric_value_state(rule: &Value, site: Option<&str>) -> Result<MetricValueSta
     Ok(MetricValueState {
         present,
         unknown,
+        unknown_note: unknown_meanings
+            .into_values()
+            .collect::<Vec<_>>()
+            .join(", "),
         note: if meanings.is_empty() {
             "no active value codes for this site".into()
         } else {
@@ -1819,6 +1844,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     }
     let mut observations = Vec::new();
     let mut value_code_notes = Vec::new();
+    let mut indeterminate_rules = BTreeMap::new();
     for (rule, (name, admission)) in opted.iter().zip(&admissions) {
         let name = *name;
         for rejection in &admission.rejected {
@@ -1953,6 +1979,10 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                     Ok(value) => {
                         present = value.present;
                         code_unknown = value.unknown;
+                        if value.unknown {
+                            indeterminate_rules
+                                .insert(format!("{name} ({keyed_target})"), value.unknown_note);
+                        }
                         value.note
                     }
                     Err(error) => {
@@ -1987,7 +2017,16 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             let mut reason: Vec<String> = mine
                 .iter()
                 .take(METRIC_ALERTS_INSTANCES_IN_NOTE)
-                .map(|i| describe_metric_instance(i))
+                .map(|i| {
+                    let detail = describe_metric_instance(i);
+                    let value = i["value"].as_str().unwrap_or_default();
+                    match marked.then(|| metric_value_meaning(value)).flatten() {
+                        Some(meaning) if meaning != "present" => {
+                            format!("held unknown (code {value}: {meaning}) on {detail}")
+                        }
+                        _ => format!("firing on {detail}"),
+                    }
+                })
                 .collect();
             if mine.len() > METRIC_ALERTS_INSTANCES_IN_NOTE {
                 reason.push(format!(
@@ -1996,7 +2035,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 ));
             }
             let reason = if !reason.is_empty() {
-                format!("{name} firing on {}", reason.join("; "))
+                format!("{name} {}", reason.join("; "))
             } else if let Some(site) = site {
                 format!("{state}; nothing firing on {site}")
             } else {
@@ -2021,9 +2060,9 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                     "labels": i.get("labels"),
                     "active_at": i.get("active_at"),
                     "value": i.get("value"),
-                    "summary": i.get("summary").and_then(Value::as_str).map(|s| truncate(s, 200)),
+                    "summary": i.get("summary").and_then(Value::as_str).map(metric_detail),
                 })).collect::<Vec<_>>(),
-                "reason": truncate(&reason, 200),
+                "reason": metric_detail(&reason),
                 "problems": problems,
                 "last_evaluation": rule.get("last_evaluation"),
                 "generated_at": document.get("generated_at"),
@@ -2051,7 +2090,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 Observation::Unknown if !unknown && no_data => format!(
                     "{name} unknown: query fetched no series (metric missing, or its window has no history yet)"
                 ),
-                Observation::Present => truncate(&reason, 200),
+                Observation::Present => metric_detail(&reason),
                 Observation::Clear => match site {
                     Some(site) => format!("{name} {state}; nothing firing on {site}"),
                     None => format!("{name} {state}"),
@@ -2079,6 +2118,29 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             observations.push((keyed_target, observation, reference, note));
         }
     }
+    if !indeterminate_rules.is_empty() {
+        // Whole identities only: cap both fan-out and bytes, reserving room
+        // for the omitted count. Complete counts survive truncated instances.
+        let mut details = Vec::new();
+        for (identity, codes) in indeterminate_rules
+            .iter()
+            .take(METRIC_INDETERMINATE_RULES_IN_NOTICE)
+        {
+            let detail = format!("{identity}: {codes}");
+            if details.join("; ").len() + detail.len() + 40 > METRIC_INDETERMINATE_NOTICE_BYTES {
+                break;
+            }
+            details.push(detail);
+        }
+        if indeterminate_rules.len() > details.len() {
+            details.push(format!(
+                "+{} more",
+                indeterminate_rules.len() - details.len()
+            ));
+        }
+        read.metric_indeterminate_reason =
+            Some(format!("indeterminate rules: {}", details.join("; ")));
+    }
     if !value_code_notes.is_empty() {
         report.identity["value_code_notes"] = json!(value_code_notes);
     }
@@ -2098,24 +2160,50 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     }
 }
 
-/// One firing instance for a note: `<site> (<instance>): <summary>`.
+/// One instance for a note: `<site> (<instance or host>): <summary>`,
+/// or just `<site>: <summary>` when neither instance nor host is available.
 fn describe_metric_instance(instance: &Value) -> String {
     let labels = instance.get("labels");
-    let site = instance_site(instance).unwrap_or("?");
+    let site = instance_site(instance).unwrap_or("(no site label)");
     let host = labels
         .and_then(|l| l.get("instance"))
         .and_then(Value::as_str)
-        .unwrap_or("?");
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            labels
+                .and_then(|l| l.get("host"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+        });
     let summary = instance
         .get("summary")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    format!("{site} ({host}): {}", truncate(summary.trim(), 160))
+    let location = match host {
+        Some(host) => format!("{site} ({host})"),
+        None => site.to_owned(),
+    };
+    format!("{location}: {}", metric_detail(summary.trim()))
 }
 
 #[cfg(test)]
 mod metric_alert_tests {
-    use super::{admit_metric_alert, metric_alert_site_target, metric_alert_target};
+    use super::{
+        METRIC_ALERTS_DETAIL_BYTES, admit_metric_alert, metric_alert_site_target,
+        metric_alert_target, metric_detail,
+    };
+
+    #[test]
+    fn notice_detail_is_bounded_at_a_word_boundary_with_an_ellipsis() {
+        let prefix = "complete words ".repeat(30);
+        let detail = format!("{prefix}{}", "é".repeat(100));
+        let shortened = metric_detail(&detail);
+        assert_eq!(shortened, format!("{}…", prefix.trim_end()));
+        assert!(shortened.len() <= METRIC_ALERTS_DETAIL_BYTES);
+        assert_eq!(metric_detail(&"é".repeat(300)), "…");
+        let exact = "x".repeat(METRIC_ALERTS_DETAIL_BYTES);
+        assert_eq!(metric_detail(&exact), exact);
+    }
 
     /// The shared admission vector: `metric-alerts-collect.py --check-targets`
     /// derives and refuses exactly the same targets.

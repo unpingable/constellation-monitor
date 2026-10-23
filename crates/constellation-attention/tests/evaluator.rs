@@ -4385,6 +4385,206 @@ fn value_code_rows(doc: &mut Value, state: &str, values: &[&str]) {
 }
 
 #[test]
+fn indeterminate_metric_notice_names_rules_and_codes_without_instance_detail() {
+    let harness = metric_alerts_harness();
+    for offset in [0, 360] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "3");
+            let template = doc["rules"][0].clone();
+            doc["rules"] = json!([template.clone(), template.clone(), template]);
+            for (rule, (name, value)) in doc["rules"].as_array_mut().unwrap().iter_mut().zip([
+                ("ProbeHttpFailing", "2"),
+                ("ProbeDown", "3"),
+                ("HostPidTableNearLimit", "3"),
+            ]) {
+                rule["name"] = json!(name);
+                rule["instances"] = json!([]);
+                rule["value_code_counts"][0]["value"] = json!(value);
+            }
+        });
+        let report = harness.evaluate(T0 + offset);
+        if offset == 360 {
+            let record = report["intents"][0]["notification_id"].as_str().unwrap();
+            let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+            let summary = sent["summary"].as_str().unwrap();
+            assert!(
+                summary.contains(concat!(
+                    "Now: indeterminate rules: ",
+                    "HostPidTableNearLimit (host-pid-table-near-limit): code 3 (missing); ",
+                    "ProbeDown (probe-down): code 3 (missing); ",
+                    "ProbeHttpFailing (probe-http-failing): code 2 (acquisition_failed)."
+                )),
+                "{summary}"
+            );
+            println!("D1 notice: {summary}");
+        }
+    }
+}
+
+#[test]
+fn indeterminate_metric_notice_limits_sorted_identities_to_eight() {
+    let harness = metric_alerts_harness();
+    for offset in [0, 360] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rows(doc, "firing", &["1", "3", "2"]);
+            let template = doc["rules"][0].clone();
+            doc["rules"] = json!(
+                (0..10)
+                    .rev()
+                    .map(|index| {
+                        let mut rule = template.clone();
+                        rule["name"] = json!(format!("Rule{index:02}"));
+                        rule
+                    })
+                    .collect::<Vec<_>>()
+            );
+        });
+        let report = harness.evaluate(T0 + offset);
+        if offset == 360 {
+            let intent = report["intents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|intent| {
+                    intent["condition_id"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with(":metric_alerts.indeterminate")
+                })
+                .unwrap();
+            let record = intent["notification_id"].as_str().unwrap();
+            let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+            let summary = sent["summary"].as_str().unwrap();
+            let expected = (0..8).map(|index| format!(
+                "Rule{index:02} (rule{index:02}): code 2 (acquisition_failed), code 3 (missing)"
+            )).collect::<Vec<_>>().join("; ");
+            assert!(
+                summary.contains(&format!("Now: indeterminate rules: {expected}; +2 more.")),
+                "{summary}"
+            );
+            assert!(!summary.contains("Rule08"));
+            assert!(!summary.contains("Rule09"));
+            assert!(!summary.contains("code 1"));
+        }
+    }
+}
+
+#[test]
+fn indeterminate_metric_notice_survives_disabled_metric_notices_and_scopes_codes() {
+    let mut harness = metric_alerts_harness();
+    harness.raw("sites = [\"testbed\"]\n[rules.metric-alert-firing]\nenabled = false\n");
+    for offset in [0, 360] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "1");
+            doc["rules"][0]["value_code_counts"] = json!([
+                {"site": "elsewhere", "state": "firing", "value": "2", "count": 1},
+                {"site": "testbed", "state": "pending", "value": "5", "count": 1},
+                {"site": "testbed", "state": "firing", "value": "4", "count": 1},
+                {"site": "testbed", "state": "firing", "value": "3", "count": 0}
+            ]);
+        });
+        let report = harness.evaluate(T0 + offset);
+        assert!(alert_intents(&report).is_empty());
+        if offset == 360 {
+            let record = report["intents"][0]["notification_id"].as_str().unwrap();
+            let sent: Value = serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+            let summary = sent["summary"].as_str().unwrap();
+            assert!(summary.contains("Now: indeterminate rules: HostSwapExhausted (host-swap-exhausted.testbed): code 4 (stale), code 5 (invalid_or_warming)."), "{summary}");
+            assert!(!summary.contains("code 2"));
+            assert!(!summary.contains("code 3"));
+        }
+    }
+}
+
+#[test]
+fn mixed_metric_notice_keeps_full_legends_and_describes_unknown_rows() {
+    for (code, meaning) in [
+        ("2", "acquisition_failed"),
+        ("3", "missing"),
+        ("4", "stale"),
+        ("5", "invalid_or_warming"),
+    ] {
+        let harness = metric_alerts_harness();
+        let legend = "(1=failed, 2=exporter unreachable, 3=missing, 4=stale, 5=warming)";
+        for offset in [0, 90] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rows(doc, "firing", &["1", code]);
+                let rule = &mut doc["rules"][0];
+                rule["name"] = json!("ProbeHttpFailing");
+                for (index, instance) in rule["instances"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .enumerate()
+                {
+                    instance["summary"] = json!(format!(
+                        "service HTTP probe /health on labelwatch: evidence code={} {legend}",
+                        if index == 0 { "1" } else { code }
+                    ));
+                }
+            });
+            let report = harness.evaluate(T0 + offset);
+            if offset == 90 {
+                let record = report["intents"][0]["notification_id"].as_str().unwrap();
+                let sent: Value =
+                    serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+                let summary = sent["summary"].as_str().unwrap();
+                assert_eq!(summary.matches(legend).count(), 2, "{summary}");
+                assert!(
+                    summary.contains("ProbeHttpFailing firing on labelwatch (instance-0)"),
+                    "{summary}"
+                );
+                assert!(
+                    summary.contains(&format!(
+                        "held unknown (code {code}: {meaning}) on labelwatch (instance-1)"
+                    )),
+                    "{summary}"
+                );
+                assert!(!summary.contains("firing on labelwatch (instance-1)"));
+            }
+        }
+    }
+}
+
+#[test]
+fn pid_table_notice_uses_instance_then_host_then_site() {
+    for (labels, location) in [
+        (
+            json!({"site": "testbed", "instance": "exporter:9100", "host": "node"}),
+            "testbed (exporter:9100)",
+        ),
+        (json!({"site": "testbed", "host": "node"}), "testbed (node)"),
+        (json!({"site": "testbed"}), "testbed"),
+    ] {
+        let harness = metric_alerts_harness();
+        for offset in [0, 90] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "firing", "1");
+                let rule = &mut doc["rules"][0];
+                rule["name"] = json!("HostPidTableNearLimit");
+                rule["instances"][0]["labels"] = labels.clone();
+                rule["value_code_counts"][0]["site"] = json!("testbed");
+                refresh_firing_sites(rule);
+            });
+            let report = harness.evaluate(T0 + offset);
+            if offset == 90 {
+                let record = report["intents"][0]["notification_id"].as_str().unwrap();
+                let sent: Value =
+                    serde_json::from_slice(&harness.submitted_intent(record)).unwrap();
+                let summary = sent["summary"].as_str().unwrap();
+                assert!(
+                    summary.contains(&format!(
+                        "Now: HostPidTableNearLimit firing on {location}: evidence code=1"
+                    )),
+                    "{summary}"
+                );
+                assert!(!summary.contains("(?)"), "{summary}");
+            }
+        }
+    }
+}
+
+#[test]
 fn mixed_value_codes_are_present_with_partial_coverage_in_report_and_digest() {
     for scoped in [false, true] {
         let mut harness = metric_alerts_harness();

@@ -391,6 +391,11 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 ) else {
                     continue;
                 };
+                let reference = input_fault_reference(
+                    report,
+                    cause,
+                    read.metric_indeterminate_reason.as_deref(),
+                );
                 observed.entry(key.id()).or_insert(Observed {
                     key,
                     rule: INPUT_UNAVAILABLE,
@@ -406,7 +411,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     } else {
                         Observation::Unknown
                     },
-                    reference: input_fault_reference(report, cause),
+                    reference,
                     note: if *cause == REJECTED_CAUSE {
                         rejected_note(report)
                     } else if report.causes.contains(cause) {
@@ -1109,9 +1114,12 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     })
 }
 
-/// The reference of an input-fault condition. For `rejected`, the refused
-/// definitions by fault and the reason, so the notice names them.
-fn input_fault_reference(report: &InputReport, cause: &str) -> Value {
+/// Name rejected definitions or the metric rules held by non-1 codes.
+fn input_fault_reference(
+    report: &InputReport,
+    cause: &str,
+    metric_indeterminate_reason: Option<&str>,
+) -> Value {
     let mut reference = json!({
         "input": report.label,
         "kind": report.kind,
@@ -1129,6 +1137,12 @@ fn input_fault_reference(report: &InputReport, cause: &str) -> Value {
         // Names first, so every rejected definition and the incident
         // reference fit the notice; the byte detail is in report.json.
         reference["reason"] = json!(truncate(&rejected_names(report), 400));
+    }
+    if cause == "indeterminate"
+        && report.kind == "metric_alerts"
+        && let Some(reason) = metric_indeterminate_reason
+    {
+        reference["reason"] = json!(reason);
     }
     reference
 }
