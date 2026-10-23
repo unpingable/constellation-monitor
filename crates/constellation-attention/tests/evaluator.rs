@@ -1,5 +1,9 @@
-//! End-to-end passes of the `constellation-attention` binary against fixture
-//! inputs and a fake `nq` that records submissions.
+//! Evaluator passes against fixture inputs and a fake `nq` that records submissions.
+//!
+//! Chosen-time, persistent passes use the debug CLI where available and the
+//! public engine API in release builds. Both run in a child process so crash
+//! recovery, environment isolation, files, and delivery assertions stay identical.
+//! Dry runs and real-clock passes exercise the CLI in both profiles.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -159,6 +163,27 @@ impl Harness {
     }
 
     fn evaluate_at(&self, at: i64, extra: &[&str]) -> Output {
+        if extra == ["--dry-run"] {
+            return self.evaluate_cli_at(at, extra);
+        }
+        assert!(extra.is_empty(), "unexpected test arguments: {extra:?}");
+        self.evaluate_persisted_at(at)
+    }
+
+    // Persistent chosen-time CLI passes are documented as debug-only.
+    #[cfg(debug_assertions)]
+    fn evaluate_persisted_at(&self, at: i64) -> Output {
+        self.evaluate_cli_at(at, &[])
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn evaluate_persisted_at(&self, at: i64) -> Output {
+        self.engine_at("evaluate", at)
+    }
+
+    fn evaluate_cli_at(&self, at: i64, extra: &[&str]) -> Output {
+        #[cfg(not(debug_assertions))]
+        assert_eq!(extra, ["--dry-run"]);
         let config = self.config_path();
         let now = rfc3339(at);
         let mut arguments = vec![
@@ -170,6 +195,45 @@ impl Harness {
         ];
         arguments.extend_from_slice(extra);
         self.command(&arguments)
+    }
+
+    // Choosing reset-clock's time is documented as debug-only too.
+    #[cfg(debug_assertions)]
+    fn reset_clock_at(&self, at: i64) -> Output {
+        self.command(&[
+            "reset-clock",
+            "--config",
+            self.config_path().to_str().unwrap(),
+            "--now",
+            &rfc3339(at),
+        ])
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn reset_clock_at(&self, at: i64) -> Output {
+        self.engine_at("reset-clock", at)
+    }
+
+    #[cfg(not(debug_assertions))]
+    fn engine_at(&self, operation: &str, at: i64) -> Output {
+        let result_path = self.path("engine-result.json");
+        let mut output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "engine_process", "--ignored", "--nocapture"])
+            .env("ATTENTION_TEST_CONFIG", self.config_path())
+            .env("ATTENTION_TEST_NOW", at.to_string())
+            .env("ATTENTION_TEST_OPERATION", operation)
+            .env("ATTENTION_TEST_RESULT", &result_path)
+            .env("FAKE_NQ_DIR", self.path("fake"))
+            .output()
+            .unwrap();
+        if operation == "reset-clock" && output.status.success() {
+            output.stdout = fs::read(result_path).unwrap();
+        }
+        output
+    }
+
+    fn evaluate_now(&self) -> Output {
+        self.command(&["evaluate", "--config", self.config_path().to_str().unwrap()])
     }
 
     fn evaluate(&self, at: i64) -> Value {
@@ -207,6 +271,50 @@ impl Harness {
     }
 }
 
+/// Release counterpart to the debug CLI's chosen-time path. Keep each pass
+/// isolated: the fake NQ deliberately kills its parent in crash-recovery tests.
+#[cfg(not(debug_assertions))]
+#[test]
+#[ignore = "subprocess entry point for chosen-time engine passes"]
+fn engine_process() {
+    use constellation_attention::config::Config;
+    use constellation_attention::engine::{self, PassOptions};
+
+    let config_path = std::env::var_os("ATTENTION_TEST_CONFIG").unwrap();
+    let config = Config::load(Path::new(&config_path)).unwrap();
+    let now = std::env::var("ATTENTION_TEST_NOW")
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    let result = match std::env::var("ATTENTION_TEST_OPERATION").unwrap().as_str() {
+        "evaluate" => engine::evaluate(
+            &config,
+            &PassOptions {
+                dry_run: false,
+                now,
+                now_ms: now * 1000,
+            },
+        )
+        .map(|result| result.exit_code),
+        "reset-clock" => engine::reset_clock(&config, now).map(|answer| {
+            fs::write(
+                std::env::var_os("ATTENTION_TEST_RESULT").unwrap(),
+                serde_json::to_vec(&answer).unwrap(),
+            )
+            .unwrap();
+            0
+        }),
+        operation => panic!("unexpected test operation: {operation}"),
+    };
+    std::process::exit(match result {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("constellation-attention: {error}");
+            1
+        }
+    });
+}
+
 /// Status with `state`, generated 5 s before `at` (beyond the 1 s clock
 /// uncertainty) and fresh for five minutes.
 fn set(harness: &Harness, label: &str, state: ProjectedStateV1, at: i64) {
@@ -229,6 +337,177 @@ fn intents(report: &Value) -> Vec<(String, String, String)> {
 }
 
 const UNKNOWN_ROOT: &str = "constellation:labelwatch:host_posture:host-posture-unknown:root";
+
+fn system_seconds() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn chosen_time_cli_dry_run_does_not_create_live_state() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0);
+    let output = harness.evaluate_at(T0, &["--dry-run"]);
+    assert_eq!(output.status.code(), Some(0));
+    let summary: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(summary["evaluated_at"], rfc3339(T0));
+    assert_eq!(summary["dry_run"], true);
+    assert!(harness.path("state/dry-run/report.json").is_file());
+    assert!(!harness.path("state/state.json").exists());
+    assert!(!harness.path("state/report.json").exists());
+    assert!(harness.calls().is_empty());
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn release_cli_refuses_chosen_time_for_persistent_commands() {
+    let harness = Harness::new();
+    for (command, message) in [
+        ("evaluate", "--now is accepted only with --dry-run"),
+        ("reset-clock", "reset-clock uses the system clock"),
+    ] {
+        let output = harness.command(&[
+            command,
+            "--config",
+            harness.config_path().to_str().unwrap(),
+            "--now",
+            &rfc3339(T0),
+        ]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+        assert!(!harness.path("state/state.json").exists());
+        assert!(!harness.path("state/report.json").exists());
+        assert!(harness.calls().is_empty());
+    }
+}
+
+/// Exercise the shipped CLI's persistent path without a chosen time. Age
+/// persisted intervals instead of sleeping; leave ample input freshness.
+#[test]
+fn real_clock_cli_persists_delivers_resets_and_resolves() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.network = false;
+    harness.notice_transport = "local_file";
+    harness.host_posture("root");
+    harness.fake("local_route", "operations");
+    let start = system_seconds();
+    publish(
+        &harness.root("root"),
+        &status_object(ProjectedStateV1::Unknown, start - 5, 3600),
+    );
+    assert_eq!(harness.evaluate_now().status.code(), Some(0));
+    assert!(intents(&harness.report()).is_empty());
+    let mut state = harness.state();
+    assert!((start..=system_seconds()).contains(&state["updated_at"].as_i64().unwrap()));
+    state["conditions"][UNKNOWN_ROOT]["first_seen"] = json!(start - 3600);
+    fs::write(
+        harness.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(harness.evaluate_now().status.code(), Some(0));
+    assert_eq!(
+        intents(&harness.report()),
+        vec![(UNKNOWN_ROOT.into(), "notice".into(), "trigger".into())]
+    );
+    assert_eq!(harness.report()["dry_run"], false);
+    let trigger: Value = serde_json::from_slice(&harness.submitted_intent("n1")).unwrap();
+    assert_eq!(trigger["destination_identity"], "local-inbox:operations");
+    assert!(trigger["summary"].as_str().unwrap().starts_with("TRIGGER "));
+    assert!(
+        trigger["stable_event_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("labelwatch-host-posture-unknown-root-trigger-")
+    );
+    assert!(harness.calls()[0].starts_with("submit local:operations "));
+    let mut state = harness.state();
+    assert_eq!(state["conditions"][UNKNOWN_ROOT]["active"], true);
+    let retained = state["conditions"][UNKNOWN_ROOT]["last_intent"].clone();
+    assert_eq!(retained["notice"]["outcome"], "accepted");
+    assert_eq!(harness.evaluate_now().status.code(), Some(0));
+    assert!(intents(&harness.report()).is_empty());
+    assert_eq!(harness.calls().len(), 1);
+
+    // Simulate a corrected forward clock step, then use release-safe reset-clock.
+    state["updated_at"] = json!(system_seconds() + 86_400);
+    let future_state = serde_json::to_vec(&state).unwrap();
+    fs::write(harness.path("state/state.json"), &future_state).unwrap();
+    let refused = harness.evaluate_now();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("the clock moved backwards"));
+    assert_eq!(
+        fs::read(harness.path("state/state.json")).unwrap(),
+        future_state
+    );
+    let log_before = fs::read(harness.path("state/intents.jsonl")).unwrap();
+    let reset_start = system_seconds();
+    let output = harness.command(&[
+        "reset-clock",
+        "--config",
+        harness.config_path().to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(answer["clamped_timestamps"].as_u64().unwrap() >= 1);
+    let state = harness.state();
+    assert!((reset_start..=system_seconds()).contains(&state["updated_at"].as_i64().unwrap()));
+    assert_eq!(state["conditions"][UNKNOWN_ROOT]["active"], true);
+    assert_eq!(state["conditions"][UNKNOWN_ROOT]["last_intent"], retained);
+    assert_eq!(
+        fs::read(harness.path("state/intents.jsonl")).unwrap(),
+        log_before
+    );
+    assert_eq!(harness.calls().len(), 1);
+
+    publish(
+        &harness.root("root"),
+        &status_object(ProjectedStateV1::Healthy, system_seconds() - 5, 3600),
+    );
+    assert_eq!(harness.evaluate_now().status.code(), Some(0));
+    assert!(intents(&harness.report()).is_empty());
+    let mut state = harness.state();
+    assert!(state["conditions"][UNKNOWN_ROOT]["clear_since"].is_i64());
+    state["conditions"][UNKNOWN_ROOT]["clear_since"] = json!(system_seconds() - 600);
+    fs::write(
+        harness.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(harness.evaluate_now().status.code(), Some(0));
+    assert_eq!(
+        intents(&harness.report()),
+        vec![(UNKNOWN_ROOT.into(), "notice".into(), "resolve".into())]
+    );
+    let resolve: Value = serde_json::from_slice(&harness.submitted_intent("n2")).unwrap();
+    assert_eq!(resolve["destination_identity"], "local-inbox:operations");
+    assert!(resolve["summary"].as_str().unwrap().starts_with("RESOLVE "));
+    assert!(
+        resolve["stable_event_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("labelwatch-host-posture-unknown-root-resolve-")
+    );
+    assert_eq!(harness.calls().len(), 2);
+    assert!(harness.state()["conditions"][UNKNOWN_ROOT].is_null());
+    let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+    let actions: Vec<Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0]["action"], "trigger");
+    assert_eq!(actions[1]["action"], "resolve");
+    assert!(actions.iter().all(|entry| entry["outcome"] == "accepted"));
+}
 
 #[test]
 fn persistence_bound_trigger_continue_recover_resolve() {
@@ -2120,15 +2399,7 @@ fn forward_clock_step_recovers_with_reset_clock() {
     let output = harness.evaluate_at(T0 + 720, &[]);
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("reset-clock"));
-    let config = harness.config_path();
-    let now = rfc3339(T0 + 780);
-    let output = harness.command(&[
-        "reset-clock",
-        "--config",
-        config.to_str().unwrap(),
-        "--now",
-        &now,
-    ]);
+    let output = harness.reset_clock_at(T0 + 780);
     assert_eq!(output.status.code(), Some(0));
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(answer["clamped_timestamps"].as_u64().unwrap() >= 1);
@@ -3191,15 +3462,7 @@ fn watcher_dies_after_reset_clock_is_stale_within_the_bound() {
         harness.state()["nq_watchers"]["nqd"]["unit-cron"],
         t + 86_397
     );
-    let config = harness.config_path();
-    let now = rfc3339(t + 300);
-    let output = harness.command(&[
-        "reset-clock",
-        "--config",
-        config.to_str().unwrap(),
-        "--now",
-        &now,
-    ]);
+    let output = harness.reset_clock_at(t + 300);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(harness.state()["nq_watchers"]["nqd"]["unit-cron"], t + 300);
     // cron's watcher dies at the corrected time.
