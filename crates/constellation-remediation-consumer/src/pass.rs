@@ -17,7 +17,11 @@ use serde_json::{Value, json};
 use crate::config::{Config, Plan};
 use crate::external::{External, Failure};
 use crate::report::{Candidate, Selection, select_with_margin};
-use crate::store::{Episode, OpenError, Reasoning, State, Store, write_atomic};
+use crate::store::{
+    AbstentionWindow, Episode, IdleWindow, LAST_PASS_SCHEMA, LastPass, MAX_JOURNAL_BYTES,
+    MAX_SEALED_JOURNALS, OpenError, Reasoning, State, Store, live_journal_bytes, read_last_pass,
+    sealed_journal_count, stamp, write_atomic, write_last_pass,
+};
 
 mod reasoning;
 
@@ -93,7 +97,15 @@ pub fn run_pass(config: &Config, now_ms: &dyn Fn() -> u64) -> Result<Summary, St
     run_pass_with(config, Decider::Deterministic, now_ms)
 }
 
+/// During an idle streak at most one `idle_summary` record per hour.
+pub const IDLE_SUMMARY_INTERVAL_MS: u64 = 3_600_000;
+
 /// Run one pass with the chosen decider.
+///
+/// An idle pass (no episode open, the condition `clear` in a fresh report
+/// with every NQ input ok, no LA settlement owed, so no external command)
+/// journals nothing of its own; every pass that holds the lock rewrites
+/// `last-pass.json`, and idle streaks reach the journal as `idle_summary`.
 pub fn run_pass_with(
     config: &Config,
     decider: Decider,
@@ -113,8 +125,42 @@ pub fn run_pass_with(
             });
         }
         Err(OpenError::Failed(error)) => return Err(error),
+        Err(OpenError::Refused { error, lock }) => {
+            // Refused with the lock held: record the fault so `--status`
+            // shows it, then release the lock.
+            let dir = &config.consumer.state_dir;
+            let pending = read_last_pass(dir).map_or((None, None), |p| {
+                (p.idle_unsummarized, p.repeat_unsummarized)
+            });
+            record_fault(
+                dir,
+                live_journal_bytes(dir),
+                (MAX_JOURNAL_BYTES, MAX_SEALED_JOURNALS),
+                &pass_id,
+                pending,
+                now_ms(),
+                &error,
+            );
+            drop(lock);
+            return Err(error);
+        }
     };
-    let state = store.load()?;
+    let opened_at = now_ms();
+    let (previous, gap) = predecessor(
+        store.load_last_pass(),
+        store.journal_bytes().ok(),
+        opened_at,
+    );
+    let state = match store.load() {
+        Ok(state) => state,
+        Err(error) => {
+            let pending = previous.as_ref().map_or((None, None), |p| {
+                (p.idle_unsummarized.clone(), p.repeat_unsummarized.clone())
+            });
+            record_store_fault(&store, &pass_id, pending, now_ms(), &error);
+            return Err(error);
+        }
+    };
     let mut pass = Pass {
         config,
         decider,
@@ -122,52 +168,165 @@ pub fn run_pass_with(
         store,
         state,
         now_ms,
+        idle_pending: previous.as_ref().and_then(|p| p.idle_unsummarized.clone()),
+        repeat: previous.as_ref().and_then(Repeat::from_last),
+        repeat_pending: previous
+            .as_ref()
+            .and_then(|p| p.repeat_unsummarized.clone()),
+        previous,
+        gap,
+        last_abstain: None,
+        quiet_at: None,
+        phase: "considered",
     };
-    let active = pass.state.active.clone();
-    pass.store.event(
-        now_ms(),
-        "pass_started",
-        active.as_ref(),
-        json!({"phase": active.as_ref().map(|e| &e.phase)}),
-    )?;
-    // LA's restart law before any new work: settle what an earlier pass left
-    // begun. A failure blocks new reasoning, never a v1 campaign in flight.
-    let swept = if decider == Decider::Model {
-        pass.la_sweep()
-    } else {
-        Ok(())
-    };
-    if let Err(error) = &swept {
-        pass.store.event(
-            now_ms(),
-            "la_recovery_failed",
-            active.as_ref(),
-            json!({"error": error}),
-        )?;
+    match pass.run() {
+        Ok((summary, kind)) => {
+            let record = pass.last_pass(&summary, kind);
+            pass.store.save_last_pass(&record)?;
+            Ok(summary)
+        }
+        Err(error) => {
+            let pending = (pass.idle_pending.take(), pass.repeat_pending.take());
+            record_store_fault(&pass.store, &pass_id, pending, now_ms(), &error);
+            Err(error)
+        }
     }
-    let result = match (&active, swept) {
-        (Some(_), _) => pass.resume()?,
-        (None, Ok(())) => pass.consider()?,
-        (None, Err(error)) => pass.abstain("la_recovery_failed", json!({"error": error}))?,
+}
+
+/// The previous pass's streak state is trusted only when it describes the
+/// immediately preceding pass: nothing was journaled since it was written
+/// (a crash or failed save between a journal append and the save, or a
+/// restored file, leaves it behind the journal) and it is at most this old
+/// and not in the future.
+pub const PREDECESSOR_MAX_AGE_MS: u64 = 60_000;
+
+/// `(previous, gap)`: the previous pass when trusted; on a journal mismatch
+/// nothing (its unsummarized windows were already journaled by the pass
+/// that appended); on a time gap the previous pass with the gap in seconds,
+/// so its windows are flushed as `streak_ended` and then forgotten.
+fn predecessor(
+    previous: Option<LastPass>,
+    journal_bytes: Option<u64>,
+    now: u64,
+) -> (Option<LastPass>, Option<i64>) {
+    let Some(previous) = previous else {
+        return (None, None);
     };
-    let episode = pass
-        .state
-        .active
-        .as_ref()
-        .or(pass.state.closed.last())
-        .filter(|_| result != "abstained")
-        .map(|e| e.episode.clone());
-    pass.store.event(
-        now_ms(),
-        "pass_finished",
-        pass.state.active.as_ref(),
-        json!({"result": result}),
-    )?;
-    Ok(Summary {
-        pass: pass_id,
-        result,
-        episode,
-    })
+    if previous.journal_bytes.is_none() || previous.journal_bytes != journal_bytes {
+        return (None, None);
+    }
+    if previous.at_unix_ms > now || now - previous.at_unix_ms > PREDECESSOR_MAX_AGE_MS {
+        let millis = i128::from(now) - i128::from(previous.at_unix_ms);
+        let gap = i64::try_from(millis / 1000).unwrap_or(i64::MAX);
+        return (Some(previous), Some(gap));
+    }
+    (Some(previous), None)
+}
+
+/// How a pass reached its summary.
+#[derive(Clone, Copy, Debug)]
+enum Kind {
+    /// Journaled as before.
+    Journaled,
+    /// Idle: nothing journaled of its own.
+    Idle(&'static str),
+    /// A repeat of the previous pass's abstention: nothing journaled of its
+    /// own.
+    Repeated(&'static str),
+}
+
+/// A streak of identical abstentions, from `last-pass.json`.
+#[derive(Clone, Debug)]
+struct Repeat {
+    reason: String,
+    detail: Value,
+    count: u64,
+    since: String,
+    since_ms: u64,
+}
+
+impl Repeat {
+    fn from_last(last: &LastPass) -> Option<Self> {
+        Some(Self {
+            reason: last.repeat_reason.clone()?,
+            detail: last.repeat_detail.clone()?,
+            count: last.repeat_count,
+            since: last.repeat_since.clone()?,
+            since_ms: last.repeat_since_unix_ms?,
+        })
+    }
+}
+
+/// What the report and state alone say before anything is journaled or run.
+enum Prejudged {
+    Abstain {
+        reason: &'static str,
+        detail: Value,
+    },
+    Proceed {
+        candidate: Box<Candidate>,
+        episode_id: String,
+        candidate_detail: Value,
+    },
+}
+
+/// `last-pass.json` for a pass that held the lock and then failed on its own
+/// state: the streak ends, idle passes not yet summarized are kept. Best
+/// effort: the pass already fails with `error`.
+fn record_store_fault(
+    store: &Store,
+    pass: &str,
+    pending: (Option<IdleWindow>, Option<AbstentionWindow>),
+    now: u64,
+    error: &str,
+) {
+    record_fault(
+        store.dir(),
+        store.journal_bytes().ok(),
+        (store.journal_max_bytes(), store.max_sealed()),
+        pass,
+        pending,
+        now,
+        error,
+    );
+}
+
+/// `last-pass.json` for a refused or failed pass that held the lock.
+fn record_fault(
+    dir: &Path,
+    journal_bytes: Option<u64>,
+    bounds: (u64, usize),
+    pass: &str,
+    pending: (Option<IdleWindow>, Option<AbstentionWindow>),
+    now: u64,
+    error: &str,
+) {
+    let record = LastPass {
+        schema: LAST_PASS_SCHEMA.to_owned(),
+        pass: pass.to_owned(),
+        at: stamp(now),
+        at_unix_ms: now,
+        result: "fault".to_owned(),
+        abstain_reason: None,
+        error: Some(error.chars().take(1024).collect()),
+        idle: false,
+        consecutive_idle_passes: 0,
+        idle_since: None,
+        idle_since_unix_ms: None,
+        idle_unsummarized: pending.0,
+        repeat_reason: None,
+        repeat_detail: None,
+        repeat_count: 0,
+        repeat_since: None,
+        repeat_since_unix_ms: None,
+        repeat_unsummarized: pending.1,
+        phase: None,
+        journal_bytes,
+        sealed_segments: sealed_journal_count(dir),
+        journal_max_bytes: bounds.0,
+        max_sealed_journals: bounds.1,
+    };
+    let _ = write_last_pass(dir, &record);
 }
 
 struct Pass<'a> {
@@ -177,6 +336,24 @@ struct Pass<'a> {
     store: Store,
     state: State,
     now_ms: &'a dyn Fn() -> u64,
+    /// The previous pass's `last-pass.json`, if readable.
+    previous: Option<LastPass>,
+    /// Idle passes not yet carried by an `idle_summary` record.
+    idle_pending: Option<IdleWindow>,
+    /// The reason of this pass's abstention, if it abstained.
+    last_abstain: Option<String>,
+    /// The repeated-abstention streak the previous pass left, then this
+    /// pass's.
+    repeat: Option<Repeat>,
+    /// Repeated passes not yet carried by an `abstention_summary` record.
+    repeat_pending: Option<AbstentionWindow>,
+    /// When an idle or repeated pass judged itself so: its `at` everywhere.
+    quiet_at: Option<u64>,
+    /// Seconds between the previous pass and this one when that breaks the
+    /// streaks (see [`predecessor`]); cleared once flushed.
+    gap: Option<i64>,
+    /// `last-pass.json` `phase`.
+    phase: &'static str,
 }
 
 /// One resolver answer: its status (or the consumer's own `unbound`,
@@ -308,6 +485,402 @@ impl Pass<'_> {
         (self.now_ms)()
     }
 
+    /// The pass itself: its summary and how it was recorded.
+    fn run(&mut self) -> Result<(Summary, Kind), String> {
+        let pass_id = self.store.pass().to_owned();
+        if self.gap.is_some() {
+            self.flush_after_gap()?;
+        }
+        let abstained = |pass: String| Summary {
+            pass,
+            result: "abstained".into(),
+            episode: None,
+        };
+        // Judged before anything is journaled or run: only with no episode
+        // open and no LA settlement owed is the outcome known this early.
+        let eligible = self.state.active.is_none()
+            && !(self.decider == Decider::Model && self.la_sweep_pending());
+        let prejudged = if eligible {
+            Some(self.prejudge()?)
+        } else {
+            None
+        };
+        let onset = match &prejudged {
+            Some(Prejudged::Abstain { reason, detail }) => {
+                Some((*reason, crate::report::abstention_key(reason, detail)))
+            }
+            _ => None,
+        };
+        if let Some(Prejudged::Abstain { reason, detail }) = &prejudged {
+            let reason = *reason;
+            if crate::report::idle(reason, detail) {
+                self.end_repeat()?;
+                self.idle(reason)?;
+                return Ok((abstained(pass_id), Kind::Idle(reason)));
+            }
+        }
+        if let Some((reason, key)) = &onset
+            && self
+                .repeat
+                .as_ref()
+                .is_some_and(|r| r.reason == *reason && r.detail == *key)
+        {
+            let reason = *reason;
+            self.repeated(reason)?;
+            return Ok((abstained(pass_id), Kind::Repeated(reason)));
+        }
+        if let Some(window) = self.idle_pending.clone() {
+            let (streak, since) = self.previous_streak();
+            self.summarize_idle("streak_ended", &window, streak, since)?;
+            self.idle_pending = None;
+        }
+        self.end_repeat()?;
+        let now_ms = self.now_ms;
+        let decider = self.decider;
+        let active = self.state.active.clone();
+        if active.is_some() {
+            self.phase = "resumed";
+        }
+        self.store.event(
+            now_ms(),
+            "pass_started",
+            active.as_ref(),
+            json!({"phase": active.as_ref().map(|e| &e.phase)}),
+        )?;
+        // LA's restart law before any new work: settle what an earlier pass
+        // left begun. A failure blocks new reasoning, never a v1 campaign in
+        // flight.
+        let swept = if decider == Decider::Model {
+            self.la_sweep()
+        } else {
+            Ok(())
+        };
+        if let Err(error) = &swept {
+            if active.is_none() {
+                self.phase = "la_recovery_failed";
+            }
+            self.store.event(
+                now_ms(),
+                "la_recovery_failed",
+                active.as_ref(),
+                json!({"error": error}),
+            )?;
+        }
+        let result = match (&active, swept) {
+            (Some(_), _) => self.resume()?,
+            (None, Ok(())) => match prejudged {
+                Some(prejudged) => self.consider_with(prejudged)?,
+                None => self.consider()?,
+            },
+            (None, Err(error)) => self.abstain("la_recovery_failed", json!({"error": error}))?,
+        };
+        let episode = self
+            .state
+            .active
+            .as_ref()
+            .or(self.state.closed.last())
+            .filter(|_| result != "abstained")
+            .map(|e| e.episode.clone());
+        let still = self.state.active.clone();
+        self.store.event(
+            now_ms(),
+            "pass_finished",
+            still.as_ref(),
+            json!({"result": result}),
+        )?;
+        // A journaled abstention judged before any command is the onset of
+        // a possible streak of identical ones.
+        if let Some((reason, key)) = onset
+            && result == "abstained"
+        {
+            let now = self.now();
+            self.repeat = Some(Repeat {
+                reason: reason.to_owned(),
+                detail: key,
+                count: 1,
+                since: stamp(now),
+                since_ms: now,
+            });
+        }
+        Ok((
+            Summary {
+                pass: pass_id,
+                result,
+                episode,
+            },
+            Kind::Journaled,
+        ))
+    }
+
+    /// The outcome of [`Self::consider`] up to its first external command,
+    /// from the report and the state alone.
+    fn prejudge(&self) -> Result<Prejudged, String> {
+        let path = &self.config.consumer.report;
+        let report: Value = match fs::read(path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
+        {
+            Ok(report) => report,
+            Err(error) => {
+                return Ok(Prejudged::Abstain {
+                    reason: "report_unreadable",
+                    detail: json!({"report": path, "error": error}),
+                });
+            }
+        };
+        // In model mode `config.model()?` now runs before `pass_started`;
+        // harmless, since `run_pass_with` (and `main`) validated it first.
+        let margin = match self.decider {
+            Decider::Deterministic => self.config.consumer.window_margin_seconds,
+            Decider::Model => self.config.model()?.window_min_seconds,
+        };
+        let candidate = match select_with_margin(self.config, &report, self.now_seconds(), margin) {
+            Selection::Act(candidate) => candidate,
+            Selection::Abstain { reason, detail } => {
+                return Ok(Prejudged::Abstain { reason, detail });
+            }
+        };
+        let episode_id = hash_domain(
+            EPISODE_DOMAIN,
+            &jcs(&json!({
+                "condition_id": candidate.condition_id,
+                "first_seen": candidate.first_seen,
+            })),
+        );
+        let candidate_detail = json!({
+            "episode": episode_id,
+            "condition_id": candidate.condition_id,
+            "first_seen": candidate.first_seen,
+            "remediation_window_until": candidate.window_until,
+            "page_deferred": candidate.page_deferred,
+            "report_evaluated_at": candidate.evaluated_at,
+            "rule_revision": candidate.rule_revision,
+        });
+        if self.state.seen(&episode_id) {
+            return Ok(Prejudged::Abstain {
+                reason: "episode_already_attempted",
+                detail: candidate_detail,
+            });
+        }
+        if let Some(until) = self.state.last_window_until
+            && self.now_seconds() < until
+        {
+            return Ok(Prejudged::Abstain {
+                reason: "attempt_within_previous_window",
+                detail: json!({"candidate": candidate_detail, "previous_window_until": until}),
+            });
+        }
+        Ok(Prejudged::Proceed {
+            candidate: Box::new(candidate),
+            episode_id,
+            candidate_detail,
+        })
+    }
+
+    /// A pass repeating the previous pass's abstention: finish a due seal,
+    /// count it, and summarize the unsummarized repeats once they span an
+    /// hour.
+    fn repeated(&mut self, reason: &str) -> Result<(), String> {
+        let now = self.now();
+        self.quiet_at = Some(now);
+        self.store.seal_if_due(now)?;
+        let Some(repeat) = self.repeat.as_mut() else {
+            return Err("repeated abstention without a streak".into());
+        };
+        repeat.count += 1;
+        let since = repeat.since.clone();
+        let detail = repeat.detail.clone();
+        let mut window = self
+            .repeat_pending
+            .take()
+            .unwrap_or_else(|| AbstentionWindow {
+                reason: reason.to_owned(),
+                detail,
+                first_at: stamp(now),
+                first_at_unix_ms: now,
+                repeat_since: Some(since),
+                ..AbstentionWindow::default()
+            });
+        window.count += 1;
+        window.last_at = stamp(now);
+        window.last_at_unix_ms = now;
+        self.repeat_pending = Some(window.clone());
+        if now.saturating_sub(window.first_at_unix_ms) >= IDLE_SUMMARY_INTERVAL_MS {
+            self.summarize_abstention("hourly", &window)?;
+            self.repeat_pending = None;
+        }
+        Ok(())
+    }
+
+    /// The previous pass is too far away in time to continue its streaks:
+    /// summarize what it left unsummarized, with the gap, and forget them.
+    fn flush_after_gap(&mut self) -> Result<(), String> {
+        if let Some(window) = self.idle_pending.clone() {
+            let (streak, since) = self.previous_streak();
+            self.summarize_idle("streak_ended", &window, streak, since)?;
+        }
+        if let Some(window) = self.repeat_pending.clone() {
+            self.summarize_abstention("streak_ended", &window)?;
+        }
+        self.idle_pending = None;
+        self.repeat_pending = None;
+        self.repeat = None;
+        self.previous = None;
+        self.gap = None;
+        Ok(())
+    }
+
+    /// End the repeated-abstention streak: summarize its unsummarized
+    /// repeats, if any.
+    fn end_repeat(&mut self) -> Result<(), String> {
+        if let Some(window) = self.repeat_pending.clone() {
+            self.summarize_abstention("streak_ended", &window)?;
+            self.repeat_pending = None;
+        }
+        self.repeat = None;
+        Ok(())
+    }
+
+    fn summarize_abstention(
+        &mut self,
+        trigger: &str,
+        window: &AbstentionWindow,
+    ) -> Result<(), String> {
+        let now = self.now();
+        let streak = self
+            .repeat
+            .as_ref()
+            .filter(|r| r.reason == window.reason && r.detail == window.detail)
+            .map(|r| r.count);
+        self.store.event(
+            now,
+            "abstention_summary",
+            None,
+            json!({
+                "trigger": trigger,
+                "reason": window.reason,
+                "detail": window.detail,
+                "count": window.count,
+                "first_at": window.first_at,
+                "first_at_unix_ms": window.first_at_unix_ms,
+                "last_at": window.last_at,
+                "last_at_unix_ms": window.last_at_unix_ms,
+                "repeat_since": window.repeat_since,
+                "repeat_count": streak,
+                "gap_seconds": self.gap,
+            }),
+        )
+    }
+
+    /// An idle pass: finish a seal the open found due, count the pass in the
+    /// unsummarized window, and summarize the window once it spans an hour.
+    fn idle(&mut self, reason: &str) -> Result<(), String> {
+        let now = self.now();
+        self.quiet_at = Some(now);
+        self.store.seal_if_due(now)?;
+        let mut window = self.idle_pending.take().unwrap_or_else(|| IdleWindow {
+            first_at: stamp(now),
+            first_at_unix_ms: now,
+            ..IdleWindow::default()
+        });
+        window.count += 1;
+        window.last_at = stamp(now);
+        window.last_at_unix_ms = now;
+        reason.clone_into(&mut window.last_reason);
+        self.idle_pending = Some(window.clone());
+        if now.saturating_sub(window.first_at_unix_ms) >= IDLE_SUMMARY_INTERVAL_MS {
+            let (streak, since) = self.previous_streak();
+            let since = since.or(Some((stamp(now), now)));
+            self.summarize_idle("hourly", &window, streak + 1, since)?;
+            self.idle_pending = None;
+        }
+        Ok(())
+    }
+
+    /// The idle streak the previous pass ended with: (passes, since).
+    fn previous_streak(&self) -> (u64, Option<(String, u64)>) {
+        self.previous
+            .as_ref()
+            .filter(|p| p.consecutive_idle_passes > 0)
+            .map_or((0, None), |p| {
+                (
+                    p.consecutive_idle_passes,
+                    p.idle_since.clone().zip(p.idle_since_unix_ms),
+                )
+            })
+    }
+
+    fn summarize_idle(
+        &mut self,
+        trigger: &str,
+        window: &IdleWindow,
+        streak: u64,
+        since: Option<(String, u64)>,
+    ) -> Result<(), String> {
+        let now = self.now();
+        self.store.event(
+            now,
+            "idle_summary",
+            None,
+            json!({
+                "trigger": trigger,
+                "count": window.count,
+                "first_at": window.first_at,
+                "first_at_unix_ms": window.first_at_unix_ms,
+                "last_at": window.last_at,
+                "last_at_unix_ms": window.last_at_unix_ms,
+                "last_reason": window.last_reason,
+                "consecutive_idle_passes": streak,
+                "idle_since": since.map(|(at, _)| at),
+                "gap_seconds": self.gap,
+            }),
+        )
+    }
+
+    /// `last-pass.json` for a pass that ran to its summary.
+    fn last_pass(&self, summary: &Summary, kind: Kind) -> LastPass {
+        let now = self.quiet_at.unwrap_or_else(|| self.now());
+        let (streak, since) = if matches!(kind, Kind::Idle(_)) {
+            let (streak, since) = self.previous_streak();
+            (streak + 1, since.or(Some((stamp(now), now))))
+        } else {
+            (0, None)
+        };
+        let quiet_reason = match kind {
+            Kind::Idle(reason) | Kind::Repeated(reason) => Some(reason.to_owned()),
+            Kind::Journaled => None,
+        };
+        let repeat = self.repeat.as_ref();
+        let dir = self.store.dir();
+        LastPass {
+            schema: LAST_PASS_SCHEMA.to_owned(),
+            pass: summary.pass.clone(),
+            at: stamp(now),
+            at_unix_ms: now,
+            result: summary.result.clone(),
+            abstain_reason: quiet_reason
+                .or_else(|| self.last_abstain.clone())
+                .filter(|_| summary.result == "abstained"),
+            error: None,
+            idle: matches!(kind, Kind::Idle(_)),
+            consecutive_idle_passes: streak,
+            idle_since_unix_ms: since.as_ref().map(|(_, ms)| *ms),
+            idle_since: since.map(|(at, _)| at),
+            idle_unsummarized: self.idle_pending.clone(),
+            repeat_reason: repeat.map(|r| r.reason.clone()),
+            repeat_detail: repeat.map(|r| r.detail.clone()),
+            repeat_count: repeat.map_or(0, |r| r.count),
+            repeat_since: repeat.map(|r| r.since.clone()),
+            repeat_since_unix_ms: repeat.map(|r| r.since_ms),
+            repeat_unsummarized: self.repeat_pending.clone(),
+            phase: Some(self.phase.to_owned()),
+            journal_bytes: self.store.journal_bytes().ok(),
+            sealed_segments: sealed_journal_count(dir),
+            journal_max_bytes: self.store.journal_max_bytes(),
+            max_sealed_journals: self.store.max_sealed(),
+        }
+    }
+
     fn now_seconds(&self) -> i64 {
         i64::try_from(self.now() / 1000).unwrap_or(i64::MAX)
     }
@@ -337,6 +910,7 @@ impl Pass<'_> {
     }
 
     fn abstain(&mut self, reason: &str, detail: Value) -> Result<String, String> {
+        self.last_abstain = Some(reason.to_owned());
         self.event("abstained", json!({"reason": reason, "detail": detail}))?;
         Ok("abstained".into())
     }
@@ -358,51 +932,19 @@ impl Pass<'_> {
     // ---- opening ---------------------------------------------------------
 
     fn consider(&mut self) -> Result<String, String> {
-        let path = self.config.consumer.report.clone();
-        let report: Value = match fs::read(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()))
-        {
-            Ok(report) => report,
-            Err(error) => {
-                return self.abstain("report_unreadable", json!({"report": path, "error": error}));
-            }
+        let prejudged = self.prejudge()?;
+        self.consider_with(prejudged)
+    }
+
+    fn consider_with(&mut self, prejudged: Prejudged) -> Result<String, String> {
+        let (candidate, episode_id, candidate_detail) = match prejudged {
+            Prejudged::Abstain { reason, detail } => return self.abstain(reason, detail),
+            Prejudged::Proceed {
+                candidate,
+                episode_id,
+                candidate_detail,
+            } => (*candidate, episode_id, candidate_detail),
         };
-        let margin = match self.decider {
-            Decider::Deterministic => self.config.consumer.window_margin_seconds,
-            Decider::Model => self.config.model()?.window_min_seconds,
-        };
-        let candidate = match select_with_margin(self.config, &report, self.now_seconds(), margin) {
-            Selection::Act(candidate) => candidate,
-            Selection::Abstain { reason, detail } => return self.abstain(reason, detail),
-        };
-        let episode_id = hash_domain(
-            EPISODE_DOMAIN,
-            &jcs(&json!({
-                "condition_id": candidate.condition_id,
-                "first_seen": candidate.first_seen,
-            })),
-        );
-        let candidate_detail = json!({
-            "episode": episode_id,
-            "condition_id": candidate.condition_id,
-            "first_seen": candidate.first_seen,
-            "remediation_window_until": candidate.window_until,
-            "page_deferred": candidate.page_deferred,
-            "report_evaluated_at": candidate.evaluated_at,
-            "rule_revision": candidate.rule_revision,
-        });
-        if self.state.seen(&episode_id) {
-            return self.abstain("episode_already_attempted", candidate_detail);
-        }
-        if let Some(until) = self.state.last_window_until
-            && self.now_seconds() < until
-        {
-            return self.abstain(
-                "attempt_within_previous_window",
-                json!({"candidate": candidate_detail, "previous_window_until": until}),
-            );
-        }
         let chosen = match self.choose_plan() {
             Ok(chosen) => chosen,
             Err((reason, detail)) => return self.abstain(reason, detail),

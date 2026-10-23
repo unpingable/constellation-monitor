@@ -26,6 +26,14 @@ use crate::provider::{self, SendError};
 use crate::report::{Selection, select_with_margin};
 use crate::store::{Call, write_atomic};
 
+/// A reservation this consumer still has to settle at LA: a call begun but
+/// unsettled, or a closed episode's reservation not yet closed.
+fn sweep_needed(closed: bool, reasoning: &crate::store::Reasoning) -> bool {
+    let open = |state: &str| state == "begin_requested" || state == "begun";
+    reasoning.reservation.is_some()
+        && (reasoning.calls.iter().any(|c| open(&c.state)) || (closed && !reasoning.la_closed))
+}
+
 /// Allowance inside the wall ceiling for one settlement after a call.
 const SETTLE_ALLOWANCE_MS: u64 = 2_000;
 
@@ -582,6 +590,20 @@ impl Pass<'_> {
         )
     }
 
+    /// Whether [`Self::la_sweep`] has anything to settle, and so would run
+    /// LA. Reads only the loaded state.
+    pub(super) fn la_sweep_pending(&self) -> bool {
+        self.config.model.is_some()
+            && self
+                .state
+                .active
+                .iter()
+                .map(|e| (false, e))
+                .chain(self.state.closed.iter().map(|e| (true, e)))
+                .filter_map(|(closed, e)| e.reasoning.as_ref().map(|r| (closed, r)))
+                .any(|(closed, r)| sweep_needed(closed, r))
+    }
+
     /// LA's restart law, run before any new work of a model-mode pass: every
     /// call this consumer's durable state shows begun but unsettled (in any
     /// episode, open or closed) is settled through one `recover`, the
@@ -606,10 +628,7 @@ impl Pass<'_> {
                     .map(|(i, e)| (Some(i), e)),
             )
             .filter_map(|(i, e)| e.reasoning.clone().map(|r| (i, r)))
-            .filter(|(i, r)| {
-                r.reservation.is_some()
-                    && (r.calls.iter().any(|c| open(&c.state)) || (i.is_some() && !r.la_closed))
-            })
+            .filter(|(i, r)| sweep_needed(i.is_some(), r))
             .collect();
         if episodes.is_empty() {
             return Ok(());
