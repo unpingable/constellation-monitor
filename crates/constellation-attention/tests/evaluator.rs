@@ -8523,7 +8523,7 @@ fn current_nq_transport_controls_delivery_even_with_old_notice_setting() {
 }
 
 #[test]
-fn removed_nq_route_retires_last_and_pending_resolve_without_retry() {
+fn missing_current_nq_route_keeps_last_and_pending_resolve_as_failures() {
     let mut harness = Harness::new();
     harness.host_posture("root");
     harness.fake("command_error-operations", "");
@@ -8542,6 +8542,9 @@ fn removed_nq_route_retires_last_and_pending_resolve_without_retry() {
     let trigger = condition["last_intent"]["notice"].clone();
     condition["pending_trigger"] = json!({"notice": trigger});
     condition["last_intent"]["notice"]["action"] = json!("resolve");
+    condition["active"] = json!(false);
+    condition["first_seen"] = Value::Null;
+    condition["clear_since"] = Value::Null;
     fs::write(
         harness.path("state/state.json"),
         serde_json::to_vec(&state).unwrap(),
@@ -8554,16 +8557,25 @@ fn removed_nq_route_retires_last_and_pending_resolve_without_retry() {
     let attempts = fs::read_to_string(harness.path("fake/attempts.log")).unwrap();
     set(&harness, "root", ProjectedStateV1::Healthy, T0 + 780);
     let report = harness.evaluate(T0 + 780);
-    assert_eq!(report["exit_code"], 0, "{report}");
+    assert_eq!(report["exit_code"], 4, "{report}");
     let rows = report["intents"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|row| row["outcome"] == "route_retired"));
+    assert!(
+        rows.iter()
+            .all(|row| row["outcome"] == "failed" && row["error"] == "route_not_configured_in_nq")
+    );
     assert_eq!(
         fs::read_to_string(harness.path("fake/attempts.log")).unwrap(),
         attempts
     );
+    assert!(harness.state()["conditions"][UNKNOWN_ROOT]["pending_trigger"]["notice"].is_object());
     set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
-    assert_eq!(harness.evaluate(T0 + 840)["exit_code"], 0);
+    assert_eq!(harness.evaluate(T0 + 840)["exit_code"], 4);
+    // Restoring NQ's current route retries the original obligations.
+    harness.nq_routes_override = None;
+    fs::remove_file(harness.path("fake/command_error-operations")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 900);
+    assert_eq!(harness.evaluate(T0 + 900)["exit_code"], 0);
 }
 
 #[test]
@@ -8595,20 +8607,62 @@ fn digest_acceptance_cannot_move_to_a_new_notice_identity() {
 }
 
 #[test]
-fn later_fatal_pass_rewrites_the_report_with_the_process_exit() {
+fn repeated_fatal_passes_preserve_the_last_completed_report() {
     let mut harness = Harness::new();
     harness.raw("[digest]\nat_utc = \"13:00\"\n");
     assert_eq!(harness.evaluate(T0)["exit_code"], 0);
-    // Fail digest persistence after evaluation and state persistence. The
-    // earlier clean report must not survive as this pass's classification.
+    let prior = fs::read(harness.path("state/report.json")).unwrap();
     fs::create_dir(harness.path("state/digest-intent.json")).unwrap();
-    let output = harness.evaluate_at(T0 + 3600, &[]);
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let report = harness.report();
-    assert_eq!(report["exit_code"], output.status.code().unwrap());
-    assert_eq!(report["exit_class"], "evaluator_error");
-    assert_eq!(report["evaluated_at"], rfc3339(T0 + 3600));
-    assert!(report["first_error"].is_string());
+    for offset in [3600, 3660] {
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(fs::read(harness.path("state/report.json")).unwrap(), prior);
+    }
+    // Consume the actual retained report through both status readers. A newer
+    // state.json or filesystem mtime cannot make evaluated_at current.
+    let script = r#"
+import importlib.util, pathlib, sys
+root, report, now = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+def module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+m = module('monitored', root / 'monitored/constellation-monitored.py')
+f = root / 'monitored/fixtures'
+argv = []
+for flag, filename in [('registry','registry.json'), ('estate','estate.json'), ('services-dir','services.d'), ('attention-config','attention.toml'), ('policy','policy.json'), ('metric-alerts','metrics.json'), ('receipts-index','receipts/index.json')]:
+    argv += ['--' + flag, str(f / filename)]
+args = m.parser().parse_args(argv + ['--attention-report', report, 'list'])
+doc = m.build(args, now)
+row = next(row for row in doc['components'] if row['service'] == 'constellation-attention.timer')
+assert 'stale' in row['state'], row
+assert 'output current' not in row['state'], row
+d = module('diagnostic', root / 'diagnostic/constellation-diagnostic.py')
+from types import SimpleNamespace
+reader = d.Investigation(SimpleNamespace(max_age=300), now)
+assert reader.document('attention', report, 'constellation.attention_report.v1', 'evaluated_at') is None
+assert any('stale' in str(row) for row in reader.bins['unknown']), reader.bins
+"#;
+    let output = Command::new("python3")
+        .args(["-B", "-c", script])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .arg(harness.path("state/report.json"))
+        .arg((T0 + 3660).to_string())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[test]
+fn a_fatal_pass_before_any_completed_report_writes_none() {
+    let harness = Harness::new();
+    fs::write(harness.path("state/state.json"), b"broken").unwrap();
+    for offset in [0, 60] {
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(!harness.path("state/report.json").exists());
+    }
 }
 
 #[test]
@@ -8641,9 +8695,27 @@ fn active_condition_acquires_and_retires_page_roles_without_repeating_notices() 
     set(&harness, "root", ProjectedStateV1::Unknown, T0 + 840);
     let report = harness.evaluate(T0 + 840);
     assert_eq!(report["exit_code"], 0);
-    assert_eq!(report["intents"].as_array().unwrap().len(), 1);
-    assert_eq!(report["intents"][0]["outcome"], "route_retired");
-    assert_eq!(harness.calls().len(), 3);
+    assert!(
+        report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["outcome"] == "route_retired")
+    );
+    assert!(
+        report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "resolve"
+                && row["route"] == "new-pager"
+                && row["outcome"] == "accepted")
+    );
+    assert_eq!(
+        report["abandoned_open_incident"][0]["route"],
+        "pagerduty-ops"
+    );
+    assert_eq!(harness.calls().len(), 5);
 }
 
 #[test]
@@ -8682,8 +8754,10 @@ fn readding_an_accepted_page_identity_does_not_reach_the_provider_again() {
         harness.evaluate(T0 + offset);
     }
     let original = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"].clone();
-    // Exercise both a transport change and removing the role entirely.
-    for (offset, local) in [(720, true), (840, false)] {
+    // A temporary transport change still preserves provider acceptance.
+    {
+        let offset = 720;
+        let local = true;
         harness.page_transport = if local { "local_file" } else { "pagerduty" };
         harness.page_route = local;
         set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
@@ -8742,4 +8816,378 @@ fn readding_an_accepted_page_identity_does_not_reach_the_provider_again() {
         2,
         "a new incident must page again"
     );
+}
+
+#[test]
+fn reviewers_missing_operations_probe_fails_notice_and_digest() {
+    for network in [true, false] {
+        let mut harness = Harness::new();
+        harness.page_route = false;
+        harness.network = network;
+        harness.host_posture("root");
+        harness.raw("[digest]\nat_utc = \"00:00\"\n");
+        harness.nq_routes_override = Some(String::new());
+        set(&harness, "root", ProjectedStateV1::Unknown, T0);
+        let report = harness.evaluate(T0);
+        assert_eq!(report["exit_code"], 4);
+        assert_eq!(report["digest"]["outcome"], "failed");
+        assert_eq!(report["digest"]["error"], "route_not_configured_in_nq");
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+        let report = harness.evaluate(T0 + 660);
+        assert_eq!(report["exit_code"], 4);
+        assert_eq!(report["delivery"]["operations"]["outcome"], "failed");
+        assert_eq!(
+            report["delivery"]["operations"]["error"],
+            "route_not_configured_in_nq"
+        );
+        assert!(report["delivery"]["operations"]["last_attempt_at"].is_null());
+        assert!(
+            report["intents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["outcome"] == "failed"
+                    && row["error"] == "route_not_configured_in_nq")
+        );
+        assert!(!report["intents"].as_array().unwrap().is_empty());
+        let output = harness.command(&[
+            "check-config",
+            "--config",
+            harness.config_path().to_str().unwrap(),
+        ]);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("route_not_configured_in_nq: operations")
+        );
+    }
+}
+
+#[test]
+fn missing_current_page_route_is_failed_and_rejected_by_check_config() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.nq_routes_override =
+        Some("[[notification_routes]]\nreference = \"operations\"\ntransport = \"slack\"\n".into());
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let report = harness.report();
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(report["delivery"]["operations"]["outcome"], "accepted");
+    assert_eq!(report["delivery"]["pagerduty-ops"]["outcome"], "failed");
+    assert_eq!(report["intents"][1]["error"], "route_not_configured_in_nq");
+    let output = harness.command(&[
+        "check-config",
+        "--config",
+        harness.config_path().to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn an_accepted_digest_cannot_hide_a_missing_current_nq_route() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.raw("[digest]\nat_utc = \"00:00\"\n");
+    assert_eq!(harness.evaluate(T0)["exit_code"], 0);
+    harness.nq_routes_override = Some(String::new());
+    let report = harness.evaluate(T0 + 60);
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(report["delivery"]["operations"]["outcome"], "failed");
+    assert!(report["intents"].as_array().unwrap().is_empty());
+    assert!(
+        report["first_error"]
+            .as_str()
+            .unwrap()
+            .contains("route_not_configured_in_nq")
+    );
+}
+
+#[test]
+fn idle_notice_only_passes_and_offline_check_config_skip_unreadable_nq() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    let config_path = harness.config_path();
+    fs::remove_file(harness.path("nq.toml")).unwrap();
+    let config = constellation_attention::config::Config::load(&config_path).unwrap();
+    for offset in [0, 60] {
+        let result = constellation_attention::engine::evaluate(
+            &config,
+            &constellation_attention::engine::PassOptions {
+                dry_run: false,
+                now: T0 + offset,
+                now_ms: (T0 + offset) * 1000,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.exit_code, 0);
+    }
+    let output = harness.command(&["check-config", "--config", config_path.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(harness.calls().is_empty());
+}
+
+#[test]
+fn removing_page_role_resolves_the_accepted_provider_incident() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let page = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"].clone();
+    let original: Value = serde_json::from_slice(
+        &harness.submitted_intent(page["notification_id"].as_str().unwrap()),
+    )
+    .unwrap();
+    harness.page_route = false;
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(report["exit_code"], 0);
+    let rows = report["intents"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["action"], "resolve");
+    assert_eq!(rows[0]["outcome"], "accepted");
+    let resolve: Value = serde_json::from_slice(
+        &harness.submitted_intent(rows[0]["notification_id"].as_str().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(resolve["condition"], original["condition"]);
+    assert_eq!(
+        resolve["destination_identity"],
+        original["destination_identity"]
+    );
+    assert_eq!(resolve["action"], "resolve");
+    assert_eq!(rows[1]["outcome"], "route_retired");
+    assert!(report["abandoned_open_incident"].is_null());
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    assert!(
+        harness.evaluate(T0 + 780)["intents"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    harness.page_route = true;
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 840);
+    let report = harness.evaluate(T0 + 840);
+    assert_eq!(report["intents"][0]["action"], "trigger");
+    assert_eq!(harness.calls().len(), 4, "notice, page, resolve, new page");
+}
+
+#[test]
+fn removing_an_unavailable_page_identity_reports_and_notices_manual_resolution() {
+    for replacement in [
+        "",
+        "[[notification_routes]]\nreference = \"pagerduty-ops\"\ntransport = \"local_file\"\n",
+    ] {
+        let mut harness = Harness::new();
+        harness.host_posture("root");
+        for offset in [0, 660] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate(T0 + offset);
+        }
+        harness.page_route = false;
+        harness.nq_routes_override = Some(format!(
+            "{replacement}[[notification_routes]]\nreference = \"operations\"\ntransport = \"slack\"\n"
+        ));
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+        let report = harness.evaluate(T0 + 720);
+        assert_eq!(report["exit_code"], 0);
+        assert_eq!(
+            report["abandoned_open_incident"],
+            json!([{"route": "pagerduty-ops", "dedup_key": UNKNOWN_ROOT}])
+        );
+        let notice = &report["intents"][0];
+        assert_eq!(notice["route"], "operations");
+        assert_eq!(notice["outcome"], "accepted");
+        let body: Value = serde_json::from_slice(
+            &harness.submitted_intent(notice["notification_id"].as_str().unwrap()),
+        )
+        .unwrap();
+        let summary = body["summary"].as_str().unwrap();
+        assert!(summary.contains("provider incident must be resolved by hand"));
+        assert!(summary.contains("pagerduty-ops"));
+        assert!(summary.contains(UNKNOWN_ROOT));
+        assert_eq!(harness.calls().len(), 3);
+    }
+}
+
+#[test]
+fn removed_page_resolve_failure_keeps_the_obligation_until_accepted() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.page_route = false;
+    harness.fake("command_error-pagerduty-ops", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(report["exit_code"], 4);
+    assert!(
+        report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["outcome"] != "route_retired")
+    );
+    assert!(harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"].is_object());
+    fs::remove_file(harness.path("fake/command_error-pagerduty-ops")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(report["intents"][0]["action"], "resolve");
+    assert_eq!(report["intents"][0]["outcome"], "accepted");
+    assert_eq!(report["intents"][1]["outcome"], "route_retired");
+}
+
+#[test]
+fn damaged_accepted_pages_are_repaired_without_blocking_evaluation() {
+    for malformed in [true, false] {
+        let mut harness = Harness::new();
+        harness.host_posture("root");
+        for offset in [0, 660] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate(T0 + offset);
+        }
+        let path = harness.path("state/accepted-pages.json");
+        if malformed {
+            fs::write(&path, b"broken").unwrap();
+        } else {
+            let mut saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            saved[UNKNOWN_ROOT]["pagerduty-ops"]["last"]["route"] = json!("wrong-route");
+            fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        }
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+        let output = harness.evaluate_at(T0 + 720, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("accepted_pages: repaired"));
+        assert_eq!(harness.report()["accepted_pages"], "repaired");
+        assert_eq!(
+            harness.calls().len(),
+            2,
+            "live state still holds acceptance"
+        );
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+        assert!(harness.evaluate(T0 + 780)["accepted_pages"].is_null());
+    }
+}
+
+#[test]
+fn removed_page_resolve_recovers_a_crash_after_provider_acceptance() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.page_route = false;
+    harness.fake("crash_after", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let output = harness.evaluate_at(T0 + 720, &[]);
+    assert!(!output.status.success());
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(report["intents"][0]["action"], "resolve");
+    assert_eq!(report["intents"][0]["outcome"], "accepted");
+    assert_eq!(report["intents"][1]["outcome"], "route_retired");
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 4);
+    assert!(calls.last().unwrap().ends_with("existing"));
+    assert_eq!(
+        calls[2].split_whitespace().nth(2),
+        calls[3].split_whitespace().nth(2)
+    );
+}
+
+#[test]
+fn removed_page_retry_pause_preserves_the_actual_attempt_time() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.page_route = false;
+    harness.fake("state-pagerduty-ops", "failed");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    assert_eq!(harness.evaluate(T0 + 720)["exit_code"], 4);
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(
+        report["delivery"]["pagerduty-ops"]["last_attempt_at"],
+        rfc3339(T0 + 720)
+    );
+    assert!(report["intents"].as_array().unwrap().is_empty());
+    harness.fake("state-pagerduty-ops", "accepted");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1020);
+    let report = harness.evaluate(T0 + 1020);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(report["intents"][0]["operation"], "resubmit");
+    assert_eq!(report["intents"][1]["outcome"], "route_retired");
+}
+
+#[test]
+fn removed_page_becomes_manual_if_nq_identity_disappears_during_cleanup() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.page_route = false;
+    harness.fake("command_error-pagerduty-ops", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    assert_eq!(harness.evaluate(T0 + 720)["exit_code"], 4);
+    harness.nq_routes_override =
+        Some("[[notification_routes]]\nreference = \"operations\"\ntransport = \"slack\"\n".into());
+    harness.fake("command_error-operations", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(
+        report["abandoned_open_incident"][0]["dedup_key"],
+        UNKNOWN_ROOT
+    );
+    fs::remove_file(harness.path("fake/command_error-operations")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 840);
+    let report = harness.evaluate(T0 + 840);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(report["intents"][0]["route"], "operations");
+    assert_eq!(report["intents"][0]["outcome"], "accepted");
+    assert_eq!(report["intents"][1]["outcome"], "route_retired");
+}
+
+#[test]
+fn readding_page_role_finishes_pending_cleanup_before_retriggering() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.page_route = false;
+    harness.fake("command_error-pagerduty-ops", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    assert_eq!(harness.evaluate(T0 + 720)["exit_code"], 4);
+    fs::remove_file(harness.path("fake/command_error-pagerduty-ops")).unwrap();
+    harness.page_route = true;
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(report["intents"][0]["action"], "resolve");
+    assert_eq!(report["intents"][0]["outcome"], "accepted");
+    assert_eq!(report["intents"][1]["outcome"], "route_retired");
+    assert_eq!(report["intents"][2]["action"], "trigger");
+    assert_eq!(report["intents"][2]["outcome"], "accepted");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 840);
+    let report = harness.evaluate(T0 + 840);
+    assert_eq!(report["exit_code"], 0);
+    assert!(report["intents"].as_array().unwrap().is_empty());
+    assert_eq!(harness.calls().len(), 4);
 }

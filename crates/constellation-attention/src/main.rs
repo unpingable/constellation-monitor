@@ -135,6 +135,7 @@ fn run() -> Result<u8, (u8, String)> {
         }
         "check-config" => {
             let config = load(&arguments).map_err(|error| (2, error))?;
+            constellation_attention::nq::check_routes(&config).map_err(|error| (2, error))?;
             let rules = config.effective_rules();
             print(&json!({
                 "valid": true,

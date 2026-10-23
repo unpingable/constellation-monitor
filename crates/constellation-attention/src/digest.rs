@@ -225,6 +225,7 @@ pub fn send_if_due(
     inputs: &[InputReport],
     policy_digest: &str,
     now: i64,
+    routes: Option<&std::collections::BTreeMap<String, nq::Route>>,
 ) -> Result<Option<Value>, String> {
     let Some(settings) = &config.digest else {
         return Ok(None);
@@ -240,13 +241,14 @@ pub fn send_if_due(
         || format!("constellation-monitor:docs/ATTENTION.md#{ANCHOR}"),
         |base| format!("{base}#{ANCHOR}"),
     );
-    let routes = nq::routes(config)?;
-    let Some(current) = routes.get(&config.routes.notice_route) else {
-        return Ok(None);
-    };
-    let local = current.local();
-    let label = current.destination_label();
-    let route = &current.reference;
+    let current = routes.and_then(|routes| routes.get(&config.routes.notice_route));
+    let missing = routes.is_some() && current.is_none();
+    let local = current.map_or_else(|| config.routes.local(INTENT_V1), nq::Route::local);
+    let label = current.map_or_else(
+        || config.routes.notice_transport.destination_label(),
+        nq::Route::destination_label,
+    );
+    let route = &config.routes.notice_route;
     let body = json!({
         "schema": INTENT_V1,
         "attention_kind": "operator_assertion",
@@ -262,7 +264,9 @@ pub fn send_if_due(
     });
     let intent_path = state_dir.join(INTENT_FILE);
     write_atomic(&intent_path, &intent::canonical(&body)?)?;
-    let outcome = if local {
+    let outcome = if missing {
+        nq::missing_route()
+    } else if local {
         nq::deliver_local(config, &intent_path, route)
     } else {
         nq::submit(config, &intent_path, route)
@@ -302,7 +306,8 @@ pub fn retire_changed_route(
         return Ok(None);
     };
     let body = read_body(config).unwrap_or(Value::Null);
-    if route.is_some_and(|route| route.matches(&body))
+    if body["route_reference"] == config.routes.notice_route
+        && route.is_none_or(|route| route.matches(&body))
         && body["stable_event_id"] == record.stable_event_id
     {
         return Ok(None);
@@ -326,19 +331,27 @@ fn read_body(config: &Config) -> Option<Value> {
 
 /// Keep today's digest obligation visible between bounded retry attempts.
 /// An omitted digest configuration creates no obligation.
-pub fn current_outcome(config: &Config, now: i64) -> Option<Record> {
+pub fn current_outcome(
+    config: &Config,
+    now: i64,
+    routes: Option<&std::collections::BTreeMap<String, nq::Route>>,
+) -> Option<Record> {
     config.digest.as_ref()?;
     let mut record = read_record(&config.state_dir().join(RECORD_FILE))
         .filter(|record| record.day == day(now))?;
-    let route = nq::routes(config)
-        .ok()?
-        .remove(&config.routes.notice_route)?;
+    let route = routes.and_then(|routes| routes.get(&config.routes.notice_route));
     let body = read_body(config)?;
     if record.outcome == "route_retired"
-        || !route.matches(&body)
+        || body["route_reference"] != config.routes.notice_route
+        || route.is_some_and(|route| !route.matches(&body))
         || body["stable_event_id"] != record.stable_event_id
     {
         return None;
+    }
+    if routes.is_some() && route.is_none() {
+        record.outcome = "failed".into();
+        record.error = Some(nq::ROUTE_NOT_CONFIGURED.into());
+        return Some(record);
     }
     // A deliberate refusal settles the day even if networking is later enabled.
     // Preserve the attempt time, but do not revive its delivery obligation.

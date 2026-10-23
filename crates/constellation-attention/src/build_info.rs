@@ -38,6 +38,9 @@ pub const RECONFIGURATION_GRACE: &str = "reconfiguration_grace";
 /// Distinguish required delivery failure from input failure in completed reports.
 pub const DELIVERY_EXIT_CODE: &str = "delivery_exit_code";
 
+/// Reconcile retained routes, preserve delivery obligations, and close removed pages.
+pub const ROUTE_CHANGE_RECONCILE: &str = "route_change_reconcile";
+
 /// Supported behaviours. Published identifiers are never renamed or removed
 /// without a build-info schema bump.
 pub const CAPABILITIES: &[&str] = &[
@@ -50,6 +53,7 @@ pub const CAPABILITIES: &[&str] = &[
     VALUE_CODES_V1,
     RECONFIGURATION_GRACE,
     DELIVERY_EXIT_CODE,
+    ROUTE_CHANGE_RECONCILE,
 ];
 
 #[derive(Debug, Serialize)]

@@ -43,6 +43,7 @@ bump. New identifiers may be added within v1.
 | `local_page_route_v1_copy` | A `local_file` page route receives a v1 page-tier copy through `deliver-local`. | `f7b74cc` |
 | `value_code_warming_informational` | Bounded value-code warming stays informational, never triggers or resolves conditions, and preserves existing faults across upgrade grace. | `f9fe6f2` |
 | `reconfiguration_grace` | Installer markers re-arm bounded metric acquisition/evaluation grace; initial empty Nightshift cycles warm during host startup. | This build |
+| `route_change_reconcile` | Reconcile route identities, fail missing current routes, close removed provider pages or report manual resolution, and preserve incomplete-pass liveness. | This build |
 | `delivery_exit_code` | Required delivery or intent-log failures exit 4; reports distinguish route outcomes from log failure and include route attempt times. | This build |
 | `report_exit_fields` | Completed pass reports carry `exit_code`, `exit_class` and `first_error`. | `e314c94` |
 | `loopback_http_runbooks` | HTTP runbook bases accept literal loopback addresses with an explicit port and path. | `3ecf0bb` |
@@ -453,29 +454,58 @@ The identity is the route reference plus its transport-derived
 `pagerduty:<route>`, or `local-inbox:<route>`). Transport locators and secrets
 remain NQ's concern; attention does not read or compare their values.
 
-An intent whose route was removed, whose role now selects another route, or
-whose transport/destination identity changed is retired before retries and
-resolve planning. Its outcome is `route_retired`, with operation `retire`, in
+An intent whose role now selects another route (or no page route), or whose
+known transport/destination identity changed, is retired before ordinary retries
+and resolve planning. Removing a route from NQ while attention still selects it
+is a delivery failure, not retirement. A retired intent records `route_retired`,
+with operation `retire`, in
 `report.json`'s `intents` and the durable `intents.jsonl` feed. Retirement is
 terminal: it is never retried, is absent from `unresolved_deliveries`, and does
 not contribute to `delivery` failures or exit 4. An intent-log write failure
 still has its separate exit-4 meaning.
 
 If the condition remains active, the same pass issues one fresh trigger for
-each missing current route role that exists in NQ's configuration. A newly
-configured page still respects the remediation window. The new event keeps
+each missing current route role. If that role's route is absent from readable
+NQ configuration, every obligation it would carry is reported as `failed` with
+`error: "route_not_configured_in_nq"`, including triggers, pending triggers,
+resolves and the daily digest. The route remains failed between attempts, even
+if its prior identity had an accepted intent; no acceptance hides the missing
+configuration. With current inputs the pass exits 4 (input-error precedence
+still applies). The intent stays retained until the role selects a different
+route or delivery can resume. `check-config` also refuses missing current
+routes when NQ configuration is readable; offline inspection can proceed when
+it is unreadable. A newly configured page still respects the remediation window. The new event keeps
 the original trigger's `transition_id` and condition key (NQ's PagerDuty dedup
 key); changing a notice handler leaves an unchanged, accepted page alone.
 Accepted provider pages and their exact intents are remembered in the separate
-`accepted-pages.json` sidecar for the lifetime of that active incident. Removing
-and re-adding the same PagerDuty identity, including a temporary switch to a
-local inbox, restores its acceptance and original attempt time without another
-provider call. Recovery discards that history so a new incident can page again;
-the released `state.json` schema is unchanged. Suspended conditions acquire no
-new triggers. Subsequent passes use the ordinary retry/acceptance rules. An inactive
-condition does not acquire a replacement trigger. A removed NQ route has no
-replacement until a current route is configured. Old pending triggers and
-resolves cannot strand subsequent passes on the removed route.
+`accepted-pages.json` sidecar for the lifetime of that active incident. A
+temporary switch to a local inbox and back to the same PagerDuty identity
+restores acceptance and its original attempt time without another provider
+trigger. Recovery discards that history so a new incident can page again; the
+released `state.json` schema is unchanged. A malformed sidecar or mismatched
+entry is discarded with a log line and `accepted_pages: "repaired"` in the
+report; valid entries and evaluation continue. Current lifecycle acceptance
+can reconstruct a damaged entry without another provider call. Suspended
+conditions acquire no new triggers. Subsequent passes use the ordinary
+retry/acceptance rules. An inactive condition acquires no replacement trigger.
+
+Removing `page_route` explicitly closes remembered accepted provider pages
+before retirement. If NQ still holds the same route and destination identity,
+attention submits a v2 resolve with the original condition (dedup key). Cleanup
+is saved before submission and failed resolves remain retryable in the sidecar;
+they contribute to delivery failure even though the page role is removed. Once
+accepted, the old page is retired; adding the page role again can trigger a new
+provider incident. Re-adding the role during a pending cleanup finishes that
+cleanup before issuing a fresh trigger. If NQ no longer holds that identity, the report records
+`abandoned_open_incident: [{"route": "…", "dedup_key": "…"}]` and sends a notice
+on the current notice route stating that the provider incident must be resolved
+by hand. A failed manual-resolution notice also remains retryable. Changing
+transport locators alone cannot prove a destination identity change: NQ retains
+that boundary.
+
+NQ route configuration is read when retained intents or a configured page role
+need reconciliation, or when a new notice/digest needs its current transport.
+An idle notice-only pass does not require a readable NQ configuration.
 
 NQ's current route transport selects the entry point and destination label,
 including while an attention transport setting still names the previous
@@ -584,15 +614,18 @@ outcomes, and `intent_log_error` records the log failure.
 
 For every report published by a pass, `exit_code` and the non-null
 `exit_class` describe the final evaluator process result: 0/`clean`,
-3/`input_error`, or 4 with the class above. Fallible work, including intent-log
-append, finishes before the completed report is written. If a pass holding
-the state lock later aborts (for example, digest persistence fails after
-state was saved), it replaces any earlier report with a fatal report carrying
-1/`evaluator_error`, the current `evaluated_at`, and `first_error`. A report
-write failure is itself fatal and is reported on stderr; an unwritable report
-path cannot provide this durable invariant. Configuration and lock refusals
-occur before a pass and do not overwrite another pass's report. This invariant
-covers the report; systemd unit observations are collected separately.
+3/`input_error`, or 4 with the class above. Fallible work, including digest
+persistence and intent-log append, finishes before the completed report is
+written. A pass that fails before publishing its completed report writes no
+report: an existing report and its `evaluated_at` remain unchanged. Only if
+this same pass already published a completed report and a later step changes
+the exit does attention correct that report's `exit_code`, `exit_class`
+(1/`evaluator_error`) and `first_error`; its evaluation payload is preserved.
+It never synthesizes a fresh fatal report. A report write failure is fatal and
+is reported on stderr; an unwritable report path cannot provide a durable
+correction. Configuration and lock refusals also leave reports untouched.
+Consumers must use `evaluated_at` to detect repeated incomplete passes;
+systemd unit observations are collected separately.
 
 The packaged oneshot fails on both 3 and 4; neither is in `SuccessExitStatus`.
 It has no `Restart=` or `OnFailure=` notification hook. Its timer may run the
@@ -705,6 +738,13 @@ Completed passes retain schema `constellation.attention_report.v1` and record:
   `failed` > `refused` > `accepted` > `skipped`. Partial means one route failed
   or refused and a different required route is accepted; skipped routes do
   not count as successes. Per-intent raw NQ outcomes remain in `intents`.
+- `abandoned_open_incident`, when needed: route and provider dedup key for
+  accepted pages whose removed role can no longer send a resolve; the current
+  notice route receives the manual-resolution request.
+- `accepted_pages: "repaired"`, when damaged sidecar entries were discarded.
+- `intents` includes terminal `route_retired` rows with `operation: "retire"`.
+  Missing current NQ routes instead carry `outcome: "failed"` and
+  `error: "route_not_configured_in_nq"`; `delivery[route].error` names it too.
 - `delivery_class`: `clean`, `delivery_partial` or `delivery_failed`, including
   when `input_error` or `intent_log_unwritable` takes precedence in `exit_class`.
   Intent-log failure alone leaves this class `clean`.

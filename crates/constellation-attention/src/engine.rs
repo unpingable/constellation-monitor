@@ -91,28 +91,41 @@ struct DeliveryRoutes<'a> {
     config: &'a Config,
     current: BTreeMap<String, nq::Route>,
     page_local: bool,
+    known: bool,
 }
 
 impl DeliveryRoutes<'_> {
-    fn route(&self, role: &str) -> Option<&nq::Route> {
-        let reference = if role == "page" {
-            self.config.routes.page_route.as_deref()?
+    fn reference(&self, role: &str) -> Option<&str> {
+        if role == "page" {
+            self.config.routes.page_route.as_deref()
         } else {
-            &self.config.routes.notice_route
-        };
-        self.current.get(reference)
+            Some(&self.config.routes.notice_route)
+        }
+    }
+
+    fn route(&self, role: &str) -> Option<&nq::Route> {
+        self.current.get(self.reference(role)?)
+    }
+
+    fn missing(&self, route: &str) -> bool {
+        self.known && !self.current.contains_key(route)
     }
 
     fn local(&self, schema: &str, route: &str) -> bool {
-        schema == INTENT_V1 && self.current.get(route).is_some_and(nq::Route::local)
+        schema == INTENT_V1
+            && self.current.get(route).map_or_else(
+                || !self.known && self.config.routes.local(schema),
+                nq::Route::local,
+            )
     }
 
     fn matches(&self, role: &str, last: &LastIntent, dir: &Path) -> bool {
-        let Some(route) = self
-            .route(role)
-            .filter(|route| route.reference == last.route)
-        else {
+        if self.reference(role) != Some(last.route.as_str()) {
             return false;
+        }
+        // A missing CURRENT route is still an obligation, never retirement.
+        let Some(route) = self.route(role) else {
+            return true;
         };
         let schema = if role == "page" && !route.local() {
             INTENT_V2
@@ -144,7 +157,7 @@ impl DeliveryRoutes<'_> {
         attempted_at: Option<i64>,
         dry_run: bool,
     ) {
-        let required = self.delivers(INTENT_V1, route) && !dry_run;
+        let required = (self.missing(route) || self.delivers(INTENT_V1, route)) && !dry_run;
         let outcome = if !required {
             "skipped"
         } else {
@@ -222,6 +235,19 @@ struct IntentReport {
 }
 
 impl IntentReport {
+    fn cleanup(id: &str, cleanup: &PageCleanup, dir: &Path, error: Option<String>) -> Self {
+        let mut report = Self::retired(
+            id,
+            if cleanup.manual { "notice" } else { "page" },
+            &cleanup.last,
+            dir,
+        );
+        report.operation = Operation::Submit;
+        report.outcome.clone_from(&cleanup.last.outcome);
+        report.error = error;
+        report
+    }
+
     fn retired(id: &str, role: &str, last: &LastIntent, dir: &Path) -> Self {
         Self {
             condition_id: id.into(),
@@ -344,7 +370,7 @@ fn follow_up(
         // Written, maybe submitted, never answered, or refused by the nq
         // command before custody: NQ retains nothing, so the same bytes go
         // again on the next pass. NQ answers an exact repeat idempotently.
-        ("unknown" | "command_error", None) => Some((Operation::SubmitAgain, false)),
+        ("unknown" | "command_error" | "failed", None) => Some((Operation::SubmitAgain, false)),
         ("accepted", _) => None,
         // A deliberate refusal (no network) is final until network is enabled.
         (_, Some(_)) if !routes.delivers(&last.schema, &last.route) => None,
@@ -366,16 +392,101 @@ struct PageAcceptances(BTreeMap<String, BTreeMap<String, AcceptedPage>>);
 struct AcceptedPage {
     last: LastIntent,
     body: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cleanup: Option<PageCleanup>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PageCleanup {
+    last: LastIntent,
+    body: Value,
+    manual: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 impl PageAcceptances {
-    fn load(dir: &Path) -> Result<Self, String> {
+    fn load(dir: &Path) -> (Self, bool) {
         let path = dir.join("accepted-pages.json");
-        if !path.try_exists().map_err(|error| error.to_string())? {
-            return Ok(Self::default());
+        if !path.exists() {
+            return (Self::default(), false);
         }
-        serde_json::from_slice(&read_bounded(&path, 8 * 1024 * 1024)?)
-            .map_err(|error| format!("cannot read accepted pages: {error}"))
+        let value = read_bounded(&path, 8 * 1024 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let Some(entries) = value.as_ref().and_then(Value::as_object) else {
+            eprintln!("accepted_pages: repaired; retiring unreadable sidecar");
+            return (Self::default(), true);
+        };
+        let mut result = Self::default();
+        let mut repaired = false;
+        for (id, entries) in entries {
+            let Some(entries) = entries.as_object() else {
+                eprintln!("accepted_pages: repaired; retiring malformed condition={id}");
+                repaired = true;
+                continue;
+            };
+            for (route, value) in entries {
+                let accepted = serde_json::from_value::<AcceptedPage>(value.clone()).ok();
+                if let Some(accepted) = accepted.filter(|accepted| {
+                    let identity = nq::Route {
+                        reference: route.clone(),
+                        transport: "pagerduty".into(),
+                    };
+                    let cleanup_valid = accepted.cleanup.as_ref().is_none_or(|cleanup| {
+                        cleanup.body["schema"] == cleanup.last.schema
+                            && cleanup.body["route_reference"] == cleanup.last.route
+                            && cleanup.body["stable_event_id"] == cleanup.last.stable_event_id
+                            && cleanup.body["transition_id"] == cleanup.last.transition_id
+                            && if cleanup.manual {
+                                cleanup.last.schema == INTENT_V1
+                                    && cleanup.last.action == "notice"
+                                    && ["slack", "discord", "local-inbox"].iter().any(|label| {
+                                        cleanup.body["destination_identity"]
+                                            == format!("{label}:{}", cleanup.last.route)
+                                    })
+                            } else {
+                                cleanup.last.route == *route
+                                    && cleanup.last.schema == INTENT_V2
+                                    && cleanup.last.action == "resolve"
+                                    && cleanup.body["action"] == "resolve"
+                                    && identity.matches(&cleanup.body)
+                                    && serde_json::from_value::<ConditionKey>(
+                                        cleanup.body["condition"].clone(),
+                                    )
+                                    .is_ok_and(|key| key.id() == *id)
+                            }
+                    });
+                    cleanup_valid
+                        && accepted.last.schema == INTENT_V2
+                        && accepted.last.action == "trigger"
+                        && accepted.last.outcome == "accepted"
+                        && accepted.last.notification_id.is_some()
+                        && accepted.last.route == *route
+                        && accepted.body.as_ref().is_some_and(|body| {
+                            identity.matches(body)
+                                && body["schema"] == INTENT_V2
+                                && body["action"] == "trigger"
+                                && body["stable_event_id"] == accepted.last.stable_event_id
+                                && body["transition_id"] == accepted.last.transition_id
+                                && serde_json::from_value::<ConditionKey>(body["condition"].clone())
+                                    .is_ok_and(|key| key.id() == *id)
+                        })
+                }) {
+                    result
+                        .0
+                        .entry(id.clone())
+                        .or_default()
+                        .insert(route.clone(), accepted);
+                } else {
+                    eprintln!(
+                        "accepted_pages: repaired; retiring mismatched condition={id} route={route}"
+                    );
+                    repaired = true;
+                }
+            }
+        }
+        (result, repaired)
     }
 
     fn remember(&mut self, state: &State, dir: &Path) {
@@ -390,17 +501,40 @@ impl PageAcceptances {
                 let body = read_bounded(&dir.join("intents").join(&last.intent_file), 64 * 1024)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-                self.0.entry(id.clone()).or_default().insert(
-                    last.route.clone(),
-                    AcceptedPage {
-                        last: last.clone(),
-                        body,
-                    },
-                );
+                if body.is_none() {
+                    continue;
+                }
+                let routes = self.0.entry(id.clone()).or_default();
+                if routes.get(&last.route).is_none_or(|accepted| {
+                    accepted.last.transition_id != last.transition_id
+                        || (accepted
+                            .cleanup
+                            .as_ref()
+                            .is_some_and(|cleanup| cleanup.last.outcome == "accepted")
+                            && accepted.last.stable_event_id != last.stable_event_id)
+                }) {
+                    routes.insert(
+                        last.route.clone(),
+                        AcceptedPage {
+                            last: last.clone(),
+                            body,
+                            cleanup: None,
+                        },
+                    );
+                }
             }
         }
         self.0.retain(|id, routes| {
             routes.retain(|_, accepted| {
+                if let Some(cleanup) = &accepted.cleanup {
+                    return cleanup.last.outcome != "accepted"
+                        || state.conditions.get(id).is_some_and(|condition| {
+                            condition
+                                .last_intent
+                                .get("page")
+                                .is_some_and(|last| last.route == accepted.last.route)
+                        });
+                }
                 state.conditions.get(id).is_some_and(|condition| {
                     condition.active
                         && accepted.last.transition_id
@@ -416,10 +550,11 @@ impl PageAcceptances {
     }
 
     fn restore(
-        &self,
+        &mut self,
         state: &mut State,
         routes: &DeliveryRoutes<'_>,
         dir: &Path,
+        repaired: &mut bool,
     ) -> Result<(), String> {
         let Some(route) = routes
             .route("page")
@@ -438,6 +573,9 @@ impl PageAcceptances {
             else {
                 continue;
             };
+            if accepted.cleanup.is_some() {
+                continue;
+            }
             if accepted.last.schema != INTENT_V2
                 || accepted.last.outcome != "accepted"
                 || accepted.last.action != "trigger"
@@ -447,7 +585,16 @@ impl PageAcceptances {
                     .as_ref()
                     .is_some_and(|body| !route.matches(body))
             {
-                return Err("accepted page identity does not match its retained intent".into());
+                eprintln!(
+                    "accepted_pages: repaired; retiring mismatched condition={id} route={}",
+                    route.reference
+                );
+                self.0
+                    .get_mut(id)
+                    .expect("accepted condition")
+                    .remove(&route.reference);
+                *repaired = true;
+                continue;
             }
             if let Some(body) = &accepted.body {
                 write_atomic(
@@ -462,7 +609,189 @@ impl PageAcceptances {
         Ok(())
     }
 
+    /// Finish provider incidents when the page role is removed. Persist each
+    /// cleanup before calling NQ, so a failed/crashed resolve remains retryable.
+    fn close_removed(
+        &mut self,
+        routes: &DeliveryRoutes<'_>,
+        options: &PassOptions,
+        abandoned: &mut Vec<Value>,
+    ) -> Result<Vec<IntentReport>, String> {
+        let config = routes.config;
+        let dir = config.state_dir();
+        let output = if options.dry_run {
+            dir.join("dry-run")
+        } else {
+            dir.clone()
+        };
+        let mut reports = Vec::new();
+        let keys: Vec<_> = self
+            .0
+            .iter()
+            .flat_map(|(id, pages)| pages.keys().map(move |route| (id.clone(), route.clone())))
+            .collect();
+        for (id, reference) in keys {
+            let accepted = &self.0[&id][&reference];
+            if config.routes.page_route.is_some() && accepted.cleanup.is_none() {
+                continue;
+            }
+            let body = accepted.body.as_ref().expect("validated accepted page");
+            let manual = accepted
+                .cleanup
+                .as_ref()
+                .is_some_and(|cleanup| cleanup.manual)
+                || !routes
+                    .current
+                    .get(&reference)
+                    .is_some_and(|route| route.matches(body));
+            if manual {
+                abandoned.push(json!({ "route": reference, "dedup_key": id }));
+            }
+            let accepted = self.0.get_mut(&id).unwrap().get_mut(&reference).unwrap();
+            let notice = routes.route("notice");
+            let cleanup_changed = accepted.cleanup.as_ref().is_some_and(|cleanup| {
+                cleanup.manual != manual
+                    || (cleanup.manual
+                        && (cleanup.last.route != config.routes.notice_route
+                            || notice.is_some_and(|route| !route.matches(&cleanup.body))))
+            });
+            if accepted.cleanup.is_none() || cleanup_changed {
+                let event = format!("{}-retire-{}", accepted.last.stable_event_id, options.now);
+                let mut body = intent::with_event_id(accepted.body.as_ref().unwrap(), &event);
+                body["transition_id"] = json!(event);
+                let route = if manual {
+                    &config.routes.notice_route
+                } else {
+                    &reference
+                };
+                if manual {
+                    body["schema"] = json!(INTENT_V1);
+                    body["route_reference"] = json!(route);
+                    let label = notice.map_or_else(
+                        || config.routes.notice_transport.destination_label(),
+                        nq::Route::destination_label,
+                    );
+                    body["destination_identity"] = json!(format!("{label}:{route}"));
+                    body["response_class"] = json!("attention");
+                    body["summary"] = json!(truncate(
+                        &format!(
+                            "abandoned_open_incident: route {reference}, dedup key {id}; the provider incident must be resolved by hand",
+                        ),
+                        512
+                    ));
+                    for field in ["action", "condition", "severity", "details", "runbook_url"] {
+                        body.as_object_mut().unwrap().remove(field);
+                    }
+                } else {
+                    body["action"] = json!("resolve");
+                    body["summary"] =
+                        json!("RESOLVE: page route removed from attention configuration");
+                }
+                accepted.cleanup = Some(PageCleanup {
+                    last: LastIntent {
+                        stable_event_id: event.clone(),
+                        transition_id: event.clone(),
+                        action: if manual { "notice" } else { "resolve" }.into(),
+                        route: route.clone(),
+                        schema: if manual { INTENT_V1 } else { INTENT_V2 }.into(),
+                        notification_id: None,
+                        outcome: "unknown".into(),
+                        network: routes.delivers(if manual { INTENT_V1 } else { INTENT_V2 }, route),
+                        at: options.now,
+                        intent_file: format!("{event}.cleanup.json"),
+                    },
+                    body,
+                    manual,
+                    error: None,
+                });
+            }
+            let cleanup = accepted.cleanup.as_mut().unwrap();
+            if cleanup.last.outcome == "accepted" {
+                continue;
+            }
+            if cleanup.last.notification_id.is_some()
+                && options.now - cleanup.last.at < PAGE_RESEND_SECONDS
+            {
+                continue;
+            }
+            let retry_of = cleanup.last.notification_id.clone();
+            if retry_of.is_some() {
+                let event = format!("{}-retire-{}", accepted.last.stable_event_id, options.now);
+                cleanup.body = intent::with_event_id(&cleanup.body, &event);
+                cleanup.last.stable_event_id = event;
+            }
+            // After a crash, submit these same bytes to recover NQ custody;
+            // never resubmit an older record again after an uncertain answer.
+            cleanup.last.notification_id = None;
+            cleanup.last.outcome = "unknown".into();
+            cleanup.last.at = options.now;
+            cleanup.error = None;
+            write_atomic(
+                &output.join("intents").join(&cleanup.last.intent_file),
+                &intent::canonical(&cleanup.body)?,
+            )?;
+            if !options.dry_run {
+                self.save(&dir)?;
+            }
+            let cleanup = self
+                .0
+                .get_mut(&id)
+                .unwrap()
+                .get_mut(&reference)
+                .unwrap()
+                .cleanup
+                .as_mut()
+                .unwrap();
+            let result = if options.dry_run {
+                nq::SubmitOutcome {
+                    outcome: "not_submitted".into(),
+                    notification_id: None,
+                    error: None,
+                }
+            } else if routes.missing(&cleanup.last.route) {
+                nq::missing_route()
+            } else if !manual && retry_of.is_some() {
+                nq::resubmit(
+                    config,
+                    retry_of.as_deref().unwrap(),
+                    &cleanup.last.stable_event_id,
+                )
+            } else if routes.local(&cleanup.last.schema, &cleanup.last.route) {
+                nq::deliver_local(
+                    config,
+                    &output.join("intents").join(&cleanup.last.intent_file),
+                    &cleanup.last.route,
+                )
+            } else {
+                nq::submit(
+                    config,
+                    &output.join("intents").join(&cleanup.last.intent_file),
+                    &cleanup.last.route,
+                )
+            };
+            cleanup.last.outcome = result.outcome;
+            cleanup.last.notification_id = result.notification_id;
+            cleanup.last.at = options.now;
+            cleanup.error = result.error;
+            let mut report =
+                IntentReport::cleanup(&id, cleanup, &output.join("intents"), cleanup.error.clone());
+            if !manual && retry_of.is_some() {
+                report.operation = Operation::Resubmit;
+                report.retry_of = retry_of;
+            }
+            reports.push(report);
+            if !options.dry_run {
+                self.save(&dir)?;
+            }
+        }
+        self.0.retain(|_, pages| !pages.is_empty());
+        Ok(reports)
+    }
+
     fn save(&self, dir: &Path) -> Result<(), String> {
+        if self.0.is_empty() && !dir.join("accepted-pages.json").exists() {
+            return Ok(());
+        }
         write_atomic(
             &dir.join("accepted-pages.json"),
             &serde_json::to_vec(self).map_err(|error| error.to_string())?,
@@ -550,38 +879,47 @@ fn reconfiguration(path: &Path, now: i64, bound: i64) -> Result<Option<i64>, Str
     Ok(Some(at.min(now)))
 }
 
-/// Every pass that holds the lock publishes its final process classification,
-/// including a fatal error after a previous report was successfully written.
+/// An incomplete pass leaves the previous liveness report untouched. Only a
+/// completed report published by THIS pass can have its exit fields corrected.
 pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let _lock = lock(config, options.dry_run)?;
-    match evaluate_locked(config, options) {
-        Ok(result) => Ok(result),
-        Err(error) => {
-            let output = if options.dry_run {
-                config.state_dir().join("dry-run")
-            } else {
-                config.state_dir()
-            };
-            let report = json!({
-                "schema": REPORT_SCHEMA, "site": config.site,
-                "evaluated_at": format_seconds(options.now), "dry_run": options.dry_run,
-                "exit_code": 1, "exit_class": "evaluator_error",
-                "first_error": error.lines().next().unwrap_or_default(),
-            });
-            let bytes =
-                serde_json::to_vec_pretty(&report).map_err(|failure| failure.to_string())?;
-            write_atomic(&output.join("report.json"), &bytes)
-                .map_err(|failure| format!("{error}; cannot write final report: {failure}"))?;
-            Err(error)
-        }
+    let mut completed = None;
+    let result = evaluate_locked(config, options, &mut completed);
+    let output = if options.dry_run {
+        config.state_dir().join("dry-run")
+    } else {
+        config.state_dir()
+    };
+    finish_pass(result, completed, &output.join("report.json"))
+}
+
+fn finish_pass(
+    result: Result<PassResult, String>,
+    completed: Option<Value>,
+    path: &Path,
+) -> Result<PassResult, String> {
+    if let (Err(error), Some(mut report)) = (&result, completed) {
+        report["exit_code"] = json!(1);
+        report["exit_class"] = json!("evaluator_error");
+        report["first_error"] = json!(error.lines().next().unwrap_or_default());
+        write_atomic(
+            path,
+            &serde_json::to_vec_pretty(&report).map_err(|e| e.to_string())?,
+        )
+        .map_err(|failure| format!("{error}; cannot correct completed report: {failure}"))?;
     }
+    result
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "The pass is one ordered sequence: read, reconcile, persist, submit, report."
 )]
-fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
+fn evaluate_locked(
+    config: &Config,
+    options: &PassOptions,
+    completed: &mut Option<Value>,
+) -> Result<PassResult, String> {
     let rules = config.effective_rules();
     let digest =
         intent::policy_digest_with(&rules, &config.remediation.targets, &config.suspensions);
@@ -592,6 +930,8 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
         state_dir.clone()
     };
     let mut state = State::load(&config.state_path, &config.site)?;
+    let (mut page_acceptances, mut accepted_pages_repaired) = PageAcceptances::load(&state_dir);
+    page_acceptances.remember(&state, &state_dir);
     let metric_history_path = state_dir.join("state-metric-alerts.json");
     let saved_metric_state = MetricAlertsState::load(&metric_history_path, &config.site)?;
     let warmup_grace = config
@@ -710,18 +1050,6 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
             format_seconds(state.updated_at)
         ));
     }
-
-    let current_routes = nq::routes(config)?;
-    let delivery_routes = DeliveryRoutes {
-        config,
-        page_local: config
-            .routes
-            .page_route
-            .as_ref()
-            .and_then(|page| current_routes.get(page))
-            .is_some_and(nq::Route::local),
-        current: current_routes,
-    };
 
     let mut read = inputs::read_all(&Context {
         config,
@@ -1083,19 +1411,74 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
         }));
     }
 
+    let retained = state.conditions.values().any(|condition| {
+        !condition.last_intent.is_empty() || !condition.pending_trigger.is_empty()
+    }) || state_dir.join("digest.json").exists()
+        || !page_acceptances.0.is_empty();
+    let routes_needed = retained || config.routes.page_route.is_some();
+    // No reconciliation on an idle notice-only deployment. New notices can
+    // still use the configured transport when NQ's config is unreadable.
+    let current_routes = if routes_needed {
+        Some(nq::routes(config)?)
+    } else if state.conditions.values().any(|condition| condition.active)
+        || config.digest.as_ref().is_some_and(|settings| {
+            settings
+                .offset_seconds()
+                .is_ok_and(|offset| crate::digest::due(offset, None, now))
+        })
+    {
+        nq::routes(config).ok()
+    } else {
+        None
+    };
+    let known = current_routes.is_some();
+    let current_routes = current_routes.unwrap_or_default();
+    let delivery_routes = DeliveryRoutes {
+        config,
+        known,
+        page_local: config
+            .routes
+            .page_route
+            .as_ref()
+            .and_then(|page| current_routes.get(page))
+            .is_some_and(nq::Route::local),
+        current: current_routes,
+    };
+
     // Plan: one intent per condition and route per pass.
     let intents_dir = output_dir.join("intents");
     ensure_dir(&intents_dir)?;
-    let mut page_acceptances = PageAcceptances::load(&state_dir)?;
-    page_acceptances.remember(&state, &state_dir);
-    if !options.dry_run {
-        page_acceptances.save(&state_dir)?;
-    }
-    let mut retired = Vec::new();
+    let mut abandoned = Vec::new();
+    let mut retired = page_acceptances.close_removed(&delivery_routes, options, &mut abandoned)?;
     for (id, condition) in &mut state.conditions {
         for slot in [&mut condition.last_intent, &mut condition.pending_trigger] {
             slot.retain(|role, last| {
-                if delivery_routes.matches(role, last, &state_dir.join("intents")) {
+                let cleanup_completed = role == "page"
+                    && page_acceptances
+                        .0
+                        .get(id)
+                        .and_then(|pages| pages.get(&last.route))
+                        .is_some_and(|accepted| {
+                            accepted.last.stable_event_id == last.stable_event_id
+                                && accepted
+                                    .cleanup
+                                    .as_ref()
+                                    .is_some_and(|cleanup| cleanup.last.outcome == "accepted")
+                        });
+                if !cleanup_completed
+                    && ((role == "page"
+                        && config.routes.page_route.is_none()
+                        && page_acceptances
+                            .0
+                            .get(id)
+                            .and_then(|pages| pages.get(&last.route))
+                            .is_some_and(|page| {
+                                page.cleanup
+                                    .as_ref()
+                                    .is_none_or(|cleanup| cleanup.last.outcome != "accepted")
+                            }))
+                        || delivery_routes.matches(role, last, &state_dir.join("intents")))
+                {
                     return true;
                 }
                 retired.push(IntentReport::retired(
@@ -1134,7 +1517,12 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
             &state_dir,
         ));
     }
-    page_acceptances.restore(&mut state, &delivery_routes, &intents_dir)?;
+    page_acceptances.restore(
+        &mut state,
+        &delivery_routes,
+        &intents_dir,
+        &mut accepted_pages_repaired,
+    )?;
     if !options.dry_run {
         for condition in state.conditions.values_mut() {
             for last in condition
@@ -1221,9 +1609,7 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
         // unchanged role (especially an accepted page) keeps its exact event.
         let refresh = !transitioned.contains(id);
         roles.retain(|(role, route)| {
-            delivery_routes
-                .route(role)
-                .is_some_and(|current| current.reference == *route)
+            delivery_routes.reference(role) == Some(route.as_str())
                 && (!refresh || !condition.last_intent.contains_key(role))
         });
         let stable_event_id = intent::event_id(&condition.key, action, now);
@@ -1265,7 +1651,10 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
                     intent::v1(
                         &input,
                         &route,
-                        delivery_routes.current[&route].destination_label(),
+                        delivery_routes.current.get(&route).map_or_else(
+                            || config.routes.notice_transport.destination_label(),
+                            nq::Route::destination_label,
+                        ),
                     ),
                     INTENT_V1,
                 )
@@ -1565,14 +1954,18 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
             {
                 withheld_count += 1;
             }
-            let result = match (item.operation, &item.retry_of) {
-                (Operation::Resubmit, Some(from)) => {
-                    nq::resubmit(config, from, &last.stable_event_id)
+            let result = if delivery_routes.missing(&last.route) {
+                nq::missing_route()
+            } else {
+                match (item.operation, &item.retry_of) {
+                    (Operation::Resubmit, Some(from)) => {
+                        nq::resubmit(config, from, &last.stable_event_id)
+                    }
+                    _ if delivery_routes.local(&last.schema, &last.route) => {
+                        nq::deliver_local(config, &intents_dir.join(&last.intent_file), &last.route)
+                    }
+                    _ => nq::submit(config, &intents_dir.join(&last.intent_file), &last.route),
                 }
-                _ if delivery_routes.local(&last.schema, &last.route) => {
-                    nq::deliver_local(config, &intents_dir.join(&last.intent_file), &last.route)
-                }
-                _ => nq::submit(config, &intents_dir.join(&last.intent_file), &last.route),
             };
             last.outcome.clone_from(&result.outcome);
             last.at = now;
@@ -1582,7 +1975,7 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
             (result.outcome, result.notification_id, result.error)
         };
         let last = last.clone();
-        if before_resolve && !options.dry_run {
+        if before_resolve && !options.dry_run && !delivery_routes.missing(&last.route) {
             // Retained or not, the pending trigger is settled by this attempt.
             condition.pending_trigger.remove(&item.role);
             if notification_id.is_none() {
@@ -1684,7 +2077,15 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
     let digest_attempt = if options.dry_run {
         None
     } else {
-        crate::digest::send_if_due(config, &state, &rules, &read.reports, &digest, now)?
+        crate::digest::send_if_due(
+            config,
+            &state,
+            &rules,
+            &read.reports,
+            &digest,
+            now,
+            delivery_routes.known.then_some(&delivery_routes.current),
+        )?
     };
     // A rejected definition leaves its input `ok` but is still an input
     // problem: the pass exits 3, and the report tells the two apart (status
@@ -1708,8 +2109,20 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
     if let Some(page) = &config.routes.page_route {
         delivery.insert(page.clone(), RouteDelivery::default());
     }
-    for condition in state.conditions.values() {
-        for last in condition.last_intent.values() {
+    for (id, condition) in &state.conditions {
+        for (role, last) in &condition.last_intent {
+            if delivery_routes.reference(role) == Some(last.route.as_str())
+                && delivery_routes.missing(&last.route)
+                && !options.dry_run
+            {
+                delivery_routes.record(&mut delivery, &last.route, "failed", None, false);
+                unresolved.push(json!({
+                    "condition_id": id, "route_role": role, "route": last.route,
+                    "stable_event_id": last.stable_event_id,
+                    "outcome": "failed", "error": nq::ROUTE_NOT_CONFIGURED,
+                }));
+                continue;
+            }
             if last.outcome == "accepted"
                 && read_bounded(&intents_dir.join(&last.intent_file), 64 * 1024)
                     .ok()
@@ -1732,15 +2145,41 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
             );
         }
     }
+    for (id, pages) in &page_acceptances.0 {
+        for page in pages.values() {
+            let Some(cleanup) = &page.cleanup else {
+                continue;
+            };
+            let last = &cleanup.last;
+            delivery.entry(last.route.clone()).or_default();
+            delivery_routes.record(
+                &mut delivery,
+                &last.route,
+                &last.outcome,
+                (!delivery_routes.missing(&last.route)).then_some(last.at),
+                options.dry_run,
+            );
+            if !options.dry_run && last.outcome != "accepted" {
+                unresolved.push(json!({
+                    "condition_id": id, "route": last.route,
+                    "outcome": last.outcome, "error": cleanup.error,
+                    "stable_event_id": last.stable_event_id,
+                    "attempted_at": format_seconds(last.at),
+                }));
+            }
+        }
+    }
     for item in &intent_reports {
         if item.outcome == "route_retired" {
             continue;
         }
+        delivery.entry(item.route.clone()).or_default();
         delivery_routes.record(
             &mut delivery,
             &item.route,
             &item.outcome,
-            (item.outcome != "intent_unreadable").then_some(now),
+            (item.outcome != "intent_unreadable" && !delivery_routes.missing(&item.route))
+                .then_some(now),
             options.dry_run,
         );
     }
@@ -1749,12 +2188,16 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
             delivery_routes.record(&mut delivery, route, "failed", None, options.dry_run);
         }
     }
-    if let Some(current) = crate::digest::current_outcome(config, now) {
+    if let Some(current) = crate::digest::current_outcome(
+        config,
+        now,
+        delivery_routes.known.then_some(&delivery_routes.current),
+    ) {
         delivery_routes.record(
             &mut delivery,
             &config.routes.notice_route,
             &current.outcome,
-            Some(current.at),
+            (!delivery_routes.missing(&config.routes.notice_route)).then_some(current.at),
             options.dry_run,
         );
         if !options.dry_run
@@ -1798,13 +2241,16 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
     let delivery: BTreeMap<_, _> = delivery
         .into_iter()
         .map(|(route, summary)| {
-            (
-                route,
-                json!({
+            (route.clone(), {
+                let mut value = json!({
                     "outcome": summary.outcome,
                     "last_attempt_at": summary.last_attempt_at.map(format_seconds),
-                }),
-            )
+                });
+                if summary.outcome == "failed" && delivery_routes.missing(&route) {
+                    value["error"] = json!(nq::ROUTE_NOT_CONFIGURED);
+                }
+                value
+            })
         })
         .collect();
     let report = json!({
@@ -1832,11 +2278,18 @@ fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult,
     if let Some(attempt) = digest_attempt {
         report["digest"] = attempt;
     }
+    if accepted_pages_repaired {
+        report["accepted_pages"] = json!("repaired");
+    }
+    if !abandoned.is_empty() {
+        report["abandoned_open_incident"] = json!(abandoned);
+    }
     report["first_error"] = json!(first_pass_error(&report));
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;
     write_atomic(&output_dir.join("report.json"), &bytes)?;
+    *completed = Some(report.clone());
     Ok(PassResult { report, exit_code })
 }
 
@@ -2114,6 +2567,37 @@ pub fn state_path(config: &Config) -> PathBuf {
 mod tests {
     use super::first_pass_error;
     use serde_json::json;
+
+    #[test]
+    fn late_failure_corrects_only_this_pass_completed_report_exit_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.json");
+        let completed = json!({
+            "schema": super::REPORT_SCHEMA, "evaluated_at": "2026-10-02T12:00:00Z",
+            "conditions": [{"id": "retained"}], "inputs": [],
+            "delivery": {"operations": {"outcome": "accepted"}},
+            "exit_code": 0, "exit_class": "clean", "first_error": null,
+        });
+        std::fs::write(&path, serde_json::to_vec(&completed).unwrap()).unwrap();
+        let prior = std::fs::read(&path).unwrap();
+        assert!(super::finish_pass(Err("early failure".into()), None, &path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), prior);
+        assert!(
+            super::finish_pass(
+                Err("late failure\nmore".into()),
+                Some(completed.clone()),
+                &path
+            )
+            .is_err()
+        );
+        let mut expected = completed;
+        expected["exit_code"] = json!(1);
+        expected["exit_class"] = json!("evaluator_error");
+        expected["first_error"] = json!("late failure");
+        let actual: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn log_failure_is_reported_even_without_input_or_delivery_rows() {

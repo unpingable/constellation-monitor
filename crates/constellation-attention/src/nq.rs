@@ -77,6 +77,34 @@ pub struct SubmitOutcome {
     pub error: Option<String>,
 }
 
+pub const ROUTE_NOT_CONFIGURED: &str = "route_not_configured_in_nq";
+
+#[must_use]
+pub fn missing_route() -> SubmitOutcome {
+    SubmitOutcome {
+        notification_id: None,
+        outcome: "failed".into(),
+        error: Some(ROUTE_NOT_CONFIGURED.into()),
+    }
+}
+
+/// Check locally readable NQ configuration without making it a prerequisite
+/// for offline configuration inspection.
+pub fn check_routes(config: &Config) -> Result<(), String> {
+    if std::fs::File::open(&config.nq.config).is_err() {
+        return Ok(());
+    }
+    let current = routes(config)?;
+    for reference in
+        std::iter::once(&config.routes.notice_route).chain(config.routes.page_route.iter())
+    {
+        if !current.contains_key(reference) {
+            return Err(format!("{ROUTE_NOT_CONFIGURED}: {reference}"));
+        }
+    }
+    Ok(())
+}
+
 fn run(config: &Config, tail: Vec<String>, network: bool) -> SubmitOutcome {
     let mut argv = vec![
         config.nq.program.display().to_string(),
@@ -113,6 +141,9 @@ fn run(config: &Config, tail: Vec<String>, network: bool) -> SubmitOutcome {
         };
     }
     if output.status != Some(0) {
+        if String::from_utf8_lossy(&output.stderr).contains("route reference is not configured") {
+            return missing_route();
+        }
         return SubmitOutcome {
             notification_id: None,
             outcome: "command_error".into(),

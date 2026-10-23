@@ -18,6 +18,7 @@
     "metric_alert_admission_per_rule",
     "value_codes_v1",
     "reconfiguration_grace",
-    "delivery_exit_code"
+    "delivery_exit_code",
+    "route_change_reconcile"
   ]
 }
