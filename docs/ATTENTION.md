@@ -345,7 +345,13 @@ trigger. Severity on v2 is the registry's (`critical` for page rules,
 first-seen time, persistence and the input identities (status artifact id,
 evaluation id, cycle id, saved-check reference), never payloads or secrets.
 `runbook_url` and `inspection_reference` come from the configured published
-runbook copies.
+runbook copies. `[runbooks].cartography_url` and `monitor_url` accept HTTPS
+or HTTP on the exact loopback literals `127.0.0.1` and `[::1]`, with an explicit
+decimal port (1–65535) and a path, for example
+`http://127.0.0.1:8080/RUNBOOKS.md` or `http://[::1]:8080/ATTENTION.md`.
+HTTP hostnames (including `localhost`), other addresses and userinfo are
+refused. Bases must be at most 900 bytes, contain no fragment, whitespace or
+control characters; the evaluator appends each rule's `#anchor`.
 
 ## Response policy (remediation window)
 

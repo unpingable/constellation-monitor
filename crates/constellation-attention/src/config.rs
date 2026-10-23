@@ -133,7 +133,7 @@ const fn default_command_timeout() -> u64 {
     90
 }
 
-/// Optional published copies of the runbook documents (https). A rule's
+/// Optional published runbooks (HTTPS or literal loopback HTTP). A rule's
 /// `runbook_url` is the matching base plus `#anchor`.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -453,13 +453,22 @@ impl Config {
             .into_iter()
             .flatten()
         {
-            if !url.starts_with("https://")
+            let loopback_http = url
+                .strip_prefix("http://127.0.0.1:")
+                .or_else(|| url.strip_prefix("http://[::1]:"))
+                .is_some_and(|rest| {
+                    rest.split_once('/').is_some_and(|(port, _)| {
+                        port.bytes().all(|byte| byte.is_ascii_digit())
+                            && port.parse::<u16>().is_ok_and(|port| port > 0)
+                    })
+                });
+            if !(url.starts_with("https://") || loopback_http)
                 || url.len() > 900
                 || url.contains('#')
                 || url.chars().any(|c| c.is_control() || c.is_whitespace())
             {
                 return Err(
-                    "runbook URLs must be https, without a fragment, at most 900 bytes".into(),
+                    "runbook URLs must be https or literal loopback http with an explicit port and path, without a fragment, at most 900 bytes".into(),
                 );
             }
         }
@@ -754,5 +763,113 @@ fn age(label: &str, value: i64) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{label} must be 1..={MAX_THRESHOLD_SECONDS}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_runbook(url: &str, accepted: bool) {
+        for cartography in [true, false] {
+            let mut config: Config = toml::from_str(
+                r#"
+                schema = "constellation.attention_config.v1"
+                site = "test"
+                state_path = "/tmp/attention/state.json"
+                [nq]
+                program = "/usr/bin/nq"
+                config = "/etc/nq/config.toml"
+                [routes]
+                notice_route = "operations"
+                notice_transport = "slack"
+                network_enabled = false
+                "#,
+            )
+            .unwrap();
+            let (rule, destination) = if cartography {
+                ("host-posture-unknown", &mut config.runbooks.cartography_url)
+            } else {
+                ("memory-pressure", &mut config.runbooks.monitor_url)
+            };
+            *destination = Some(url.into());
+            let result = config.validate();
+            assert_eq!(result.is_ok(), accepted, "{url:?}: {result:?}");
+            if accepted {
+                assert_eq!(
+                    config.runbook_url(registry::rule(rule).unwrap()),
+                    Some(format!("{url}#{rule}")),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runbooks_accept_https_and_literal_loopback_http() {
+        for url in [
+            "https://docs.example.org/RUNBOOKS.md",
+            "http://127.0.0.1:8080/RUNBOOKS.md",
+            "http://[::1]:8080/ATTENTION.md",
+            "http://127.0.0.1:1/",
+            "http://[::1]:65535/",
+        ] {
+            check_runbook(url, true);
+        }
+    }
+
+    #[test]
+    fn runbooks_refuse_localhost_http() {
+        check_runbook("http://localhost:8080/RUNBOOKS.md", false);
+    }
+
+    #[test]
+    fn runbooks_refuse_non_loopback_http() {
+        check_runbook("http://10.0.0.1:8080/RUNBOOKS.md", false);
+    }
+
+    #[test]
+    fn runbooks_refuse_loopback_looking_authorities() {
+        for url in [
+            "http://127.0.0.1@evil/",
+            "http://127.0.0.1:8080@evil/RUNBOOKS.md",
+            "http://[::1]:8080@evil/RUNBOOKS.md",
+            "http://127.0.0.1.evil:8080/RUNBOOKS.md",
+            "http://[::2]:8080/RUNBOOKS.md",
+        ] {
+            check_runbook(url, false);
+        }
+    }
+
+    #[test]
+    fn runbooks_require_a_nonzero_numeric_loopback_port_and_path() {
+        for host in ["127.0.0.1", "[::1]"] {
+            for suffix in [
+                "/path",
+                ":8080",
+                ":/path",
+                ":0/path",
+                ":65536/path",
+                ":+80/path",
+                ":port/path",
+            ] {
+                check_runbook(&format!("http://{host}{suffix}"), false);
+            }
+        }
+    }
+
+    #[test]
+    fn runbooks_keep_fragment_whitespace_control_and_length_bounds() {
+        for base in [
+            "https://example.org/",
+            "http://127.0.0.1:8080/",
+            "http://[::1]:8080/",
+        ] {
+            for suffix in ["#anchor", "has space", "\t", "\n", "\u{2003}", "\u{7f}"] {
+                check_runbook(&format!("{base}{suffix}"), false);
+            }
+            let longest = format!("{base}{}", "x".repeat(900 - base.len()));
+            check_runbook(&longest, true);
+            check_runbook(&format!("{longest}x"), false);
+        }
     }
 }

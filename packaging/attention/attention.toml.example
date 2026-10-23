@@ -8,7 +8,8 @@ state_path = "/var/lib/constellation-attention/state.json"
 command_timeout_seconds = 90
 
 [runbooks]
-# Optional published https copies; rules link to `#<anchor>`.
+# Optional HTTPS copies, or http://127.0.0.1:PORT/path or http://[::1]:PORT/path.
+# Loopback HTTP needs port 1..=65535; bases have no fragment. Rules add `#<anchor>`.
 # cartography_url = "https://example.org/constellation/beta-observability/RUNBOOKS.md"
 # monitor_url = "https://example.org/constellation/monitor/ATTENTION.md"
 
