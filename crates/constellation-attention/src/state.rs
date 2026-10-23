@@ -37,12 +37,6 @@ pub struct MetricAlertsState {
     /// Last completed pass tracking this input, including unreadable reports.
     #[serde(default)]
     pub updated_at: i64,
-    /// First evaluator pass, independent of metric report availability.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_seen: Option<i64>,
-    /// Newest accepted installer marker timestamp (Unix seconds).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reconfigured_at: Option<i64>,
     /// Null until a fresh install first reads a metric report.
     #[serde(deserialize_with = "Option::deserialize")]
     pub history: Option<MetricAlertsHistory>,
@@ -225,11 +219,99 @@ impl MetricAlertsState {
     pub fn reset_clock(&mut self, now: i64) -> usize {
         let mut clamped = 0;
         let mut timestamps = vec![&mut self.updated_at];
-        timestamps.extend(self.first_seen.iter_mut());
-        timestamps.extend(self.reconfigured_at.iter_mut());
         if let Some(history) = &mut self.history {
             timestamps.push(&mut history.first_seen);
             timestamps.extend(history.warming_since.values_mut());
+        }
+        for at in timestamps {
+            if *at > now {
+                *at = now;
+                clamped += 1;
+            }
+        }
+        clamped
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        write_atomic(path, &bytes)
+    }
+}
+
+/// Host timing and per-identity reconfiguration custody. Kept out of the
+/// release-compatible metric sidecar and condition state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttentionLifecycle {
+    pub schema: String,
+    pub site: String,
+    pub updated_at: i64,
+    pub first_seen: i64,
+    pub reconfigured_at: Option<i64>,
+    pub identities: BTreeMap<String, IdentityLifecycle>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityLifecycle {
+    pub faulting: bool,
+    pub grace_at: Option<i64>,
+    pub recovered_since_grace: bool,
+}
+
+impl IdentityLifecycle {
+    pub fn rearm(&mut self, at: i64, bound: i64) {
+        if !self.faulting
+            && (self.recovered_since_grace
+                || self
+                    .grace_at
+                    .is_none_or(|saved| at.saturating_sub(saved) >= bound))
+        {
+            self.grace_at = Some(at);
+            self.recovered_since_grace = false;
+        }
+    }
+}
+
+impl AttentionLifecycle {
+    pub const SCHEMA: &str = "constellation.attention_lifecycle.v1";
+
+    pub fn new(site: &str, first_seen: i64) -> Self {
+        Self {
+            schema: Self::SCHEMA.into(),
+            site: site.into(),
+            updated_at: 0,
+            first_seen,
+            reconfigured_at: None,
+            identities: BTreeMap::new(),
+        }
+    }
+
+    /// Absence is no history. Never silently replace invalid custody.
+    pub fn load(path: &Path, site: &str) -> Result<Option<Self>, String> {
+        if !path.try_exists().map_err(|error| error.to_string())? {
+            return Ok(None);
+        }
+        let bytes = read_bounded(path, MAX_STATE_BYTES)?;
+        let state: Self = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "attention lifecycle {} is malformed: {error}",
+                path.display()
+            )
+        })?;
+        if state.schema != Self::SCHEMA || state.site != site {
+            return Err("attention lifecycle schema or site mismatch".into());
+        }
+        Ok(Some(state))
+    }
+
+    pub fn reset_clock(&mut self, now: i64) -> usize {
+        let mut clamped = 0;
+        let mut timestamps = vec![&mut self.updated_at, &mut self.first_seen];
+        timestamps.extend(self.reconfigured_at.iter_mut());
+        for identity in self.identities.values_mut() {
+            timestamps.extend(identity.grace_at.iter_mut());
         }
         for at in timestamps {
             if *at > now {

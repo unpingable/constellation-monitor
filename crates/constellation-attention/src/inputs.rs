@@ -16,7 +16,7 @@ use crate::config::{
     Config, EffectiveRule, EstateInput, HostPostureInput, MetricAlertsInput, NightshiftInput,
     NqStatusInput, NqStatusSource, SavedCheckInput, default_metric_warmup_grace,
 };
-use crate::state::MetricAlertsHistory;
+use crate::state::{AttentionLifecycle, IdentityLifecycle, MetricAlertsHistory};
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
     run_bounded, truncate, truncate_words,
@@ -181,6 +181,7 @@ pub struct InputsRead {
     /// Notice text independent of whether metric-alert-firing is enabled.
     pub metric_indeterminate_reason: Option<String>,
     pub metric_alerts: Option<MetricAlertsHistory>,
+    pub lifecycle: Option<AttentionLifecycle>,
     /// Evaluation-history mode: the NQ status input's label and its updated
     /// watcher roster, to be remembered in the state.
     pub nq_watchers: Option<(String, BTreeMap<String, i64>)>,
@@ -193,7 +194,7 @@ pub struct Context<'a> {
     pub now_ms: i64,
     pub metric_alerts: Option<&'a MetricAlertsHistory>,
     pub first_seen: i64,
-    pub reconfigured_at: Option<i64>,
+    pub lifecycle: &'a AttentionLifecycle,
     /// The remembered NQ watcher roster of the NQ status input's label.
     pub nq_watchers: Option<&'a BTreeMap<String, i64>>,
 }
@@ -216,6 +217,7 @@ impl Context<'_> {
 
 pub fn read_all(context: &Context<'_>) -> InputsRead {
     let mut read = InputsRead {
+        lifecycle: None,
         reports: Vec::new(),
         observed: Vec::new(),
         metric_indeterminate_reason: None,
@@ -1085,49 +1087,48 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
         error: None,
         identity: Value::Null,
     };
-    let newest = match newest_closed_cycle(&input.store_path) {
-        Ok(newest) => newest,
-        Err(error) => {
-            report.error = Some(error);
+    let first_seen = context.metric_alerts.map_or(context.first_seen, |history| {
+        context.first_seen.min(history.first_seen)
+    });
+    let grace = context
+        .config
+        .inputs
+        .metric_alerts
+        .as_ref()
+        .map_or_else(default_metric_warmup_grace, |input| input.warmup_grace);
+    let newest = newest_closed_cycle(&input.store_path);
+    let (cycle_id, closed_at) = match newest {
+        Ok(Some(cycle)) => cycle,
+        missing => {
+            if context.now.saturating_sub(first_seen) < grace {
+                report.status = InputStatus::Ok;
+                report.causes.push("warming");
+                report.identity =
+                    json!({"first_seen": format_seconds(first_seen), "warmup_grace": grace});
+            } else {
+                match missing {
+                    Err(error) => report.error = Some(error),
+                    _ => report.fault(
+                        "empty",
+                        InputStatus::NotCurrent,
+                        "no closed observation cycle",
+                    ),
+                }
+            }
             read.reports.push(report);
+            push(
+                context,
+                read,
+                "nightshift-recurrence-missing",
+                "nightshift",
+                Some(&input.label),
+                &input.label,
+                Observation::Unknown,
+                &Value::Null,
+                "no closed observation cycle available yet".into(),
+            );
             return;
         }
-    };
-    let Some((cycle_id, closed_at)) = newest else {
-        let first_seen = context.metric_alerts.map_or(context.first_seen, |history| {
-            context.first_seen.min(history.first_seen)
-        });
-        let grace = context
-            .config
-            .inputs
-            .metric_alerts
-            .as_ref()
-            .map_or_else(default_metric_warmup_grace, |input| input.warmup_grace);
-        if context.now.saturating_sub(first_seen) < grace {
-            report.status = InputStatus::Ok;
-            report.causes.push("warming");
-            report.identity =
-                json!({"first_seen": format_seconds(first_seen), "warmup_grace": grace});
-        } else {
-            report.fault(
-                "empty",
-                InputStatus::NotCurrent,
-                "no closed observation cycle",
-            );
-        }
-        read.reports.push(report);
-        push(
-            context,
-            read,
-            "nightshift-recurrence-missing",
-            "nightshift",
-            Some(&input.label),
-            &input.label,
-            Observation::Unknown,
-            &Value::Null,
-            "no closed observation cycle yet".into(),
-        );
-        return;
     };
     let identity = json!({"cycle_id": cycle_id, "closed_at": format_seconds(closed_at)});
     report.status = InputStatus::Ok;
@@ -1775,10 +1776,12 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             first_seen: context.now,
             warming_since: BTreeMap::new(),
         });
-    let reconfiguration_grace = context
-        .reconfigured_at
-        .is_some_and(|at| context.now.saturating_sub(at) < input.warmup_grace);
-    let in_grace = context.now - history.first_seen < input.warmup_grace || reconfiguration_grace;
+    let mut lifecycle = context.lifecycle.clone();
+    // Unreported or rejected identities cannot attest recovery.
+    for identity in lifecycle.identities.values_mut() {
+        identity.faulting = true;
+    }
+    let startup_grace = context.now - history.first_seen < input.warmup_grace;
     let mut warming_rules = Vec::new();
     let generated = document
         .get("generated_at")
@@ -1896,6 +1899,23 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     let mut indeterminate_rules = BTreeMap::new();
     for (rule, (name, admission)) in opted.iter().zip(&admissions) {
         let name = *name;
+        for (_, target) in &admission.keyed {
+            lifecycle
+                .identities
+                .entry(target.clone())
+                .or_insert_with(|| {
+                    let mut identity = IdentityLifecycle {
+                        faulting: false,
+                        ..IdentityLifecycle::default()
+                    };
+                    if let Some(at) = context.lifecycle.reconfigured_at {
+                        identity.rearm(at, input.warming_bound);
+                    }
+                    // A rejected definition below cannot establish health.
+                    identity.faulting = true;
+                    identity
+                });
+        }
         for rejection in &admission.rejected {
             report.reject(name, rejection.site, &rejection.target, &rejection.reason);
         }
@@ -1935,7 +1955,6 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             .and_then(Value::as_str)
             .map(rfc3339_seconds);
         let missing_evaluation = !matches!(last_evaluation, Some(Ok(_)));
-        let evaluation_warming = missing_evaluation && reconfiguration_grace;
         let mut problems: Vec<String> = Vec::new();
         if health != "ok" {
             let error = rule
@@ -1954,7 +1973,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 "last evaluated {} s before the document",
                 at - evaluated
             )),
-            (Some(_), _) if evaluation_warming => {}
+            _ if missing_evaluation => {}
             _ => problems.push("has no valid last_evaluation".to_owned()),
         }
         if !matches!(state, "firing" | "pending" | "inactive") {
@@ -1998,18 +2017,43 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         // truncates instance detail; instances alone could omit a site's firing
         // instance at high fan-out.
         let firing_sites = rule.get("firing_sites").and_then(Value::as_object);
-        let unknown = stale.is_some() || !problems.is_empty() || missing_evaluation;
-        let evaluation_note = evaluation_warming
-            .then(|| "has no valid last_evaluation; warming after reconfiguration".to_owned());
-        let unknown_why = stale
-            .iter()
-            .chain(problems.iter())
-            .chain(drift.iter())
-            .chain(evaluation_note.iter())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("; ");
         for (index, (site, keyed_target)) in keyed.into_iter().enumerate() {
+            let identity = lifecycle
+                .identities
+                .get_mut(&keyed_target)
+                .expect("admitted targets have lifecycle custody");
+            let reconfiguration_grace = identity
+                .grace_at
+                .is_some_and(|at| context.now.saturating_sub(at) < input.warmup_grace);
+            let in_grace = startup_grace || reconfiguration_grace;
+            let evaluation_warming = missing_evaluation && reconfiguration_grace;
+            let unknown = stale.is_some() || !problems.is_empty() || missing_evaluation;
+            let mut identity_fault = stale.is_some()
+                || drift.is_some()
+                || !problems.is_empty()
+                || (missing_evaluation && !evaluation_warming);
+            if missing_evaluation && !evaluation_warming {
+                report.fault(
+                    "indeterminate",
+                    InputStatus::NotCurrent,
+                    &format!("alert {name} ({keyed_target}): has no valid last_evaluation"),
+                );
+            }
+            let evaluation_note = missing_evaluation.then(|| {
+                if evaluation_warming {
+                    "has no valid last_evaluation; warming after reconfiguration".to_owned()
+                } else {
+                    "has no valid last_evaluation".to_owned()
+                }
+            });
+            let unknown_why = stale
+                .iter()
+                .chain(problems.iter())
+                .chain(drift.iter())
+                .chain(evaluation_note.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ");
             if !marked && !unknown && !no_data && drift.is_none() {
                 history
                     .warming_since
@@ -2022,6 +2066,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                     .or_insert(context.now);
                 let expired = context.now - since >= input.warming_bound;
                 if expired {
+                    identity_fault = true;
                     report.fault(
                         "indeterminate",
                         InputStatus::NotCurrent,
@@ -2131,6 +2176,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                             ));
                         }
                         if !fault_codes.is_empty() {
+                            identity_fault = true;
                             report.fault(
                                 "indeterminate",
                                 InputStatus::NotCurrent,
@@ -2263,6 +2309,10 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                     truncate(&names.join(", "), 80)
                 ));
             }
+            identity.faulting = identity_fault || no_data;
+            if !unknown && !code_unknown && !no_data && drift.is_none() {
+                identity.recovered_since_grace = true;
+            }
             observations.push((keyed_target, observation, reference, note));
         }
     }
@@ -2274,6 +2324,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     report.identity["warmup_grace"] = json!(input.warmup_grace);
     report.identity["warming_bound"] = json!(input.warming_bound);
     read.metric_alerts = Some(history);
+    read.lifecycle = Some(lifecycle);
     if !indeterminate_rules.is_empty() {
         // Whole identities only: cap both fan-out and bytes, reserving room
         // for the omitted count. Complete counts survive truncated instances.

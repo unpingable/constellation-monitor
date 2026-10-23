@@ -25,8 +25,8 @@ use crate::registry::{
 };
 use crate::remediation::{self, PageDecision};
 use crate::state::{
-    ConditionState, LastIntent, METRIC_ALERTS_STATE_SCHEMA, MetricAlertsHistory, MetricAlertsState,
-    State,
+    AttentionLifecycle, ConditionState, IdentityLifecycle, LastIntent, METRIC_ALERTS_STATE_SCHEMA,
+    MetricAlertsHistory, MetricAlertsState, State,
 };
 use crate::util::{format_seconds, read_bounded, rfc3339_seconds, truncate, write_atomic};
 
@@ -329,7 +329,7 @@ fn reconfiguration(path: &Path, now: i64, bound: i64) -> Result<Option<i64>, Str
         return Err("invalid reconfiguration marker run_id or reason".into());
     }
     let at = rfc3339_seconds(&marker.at)?;
-    if at > now {
+    if at > now.saturating_add(300) {
         return Err("reconfiguration marker is from the future".into());
     }
     if now.saturating_sub(at) >= bound {
@@ -365,33 +365,62 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .metric_alerts
         .as_ref()
         .map_or_else(default_metric_warmup_grace, |input| input.warmup_grace);
-    let first_seen = saved_metric_state
-        .as_ref()
-        .and_then(|saved| saved.first_seen)
-        .unwrap_or_else(|| {
-            if state.updated_at > 0 {
-                options.now.saturating_sub(warmup_grace)
-            } else {
-                options.now
+    let lifecycle_path = state_dir.join("state-attention-lifecycle.json");
+    let mut lifecycle =
+        AttentionLifecycle::load(&lifecycle_path, &config.site)?.unwrap_or_else(|| {
+            let mut lifecycle = AttentionLifecycle::new(
+                &config.site,
+                if state.updated_at > 0 {
+                    options.now.saturating_sub(warmup_grace)
+                } else {
+                    options.now
+                },
+            );
+            // Without identity history, established targets cannot attest a
+            // nonfaulting pre-marker pass. New targets may still warm.
+            for condition in state.conditions.values() {
+                if condition.key.rule == "metric-alert-firing"
+                    && let Some(target) = &condition.key.target_class
+                {
+                    lifecycle.identities.insert(
+                        target.clone(),
+                        IdentityLifecycle {
+                            faulting: true,
+                            ..IdentityLifecycle::default()
+                        },
+                    );
+                }
             }
+            lifecycle
         });
-    let mut reconfigured_at = saved_metric_state
-        .as_ref()
-        .and_then(|saved| saved.reconfigured_at);
+    // A rollback evaluator cannot attest per-identity continuity or recovery.
+    if lifecycle.updated_at < state.updated_at {
+        for identity in lifecycle.identities.values_mut() {
+            identity.faulting = true;
+        }
+    }
+    let first_seen = lifecycle.first_seen;
     let marker_path = state_dir.join("reconfigured");
-    let marker_present = marker_path
-        .try_exists()
-        .map_err(|error| format!("cannot inspect reconfiguration marker: {error}"))?;
+    let marker_present = marker_path.try_exists().unwrap_or(true);
+    let mut marker_error = None;
     if marker_present {
         let bound = config
             .inputs
             .metric_alerts
             .as_ref()
             .map_or_else(default_metric_warming_bound, |input| input.warming_bound);
-        if let Some(at) = reconfiguration(&marker_path, options.now, bound)? {
-            reconfigured_at = Some(reconfigured_at.map_or(at, |saved| saved.max(at)));
+        match reconfiguration(&marker_path, options.now, bound) {
+            Ok(Some(at)) if lifecycle.reconfigured_at.is_none_or(|saved| at > saved) => {
+                lifecycle.reconfigured_at = Some(at);
+                for identity in lifecycle.identities.values_mut() {
+                    identity.rearm(at, bound);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => marker_error = Some(format!("invalid: {error}")),
         }
     }
+    let reconfigured_at = lifecycle.reconfigured_at;
     let metric_history = match saved_metric_state {
         Some(mut metric_state) => {
             if metric_state.updated_at < state.updated_at
@@ -448,7 +477,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         now_ms: options.now_ms,
         metric_alerts: metric_history.as_ref(),
         first_seen,
-        reconfigured_at,
+        lifecycle: &lifecycle,
         nq_watchers: config
             .inputs
             .nq_status
@@ -461,6 +490,30 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     .or_else(|| state.nq_watchers.values().next())
             }),
     });
+    if let Some(error) = &marker_error {
+        read.reports.push(InputReport {
+            label: "reconfiguration_marker".into(),
+            kind: "reconfiguration_marker",
+            component: "host_posture",
+            source: marker_path.display().to_string(),
+            status: InputStatus::Unavailable,
+            causes: vec!["unreadable"],
+            rejected_rules: Vec::new(),
+            error: Some(error.clone()),
+            identity: Value::Null,
+        });
+    }
+    if let Some(updated) = read.lifecycle.take() {
+        lifecycle = updated;
+    } else if read
+        .reports
+        .iter()
+        .any(|report| report.kind == "metric_alerts" && report.status != InputStatus::Ok)
+    {
+        for identity in lifecycle.identities.values_mut() {
+            identity.faulting = true;
+        }
+    }
     if let Some(at) = reconfigured_at {
         for report in read
             .reports
@@ -589,7 +642,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     // from pass to pass still reaches the bound.
                     observation: if report.causes.contains(cause) {
                         Observation::Present
-                    } else if report.status == InputStatus::Ok {
+                    } else if report.status == InputStatus::Ok
+                        && !report.causes.contains(&"warming")
+                    {
                         Observation::Clear
                     } else {
                         Observation::Unknown
@@ -653,6 +708,15 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             (
                 Observation::Removed,
                 "target retired from supervision by the operator".into(),
+            )
+        } else if condition.key.rule == INPUT_UNAVAILABLE
+            && read.reports.iter().any(|report| {
+                report.label == condition.input_label && report.causes.contains(&"warming")
+            })
+        {
+            (
+                Observation::Unknown,
+                "input warming; recovery not observed".into(),
             )
         } else if condition.key.rule == INPUT_UNAVAILABLE {
             // Every configured input reports every fault class, so an
@@ -1115,12 +1179,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             schema: METRIC_ALERTS_STATE_SCHEMA.into(),
             site: config.site.clone(),
             updated_at: now,
-            first_seen: Some(first_seen),
-            reconfigured_at,
             history: metric_history,
         }
         .save(&metric_history_path)?;
-        if marker_present {
+        lifecycle.updated_at = now;
+        lifecycle.save(&lifecycle_path)?;
+        if marker_present && marker_error.is_some() {
+            fs::rename(
+                &marker_path,
+                state_dir.join(format!("reconfigured.invalid-{now}")),
+            )
+            .map_err(|error| format!("cannot quarantine reconfiguration marker: {error}"))?;
+        } else if marker_present {
             fs::remove_file(&marker_path)
                 .map_err(|error| format!("cannot remove reconfiguration marker: {error}"))?;
         }
@@ -1584,6 +1654,8 @@ pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
     let mut state = State::load(&config.state_path, &config.site)?;
     let metric_history_path = config.state_dir().join("state-metric-alerts.json");
     let mut metric_history = MetricAlertsState::load(&metric_history_path, &config.site)?;
+    let lifecycle_path = config.state_dir().join("state-attention-lifecycle.json");
+    let mut lifecycle = AttentionLifecycle::load(&lifecycle_path, &config.site)?;
     let previous = state.updated_at;
     let mut clamped = state.reset_clock(now);
     if let Some(history) = &mut metric_history {
@@ -1592,6 +1664,13 @@ pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
             history.save(&metric_history_path)?;
         }
         clamped += history_clamped;
+    }
+    if let Some(lifecycle) = &mut lifecycle {
+        let lifecycle_clamped = lifecycle.reset_clock(now);
+        if lifecycle_clamped > 0 {
+            lifecycle.save(&lifecycle_path)?;
+        }
+        clamped += lifecycle_clamped;
     }
     if clamped > 0 {
         state.save(&config.state_path)?;
