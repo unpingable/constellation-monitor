@@ -5,11 +5,43 @@
 use std::path::Path;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::util::{ChildEnvironment, excerpt, run_bounded};
+use crate::util::{ChildEnvironment, excerpt, read_bounded, run_bounded};
+
+/// Read only route references and transports; locators remain NQ's concern.
+pub fn page_is_local(config: &Config) -> Result<bool, String> {
+    let Some(page) = &config.routes.page_route else {
+        return Ok(false);
+    };
+    #[derive(Deserialize)]
+    struct Route {
+        reference: String,
+        transport: String,
+    }
+    #[derive(Deserialize)]
+    struct Routes {
+        #[serde(default)]
+        notification_routes: Vec<Route>,
+    }
+    let bytes = read_bounded(&config.nq.config, 1024 * 1024)?;
+    let routes: Routes =
+        toml::from_str(std::str::from_utf8(&bytes).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("cannot read NQ route transports: {error}"))?;
+    let local = routes
+        .notification_routes
+        .iter()
+        .any(|route| route.reference == *page && route.transport == "local_file");
+    if local && page.len() > crate::intent::LOCAL_ROUTE_MAX {
+        return Err(format!(
+            "a local_file page_route must be at most {} bytes so its rendered message fits NQ's 4 KiB limit",
+            crate::intent::LOCAL_ROUTE_MAX
+        ));
+    }
+    Ok(local)
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SubmitOutcome {

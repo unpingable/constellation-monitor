@@ -79,6 +79,9 @@ struct Harness {
     dir: TempDir,
     extra_config: String,
     page_route: bool,
+    page_reference: &'static str,
+    page_transport: &'static str,
+    notice_reference: &'static str,
     network: bool,
     notice_transport: &'static str,
     runbook_base: &'static str,
@@ -93,6 +96,9 @@ impl Harness {
             dir,
             extra_config: String::new(),
             page_route: true,
+            page_reference: "pagerduty-ops",
+            page_transport: "pagerduty",
+            notice_reference: "operations",
             network: true,
             notice_transport: "slack",
             runbook_base: "https://docs.example.org/beta-observability/RUNBOOKS.md",
@@ -124,10 +130,19 @@ impl Harness {
     }
 
     fn config_path(&self) -> PathBuf {
+        let nq_config = self.path("nq.toml");
+        fs::write(
+            &nq_config,
+            format!(
+                "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n",
+                self.page_reference, self.page_transport,
+            ),
+        )
+        .unwrap();
         let page = if self.page_route {
-            "page_route = \"pagerduty-ops\"\n"
+            format!("page_route = {:?}\n", self.page_reference)
         } else {
-            ""
+            String::new()
         };
         let text = format!(
             "schema = \"constellation.attention_config.v1\"\n\
@@ -137,14 +152,16 @@ impl Harness {
              cartography_url = \"{runbook_base}\"\n\
              [nq]\n\
              program = \"{nq}\"\n\
-             config = \"/etc/nq/nqd-ops.toml\"\n\
+             config = \"{nq_config}\"\n\
              [routes]\n\
-             notice_route = \"operations\"\n\
+             notice_route = \"{notice_reference}\"\n\
              notice_transport = \"{transport}\"\n\
              {page}\
              network_enabled = {network}\n\
              {extra}\n",
             state = self.path("state/state.json").display(),
+            nq_config = nq_config.display(),
+            notice_reference = self.notice_reference,
             nq = Path::new(FIXTURES).join("fake-nq.sh").display(),
             network = self.network,
             transport = self.notice_transport,
@@ -744,8 +761,11 @@ fn loopback_runbooks_reach_notice_and_page_without_nq_runbook_url() {
             String::from_utf8_lossy(&output.stderr)
                 .matches("runbook_url_withheld:")
                 .count(),
-            1
+            usize::from(offset == 660 || offset == 840)
         );
+        if offset == 660 || offset == 840 {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("for 1 intents"));
+        }
     }
     let calls = harness.calls();
     assert_eq!(calls.len(), 4, "{calls:?}");
@@ -767,6 +787,186 @@ fn loopback_runbooks_reach_notice_and_page_without_nq_runbook_url() {
             intent["inspection_reference"],
             "http://127.0.0.1:8088/RUNBOOKS.md#host-posture-unknown"
         );
+    }
+}
+
+#[test]
+fn rehearsal_local_page_route_delivers_v1_with_loopback_runbooks() {
+    let mut harness = Harness::new();
+    harness.runbook_base = "http://127.0.0.1:8088/RUNBOOKS.md";
+    harness.page_reference = "site-page-inbox";
+    harness.page_transport = "local_file";
+    harness.network = false;
+    harness.fake("local_route", "site-page-inbox");
+    harness.host_posture("root");
+    for (offset, state) in [
+        (0, ProjectedStateV1::Unknown),
+        (660, ProjectedStateV1::Unknown),
+        (720, ProjectedStateV1::Healthy),
+        (840, ProjectedStateV1::Healthy),
+    ] {
+        set(&harness, "root", state, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("runbook_url_withheld:"));
+        let report = harness.report();
+        assert_eq!(report["page_delivery"], "local_file route; v1 copy");
+        assert_eq!(report["exit_class"], "clean");
+        assert!(report["first_error"].is_null());
+    }
+    let calls = harness.calls();
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    for (index, call) in calls.iter().enumerate() {
+        let id = call.split(' ').nth(3).unwrap();
+        let intent: Value = serde_json::from_slice(&harness.submitted_intent(id)).unwrap();
+        assert_eq!(intent["schema"], "nq.notification_delivery_intent.v1");
+        assert!(intent.get("runbook_url").is_none());
+        assert_eq!(intent["response_class"], "page");
+        assert_eq!(
+            intent["inspection_reference"],
+            "http://127.0.0.1:8088/RUNBOOKS.md#host-posture-unknown"
+        );
+        if index % 2 == 1 {
+            assert!(call.starts_with("submit local:site-page-inbox "), "{call}");
+            assert!(call.contains(" accepted "), "{call}");
+            assert_eq!(
+                intent["destination_identity"],
+                "local-inbox:site-page-inbox"
+            );
+        }
+    }
+}
+
+#[test]
+fn shared_local_page_and_notice_route_delivers_one_copy() {
+    let mut harness = Harness::new();
+    harness.page_reference = "site-page-inbox";
+    harness.page_transport = "local_file";
+    harness.notice_reference = "site-page-inbox";
+    harness.notice_transport = "local_file";
+    harness.network = false;
+    harness.fake("local_route", "site-page-inbox");
+    harness.host_posture("root");
+    for (offset, state) in [
+        (0, ProjectedStateV1::Unknown),
+        (660, ProjectedStateV1::Unknown),
+        (720, ProjectedStateV1::Healthy),
+        (840, ProjectedStateV1::Healthy),
+    ] {
+        set(&harness, "root", state, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+    }
+    assert_eq!(harness.calls().len(), 2, "one trigger and one resolve");
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .all(|call| call.starts_with("submit local:site-page-inbox "))
+    );
+}
+
+#[test]
+fn upgrade_repairs_unretained_v1_and_local_page_intents() {
+    let mut harness = Harness::new();
+    harness.page_reference = "site-page-inbox";
+    harness.page_transport = "local_file";
+    harness.network = false;
+    harness.fake("local_route", "site-page-inbox");
+    harness.fake("command_error", "");
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate_at(T0 + offset, &[]);
+    }
+    let mut state = harness.state();
+    let last = state["conditions"][UNKNOWN_ROOT]["last_intent"]
+        .as_object_mut()
+        .unwrap();
+    for (role, record) in last {
+        let path = harness
+            .path("state/intents")
+            .join(record["intent_file"].as_str().unwrap());
+        let mut intent: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        intent["runbook_url"] = intent["inspection_reference"].clone();
+        if role == "page" {
+            intent["schema"] = json!("nq.notification_delivery_intent.v2");
+            intent["destination_identity"] = json!("pagerduty:site-page-inbox");
+            intent["condition"] = json!({"site": "labelwatch"});
+            intent["action"] = json!("trigger");
+            intent["severity"] = json!("critical");
+            intent["details"] = json!({});
+            record["schema"] = intent["schema"].clone();
+            record["network"] = json!(false);
+        }
+        fs::write(path, serde_jcs::to_vec(&intent).unwrap()).unwrap();
+    }
+    fs::write(
+        harness.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let output = harness.evaluate_at(T0 + 720, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        harness.report()["intents"][1]["schema"],
+        "nq.notification_delivery_intent.v1"
+    );
+    assert_eq!(harness.report()["intents"][1]["outcome"], "accepted");
+    assert_eq!(harness.calls().len(), 2);
+    // Local retries must still deliver when network is disabled.
+    harness.fake("next_state", "failed");
+    for offset in [780, 900] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate_at(T0 + offset, &[]);
+    }
+    harness.fake("next_state", "accepted");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 1800);
+    let output = harness.evaluate_at(T0 + 1800, &[]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(harness.report()["intents"][0]["outcome"], "accepted");
+    assert_eq!(harness.report()["intents"][0]["route"], "site-page-inbox");
+}
+
+#[test]
+fn dry_run_with_loopback_runbooks_does_not_log_withholding() {
+    let mut harness = Harness::new();
+    harness.runbook_base = "http://127.0.0.1:8088/RUNBOOKS.md";
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+    let output = harness.evaluate_at(T0 + 660, &["--dry-run"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("runbook_url_withheld:"));
+    let report: Value =
+        serde_json::from_slice(&fs::read(harness.path("state/dry-run/report.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["intents"].as_array().unwrap().len(), 2);
+    assert!(harness.calls().is_empty());
+}
+
+#[test]
+fn withholding_log_counts_v2_submissions_once_per_pass() {
+    let mut harness = Harness::new();
+    harness.runbook_base = "http://127.0.0.1:8088/RUNBOOKS.md";
+    harness.host_posture("alpha").host_posture("beta");
+    for offset in [0, 660] {
+        for label in ["alpha", "beta"] {
+            set(&harness, label, ProjectedStateV1::Unknown, T0 + offset);
+        }
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.matches("runbook_url_withheld:").count(),
+            usize::from(offset == 660)
+        );
+        if offset == 660 {
+            assert!(stderr.contains("for 2 intents"), "{stderr}");
+        }
     }
 }
 

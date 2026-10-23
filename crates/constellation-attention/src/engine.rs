@@ -64,6 +64,63 @@ struct Planned {
     retry_of: Option<String>,
 }
 
+struct DeliveryRoutes<'a> {
+    config: &'a Config,
+    page_local: bool,
+}
+
+impl DeliveryRoutes<'_> {
+    fn local(&self, schema: &str, route: &str) -> bool {
+        schema == INTENT_V1
+            && ((route == self.config.routes.notice_route && self.config.routes.local(schema))
+                || (self.page_local && self.config.routes.page_route.as_deref() == Some(route)))
+    }
+
+    fn delivers(&self, schema: &str, route: &str) -> bool {
+        self.config.routes.network_enabled || self.local(schema, route)
+    }
+
+    /// Earlier builds wrote intents NQ could not retain. Repair only those
+    /// without custody, so an active condition can recover on upgrade.
+    fn repair_unretained(&self, last: &mut LastIntent, dir: &Path) -> Result<(), String> {
+        if last.notification_id.is_some() {
+            return Ok(());
+        }
+        let local_page = last.schema == INTENT_V2
+            && self.page_local
+            && self.config.routes.page_route.as_ref() == Some(&last.route);
+        if last.schema != INTENT_V1 && !local_page {
+            return Ok(());
+        }
+        let path = dir.join(&last.intent_file);
+        // Missing files are handled by the existing follow-up error path.
+        let Ok(bytes) = read_bounded(&path, 64 * 1024) else {
+            return Ok(());
+        };
+        let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
+            return Ok(());
+        };
+        let Some(fields) = value.as_object_mut() else {
+            return Ok(());
+        };
+        let removed_url = fields.remove("runbook_url").is_some();
+        if local_page {
+            for key in ["action", "condition", "severity", "details"] {
+                fields.remove(key);
+            }
+            value["schema"] = json!(INTENT_V1);
+            value["destination_identity"] = json!(format!("local-inbox:{}", last.route));
+            value["summary"] = json!(truncate(value["summary"].as_str().unwrap_or_default(), 512));
+            last.schema = INTENT_V1.into();
+            last.network = true;
+        }
+        if local_page || removed_url {
+            write_atomic(&path, &intent::canonical(&value)?)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Serialize)]
 struct IntentReport {
     condition_id: String,
@@ -173,7 +230,7 @@ pub fn step(
 fn follow_up(
     last: &LastIntent,
     condition: &ConditionState,
-    config: &Config,
+    routes: &DeliveryRoutes<'_>,
 ) -> Option<(Operation, bool)> {
     let relevant = match Action::parse(&last.action) {
         Some(Action::Trigger) => condition.active,
@@ -190,7 +247,7 @@ fn follow_up(
         ("unknown" | "command_error", None) => Some((Operation::SubmitAgain, false)),
         ("accepted", _) => None,
         // A deliberate refusal (no network) is final until network is enabled.
-        (_, Some(_)) if !config.routes.delivers(&last.schema) => None,
+        (_, Some(_)) if !routes.delivers(&last.schema, &last.route) => None,
         // PagerDuty: NQ allows resubmitting the newest failed/unknown/refused/pending record.
         (_, Some(_)) if last.schema == INTENT_V2 => Some((Operation::Resubmit, true)),
         // Slack/Discord/local inbox: a new event only after a definite
@@ -274,19 +331,10 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         ));
     }
 
-    if [
-        &config.runbooks.cartography_url,
-        &config.runbooks.monitor_url,
-    ]
-    .into_iter()
-    .flatten()
-    .any(|url| !url.starts_with("https://"))
-    {
-        eprintln!(
-            "runbook_url_withheld: non-HTTPS runbook URL withheld from NQ runbook_url; \
-             link retained in human-readable inspection_reference"
-        );
-    }
+    let delivery_routes = DeliveryRoutes {
+        config,
+        page_local: nq::page_is_local(config)?,
+    };
 
     let mut read = inputs::read_all(&Context {
         config,
@@ -599,6 +647,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Plan: one intent per condition and route per pass.
     let intents_dir = output_dir.join("intents");
     ensure_dir(&intents_dir)?;
+    if !options.dry_run {
+        for condition in state.conditions.values_mut() {
+            for last in condition
+                .last_intent
+                .values_mut()
+                .chain(condition.pending_trigger.values_mut())
+            {
+                delivery_routes.repair_unretained(last, &intents_dir)?;
+            }
+        }
+    }
     let mut plan: Vec<Planned> = Vec::new();
     let mut superseded: Vec<Value> = Vec::new();
     let notice_route = config.routes.notice_route.clone();
@@ -637,7 +696,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 {
                     roles.push(("page".into(), page.clone()));
                 }
-                roles.push(("notice".into(), notice_route.clone()));
+                if !roles.iter().any(|(_, route)| route == &notice_route) {
+                    roles.push(("notice".into(), notice_route.clone()));
+                }
             }
             Action::Resolve => {
                 for (role, last) in &condition.last_intent {
@@ -679,14 +740,19 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         };
         let mut written = Vec::new();
         for (role, route) in roles {
-            let (value, schema) = if role == "page" {
+            let local_page = role == "page" && delivery_routes.page_local;
+            let (value, schema) = if role == "page" && !local_page {
                 (intent::v2(&input, &route), INTENT_V2)
             } else {
                 (
                     intent::v1(
                         &input,
                         &route,
-                        config.routes.notice_transport.destination_label(),
+                        if local_page {
+                            intent::LOCAL_INBOX_LABEL
+                        } else {
+                            config.routes.notice_transport.destination_label()
+                        },
                     ),
                     INTENT_V1,
                 )
@@ -699,11 +765,11 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     stable_event_id: stable_event_id.clone(),
                     transition_id: transition_id.clone(),
                     action: action.as_str().into(),
+                    network: delivery_routes.delivers(schema, &route),
                     route,
                     schema: schema.into(),
                     notification_id: None,
                     outcome: "unknown".into(),
-                    network: config.routes.delivers(schema),
                     at: now,
                     intent_file: file,
                 },
@@ -757,7 +823,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         }
         let snapshot = condition.clone();
         for (role, last) in &mut condition.last_intent {
-            let Some((operation, waits)) = follow_up(last, &snapshot, config) else {
+            let Some((operation, waits)) = follow_up(last, &snapshot, &delivery_routes) else {
                 continue;
             };
             let interval = if operation == Operation::Resubmit {
@@ -875,7 +941,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 }
             }
             last.outcome = "unknown".into();
-            last.network = config.routes.delivers(&last.schema);
+            last.network = delivery_routes.delivers(&last.schema, &last.route);
             last.at = now;
             plan.push(Planned {
                 condition_id: id.clone(),
@@ -939,6 +1005,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     }
     let mut delivery_problem = !unreadable.is_empty() || !superseded.is_empty();
     let mut intent_reports = unreadable;
+    let mut withheld_count = 0;
     let mut dropped_triggers = superseded;
     for item in &plan {
         let condition = state
@@ -955,11 +1022,24 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         let (outcome, notification_id, error) = if options.dry_run {
             ("not_submitted".to_owned(), None, None)
         } else {
+            if last.schema == INTENT_V2
+                && read_bounded(&intents_dir.join(&last.intent_file), 64 * 1024)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|intent| {
+                        intent.get("runbook_url").is_none()
+                            && intent["inspection_reference"]
+                                .as_str()
+                                .is_some_and(|url| url.starts_with("http://"))
+                    })
+            {
+                withheld_count += 1;
+            }
             let result = match (item.operation, &item.retry_of) {
                 (Operation::Resubmit, Some(from)) => {
                     nq::resubmit(config, from, &last.stable_event_id)
                 }
-                _ if config.routes.local(&last.schema) => {
+                _ if delivery_routes.local(&last.schema, &last.route) => {
                     nq::deliver_local(config, &intents_dir.join(&last.intent_file), &last.route)
                 }
                 _ => nq::submit(config, &intents_dir.join(&last.intent_file), &last.route),
@@ -1023,6 +1103,13 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         });
     }
 
+    if withheld_count > 0 {
+        eprintln!(
+            "runbook_url_withheld: non-HTTPS runbook URL withheld from NQ runbook_url for {withheld_count} intents; \
+             link retained in human-readable inspection_reference"
+        );
+    }
+
     if !options.dry_run {
         // Forget settled, inactive conditions and unreferenced intent files.
         state.conditions.retain(|_, condition| {
@@ -1031,7 +1118,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 || condition
                     .last_intent
                     .values()
-                    .any(|last| follow_up(last, condition, config).is_some())
+                    .any(|last| follow_up(last, condition, &delivery_routes).is_some())
                 || !condition.pending_trigger.is_empty()
         });
         state.updated_at = now;
@@ -1115,6 +1202,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         "registry": REGISTRY_VERSION,
         "attention_policy_digest": digest,
         "network_enabled": config.routes.network_enabled,
+        "page_delivery": delivery_routes.page_local.then_some("local_file route; v1 copy"),
         "rules": rules_report(&rules, config),
         "inputs": read.reports.iter().collect::<Vec<&InputReport>>(),
         "conditions": condition_reports,
@@ -1142,9 +1230,13 @@ fn first_pass_error(report: &Value) -> Option<String> {
     if report["exit_code"] == 0 {
         return None;
     }
-    let input = report["inputs"].as_array()?.iter().find(|input| {
-        input["status"] != "ok" || input["causes"].as_array().is_some_and(|c| !c.is_empty())
-    });
+    let input = report["inputs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|input| {
+            input["status"] != "ok" || input["causes"].as_array().is_some_and(|c| !c.is_empty())
+        });
     let error = input
         .map(|input| {
             format!(
@@ -1160,8 +1252,10 @@ fn first_pass_error(report: &Value) -> Option<String> {
                 .into_iter()
                 .flat_map(|key| report[key].as_array().into_iter().flatten())
                 .find(|item| {
-                    !matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted"))
-                        && !(item["outcome"] == "refused" && report["network_enabled"] == false)
+                    item["error"].is_string()
+                        || (!matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted"))
+                            && !(item["outcome"] == "refused"
+                                && report["network_enabled"] == false))
                 })
                 .map(|item| {
                     format!(
@@ -1183,7 +1277,13 @@ fn first_pass_error(report: &Value) -> Option<String> {
                 )
             })
         })
-        .or_else(|| report["intent_log_error"].as_str().map(str::to_owned));
+        .or_else(|| report["intent_log_error"].as_str().map(str::to_owned))
+        .or_else(|| {
+            Some(format!(
+                "pass: {}",
+                report["exit_class"].as_str().unwrap_or("error")
+            ))
+        });
     error.map(|error| error.lines().next().unwrap_or_default().to_owned())
 }
 
@@ -1362,4 +1462,41 @@ pub fn reset_clock(config: &Config, now: i64) -> Result<Value, String> {
 #[must_use]
 pub fn state_path(config: &Config) -> PathBuf {
     config.state_path.clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::first_pass_error;
+    use serde_json::json;
+
+    #[test]
+    fn log_failure_is_reported_even_without_input_or_delivery_rows() {
+        assert_eq!(
+            first_pass_error(&json!({
+                "exit_code": 3,
+                "exit_class": "delivery_error",
+                "intent_log_error": "intent_log_unwritable: permission denied\nmore detail",
+            }))
+            .as_deref(),
+            Some("intent_log_unwritable: permission denied"),
+        );
+    }
+
+    #[test]
+    fn delivery_error_is_not_hidden_by_network_disabled() {
+        assert_eq!(
+            first_pass_error(&json!({
+                "exit_code": 3,
+                "network_enabled": false,
+                "inputs": [],
+                "dropped_triggers": [{
+                    "condition_id": "page-condition",
+                    "outcome": "refused",
+                    "error": "superseded by a resolve before it was accepted",
+                }],
+            }))
+            .as_deref(),
+            Some("delivery page-condition: superseded by a resolve before it was accepted"),
+        );
+    }
 }

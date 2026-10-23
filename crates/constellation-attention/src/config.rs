@@ -185,8 +185,9 @@ pub struct Routes {
     /// Transport of `notice_route`; it names the destination identity label
     /// and, for `local_file`, selects `nq notification deliver-local`.
     pub notice_transport: NoticeTransport,
-    /// NQ route reference of a pagerduty route (v2 intents). Without it, page
-    /// rules reach the operator through `notice_route` only.
+    /// NQ route reference of a pagerduty route (v2 intents), or a local_file
+    /// qualification route (v1 copies). Without it, page rules reach the
+    /// operator through `notice_route` only.
     pub page_route: Option<String>,
     /// Pass `--enable-network` to `nq notification submit`. When false NQ
     /// retains a refusal and sends nothing. A `local_file` notice route
@@ -509,7 +510,9 @@ impl Config {
         }
         if let Some(page) = &self.routes.page_route {
             route_reference("routes.page_route", page)?;
-            if page == &self.routes.notice_route {
+            if page == &self.routes.notice_route
+                && self.routes.notice_transport != NoticeTransport::LocalFile
+            {
                 return Err("page_route and notice_route must be different NQ routes".into());
             }
         }

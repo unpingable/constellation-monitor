@@ -352,12 +352,19 @@ decimal port (1–65535) and a path, for example
 HTTP hostnames (including `localhost`), other addresses and userinfo are
 refused. Bases must be at most 900 bytes, contain no fragment, whitespace or
 control characters; the evaluator appends each rule's `#anchor`.
-NQ accepts only HTTPS in the optional `runbook_url` field. Both notice and
-page intents carry that field for HTTPS runbooks and omit it for loopback
-HTTP runbooks. The full link remains in `inspection_reference`, which NQ
-renders in the human-readable notice text. Each pass with a non-HTTPS
-runbook logs one `runbook_url_withheld` message; withholding the field is
-not a delivery error.
+NQ v1 intents never carry `runbook_url`: its strict schema rejects that field.
+V2 page intents carry it for HTTPS runbooks and omit it for loopback HTTP
+runbooks. The full link remains in `inspection_reference`, which NQ renders
+in the human-readable notice text. A pass that submits v2 intents with a
+withheld non-HTTPS URL logs one `runbook_url_withheld` message naming the
+intent count. Passes without such submissions, including dry runs, log none;
+withholding the field is not a delivery error.
+
+For qualification, a `page_route` whose transport is `local_file` in NQ's
+`notification_routes` receives a v1 page-tier copy through `deliver-local`.
+The report records `page_delivery: "local_file route; v1 copy"`. If page and
+notice use the same local route, attention delivers one copy per transition.
+Local copies need no network; a PagerDuty page route continues to receive v2.
 
 ## Response policy (remediation window)
 
