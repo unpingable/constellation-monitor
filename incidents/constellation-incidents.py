@@ -33,6 +33,44 @@ reports keeps it open for the operator. An unresolved incident already present f
 """
 import argparse, datetime, hashlib, json, os, sqlite3, subprocess, sys, tempfile, time
 
+# Load our sibling by absolute path: importlib callers and isolated installed
+# entrypoints need not put the incident implementation directory on sys.path.
+import importlib.util
+from pathlib import Path
+
+_metric_spec = importlib.util.spec_from_file_location('incident_metric_links', Path(__file__).resolve().with_name('metric_links.py'))
+_metric_links = importlib.util.module_from_spec(_metric_spec)
+_metric_spec.loader.exec_module(_metric_links)
+
+
+def metric_links(incident, config, now):
+    """Presentation metadata only; never alter retained incident rows."""
+    if isinstance(config, dict) and config.get('_metric_links_error'):
+        return {'metric_links': {}, 'metric_links_status': config['_metric_links_error']}
+    try:
+        options = (config or {}).get('grafana', {})
+        return {'metric_links': _metric_links.incident_metric_links(incident, site=options.get('site'),
+                host=options.get('host'), base_url=options.get('base_url', 'http://localhost:3100'), now=now)}
+    except (ValueError, KeyError, TypeError, AttributeError, OverflowError):
+        return {'metric_links': {}, 'metric_links_status': 'unavailable: valid first_seen, observation time and configured Grafana site/host/base_url required'}
+
+
+def link_config(path):
+    try:
+        with open(path, 'rb') as source:
+            raw = source.read(65537)
+        if len(raw) > 65536:
+            raise ValueError('incidents config exceeds 64 KiB')
+        config = json.loads(raw)
+        if not isinstance(config, dict):
+            raise ValueError('incidents config must be an object')
+        return config
+    except FileNotFoundError:
+        return {}  # inspection and show remain available without graph configuration
+    except (OSError, ValueError) as error:
+        return {'_metric_links_error': 'unavailable: incidents graph config could not be read (%s)' % type(error).__name__}
+
+
 SCHEMA = "constellation.incidents/v1"
 CONFIRM_SECONDS = 300
 RETAIN_DAYS = 30
@@ -473,7 +511,7 @@ INSPECTION_MISSING = ["response_actor", "assignment", "authority_decision", "pro
                       "detection_count", "unpersisted_detections"]
 
 
-def inspection(store, now, ref=None, source=None):
+def inspection(store, now, ref=None, source=None, config=None):
     """An inspection, never a new lifecycle. Exact retained rows, no synthesized authority or health.
     Call under a backend-consistent read transaction. A bounded refusal is not an empty success.
     """
@@ -494,11 +532,11 @@ def inspection(store, now, ref=None, source=None):
            "meta": meta, "missing_fields": INSPECTION_MISSING,
            "scope": {"resolved_window_seconds": 86400 if ref is None else None,
                      "history": "source-retained append order; normally at most 300 events per incident"},
-           "incidents": [{"incident": i, "events": store.events(i["id"]), "attempts": store.attempts(i["id"])} for i in rows]}
+           "incidents": [{"incident": i, "events": store.events(i["id"]), "attempts": store.attempts(i["id"]), **metric_links(i, config, now)} for i in rows]}
     return doc
 
 
-def inspect_readonly(path, now, ref=None):
+def inspect_readonly(path, now, ref=None, config=None):
     from urllib.parse import quote
     # URI-escape names so ?/#/% in an operator-configured path cannot change read mode.
     store = SqliteStore(quote(os.path.abspath(path), safe="/"), readonly=True)
@@ -506,12 +544,12 @@ def inspect_readonly(path, now, ref=None):
         store._x("PRAGMA query_only=ON")
         store._x("BEGIN")
         return inspection(store, now, ref, {"kind": "incident-store/v1", "locator": os.path.abspath(path),
-                          "implementation_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest()})
+                          "implementation_sha256": hashlib.sha256(open(__file__, "rb").read()).hexdigest()}, config=config)
     finally:
         store.db.close()
 
 
-def inspect_handover(path, now, ref=None):
+def inspect_handover(path, now, ref=None, config=None):
     """Inspect an existing off-host export without importing or asserting current host state."""
     with open(path, "rb") as source:
         raw = source.read(INSPECTION_MAX_BYTES + 1)
@@ -527,6 +565,7 @@ def inspect_handover(path, now, ref=None):
             raise ValueError("incident not in handover: %s" % ref)
     if len(entries) > 1000:
         raise ValueError("handover exceeds 1000 incidents")
+    entries = [dict(e, **metric_links(e["incident"], config, now)) for e in entries]
     return {"schema": INSPECTION, "read_at": iso(now), "meta": {}, "incidents": entries,
             "missing_fields": INSPECTION_MISSING + ["sync_health", "recently_resolved"],
             "source": {"kind": "off-host-handover/v1", "locator": os.path.abspath(path),
@@ -605,7 +644,7 @@ def find(store, ref):
     return None
 
 
-def show_view(store, ref):
+def show_view(store, ref, config=None, now=None):
     i = find(store, ref)
     if not i:
         return "no incident %s" % ref
@@ -613,6 +652,12 @@ def show_view(store, ref):
            "opened %s; last observed %s (%s)%s" % (i["opened_at"], i["last_observed_at"], i["last_observation"],
                                                  "; resolved %s: %s" % (i["resolved_at"], i["resolution"]) if i["resolved_at"] else ""),
            "needs you: %s" % (i["needs_operator"] or "nothing now")]
+    links = metric_links(i, config, time.time() if now is None else now)
+    out.append("metrics (Grafana):")
+    for name, url in links['metric_links'].items():
+        out.append("  %s: %s" % (name, url))
+    if not links['metric_links']:
+        out.append("  " + links['metric_links_status'])
     out.append("attempts:")
     for a in store.attempts(i["id"]) or []:
         out.append("  %s %-26s outcome=%-16s verified=%s" % (a["opened_at"], a["plan"] or a["episode"][:19], a["outcome"] or "in flight", a["verified"] or "no"))
@@ -660,6 +705,7 @@ def load(path):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="constellation-incidents", description=__doc__.split("\n\n")[0])
     ap.add_argument("--db", default="/var/lib/constellation-incidents/incidents.sqlite")
+    ap.add_argument("--config", default="/etc/constellation-incidents/incidents.json", help="optional presentation config (Grafana labels and base URL)")
     sub = ap.add_subparsers(dest="cmd")
     s = sub.add_parser("sync")
     s.add_argument("--report", default="/var/lib/constellation-attention/report.json")
@@ -683,7 +729,7 @@ def main(argv=None):
     try:
         if cmd == "inspect":
             try:
-                doc = inspect_handover(a.handover, time.time(), a.id) if a.handover else inspect_readonly(a.db, time.time(), a.id)
+                doc = inspect_handover(a.handover, time.time(), a.id, link_config(a.config)) if a.handover else inspect_readonly(a.db, time.time(), a.id, link_config(a.config))
                 print(inspection_json(doc))
                 return 0
             except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as e:
@@ -711,7 +757,7 @@ def main(argv=None):
             return 0
         if cmd in ("list", "show"):
             store = SqliteStore(a.db, readonly=True)
-            print(list_view(store) if cmd == "list" else show_view(store, a.ref))
+            print(list_view(store) if cmd == "list" else show_view(store, a.ref, link_config(a.config)))
             return 0
         store = SqliteStore(a.db)
         now = time.time()

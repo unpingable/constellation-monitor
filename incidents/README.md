@@ -56,3 +56,48 @@ The bounded machine interface for the Operations Board is
 [`inspect`](INSPECTION.md). It returns unresolved and recently resolved incidents,
 exact attempts, retained history, sync metadata and explicit missing fields.
 The UI lives in Constellation Workbench, separate from this lifecycle owner.
+
+## Incident metric links
+
+`show` prints Host, Services and Alerts links, and `inspect` includes them as
+`metric_links` on each entry beside `incident`, `events` and `attempts`. The
+retained incident row and its lifecycle are unchanged. The helper now belongs
+to Monitor at `incidents/metric_links.py`, moved from Cartography's temporary
+home. Release assembly must install that sibling beside
+`constellation-incidents.py` (including when the command is a symlink), and
+stop maintaining a separate Cartography implementation. It uses only stdlib.
+
+Set scrape labels and, optionally, the browser-facing Grafana URL in
+`/etc/constellation-incidents/incidents.json`, or pass global `--config PATH`:
+
+```json
+{"grafana": {"site": "example", "host": "machine-01", "base_url": "http://localhost:3100"}}
+```
+
+`base_url` defaults to `http://localhost:3100`; site and host must match the
+installed dashboard scrape labels. They are never inferred from incident
+subjects or machine-id. A reverse-proxy path is supported. Credentials, query
+strings and fragments in the base URL are refused. This presentation config
+contains no secrets. Missing config keeps incident inspection available with
+empty links and an explicit `metric_links_status` explanation. Missing/invalid
+`first_seen` also leaves links unavailable; it never substitutes another time.
+
+The stable dashboard UIDs are `constellation-host`, `constellation-services`,
+`constellation-alerts`. URLs carry `orgId=1`, encoded `var-site` and `var-host`,
+and Unix milliseconds: `from = max(0, first_seen - 30m)` and
+`to = max(first_seen + 30m, last_observed_at or now)`. The lower bound is clamped
+only at the Unix epoch. `last_observed_at` is the incident sync update, not an
+independent metric acquisition time. No graph query or Grafana availability
+check is performed. A resolved incident's link does not assert current health.
+
+Grafana's default listener is loopback. From the operator's computer:
+
+```sh
+ssh -N -L 3100:127.0.0.1:3100 operator@monitored-machine
+```
+
+Keep the forward open while visiting the printed localhost URLs. If using local
+port 13100, forward `13100:127.0.0.1:3100` and set `base_url` to
+`http://localhost:13100`. This setting describes the operator browser's endpoint;
+it does not publish Grafana. The helper CLI also accepts `--first-seen`,
+`--last-observed`, `--site`, `--host`, and `--base-url` for offline link creation.

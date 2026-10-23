@@ -68,6 +68,11 @@
         }
       ],
       "attempts": [],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000"
+      },
       "demo_checkpoint": "2026-10-16T12:55:00Z"
     },
     {
@@ -106,7 +111,12 @@
           "detail": "{\"note\": \"Observation acquisition lost; service health unknown\"}"
         }
       ],
-      "attempts": []
+      "attempts": [],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000"
+      }
     },
     {
       "incident": {
@@ -170,7 +180,12 @@
           "verified": null,
           "plan": "restart-worker.json"
         }
-      ]
+      ],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792153800000"
+      }
     },
     {
       "incident": {
@@ -224,7 +239,12 @@
           "verified": null,
           "plan": "start-inactive.json"
         }
-      ]
+      ],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155480000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155480000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155480000"
+      }
     },
     {
       "incident": {
@@ -262,7 +282,12 @@
           "detail": "{\"owner\": \"Morgan\", \"reason\": \"review needed\", \"resume_when\": \"replacement storage is reviewed\"}"
         }
       ],
-      "attempts": []
+      "attempts": [],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155520000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155520000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155520000"
+      }
     },
     {
       "incident": {
@@ -300,7 +325,12 @@
           "detail": "{\"note\": \"evaluator resolved the condition as recovered; confirming for 300 s\"}"
         }
       ],
-      "attempts": []
+      "attempts": [],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155360000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155360000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155360000"
+      }
     },
     {
       "incident": {
@@ -343,7 +373,12 @@
           "detail": "{\"by\": \"constellation\", \"verified\": true}"
         }
       ],
-      "attempts": []
+      "attempts": [],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155000000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155000000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155000000"
+      }
     },
     {
       "incident": {
@@ -381,7 +416,12 @@
           "detail": "{\"by\": \"demo operator\", \"verified\": false}"
         }
       ],
-      "attempts": []
+      "attempts": [],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155420000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155420000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155420000"
+      }
     },
     {
       "incident": {
@@ -435,7 +475,12 @@
           "verified": null,
           "plan": "increase-worker-limit.json"
         }
-      ]
+      ],
+      "metric_links": {
+        "host": "http://localhost:3100/d/constellation-host?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155500000",
+        "services": "http://localhost:3100/d/constellation-services?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155500000",
+        "alerts": "http://localhost:3100/d/constellation-alerts?orgId=1&var-site=demo&var-host=demo-host&from=1792150200000&to=1792155500000"
+      }
     }
   ],
   "demo_at": "2026-10-16T13:00:00Z",

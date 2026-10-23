@@ -86,7 +86,8 @@ def test_handover_inspection_never_imports_or_implies_sync_health(tmp_path, stor
     path.write_text(json.dumps(doc))
     before = path.read_bytes()
     result = inc.inspect_handover(path, NOW)
-    assert result['incidents'] == doc['incidents']
+    assert [{k: e[k] for k in ('incident', 'events', 'attempts')} for e in result['incidents']] == doc['incidents']
+    assert all(e['metric_links'] == {} for e in result['incidents'])
     assert not result['meta']
     assert result['source']['kind'] == 'off-host-handover/v1'
     assert 'recently_resolved' in result['missing_fields']
