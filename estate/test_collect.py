@@ -616,4 +616,4 @@ def test_attention_delivery_exit_is_named_and_not_an_allowed_input_status(monkey
         "systemctl show constellation-attention.service": (0, "Result=exit-code\nExecMainStatus=4\nActiveState=failed\n")}))
     out = c.timer_concern({"unit": "constellation-attention.timer", "ok_status": [0, 3]}, 10)
     assert out["state"] == "DEGRADED"
-    assert "delivery_failed or delivery_partial" in out["reason"]
+    assert "delivery_failed or delivery_partial or intent_log_unwritable" in out["reason"]

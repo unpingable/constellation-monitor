@@ -32,6 +32,8 @@ pub struct Record {
     pub outcome: String,
     pub network: bool,
     pub notification_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl Record {
@@ -267,6 +269,7 @@ pub fn send_if_due(
         outcome: outcome.outcome.clone(),
         network: config.routes.delivers(INTENT_V1),
         notification_id: outcome.notification_id.clone(),
+        error: outcome.error.clone(),
     };
     let mut bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
@@ -284,11 +287,16 @@ pub fn send_if_due(
 
 /// Keep today's digest obligation visible between bounded retry attempts.
 /// An omitted digest configuration creates no obligation.
-pub fn current_outcome(config: &Config, now: i64) -> Option<String> {
+pub fn current_outcome(config: &Config, now: i64) -> Option<Record> {
     config.digest.as_ref()?;
-    read_record(&config.state_dir().join(RECORD_FILE))
-        .filter(|record| record.day == day(now))
-        .map(|record| record.outcome)
+    let mut record = read_record(&config.state_dir().join(RECORD_FILE))
+        .filter(|record| record.day == day(now))?;
+    // A deliberate refusal settles the day even if networking is later enabled.
+    // Preserve the attempt time, but do not revive its delivery obligation.
+    if record.settled() && record.outcome != "accepted" {
+        record.outcome = "skipped".into();
+    }
+    Some(record)
 }
 
 fn read_record(path: &Path) -> Option<Record> {
@@ -311,6 +319,7 @@ mod tests {
             outcome: outcome.into(),
             network: true,
             notification_id: None,
+            error: None,
         }
     }
 

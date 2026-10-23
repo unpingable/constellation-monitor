@@ -80,17 +80,20 @@ class DiagnosticTest(unittest.TestCase):
         self.assertFalse(result["bins"]["checked_not_wrong_within_scope"])
 
     def test_attention_delivery_failure_is_named_independently_of_conditions(self):
-        for code, exit_class in [(4, "delivery_failed"), (4, "delivery_partial"), (3, "input_error")]:
+        for code, exit_class in [(4, "delivery_failed"), (4, "delivery_partial"), (4, "intent_log_unwritable"), (3, "input_error")]:
             with self.subTest(exit_class=exit_class):
+                delivery_class = "clean" if exit_class == "intent_log_unwritable" else "delivery_partial"
+                outcome = "accepted" if delivery_class == "clean" else "failed"
                 self.write("attention.json", {"schema": "constellation.attention_report.v1", "evaluated_at": "2026-10-20T00:00:00Z",
                                              "conditions": [], "exit_code": code, "exit_class": exit_class,
-                                             "delivery_class": "delivery_partial", "delivery": {"operations": "failed", "page": "accepted"}})
+                                             "delivery_class": delivery_class, "delivery": {"operations": {"outcome": outcome, "last_attempt_at": "2026-10-20T00:00:00Z"}, "page": {"outcome": "accepted", "last_attempt_at": "2026-10-19T00:00:00Z"}}})
                 result = self.run_diagnostic()
                 finding = next(f for f in result["bins"]["probably_wrong"] if f["subject"].startswith("attention."))
                 self.assertIn(exit_class, finding["statement"])
-                self.assertIn("delivery_partial", finding["statement"])
+                self.assertIn(delivery_class, finding["statement"])
                 self.assertIn("operations", finding["statement"])
-                self.assertIn("failed", finding["statement"])
+                self.assertIn("last_attempt_at", finding["statement"])
+                self.assertIn(outcome, finding["statement"])
                 self.assertFalse(result["bins"]["wrong"])
                 (self.root / "record.json").unlink()
 

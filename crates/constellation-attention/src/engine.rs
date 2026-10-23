@@ -31,7 +31,7 @@ use crate::state::{
 use crate::util::{format_seconds, read_bounded, rfc3339_seconds, truncate, write_atomic};
 
 pub const REPORT_SCHEMA: &str = "constellation.attention_report.v1";
-/// Completed evaluation with an unmet required delivery obligation.
+/// Completed evaluation with an unmet delivery obligation or intent-log failure.
 pub const DELIVERY_EXIT_CODE: i32 = 4;
 const INPUT_UNAVAILABLE: &str = "evaluator-input-unavailable";
 
@@ -44,7 +44,7 @@ pub struct PassOptions {
 
 pub struct PassResult {
     pub report: Value,
-    /// 0 clean; 3 input error (takes precedence); 4 required delivery failure.
+    /// 0 clean; 3 input error (takes precedence); 4 delivery or intent-log failure.
     pub exit_code: i32,
 }
 
@@ -71,6 +71,20 @@ struct Planned {
     retry_of: Option<String>,
 }
 
+struct RouteDelivery {
+    outcome: &'static str,
+    last_attempt_at: Option<i64>,
+}
+
+impl Default for RouteDelivery {
+    fn default() -> Self {
+        Self {
+            outcome: "skipped",
+            last_attempt_at: None,
+        }
+    }
+}
+
 struct DeliveryRoutes<'a> {
     config: &'a Config,
     page_local: bool,
@@ -91,9 +105,10 @@ impl DeliveryRoutes<'_> {
     /// Disabled transports and dry runs have no required delivery obligation.
     fn record(
         &self,
-        delivery: &mut BTreeMap<String, &'static str>,
+        delivery: &mut BTreeMap<String, RouteDelivery>,
         route: &str,
         outcome: &str,
+        attempted_at: Option<i64>,
         dry_run: bool,
     ) {
         let required = self.delivers(INTENT_V1, route) && !dry_run;
@@ -103,6 +118,7 @@ impl DeliveryRoutes<'_> {
             match outcome {
                 "accepted" => "accepted",
                 "refused" => "refused",
+                "skipped" => "skipped",
                 _ => "failed",
             }
         };
@@ -113,9 +129,12 @@ impl DeliveryRoutes<'_> {
             "accepted" => 1,
             _ => 0,
         };
-        let current = delivery.entry(route.to_owned()).or_insert("skipped");
-        if rank(outcome) > rank(*current) {
-            *current = outcome;
+        let current = delivery.entry(route.to_owned()).or_default();
+        if rank(outcome) > rank(current.outcome) {
+            current.outcome = outcome;
+        }
+        if !dry_run {
+            current.last_attempt_at = current.last_attempt_at.max(attempted_at);
         }
     }
 
@@ -1371,7 +1390,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
 
     // Deliveries still not accepted (other than deliberate refusals) keep the
     // pass visible until a resend succeeds or the condition is forgotten.
-    let unresolved: Vec<Value> = if options.dry_run {
+    let mut unresolved: Vec<Value> = if options.dry_run {
         Vec::new()
     } else {
         state
@@ -1421,42 +1440,63 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     if let Some(error) = &intent_log_error {
         eprintln!("{error}");
     }
-    let mut delivery = BTreeMap::from([(config.routes.notice_route.clone(), "skipped")]);
+    let mut delivery =
+        BTreeMap::from([(config.routes.notice_route.clone(), RouteDelivery::default())]);
     if let Some(page) = &config.routes.page_route {
-        delivery.insert(page.clone(), "skipped");
+        delivery.insert(page.clone(), RouteDelivery::default());
     }
     for condition in state.conditions.values() {
         for last in condition.last_intent.values() {
-            delivery_routes.record(&mut delivery, &last.route, &last.outcome, options.dry_run);
+            delivery_routes.record(
+                &mut delivery,
+                &last.route,
+                &last.outcome,
+                Some(last.at),
+                options.dry_run,
+            );
         }
     }
     for item in &intent_reports {
-        delivery_routes.record(&mut delivery, &item.route, &item.outcome, options.dry_run);
-        // The intent log is required custody for each enabled route's outcome,
-        // including resolves forgotten from state after acceptance.
-        if intent_log_error.is_some() {
-            delivery_routes.record(&mut delivery, &item.route, "failed", options.dry_run);
-        }
-    }
-    for item in &dropped_triggers {
-        if let Some(route) = item["route"].as_str() {
-            delivery_routes.record(&mut delivery, route, "failed", options.dry_run);
-        }
-    }
-    if let Some(outcome) = crate::digest::current_outcome(config, now) {
         delivery_routes.record(
             &mut delivery,
-            &config.routes.notice_route,
-            &outcome,
+            &item.route,
+            &item.outcome,
+            (item.outcome != "intent_unreadable").then_some(now),
             options.dry_run,
         );
     }
+    for item in &dropped_triggers {
+        if let Some(route) = item["route"].as_str() {
+            delivery_routes.record(&mut delivery, route, "failed", None, options.dry_run);
+        }
+    }
+    if let Some(current) = crate::digest::current_outcome(config, now) {
+        delivery_routes.record(
+            &mut delivery,
+            &config.routes.notice_route,
+            &current.outcome,
+            Some(current.at),
+            options.dry_run,
+        );
+        if !options.dry_run
+            && digest_attempt.is_none()
+            && !matches!(current.outcome.as_str(), "accepted" | "skipped")
+        {
+            unresolved.push(json!({
+                "condition_id": "daily-digest",
+                "route": config.routes.notice_route,
+                "outcome": current.outcome,
+                "error": format!("digest retry pause: {}", current.error.as_deref().unwrap_or(&current.outcome)),
+                "attempted_at": format_seconds(current.at),
+            }));
+        }
+    }
     let delivery_problem = delivery
         .values()
-        .any(|outcome| matches!(*outcome, "refused" | "failed"));
+        .any(|route| matches!(route.outcome, "refused" | "failed"));
     let delivery_class = if !delivery_problem {
         "clean"
-    } else if delivery.values().any(|outcome| *outcome == "accepted") {
+    } else if delivery.values().any(|route| route.outcome == "accepted") {
         "delivery_partial"
     } else {
         "delivery_failed"
@@ -1464,16 +1504,30 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Observation failure is fundamental even when notification also fails.
     let exit_code = if input_problem {
         3
-    } else if delivery_problem {
+    } else if delivery_problem || intent_log_error.is_some() {
         DELIVERY_EXIT_CODE
     } else {
         0
     };
     let exit_class = if input_problem {
         "input_error"
+    } else if intent_log_error.is_some() {
+        "intent_log_unwritable"
     } else {
         delivery_class
     };
+    let delivery: BTreeMap<_, _> = delivery
+        .into_iter()
+        .map(|(route, summary)| {
+            (
+                route,
+                json!({
+                    "outcome": summary.outcome,
+                    "last_attempt_at": summary.last_attempt_at.map(format_seconds),
+                }),
+            )
+        })
+        .collect();
     let report = json!({
         "schema": REPORT_SCHEMA,
         "site": config.site,
@@ -1540,14 +1594,15 @@ fn first_pass_error(report: &Value) -> Option<String> {
                     matches!(
                         item["route"]
                             .as_str()
-                            .and_then(|route| report["delivery"][route].as_str()),
+                            .and_then(|route| report["delivery"][route]["outcome"].as_str()),
                         Some("refused" | "failed")
                     ) && (item["error"].is_string()
                         || !matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted")))
                 })
                 .map(|item| {
                     format!(
-                        "delivery {}: {}",
+                        "delivery {} ({}): {}",
+                        item["route"].as_str().unwrap_or("unknown"),
                         item["condition_id"].as_str().unwrap_or("unknown"),
                         item["error"]
                             .as_str()
@@ -1558,7 +1613,8 @@ fn first_pass_error(report: &Value) -> Option<String> {
         .or_else(|| {
             (report["digest"]["settled"] == false).then(|| {
                 format!(
-                    "digest: {}",
+                    "digest {}: {}",
+                    report["digest"]["route"].as_str().unwrap_or("unknown"),
                     report["digest"]["error"].as_str().unwrap_or_else(|| {
                         report["digest"]["outcome"].as_str().unwrap_or("unsettled")
                     })
@@ -1780,7 +1836,7 @@ mod tests {
         assert_eq!(
             first_pass_error(&json!({
                 "exit_code": 4,
-                "exit_class": "delivery_failed",
+                "exit_class": "intent_log_unwritable",
                 "intent_log_error": "intent_log_unwritable: permission denied\nmore detail",
             }))
             .as_deref(),
@@ -1795,7 +1851,7 @@ mod tests {
                 "exit_code": 4,
                 "network_enabled": false,
                 "inputs": [],
-                "delivery": {"local-page": "failed"},
+                "delivery": {"local-page": {"outcome": "failed", "last_attempt_at": null}},
                 "dropped_triggers": [{
                     "route": "local-page",
                     "condition_id": "page-condition",
@@ -1804,7 +1860,9 @@ mod tests {
                 }],
             }))
             .as_deref(),
-            Some("delivery page-condition: superseded by a resolve before it was accepted"),
+            Some(
+                "delivery local-page (page-condition): superseded by a resolve before it was accepted"
+            ),
         );
     }
 }

@@ -227,7 +227,7 @@ def timer_concern(spec, timeout, now=None):
     elif spec.get("check_result", True) and svc.get("ActiveState") == "failed" and svc.get("ExecMainStatus") not in ok_status:
         state, reason = "DEGRADED", "last run of %s failed (status %s)" % (t.get("Unit"), svc.get("ExecMainStatus"))
         if t.get("Unit") == "constellation-attention.service" and svc.get("ExecMainStatus") == "4":
-            reason += ": attention delivery failure (delivery_failed or delivery_partial); inspect report.json"
+            reason += ": attention delivery/feed failure (delivery_failed or delivery_partial or intent_log_unwritable); inspect report.json"
     elif "first_result_due_at" in spec or "max_success_age_seconds" in spec:
         exited = timestamp(svc.get("ExecMainExitTimestamp"))
         success = exited if svc.get("Result") == "success" and svc.get("ExecMainStatus") in ok_status else None

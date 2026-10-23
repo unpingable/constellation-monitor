@@ -947,7 +947,7 @@ fn dry_run_with_loopback_runbooks_does_not_log_withholding() {
     assert_eq!(report["intents"].as_array().unwrap().len(), 2);
     assert_eq!(
         report["delivery"],
-        json!({"operations": "skipped", "pagerduty-ops": "skipped"})
+        json!({"operations": {"outcome": "skipped", "last_attempt_at": null}, "pagerduty-ops": {"outcome": "skipped", "last_attempt_at": null}})
     );
     assert!(harness.calls().is_empty());
 }
@@ -1435,7 +1435,7 @@ fn required_route_failures_are_distinct_and_partial_delivery_is_explicit() {
             );
             assert_eq!(report["delivery_class"], report["exit_class"]);
             assert_eq!(
-                report["delivery"]["operations"],
+                report["delivery"]["operations"]["outcome"],
                 if outcome == "refused" {
                     "refused"
                 } else {
@@ -1443,7 +1443,7 @@ fn required_route_failures_are_distinct_and_partial_delivery_is_explicit() {
                 }
             );
             assert_eq!(
-                report["delivery"]["pagerduty-ops"],
+                report["delivery"]["pagerduty-ops"]["outcome"],
                 if partial {
                     "accepted"
                 } else if outcome == "refused" {
@@ -1474,7 +1474,7 @@ fn disabled_route_failure_does_not_count_but_local_delivery_is_required() {
     assert_eq!(report["exit_class"], "clean");
     assert_eq!(
         report["delivery"],
-        json!({"operations": "accepted", "pagerduty-ops": "skipped"})
+        json!({"operations": {"outcome": "accepted", "last_attempt_at": rfc3339(T0 + 660)}, "pagerduty-ops": {"outcome": "skipped", "last_attempt_at": rfc3339(T0 + 660)}})
     );
     assert!(report["first_error"].is_null());
     // An omitted (optional) page route has no obligation or report entry.
@@ -1487,7 +1487,10 @@ fn disabled_route_failure_does_not_count_but_local_delivery_is_required() {
         set(&fresh, "root", ProjectedStateV1::Unknown, T0 + offset);
         assert_eq!(fresh.evaluate_at(T0 + offset, &[]).status.code(), Some(0));
     }
-    assert_eq!(fresh.report()["delivery"], json!({"operations": "skipped"}));
+    assert_eq!(
+        fresh.report()["delivery"],
+        json!({"operations": {"outcome": "skipped", "last_attempt_at": rfc3339(T0 + 660)}})
+    );
 }
 
 #[test]
@@ -1591,12 +1594,17 @@ fn report_classifies_input_and_delivery_failures_and_keeps_one_error_line() {
             .starts_with("input root:")
     );
 
+    fs::create_dir(harness.path("state/intents.jsonl")).unwrap();
     harness.fake("command_error", "");
     let output = harness.evaluate_at(T0 + 360, &[]);
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(harness.report()["exit_class"], "input_error");
     assert_eq!(harness.report()["delivery_class"], "delivery_failed");
-    assert_eq!(harness.report()["delivery"]["operations"], "failed");
+    assert!(harness.report()["intent_log_error"].is_string());
+    assert_eq!(
+        harness.report()["delivery"]["operations"]["outcome"],
+        "failed"
+    );
     assert_eq!(
         harness.report()["first_error"]
             .as_str()
@@ -1608,24 +1616,87 @@ fn report_classifies_input_and_delivery_failures_and_keeps_one_error_line() {
 }
 
 #[test]
-fn report_includes_intent_log_failure_in_the_same_pass() {
+fn report_includes_intent_log_failure_without_overwriting_route_outcomes() {
+    for (network, partial) in [(true, false), (true, true), (false, false)] {
+        let mut harness = Harness::new();
+        harness.network = network;
+        harness.host_posture("root");
+        if partial {
+            harness.fake("state-operations", "failed");
+        }
+        set(&harness, "root", ProjectedStateV1::Unknown, T0);
+        harness.evaluate(T0);
+        fs::create_dir(harness.path("state/intents.jsonl")).unwrap();
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
+        let output = harness.evaluate_at(T0 + 660, &[]);
+        assert_eq!(output.status.code(), Some(4));
+        let report = harness.report();
+        assert_eq!(report["exit_code"], 4);
+        assert_eq!(report["exit_class"], "intent_log_unwritable");
+        assert_eq!(
+            report["delivery_class"],
+            if partial { "delivery_partial" } else { "clean" }
+        );
+        assert_eq!(
+            report["delivery"]["operations"]["outcome"],
+            if !network {
+                "skipped"
+            } else if partial {
+                "failed"
+            } else {
+                "accepted"
+            }
+        );
+        assert_eq!(
+            report["delivery"]["pagerduty-ops"]["outcome"],
+            if network { "accepted" } else { "skipped" }
+        );
+        assert_eq!(
+            report["delivery"]["pagerduty-ops"]["last_attempt_at"],
+            rfc3339(T0 + 660)
+        );
+        assert!(
+            report["intent_log_error"]
+                .as_str()
+                .unwrap()
+                .starts_with("intent_log_unwritable")
+        );
+        if !partial {
+            assert!(
+                report["first_error"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("intent_log_unwritable")
+            );
+        }
+    }
+}
+
+#[test]
+fn retained_route_acceptance_keeps_its_original_attempt_time() {
     let mut harness = Harness::new();
-    harness.page_route = false;
     harness.host_posture("root");
     set(&harness, "root", ProjectedStateV1::Unknown, T0);
-    harness.evaluate(T0);
-    fs::create_dir(harness.path("state/intents.jsonl")).unwrap();
-    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 660);
-    let output = harness.evaluate_at(T0 + 660, &[]);
-    assert_eq!(output.status.code(), Some(4));
-    assert_eq!(harness.report()["exit_code"], 4);
-    assert_eq!(harness.report()["exit_class"], "delivery_failed");
-    assert!(
-        harness.report()["first_error"]
-            .as_str()
-            .unwrap()
-            .starts_with("intent_log_unwritable")
+    let idle = harness.evaluate(T0);
+    assert_eq!(
+        idle["delivery"]["operations"],
+        json!({"outcome": "skipped", "last_attempt_at": null})
     );
+    for offset in [660, 720] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let report = harness.evaluate(T0 + offset);
+        for route in ["operations", "pagerduty-ops"] {
+            assert_eq!(
+                report["delivery"][route],
+                json!({"outcome": "accepted", "last_attempt_at": rfc3339(T0 + 660)})
+            );
+        }
+        assert_eq!(
+            report["intents"].as_array().unwrap().len(),
+            if offset == 660 { 2 } else { 0 }
+        );
+    }
+    assert_eq!(harness.calls().len(), 2);
 }
 
 #[test]
@@ -4454,8 +4525,20 @@ fn daily_digest_restates_active_conditions_once_a_day() {
     let waiting = harness.evaluate(at + 300);
     assert!(waiting.get("digest").is_none());
     assert_eq!(waiting["exit_code"], 4);
-    assert_eq!(waiting["delivery"]["operations"], "failed");
+    assert_eq!(waiting["delivery"]["operations"]["outcome"], "failed");
     assert_eq!(waiting["exit_class"], "delivery_partial");
+    assert_eq!(
+        waiting["delivery"]["operations"]["last_attempt_at"],
+        rfc3339(at)
+    );
+    assert_eq!(
+        waiting["first_error"],
+        "delivery operations (daily-digest): digest retry pause: failed"
+    );
+    assert_eq!(
+        waiting["unresolved_deliveries"][0]["condition_id"],
+        "daily-digest"
+    );
     harness.fake("next_state", "accepted");
     set(&harness, "root", ProjectedStateV1::Unknown, at + 900);
     assert_eq!(harness.evaluate(at + 900)["digest"]["settled"], true);
@@ -4478,6 +4561,85 @@ fn daily_digest_restates_active_conditions_once_a_day() {
             .is_some(),
         "next day"
     );
+}
+
+#[test]
+fn digest_retry_pause_retains_the_route_and_command_error() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness
+        .host_posture("root")
+        .raw("[digest]\nat_utc = \"00:40\"\n");
+    harness.fake("command_error", "");
+    let at = T0 - T0.rem_euclid(86_400) + 86_400 + 2400;
+    set(&harness, "root", ProjectedStateV1::Healthy, at);
+    let failed = harness.evaluate(at);
+    let reason = failed["digest"]["error"].as_str().unwrap();
+    assert!(reason.contains("notification condition target_class is refused"));
+    assert!(
+        failed["first_error"]
+            .as_str()
+            .unwrap()
+            .starts_with("digest operations:")
+    );
+    fs::remove_file(harness.path("fake/command_error")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Healthy, at + 300);
+    let waiting = harness.evaluate(at + 300);
+    assert_eq!(waiting["exit_code"], 4);
+    assert!(waiting.get("digest").is_none());
+    assert_eq!(
+        waiting["first_error"],
+        format!(
+            "delivery operations (daily-digest): digest retry pause: {}",
+            reason.lines().next().unwrap()
+        )
+    );
+    assert_eq!(
+        waiting["delivery"]["operations"]["last_attempt_at"],
+        rfc3339(at)
+    );
+    let attempts = fs::read_to_string(harness.path("fake/attempts.log")).unwrap();
+    assert_eq!(attempts.lines().count(), 1);
+}
+
+#[test]
+fn digest_refused_without_network_stays_settled_after_network_is_enabled() {
+    let mut harness = Harness::new();
+    harness.network = false;
+    harness.page_route = false;
+    harness
+        .host_posture("root")
+        .raw("[digest]\nat_utc = \"00:40\"\n");
+    let at = T0 - T0.rem_euclid(86_400) + 86_400 + 2400;
+    set(&harness, "root", ProjectedStateV1::Healthy, at);
+    let refused = harness.evaluate(at);
+    assert_eq!(refused["digest"]["outcome"], "refused");
+    assert_eq!(refused["digest"]["settled"], true);
+    assert_eq!(refused["exit_code"], 0);
+    harness.network = true;
+    for offset in [60, 900, 3600] {
+        set(&harness, "root", ProjectedStateV1::Healthy, at + offset);
+        let report = harness.evaluate(at + offset);
+        assert_eq!(report["exit_code"], 0);
+        assert_eq!(report["exit_class"], "clean");
+        assert_eq!(report["delivery_class"], "clean");
+        assert_eq!(
+            report["delivery"]["operations"],
+            json!({"outcome": "skipped", "last_attempt_at": rfc3339(at)})
+        );
+        assert!(report.get("digest").is_none());
+        assert!(report["first_error"].is_null());
+    }
+    assert_eq!(harness.calls().len(), 1);
+    // The next UTC day creates a new obligation and can deliver normally.
+    set(&harness, "root", ProjectedStateV1::Healthy, at + 86_400);
+    let next = harness.evaluate(at + 86_400);
+    assert_eq!(next["digest"]["outcome"], "accepted");
+    assert_eq!(
+        next["delivery"]["operations"]["last_attempt_at"],
+        rfc3339(at + 86_400)
+    );
+    assert_eq!(harness.calls().len(), 2);
 }
 
 fn write_estate(harness: &Harness, at: i64, services: &[(&str, &str, &str)]) {

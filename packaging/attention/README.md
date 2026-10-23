@@ -178,11 +178,13 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
 7. Watch `journalctl -u constellation-attention`, `report.json` and
    `constellation-attention state --config ...`. Read `exit_class` from a
    fresh `report.json`: exit 3 means an input error; exit 4 means required
-   delivery failed (`delivery_failed` or `delivery_partial`). Both fail the
-   unit. `delivery` gives each route's outcome; `delivery_class` preserves
-   delivery failure when an input error takes precedence at exit 3. After its
-   own synchronous pass, the installer may reset-failed only for `input_error`
-   with `delivery_class: "clean"` (or an older input-only report). Delivery
+   delivery failed (`delivery_failed` or `delivery_partial`) or the intent
+   log could not be appended (`intent_log_unwritable`). Both codes fail the
+   unit. `delivery` gives each route's `outcome` and `last_attempt_at`;
+   `delivery_class` preserves delivery failure when an input error takes
+   precedence at exit 3. After its own synchronous pass, the installer may
+   reset-failed only for `input_error` with `delivery_class: "clean"` and no
+   `intent_log_error` (or an older input-only report). Delivery and intent-log
    errors retain the failed state. The unit has no restart or OnFailure hook.
    Exit 1 means the pass could not run (state lock,
    malformed state, clock moved backwards). After a corrected forward clock

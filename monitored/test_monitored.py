@@ -67,18 +67,21 @@ class MonitoredTest(unittest.TestCase):
         (self.root / 'receipts/index.json').write_text(json.dumps({'schema': 'constellation.monitored_receipts/v1', 'receipts': entries}))
 
     def test_attention_delivery_failure_is_named_without_changing_conditions(self):
-        for code, exit_class in [(4, 'delivery_failed'), (4, 'delivery_partial'), (3, 'input_error')]:
+        for code, exit_class in [(4, 'delivery_failed'), (4, 'delivery_partial'), (4, 'intent_log_unwritable'), (3, 'input_error')]:
             with self.subTest(exit_class=exit_class):
+                delivery_class = 'clean' if exit_class == 'intent_log_unwritable' else 'delivery_partial'
+                outcome = 'accepted' if delivery_class == 'clean' else 'failed'
                 self.edit('report.json', lambda d: d.update(exit_code=code, exit_class=exit_class,
-                          delivery_class='delivery_partial', delivery={'operations': 'failed', 'page': 'accepted'},
+                          delivery_class=delivery_class, delivery={'operations': {'outcome': outcome, 'last_attempt_at': '2026-10-20T00:00:00Z'}, 'page': {'outcome': 'accepted', 'last_attempt_at': '2026-10-19T00:00:00Z'}},
                           first_error='delivery route unavailable'))
                 doc = self.build()
                 row = next(r for r in doc['components'] if r['service'] == 'constellation-attention.timer')
                 self.assertIn(exit_class, row['state'])
-                self.assertIn('delivery_partial', row['state'])
+                self.assertIn(delivery_class, row['state'])
                 self.assertIn('operations', row['state'])
-                self.assertIn('failed', row['state'])
-                self.assertIn('delivery_partial', m.render(doc))
+                self.assertIn('last_attempt_at', row['state'])
+                self.assertIn(outcome, row['state'])
+                self.assertIn(delivery_class, m.render(doc))
 
     def test_operator_finds_degraded_service_and_what_would_tell_them(self):
         row = self.service()
