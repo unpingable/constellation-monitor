@@ -5310,9 +5310,21 @@ fn marker_accepts_five_minutes_of_future_clock_skew() {
         assert_eq!(report["exit_code"], 0);
         assert_eq!(
             metric_input(&report)["identity"]["reconfigured_at"],
-            rfc3339(at + skew)
+            rfc3339(at)
         );
         assert!(!harness.path("state/reconfigured").exists());
+        let lifecycle: Value = serde_json::from_slice(
+            &fs::read(harness.path("state/state-attention-lifecycle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lifecycle["reconfigured_at"], at);
+        for offset in [899, 900] {
+            write_metric_alerts(&harness, at + offset, |doc| {
+                value_code_rule(doc, "firing", "3")
+            });
+            let report = harness.evaluate(at + offset);
+            assert_eq!(report["exit_code"], if offset < 900 { 0 } else { 3 });
+        }
     }
 }
 
@@ -7731,6 +7743,83 @@ fn preexisting_fault_stays_open_while_other_identities_reconfigure() {
         }
         assert_eq!(harness.calls(), calls, "no resolve or retrigger");
     }
+}
+
+#[test]
+fn release_upgrade_with_open_code_two_fault_never_rearms_it() {
+    const FAULT: &str = "constellation:labelwatch:host_posture:evaluator-input-unavailable:metric_alerts.indeterminate";
+    for unset_updated_at in [false, true] {
+        let harness = metric_alerts_harness();
+        for offset in [0, 900, 960, 1020, 1080, 1140, 1200, 1260] {
+            write_metric_alerts(&harness, T0 + offset, |doc| {
+                value_code_rule(doc, "firing", "2");
+                doc["rules"][0]["name"] = json!("ProbeDown");
+            });
+            harness.evaluate(T0 + offset);
+        }
+        let mut state = harness.state();
+        assert_eq!(state["conditions"][FAULT]["active"], true);
+        assert_eq!(state["conditions"].as_object().unwrap().len(), 1);
+        // N8: the release persists only the aggregate input incident, with
+        // no firing condition for this probe and no lifecycle sidecar.
+        fs::remove_file(harness.path("state/state-attention-lifecycle.json")).unwrap();
+        if unset_updated_at {
+            state["updated_at"] = json!(0);
+            fs::write(
+                harness.path("state/state.json"),
+                serde_json::to_vec(&state).unwrap(),
+            )
+            .unwrap();
+        }
+        let calls = harness.calls();
+        let at = T0 + 1320;
+        write_reconfiguration(&harness, at);
+        for offset in [0, 60, 899, 900, 1200] {
+            write_metric_alerts(&harness, at + offset, |doc| {
+                value_code_rule(doc, "firing", "2");
+                doc["rules"][0]["name"] = json!("ProbeDown");
+            });
+            let report = harness.evaluate(at + offset);
+            assert_eq!(report["exit_code"], 3);
+            assert_eq!(causes(&metric_input(&report)), ["indeterminate"]);
+            assert_eq!(condition(&report, FAULT).unwrap()["observation"], "present");
+            assert_eq!(harness.state()["conditions"][FAULT]["active"], true);
+            assert!(intents(&report).is_empty());
+        }
+        assert_eq!(harness.calls(), calls, "no resolve or retrigger");
+        let lifecycle: Value = serde_json::from_slice(
+            &fs::read(harness.path("state/state-attention-lifecycle.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lifecycle["identities"].as_object().unwrap().len(), 1);
+        for identity in lifecycle["identities"].as_object().unwrap().values() {
+            assert_eq!(identity["faulting"], true);
+            assert_eq!(identity["grace_at"], Value::Null);
+        }
+    }
+}
+
+#[test]
+fn release_upgrade_seeds_every_first_pass_identity_without_grace() {
+    let harness = metric_alerts_harness();
+    write_metric_alerts(&harness, T0, |doc| value_code_rule(doc, "inactive", "1"));
+    harness.evaluate(T0);
+    fs::remove_file(harness.path("state/state-attention-lifecycle.json")).unwrap();
+    let at = T0 + 3600;
+    write_reconfiguration(&harness, at);
+    write_metric_alerts(&harness, at, |doc| {
+        value_code_rule(doc, "firing", "3");
+        doc["rules"][0]["name"] = json!("NewProbe");
+    });
+    let report = harness.evaluate(at);
+    assert_eq!(report["exit_code"], 3);
+    assert_eq!(causes(&metric_input(&report)), ["indeterminate"]);
+    // After that first pass, genuinely new identities can receive grace.
+    write_metric_alerts(&harness, at + 60, |doc| {
+        value_code_rule(doc, "firing", "3");
+        doc["rules"][0]["name"] = json!("LaterProbe");
+    });
+    assert_eq!(harness.evaluate(at + 60)["exit_code"], 0);
 }
 
 #[test]

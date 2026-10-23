@@ -339,7 +339,7 @@ fn reconfiguration(path: &Path, now: i64, bound: i64) -> Result<Option<i64>, Str
         );
         return Ok(None);
     }
-    Ok(Some(at))
+    Ok(Some(at.min(now)))
 }
 
 #[allow(
@@ -366,33 +366,45 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         .as_ref()
         .map_or_else(default_metric_warmup_grace, |input| input.warmup_grace);
     let lifecycle_path = state_dir.join("state-attention-lifecycle.json");
-    let mut lifecycle =
-        AttentionLifecycle::load(&lifecycle_path, &config.site)?.unwrap_or_else(|| {
-            let mut lifecycle = AttentionLifecycle::new(
-                &config.site,
-                if state.updated_at > 0 {
-                    options.now.saturating_sub(warmup_grace)
-                } else {
-                    options.now
-                },
-            );
-            // Without identity history, established targets cannot attest a
-            // nonfaulting pre-marker pass. New targets may still warm.
-            for condition in state.conditions.values() {
-                if condition.key.rule == "metric-alert-firing"
-                    && let Some(target) = &condition.key.target_class
-                {
-                    lifecycle.identities.insert(
-                        target.clone(),
-                        IdentityLifecycle {
-                            faulting: true,
-                            ..IdentityLifecycle::default()
-                        },
-                    );
-                }
+    let saved_lifecycle = AttentionLifecycle::load(&lifecycle_path, &config.site)?;
+    // Release state has no complete identity roster. An open aggregate input
+    // incident also establishes prior faults, even if updated_at is unset.
+    let seed_metric_identities_faulting = saved_lifecycle.is_none()
+        && (state.updated_at > 0
+            || config.inputs.metric_alerts.as_ref().is_some_and(|input| {
+                state.conditions.values().any(|condition| {
+                    condition.active
+                        && condition.key.rule == INPUT_UNAVAILABLE
+                        && condition.key.target_class.as_deref()
+                            == Some(format!("{}.indeterminate", input.label).as_str())
+                })
+            }));
+    let mut lifecycle = saved_lifecycle.unwrap_or_else(|| {
+        let mut lifecycle = AttentionLifecycle::new(
+            &config.site,
+            if state.updated_at > 0 {
+                options.now.saturating_sub(warmup_grace)
+            } else {
+                options.now
+            },
+        );
+        // Preserve known targets even when they are absent from this pass.
+        // Other first-pass targets are conservatively seeded by the reader.
+        for condition in state.conditions.values() {
+            if condition.key.rule == "metric-alert-firing"
+                && let Some(target) = &condition.key.target_class
+            {
+                lifecycle.identities.insert(
+                    target.clone(),
+                    IdentityLifecycle {
+                        faulting: true,
+                        ..IdentityLifecycle::default()
+                    },
+                );
             }
-            lifecycle
-        });
+        }
+        lifecycle
+    });
     // A rollback evaluator cannot attest per-identity continuity or recovery.
     if lifecycle.updated_at < state.updated_at {
         for identity in lifecycle.identities.values_mut() {
@@ -478,6 +490,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         metric_alerts: metric_history.as_ref(),
         first_seen,
         lifecycle: &lifecycle,
+        seed_metric_identities_faulting,
         nq_watchers: config
             .inputs
             .nq_status

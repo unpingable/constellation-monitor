@@ -195,6 +195,8 @@ pub struct Context<'a> {
     pub metric_alerts: Option<&'a MetricAlertsHistory>,
     pub first_seen: i64,
     pub lifecycle: &'a AttentionLifecycle,
+    /// No lifecycle roster on upgrade: unseen targets cannot attest prior health.
+    pub seed_metric_identities_faulting: bool,
     /// The remembered NQ watcher roster of the NQ status input's label.
     pub nq_watchers: Option<&'a BTreeMap<String, i64>>,
 }
@@ -1905,7 +1907,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 .entry(target.clone())
                 .or_insert_with(|| {
                     let mut identity = IdentityLifecycle {
-                        faulting: false,
+                        faulting: context.seed_metric_identities_faulting,
                         ..IdentityLifecycle::default()
                     };
                     if let Some(at) = context.lifecycle.reconfigured_at {

@@ -548,8 +548,10 @@ structures reject unknown fields. An absent file means no saved history;
 malformed, unreadable, or foreign-site history is an error and is never
 silently replaced. Without lifecycle history, an established host seeds an
 expired startup window and existing targets cannot attest pre-marker health;
-new targets can warm. A fresh install records pending metric startup with
-`history: null` until its first metric report.
+every identity first encountered on that pass is ineligible for reconfiguration
+grace, including identities represented only by an open input
+`<label>.indeterminate` incident. Later new targets can warm. A fresh install
+records pending metric startup with `history: null` until its first metric report.
 
 The sidecars use the same state lock and atomic write custody as condition
 state: mode 0600, exclusive temporary file, file fsync, rename and directory
@@ -851,7 +853,8 @@ Exactly these three fields are accepted, with a maximum document size of
 4096 bytes. `run_id` is the installer's nonblank apply identity (at most
 128 UTF-8 bytes). `at` is an RFC 3339 timestamp of the completed change,
 up to 300 seconds ahead of the evaluator clock to tolerate off-host
-installer skew; attention stores whole Unix seconds. Greater future skew is
+installer skew; attention stores whole Unix seconds, clamped to the evaluation
+time so future skew cannot extend grace. Greater future skew is
 invalid. `reason` is exactly one of `vmalert restarted`, `rules changed`, or
 `scrapes changed`.
 For multiple changes choose one applicable reason. Do not write a marker
@@ -869,7 +872,7 @@ an earlier one. The installer owns publication; Monitor supplies the reader
 and this contract, not the site installer.
 
 At the start of a pass, under the state lock, attention reads the marker
-and retains the newer of its `at` and saved `reconfigured_at`. It saves
+and retains the newer of its clamped `at` and saved `reconfigured_at`. It saves
 `reconfigured_at` and per-identity eligibility in
 `state-attention-lifecycle.json` before removing the marker, before condition
 decisions are saved or deliveries submitted. A crash
@@ -885,6 +888,8 @@ grace. The pass continues with a reported input fault labelled
 marker is renamed `reconfigured.invalid-<ts>` (evaluation Unix seconds) for
 installer inspection. Dry runs retain it. The next pass evaluates normally
 without requiring someone to delete the invalid marker.
+The installer must inspect `reconfigured.invalid-*` itself: the invalid-marker
+condition is reported for one pass and never persists long enough to send a notice.
 
 Only identities that were not faulting at the last persisted pass before
 the marker can receive reconfiguration grace. New identities have no prior
@@ -911,6 +916,8 @@ fault normally. Neither accepting another marker nor restarting attention
 resets a rule/site's continuous warming start: `warming_bound` still caps
 each interval. A qualified healthy observation ends it, including for a
 plain rule that was waiting for its first evaluation.
+An active `evaluator-input-unavailable` incident stays open (unknown) while any
+rule on that input is warming, up to the configured bound (default 6 h).
 
 For initial installation, a missing or unreadable Nightshift store, or one
 with no closed observation cycle (empty or with only open cycles), is
