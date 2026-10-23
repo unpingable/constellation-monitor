@@ -49,6 +49,7 @@ if [ "${4:-}" = evaluations ]; then
   exit 0
 fi
 [ "$1" = --config ] && [ "$3" = --json ] && [ "$4" = notification ] || { echo "unexpected argv: $*" >&2; exit 64; }
+nq_config="$2"
 sub="$5"; shift 5
 net=false; intent=""; route=""; from=""; event=""
 while [ $# -gt 0 ]; do
@@ -78,6 +79,23 @@ if [ -n "$intent" ]; then
   attempt_event=$(sed -n 's/.*"stable_event_id":"\([^"]*\)".*/\1/p' "$intent")
 fi
 echo "$sub $route $attempt_event" >> "$dir/attempts.log"
+# Honor the current route configuration, including removal and transport
+# changes, rather than letting a fake acceptance hide stale intent identity.
+if [ -n "$route" ]; then
+  transport=$(awk -F '"' -v wanted="$route" '
+    /^\[\[notification_routes\]\]/ { reference = "" }
+    /^reference = / { reference = $2 }
+    /^transport = / && reference == wanted { print $2; exit }
+  ' "$nq_config")
+  [ -n "$transport" ] || { echo "route reference is not configured" >&2; exit 1; }
+  label="$transport"
+  if [ "$transport" = local_file ]; then
+    label=local-inbox
+    [ "$sub" = deliver-local ] || { echo "local_file routes require notification deliver-local" >&2; exit 1; }
+  fi
+  grep -q "\"destination_identity\":\"$label:$route\"" "$intent" || {
+    echo "intent destination identity does not match its configured route" >&2; exit 1; }
+fi
 if [ -e "$dir/command_error" ] || [ -e "$dir/command_error-$route" ]; then echo "notification condition target_class is refused" >&2; exit 1; fi
 state=$(cat "$dir/state-$route" 2>/dev/null || cat "$dir/next_state" 2>/dev/null || echo accepted)
 mkdir -p "$dir/records" "$dir/intents"

@@ -444,6 +444,58 @@ before a human is interrupted. Report rows show `response_policy`,
 `remediation_window_until` (unix seconds, for targets) and `page_deferred`.
 The remediation targets are part of the policy digest.
 
+## Route changes
+
+Each pass reconciles `last_intent`, `pending_trigger`, and the retained daily
+digest against the current attention route roles and NQ `notification_routes`.
+The identity is the route reference plus its transport-derived
+`destination_identity` (`slack:<route>`, `discord:<route>`,
+`pagerduty:<route>`, or `local-inbox:<route>`). Transport locators and secrets
+remain NQ's concern; attention does not read or compare their values.
+
+An intent whose route was removed, whose role now selects another route, or
+whose transport/destination identity changed is retired before retries and
+resolve planning. Its outcome is `route_retired`, with operation `retire`, in
+`report.json`'s `intents` and the durable `intents.jsonl` feed. Retirement is
+terminal: it is never retried, is absent from `unresolved_deliveries`, and does
+not contribute to `delivery` failures or exit 4. An intent-log write failure
+still has its separate exit-4 meaning.
+
+If the condition remains active, the same pass issues one fresh trigger for
+each missing current route role that exists in NQ's configuration. A newly
+configured page still respects the remediation window. The new event keeps
+the original trigger's `transition_id` and condition key (NQ's PagerDuty dedup
+key); changing a notice handler leaves an unchanged, accepted page alone.
+Accepted provider pages and their exact intents are remembered in the separate
+`accepted-pages.json` sidecar for the lifetime of that active incident. Removing
+and re-adding the same PagerDuty identity, including a temporary switch to a
+local inbox, restores its acceptance and original attempt time without another
+provider call. Recovery discards that history so a new incident can page again;
+the released `state.json` schema is unchanged. Suspended conditions acquire no
+new triggers. Subsequent passes use the ordinary retry/acceptance rules. An inactive
+condition does not acquire a replacement trigger. A removed NQ route has no
+replacement until a current route is configured. Old pending triggers and
+resolves cannot strand subsequent passes on the removed route.
+
+NQ's current route transport selects the entry point and destination label,
+including while an attention transport setting still names the previous
+transport: network routes use `submit` (or an eligible v2 `resubmit`), and
+`local_file` uses v1 through `deliver-local`. A transport change retires the
+old intent rather than sending its bytes through the new transport.
+
+Per-route `delivery.outcome` has four values: `accepted`, `refused`, `failed`,
+and `skipped`. `accepted` requires an attempt or a retained acceptance for
+that route's current identity; the daily digest is checked against its exact
+retained intent too, including records from earlier builds without a route
+field. Its `last_attempt_at` is the actual attempt time, never inherited from
+another route. A route with no attempt this pass and no matching retained
+acceptance is `skipped` with a null attempt time when there is no matching
+retained attempt. Existing failed/refused obligations remain visible between
+retries. We retain `skipped` instead of adding `pending` so readers keep the
+existing four-value vocabulary; `intents` and `unresolved_deliveries` describe
+the obligations independently. Retirement has only the per-intent outcome
+`route_retired`, so it cannot be confused with provider acceptance or failure.
+
 ## Sink failures and restarts
 
 Before submitting anything a pass writes the intent files and saves state
@@ -521,14 +573,27 @@ resent. There is no configured finite retry-count limit to exhaust. Exit 4
 records failure after the bounded attempt, and remains visible during the
 retry pause; it does not add attempts or a retry loop. Acceptance clears the
 outstanding failure. NQ's existing event/route idempotent dedup remains the
-custody boundary. Evaluation, conditions, incident/transition identities and
-intent generation are unchanged by this exit/report classification.
+custody boundary. Route reconciliation preserves condition and transition
+identities while issuing fresh events only for missing current routes.
 
 If input and delivery or intent logging both fail, **exit 3 and
 `exit_class: "input_error"` win** because the evaluator's observation failure
 is more fundamental. Otherwise, log failure takes precedence over the delivery
 exit class. `delivery` and `delivery_class` always record the independent route
 outcomes, and `intent_log_error` records the log failure.
+
+For every report published by a pass, `exit_code` and the non-null
+`exit_class` describe the final evaluator process result: 0/`clean`,
+3/`input_error`, or 4 with the class above. Fallible work, including intent-log
+append, finishes before the completed report is written. If a pass holding
+the state lock later aborts (for example, digest persistence fails after
+state was saved), it replaces any earlier report with a fatal report carrying
+1/`evaluator_error`, the current `evaluated_at`, and `first_error`. A report
+write failure is itself fatal and is reported on stderr; an unwritable report
+path cannot provide this durable invariant. Configuration and lock refusals
+occur before a pass and do not overwrite another pass's report. This invariant
+covers the report; systemd unit observations are collected separately.
+
 The packaged oneshot fails on both 3 and 4; neither is in `SuccessExitStatus`.
 It has no `Restart=` or `OnFailure=` notification hook. Its timer may run the
 next ordinary pass. Status reads a fresh `report.json`; monitored and diagnostic

@@ -53,6 +53,7 @@ pub fn due(offset_seconds: i64, record: Option<&Record>, now: i64) -> bool {
         return false;
     }
     match record {
+        Some(record) if record.outcome == "route_retired" => true,
         Some(record) if record.day == day(now) => {
             !record.settled() && now - record.at >= RESEND_INTERVAL_SECONDS
         }
@@ -239,9 +240,13 @@ pub fn send_if_due(
         || format!("constellation-monitor:docs/ATTENTION.md#{ANCHOR}"),
         |base| format!("{base}#{ANCHOR}"),
     );
-    let local = config.routes.local(INTENT_V1);
-    let label = config.routes.notice_transport.destination_label();
-    let route = &config.routes.notice_route;
+    let routes = nq::routes(config)?;
+    let Some(current) = routes.get(&config.routes.notice_route) else {
+        return Ok(None);
+    };
+    let local = current.local();
+    let label = current.destination_label();
+    let route = &current.reference;
     let body = json!({
         "schema": INTENT_V1,
         "attention_kind": "operator_assertion",
@@ -267,7 +272,7 @@ pub fn send_if_due(
         at: now,
         stable_event_id: stable_event_id.clone(),
         outcome: outcome.outcome.clone(),
-        network: config.routes.delivers(INTENT_V1),
+        network: local || config.routes.network_enabled,
         notification_id: outcome.notification_id.clone(),
         error: outcome.error.clone(),
     };
@@ -285,12 +290,56 @@ pub fn send_if_due(
     })))
 }
 
+/// Retire the old digest once, before its route can be reused or retried.
+/// The exact intent supplies identity for records written by earlier builds.
+pub fn retire_changed_route(
+    config: &Config,
+    route: Option<&nq::Route>,
+    dry_run: bool,
+) -> Result<Option<(Record, Value)>, String> {
+    let path = config.state_dir().join(RECORD_FILE);
+    let Some(record) = read_record(&path).filter(|record| record.outcome != "route_retired") else {
+        return Ok(None);
+    };
+    let body = read_body(config).unwrap_or(Value::Null);
+    if route.is_some_and(|route| route.matches(&body))
+        && body["stable_event_id"] == record.stable_event_id
+    {
+        return Ok(None);
+    }
+    if !dry_run {
+        let mut retired = record.clone();
+        retired.outcome = "route_retired".into();
+        write_atomic(
+            &path,
+            &serde_json::to_vec_pretty(&retired).map_err(|error| error.to_string())?,
+        )?;
+    }
+    Ok(Some((record, body)))
+}
+
+fn read_body(config: &Config) -> Option<Value> {
+    read_bounded(&config.state_dir().join(INTENT_FILE), 64 * 1024)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
 /// Keep today's digest obligation visible between bounded retry attempts.
 /// An omitted digest configuration creates no obligation.
 pub fn current_outcome(config: &Config, now: i64) -> Option<Record> {
     config.digest.as_ref()?;
     let mut record = read_record(&config.state_dir().join(RECORD_FILE))
         .filter(|record| record.day == day(now))?;
+    let route = nq::routes(config)
+        .ok()?
+        .remove(&config.routes.notice_route)?;
+    let body = read_body(config)?;
+    if record.outcome == "route_retired"
+        || !route.matches(&body)
+        || body["stable_event_id"] != record.stable_event_id
+    {
+        return None;
+    }
     // A deliberate refusal settles the day even if networking is later enabled.
     // Preserve the attempt time, but do not revive its delivery obligation.
     if record.settled() && record.outcome != "accepted" {

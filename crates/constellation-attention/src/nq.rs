@@ -11,16 +11,37 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::util::{ChildEnvironment, excerpt, read_bounded, run_bounded};
 
-/// Read only route references and transports; locators remain NQ's concern.
-pub fn page_is_local(config: &Config) -> Result<bool, String> {
-    let Some(page) = &config.routes.page_route else {
-        return Ok(false);
-    };
-    #[derive(Deserialize)]
-    struct Route {
-        reference: String,
-        transport: String,
+/// Only protocol identity is read here; transport locators remain NQ's concern.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Route {
+    pub reference: String,
+    pub transport: String,
+}
+
+impl Route {
+    #[must_use]
+    pub fn local(&self) -> bool {
+        self.transport == "local_file"
     }
+
+    #[must_use]
+    pub fn destination_label(&self) -> &str {
+        if self.local() {
+            "local-inbox"
+        } else {
+            &self.transport
+        }
+    }
+
+    #[must_use]
+    pub fn matches(&self, intent: &Value) -> bool {
+        intent["route_reference"] == self.reference
+            && intent["destination_identity"]
+                == format!("{}:{}", self.destination_label(), self.reference)
+    }
+}
+
+pub fn routes(config: &Config) -> Result<std::collections::BTreeMap<String, Route>, String> {
     #[derive(Deserialize)]
     struct Routes {
         #[serde(default)]
@@ -30,17 +51,21 @@ pub fn page_is_local(config: &Config) -> Result<bool, String> {
     let routes: Routes =
         toml::from_str(std::str::from_utf8(&bytes).map_err(|error| error.to_string())?)
             .map_err(|error| format!("cannot read NQ route transports: {error}"))?;
-    let local = routes
-        .notification_routes
-        .iter()
-        .any(|route| route.reference == *page && route.transport == "local_file");
-    if local && page.len() > crate::intent::LOCAL_ROUTE_MAX {
-        return Err(format!(
-            "a local_file page_route must be at most {} bytes so its rendered message fits NQ's 4 KiB limit",
-            crate::intent::LOCAL_ROUTE_MAX
-        ));
+    let mut current = std::collections::BTreeMap::new();
+    for route in routes.notification_routes {
+        if route.local()
+            && (route.reference == config.routes.notice_route
+                || config.routes.page_route.as_ref() == Some(&route.reference))
+            && route.reference.len() > crate::intent::LOCAL_ROUTE_MAX
+        {
+            return Err(format!(
+                "a local_file route must be at most {} bytes so its rendered message fits NQ's 4 KiB limit",
+                crate::intent::LOCAL_ROUTE_MAX
+            ));
+        }
+        current.insert(route.reference.clone(), route);
     }
-    Ok(local)
+    Ok(current)
 }
 
 #[derive(Clone, Debug, Serialize)]

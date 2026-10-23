@@ -61,6 +61,8 @@ enum Operation {
     /// The same bytes of a trigger NQ never retained, submitted before the
     /// resolve that replaced it.
     SubmitBeforeResolve,
+    /// The route no longer has the identity this intent was created for.
+    Retire,
 }
 
 struct Planned {
@@ -87,14 +89,45 @@ impl Default for RouteDelivery {
 
 struct DeliveryRoutes<'a> {
     config: &'a Config,
+    current: BTreeMap<String, nq::Route>,
     page_local: bool,
 }
 
 impl DeliveryRoutes<'_> {
+    fn route(&self, role: &str) -> Option<&nq::Route> {
+        let reference = if role == "page" {
+            self.config.routes.page_route.as_deref()?
+        } else {
+            &self.config.routes.notice_route
+        };
+        self.current.get(reference)
+    }
+
     fn local(&self, schema: &str, route: &str) -> bool {
-        schema == INTENT_V1
-            && ((route == self.config.routes.notice_route && self.config.routes.local(schema))
-                || (self.page_local && self.config.routes.page_route.as_deref() == Some(route)))
+        schema == INTENT_V1 && self.current.get(route).is_some_and(nq::Route::local)
+    }
+
+    fn matches(&self, role: &str, last: &LastIntent, dir: &Path) -> bool {
+        let Some(route) = self
+            .route(role)
+            .filter(|route| route.reference == last.route)
+        else {
+            return false;
+        };
+        let schema = if role == "page" && !route.local() {
+            INTENT_V2
+        } else {
+            INTENT_V1
+        };
+        if last.schema != schema {
+            return false;
+        }
+        // Missing files still follow the existing intent_unreadable/resubmit
+        // path. A readable file binds even pre-upgrade state to its identity.
+        read_bounded(&dir.join(&last.intent_file), 64 * 1024)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_none_or(|value| route.matches(&value))
     }
 
     fn delivers(&self, schema: &str, route: &str) -> bool {
@@ -129,7 +162,9 @@ impl DeliveryRoutes<'_> {
             "accepted" => 1,
             _ => 0,
         };
-        let current = delivery.entry(route.to_owned()).or_default();
+        let Some(current) = delivery.get_mut(route) else {
+            return;
+        };
         if rank(outcome) > rank(current.outcome) {
             current.outcome = outcome;
         }
@@ -144,10 +179,7 @@ impl DeliveryRoutes<'_> {
         if last.notification_id.is_some() {
             return Ok(());
         }
-        let local_page = last.schema == INTENT_V2
-            && self.page_local
-            && self.config.routes.page_route.as_ref() == Some(&last.route);
-        if last.schema != INTENT_V1 && !local_page {
+        if last.schema != INTENT_V1 {
             return Ok(());
         }
         let path = dir.join(&last.intent_file);
@@ -162,17 +194,7 @@ impl DeliveryRoutes<'_> {
             return Ok(());
         };
         let removed_url = fields.remove("runbook_url").is_some();
-        if local_page {
-            for key in ["action", "condition", "severity", "details"] {
-                fields.remove(key);
-            }
-            value["schema"] = json!(INTENT_V1);
-            value["destination_identity"] = json!(format!("local-inbox:{}", last.route));
-            value["summary"] = json!(truncate(value["summary"].as_str().unwrap_or_default(), 512));
-            last.schema = INTENT_V1.into();
-            last.network = true;
-        }
-        if local_page || removed_url {
+        if removed_url {
             write_atomic(&path, &intent::canonical(&value)?)?;
         }
         Ok(())
@@ -197,6 +219,26 @@ struct IntentReport {
     notification_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+impl IntentReport {
+    fn retired(id: &str, role: &str, last: &LastIntent, dir: &Path) -> Self {
+        Self {
+            condition_id: id.into(),
+            route_role: role.into(),
+            route: last.route.clone(),
+            schema: last.schema.clone(),
+            action: last.action.clone(),
+            operation: Operation::Retire,
+            stable_event_id: last.stable_event_id.clone(),
+            transition_id: last.transition_id.clone(),
+            retry_of: None,
+            intent_file: dir.join(&last.intent_file).display().to_string(),
+            outcome: "route_retired".into(),
+            notification_id: last.notification_id.clone(),
+            error: Some("route removed or transport/destination identity changed".into()),
+        }
+    }
 }
 
 fn rule_for<'a>(rules: &'a [EffectiveRule], id: &str) -> Option<&'a EffectiveRule> {
@@ -315,6 +357,119 @@ fn follow_up(
     }
 }
 
+/// Keep accepted provider pages across removal/re-addition during one incident.
+/// A sidecar leaves the released lifecycle state schema unchanged.
+#[derive(Default, Deserialize, Serialize)]
+struct PageAcceptances(BTreeMap<String, BTreeMap<String, AcceptedPage>>);
+
+#[derive(Deserialize, Serialize)]
+struct AcceptedPage {
+    last: LastIntent,
+    body: Option<Value>,
+}
+
+impl PageAcceptances {
+    fn load(dir: &Path) -> Result<Self, String> {
+        let path = dir.join("accepted-pages.json");
+        if !path.try_exists().map_err(|error| error.to_string())? {
+            return Ok(Self::default());
+        }
+        serde_json::from_slice(&read_bounded(&path, 8 * 1024 * 1024)?)
+            .map_err(|error| format!("cannot read accepted pages: {error}"))
+    }
+
+    fn remember(&mut self, state: &State, dir: &Path) {
+        for (id, condition) in &state.conditions {
+            if let Some(last) = condition.last_intent.get("page").filter(|last| {
+                condition.active
+                    && last.schema == INTENT_V2
+                    && last.action == "trigger"
+                    && last.outcome == "accepted"
+                    && last.notification_id.is_some()
+            }) {
+                let body = read_bounded(&dir.join("intents").join(&last.intent_file), 64 * 1024)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+                self.0.entry(id.clone()).or_default().insert(
+                    last.route.clone(),
+                    AcceptedPage {
+                        last: last.clone(),
+                        body,
+                    },
+                );
+            }
+        }
+        self.0.retain(|id, routes| {
+            routes.retain(|_, accepted| {
+                state.conditions.get(id).is_some_and(|condition| {
+                    condition.active
+                        && accepted.last.transition_id
+                            == intent::event_id(
+                                &condition.key,
+                                Action::Trigger,
+                                condition.transition_at.unwrap_or_default(),
+                            )
+                })
+            });
+            !routes.is_empty()
+        });
+    }
+
+    fn restore(
+        &self,
+        state: &mut State,
+        routes: &DeliveryRoutes<'_>,
+        dir: &Path,
+    ) -> Result<(), String> {
+        let Some(route) = routes
+            .route("page")
+            .filter(|route| route.transport == "pagerduty")
+        else {
+            return Ok(());
+        };
+        for (id, condition) in &mut state.conditions {
+            if !condition.active
+                || condition.page_deferred
+                || condition.last_intent.contains_key("page")
+            {
+                continue;
+            }
+            let Some(accepted) = self.0.get(id).and_then(|pages| pages.get(&route.reference))
+            else {
+                continue;
+            };
+            if accepted.last.schema != INTENT_V2
+                || accepted.last.outcome != "accepted"
+                || accepted.last.action != "trigger"
+                || accepted.last.route != route.reference
+                || accepted
+                    .body
+                    .as_ref()
+                    .is_some_and(|body| !route.matches(body))
+            {
+                return Err("accepted page identity does not match its retained intent".into());
+            }
+            if let Some(body) = &accepted.body {
+                write_atomic(
+                    &dir.join(&accepted.last.intent_file),
+                    &intent::canonical(body)?,
+                )?;
+            }
+            condition
+                .last_intent
+                .insert("page".into(), accepted.last.clone());
+        }
+        Ok(())
+    }
+
+    fn save(&self, dir: &Path) -> Result<(), String> {
+        write_atomic(
+            &dir.join("accepted-pages.json"),
+            &serde_json::to_vec(self).map_err(|error| error.to_string())?,
+        )
+    }
+}
+
 struct Lock {
     _file: Option<File>,
 }
@@ -395,11 +550,38 @@ fn reconfiguration(path: &Path, now: i64, bound: i64) -> Result<Option<i64>, Str
     Ok(Some(at.min(now)))
 }
 
+/// Every pass that holds the lock publishes its final process classification,
+/// including a fatal error after a previous report was successfully written.
+pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
+    let _lock = lock(config, options.dry_run)?;
+    match evaluate_locked(config, options) {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            let output = if options.dry_run {
+                config.state_dir().join("dry-run")
+            } else {
+                config.state_dir()
+            };
+            let report = json!({
+                "schema": REPORT_SCHEMA, "site": config.site,
+                "evaluated_at": format_seconds(options.now), "dry_run": options.dry_run,
+                "exit_code": 1, "exit_class": "evaluator_error",
+                "first_error": error.lines().next().unwrap_or_default(),
+            });
+            let bytes =
+                serde_json::to_vec_pretty(&report).map_err(|failure| failure.to_string())?;
+            write_atomic(&output.join("report.json"), &bytes)
+                .map_err(|failure| format!("{error}; cannot write final report: {failure}"))?;
+            Err(error)
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "The pass is one ordered sequence: read, reconcile, persist, submit, report."
 )]
-pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
+fn evaluate_locked(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let rules = config.effective_rules();
     let digest =
         intent::policy_digest_with(&rules, &config.remediation.targets, &config.suspensions);
@@ -409,7 +591,6 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     } else {
         state_dir.clone()
     };
-    let _lock = lock(config, options.dry_run)?;
     let mut state = State::load(&config.state_path, &config.site)?;
     let metric_history_path = state_dir.join("state-metric-alerts.json");
     let saved_metric_state = MetricAlertsState::load(&metric_history_path, &config.site)?;
@@ -530,9 +711,16 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         ));
     }
 
+    let current_routes = nq::routes(config)?;
     let delivery_routes = DeliveryRoutes {
         config,
-        page_local: nq::page_is_local(config)?,
+        page_local: config
+            .routes
+            .page_route
+            .as_ref()
+            .and_then(|page| current_routes.get(page))
+            .is_some_and(nq::Route::local),
+        current: current_routes,
     };
 
     let mut read = inputs::read_all(&Context {
@@ -898,6 +1086,55 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     // Plan: one intent per condition and route per pass.
     let intents_dir = output_dir.join("intents");
     ensure_dir(&intents_dir)?;
+    let mut page_acceptances = PageAcceptances::load(&state_dir)?;
+    page_acceptances.remember(&state, &state_dir);
+    if !options.dry_run {
+        page_acceptances.save(&state_dir)?;
+    }
+    let mut retired = Vec::new();
+    for (id, condition) in &mut state.conditions {
+        for slot in [&mut condition.last_intent, &mut condition.pending_trigger] {
+            slot.retain(|role, last| {
+                if delivery_routes.matches(role, last, &state_dir.join("intents")) {
+                    return true;
+                }
+                retired.push(IntentReport::retired(
+                    id,
+                    role,
+                    last,
+                    &state_dir.join("intents"),
+                ));
+                false
+            });
+        }
+    }
+    if let Some((record, body)) = crate::digest::retire_changed_route(
+        config,
+        delivery_routes.route("notice"),
+        options.dry_run,
+    )? {
+        retired.push(IntentReport::retired(
+            "daily-digest",
+            "notice",
+            &LastIntent {
+                stable_event_id: record.stable_event_id.clone(),
+                transition_id: body["transition_id"]
+                    .as_str()
+                    .unwrap_or(&record.stable_event_id)
+                    .into(),
+                action: "digest".into(),
+                route: body["route_reference"].as_str().unwrap_or_default().into(),
+                schema: INTENT_V1.into(),
+                notification_id: record.notification_id,
+                outcome: record.outcome,
+                network: record.network,
+                at: record.at,
+                intent_file: "digest-intent.json".into(),
+            },
+            &state_dir,
+        ));
+    }
+    page_acceptances.restore(&mut state, &delivery_routes, &intents_dir)?;
     if !options.dry_run {
         for condition in state.conditions.values_mut() {
             for last in condition
@@ -912,7 +1149,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     let mut plan: Vec<Planned> = Vec::new();
     let mut superseded: Vec<Value> = Vec::new();
     let notice_route = config.routes.notice_route.clone();
-    let work: Vec<(String, Action, ResolveReason, bool)> = transitions
+    let mut work: Vec<(String, Action, ResolveReason, bool)> = transitions
         .iter()
         .map(|(id, action, reason)| (id.clone(), *action, *reason, false))
         .chain(
@@ -921,6 +1158,18 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 .map(|id| (id.clone(), Action::Trigger, ResolveReason::Recovered, true)),
         )
         .collect();
+    let transitioned: BTreeSet<String> = work.iter().map(|(id, _, _, _)| id.clone()).collect();
+    work.extend(
+        state
+            .conditions
+            .iter()
+            .filter(|(id, condition)| {
+                condition.active
+                    && !transitioned.contains(*id)
+                    && !config.suspensions.iter().any(|s| s.covers(&condition.key))
+            })
+            .map(|(id, _)| (id.clone(), Action::Trigger, ResolveReason::Recovered, false)),
+    );
     for (id, action, reason, page_only) in &work {
         let (action, reason) = (*action, *reason);
         let condition = state
@@ -930,6 +1179,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         let Some(rule) = rule_for(&rules, &condition.key.rule) else {
             continue;
         };
+        if !transitioned.contains(id) && !rule.enabled {
+            continue;
+        }
         let mut roles: Vec<(String, String)> = Vec::new();
         match action {
             // The remediation window expired with the condition present: the
@@ -938,6 +1190,11 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             Action::Trigger if *page_only => {
                 if let Some(page) = &config.routes.page_route {
                     roles.push(("page".into(), page.clone()));
+                }
+                if !condition.last_intent.contains_key("notice")
+                    && !roles.iter().any(|(_, route)| route == &notice_route)
+                {
+                    roles.push(("notice".into(), notice_route.clone()));
                 }
             }
             Action::Trigger => {
@@ -960,8 +1217,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                 }
             }
         }
+        // Active conditions also acquire newly configured roles, but an
+        // unchanged role (especially an accepted page) keeps its exact event.
+        let refresh = !transitioned.contains(id);
+        roles.retain(|(role, route)| {
+            delivery_routes
+                .route(role)
+                .is_some_and(|current| current.reference == *route)
+                && (!refresh || !condition.last_intent.contains_key(role))
+        });
         let stable_event_id = intent::event_id(&condition.key, action, now);
-        let transition_id = if *page_only {
+        let transition_id = if *page_only || refresh {
             intent::event_id(
                 &condition.key,
                 Action::Trigger,
@@ -999,11 +1265,7 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
                     intent::v1(
                         &input,
                         &route,
-                        if local_page {
-                            intent::LOCAL_INBOX_LABEL
-                        } else {
-                            config.routes.notice_transport.destination_label()
-                        },
+                        delivery_routes.current[&route].destination_label(),
                     ),
                     INTENT_V1,
                 )
@@ -1061,19 +1323,17 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             }
         }
     }
-    // Conditions that got an intent this pass: no follow-up besides it.
-    let transitioned: BTreeSet<&String> = transitions
+    let planned: BTreeSet<(String, String)> = plan
         .iter()
-        .map(|(id, _, _)| id)
-        .chain(deferred_pages.iter())
+        .map(|item| (item.condition_id.clone(), item.role.clone()))
         .collect();
     let mut unreadable: Vec<IntentReport> = Vec::new();
     for (id, condition) in &mut state.conditions {
-        if transitioned.contains(id) {
-            continue;
-        }
         let snapshot = condition.clone();
         for (role, last) in &mut condition.last_intent {
+            if planned.contains(&(id.clone(), role.clone())) {
+                continue;
+            }
             let Some((operation, waits)) = follow_up(last, &snapshot, &delivery_routes) else {
                 continue;
             };
@@ -1273,7 +1533,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
             dropped["outcome"].as_str().unwrap_or_default(),
         );
     }
-    let mut intent_reports = unreadable;
+    let mut intent_reports = retired;
+    intent_reports.extend(unreadable);
     let mut withheld_count = 0;
     let mut dropped_triggers = superseded;
     for item in &plan {
@@ -1385,6 +1646,8 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         });
         state.updated_at = now;
         state.save(&config.state_path)?;
+        page_acceptances.remember(&state, &state_dir);
+        page_acceptances.save(&state_dir)?;
         prune_intents(&intents_dir, &state);
     }
 
@@ -1447,6 +1710,19 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
     }
     for condition in state.conditions.values() {
         for last in condition.last_intent.values() {
+            if last.outcome == "accepted"
+                && read_bounded(&intents_dir.join(&last.intent_file), 64 * 1024)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_none_or(|value| {
+                        !delivery_routes
+                            .current
+                            .get(&last.route)
+                            .is_some_and(|route| route.matches(&value))
+                    })
+            {
+                continue;
+            }
             delivery_routes.record(
                 &mut delivery,
                 &last.route,
@@ -1457,6 +1733,9 @@ pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, St
         }
     }
     for item in &intent_reports {
+        if item.outcome == "route_retired" {
+            continue;
+        }
         delivery_routes.record(
             &mut delivery,
             &item.route,
@@ -1591,13 +1870,18 @@ fn first_pass_error(report: &Value) -> Option<String> {
                 .into_iter()
                 .flat_map(|key| report[key].as_array().into_iter().flatten())
                 .find(|item| {
-                    matches!(
-                        item["route"]
-                            .as_str()
-                            .and_then(|route| report["delivery"][route]["outcome"].as_str()),
-                        Some("refused" | "failed")
-                    ) && (item["error"].is_string()
-                        || !matches!(item["outcome"].as_str(), Some("accepted" | "not_submitted")))
+                    item["outcome"] != "route_retired"
+                        && matches!(
+                            item["route"]
+                                .as_str()
+                                .and_then(|route| report["delivery"][route]["outcome"].as_str()),
+                            Some("refused" | "failed")
+                        )
+                        && (item["error"].is_string()
+                            || !matches!(
+                                item["outcome"].as_str(),
+                                Some("accepted" | "not_submitted")
+                            ))
                 })
                 .map(|item| {
                     format!(

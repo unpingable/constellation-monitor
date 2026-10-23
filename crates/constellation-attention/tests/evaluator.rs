@@ -85,6 +85,7 @@ struct Harness {
     network: bool,
     notice_transport: &'static str,
     runbook_base: &'static str,
+    nq_routes_override: Option<String>,
 }
 
 impl Harness {
@@ -102,6 +103,7 @@ impl Harness {
             network: true,
             notice_transport: "slack",
             runbook_base: "https://docs.example.org/beta-observability/RUNBOOKS.md",
+            nq_routes_override: None,
         }
     }
 
@@ -133,10 +135,21 @@ impl Harness {
         let nq_config = self.path("nq.toml");
         fs::write(
             &nq_config,
-            format!(
-                "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n",
-                self.page_reference, self.page_transport,
-            ),
+            self.nq_routes_override.clone().unwrap_or_else(|| {
+                format!(
+                    "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n{}",
+                    self.page_reference,
+                    self.page_transport,
+                    if self.notice_reference == self.page_reference {
+                        String::new()
+                    } else {
+                        format!(
+                            "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n",
+                            self.notice_reference, self.notice_transport
+                        )
+                    },
+                )
+            }),
         )
         .unwrap();
         let page = if self.page_route {
@@ -263,7 +276,28 @@ impl Harness {
             "pass failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        self.report()
+        let report = self.report();
+        assert_eq!(
+            report["exit_code"],
+            output.status.code().unwrap(),
+            "{report}"
+        );
+        assert!(
+            matches!(
+                (
+                    output.status.code().unwrap(),
+                    report["exit_class"].as_str().unwrap()
+                ),
+                (0, "clean")
+                    | (3, "input_error")
+                    | (
+                        4,
+                        "delivery_partial" | "delivery_failed" | "intent_log_unwritable"
+                    )
+            ),
+            "{report}"
+        );
+        report
     }
 
     fn report(&self) -> Value {
@@ -910,11 +944,19 @@ fn upgrade_repairs_unretained_v1_and_local_page_intents() {
     set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
     let output = harness.evaluate_at(T0 + 720, &[]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = harness.report();
+    assert_eq!(report["intents"][0]["outcome"], "route_retired");
     assert_eq!(
-        harness.report()["intents"][1]["schema"],
-        "nq.notification_delivery_intent.v1"
+        report["intents"][0]["schema"],
+        "nq.notification_delivery_intent.v2"
     );
-    assert_eq!(harness.report()["intents"][1]["outcome"], "accepted");
+    let fresh = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["route_role"] == "page" && item["outcome"] == "accepted")
+        .unwrap();
+    assert_eq!(fresh["schema"], "nq.notification_delivery_intent.v1");
     assert_eq!(harness.calls().len(), 2);
     // Local retries must still deliver when network is disabled.
     harness.fake("next_state", "failed");
@@ -4128,16 +4170,17 @@ fn make_legacy_page(harness: &Harness) {
 #[test]
 fn fake_nq_retains_a_non_page_v2_as_refused() {
     let harness = Harness::new();
+    harness.config_path();
     let intent = harness.path("legacy.json");
     fs::write(
         &intent,
-        br#"{"schema":"nq.notification_delivery_intent.v2","stable_event_id":"labelwatch-x-trigger-1"}"#,
+        br#"{"schema":"nq.notification_delivery_intent.v2","stable_event_id":"labelwatch-x-trigger-1","destination_identity":"pagerduty:pagerduty-ops"}"#,
     )
     .unwrap();
     let output = Command::new(Path::new(FIXTURES).join("fake-nq.sh"))
         .args([
             "--config",
-            "/etc/nq/nqd-ops.toml",
+            harness.path("nq.toml").to_str().unwrap(),
             "--json",
             "notification",
             "submit",
@@ -8314,5 +8357,389 @@ fn previously_rejected_identity_cannot_gain_reconfiguration_grace() {
         metric_input(&report)["identity"]
             .get("warming_rules")
             .is_none()
+    );
+}
+
+/// Handler changes retire old obligations while the condition and accepted
+/// page retain their identities. Retirements themselves never fail delivery.
+#[test]
+fn active_condition_survives_notice_handler_added_then_removed() {
+    for pending in [false, true] {
+        let mut harness = Harness::new();
+        harness.notice_transport = "local_file";
+        harness.host_posture("root");
+        if pending {
+            harness.fake("command_error-operations", "");
+        }
+        for offset in [0, 660] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate(T0 + offset);
+        }
+        let page_event =
+            harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["stable_event_id"]
+                .clone();
+        harness.notice_reference = "my-hook";
+        harness.notice_transport = "slack";
+        for (offset, retired_route) in [(720, "operations"), (780, "my-hook")] {
+            if offset == 780 {
+                harness.notice_reference = "operations";
+                harness.notice_transport = "local_file";
+                if pending {
+                    fs::remove_file(harness.path("fake/command_error-operations")).unwrap();
+                }
+            }
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            let output = harness.evaluate_at(T0 + offset, &[]);
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let report = harness.report();
+            let rows = report["intents"].as_array().unwrap();
+            assert_eq!(rows.len(), 2, "{report}");
+            assert_eq!(rows[0]["outcome"], "route_retired");
+            assert_eq!(rows[0]["route"], retired_route);
+            assert_eq!(rows[1]["outcome"], "accepted");
+            assert_eq!(rows[1]["route"], harness.notice_reference);
+            assert!(
+                report["unresolved_deliveries"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"]["stable_event_id"],
+                page_event
+            );
+            assert_eq!(rows[1]["transition_id"], page_event);
+            assert!(report["delivery"].get(retired_route).is_none());
+        }
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 840);
+        assert!(
+            harness.evaluate(T0 + 840)["intents"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            harness
+                .calls()
+                .iter()
+                .filter(|call| call.starts_with("submit pagerduty-ops "))
+                .count(),
+            1
+        );
+        let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+        assert_eq!(
+            log.lines()
+                .filter(|line| line.contains("route_retired"))
+                .count(),
+            2
+        );
+    }
+}
+
+#[test]
+fn route_transport_changes_retire_before_using_the_current_nq_entry_point() {
+    for (page, initially_local) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut harness = Harness::new();
+        if initially_local {
+            if page {
+                harness.page_transport = "local_file";
+            } else {
+                harness.notice_transport = "local_file";
+            }
+        }
+        harness.host_posture("root");
+        for offset in [0, 660] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate(T0 + offset);
+        }
+        let (offset, local) = (720, !initially_local);
+        let route = if page {
+            harness.page_reference
+        } else {
+            harness.notice_reference
+        };
+        if page {
+            harness.page_transport = if local { "local_file" } else { "pagerduty" };
+        } else {
+            harness.notice_transport = if local { "local_file" } else { "discord" };
+        }
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 0, "{report}");
+        let rows = report["intents"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["outcome"], "route_retired");
+        assert_eq!(rows[1]["outcome"], "accepted");
+        assert_eq!(rows[1]["route"], route);
+        let attempts = fs::read_to_string(harness.path("fake/attempts.log")).unwrap();
+        assert!(attempts.lines().last().unwrap().starts_with(&format!(
+            "{} {route} ",
+            if local { "deliver-local" } else { "submit" }
+        )));
+        let body: Value = serde_json::from_slice(
+            &harness.submitted_intent(rows[1]["notification_id"].as_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(
+            body["destination_identity"],
+            format!(
+                "{}:{route}",
+                if local {
+                    "local-inbox"
+                } else if page {
+                    "pagerduty"
+                } else {
+                    "discord"
+                }
+            )
+        );
+    }
+}
+
+#[test]
+fn current_nq_transport_controls_delivery_even_with_old_notice_setting() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.nq_routes_override = Some(
+        "[[notification_routes]]\nreference = \"operations\"\ntransport = \"local_file\"\n".into(),
+    );
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(report["exit_code"], 0, "{report}");
+    assert_eq!(report["intents"][0]["outcome"], "route_retired");
+    assert_eq!(report["intents"][1]["outcome"], "accepted");
+    assert!(
+        harness
+            .calls()
+            .last()
+            .unwrap()
+            .starts_with("submit local:operations ")
+    );
+}
+
+#[test]
+fn removed_nq_route_retires_last_and_pending_resolve_without_retry() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("command_error-operations", "");
+    for (offset, state) in [
+        (0, ProjectedStateV1::Unknown),
+        (660, ProjectedStateV1::Unknown),
+        (720, ProjectedStateV1::Healthy),
+    ] {
+        set(&harness, "root", state, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    // Model the persisted pre-submission checkpoint: resolve and its pending
+    // trigger both refer to the route removed by the next config apply.
+    let mut state = harness.state();
+    let condition = &mut state["conditions"][UNKNOWN_ROOT];
+    let trigger = condition["last_intent"]["notice"].clone();
+    condition["pending_trigger"] = json!({"notice": trigger});
+    condition["last_intent"]["notice"]["action"] = json!("resolve");
+    fs::write(
+        harness.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    harness.nq_routes_override = Some(
+        "[[notification_routes]]\nreference = \"pagerduty-ops\"\ntransport = \"pagerduty\"\n"
+            .into(),
+    );
+    let attempts = fs::read_to_string(harness.path("fake/attempts.log")).unwrap();
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 780);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 0, "{report}");
+    let rows = report["intents"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["outcome"] == "route_retired"));
+    assert_eq!(
+        fs::read_to_string(harness.path("fake/attempts.log")).unwrap(),
+        attempts
+    );
+    set(&harness, "root", ProjectedStateV1::Healthy, T0 + 840);
+    assert_eq!(harness.evaluate(T0 + 840)["exit_code"], 0);
+}
+
+#[test]
+fn digest_acceptance_cannot_move_to_a_new_notice_identity() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.raw("[digest]\nat_utc = \"00:40\"\n");
+    let accepted = harness.evaluate(T0);
+    assert_eq!(accepted["delivery"]["operations"]["outcome"], "accepted");
+    // No obligation is due for this identity yet, even though the previous
+    // route accepted a digest today. The old digest record has no route field.
+    harness.extra_config = "[digest]\nat_utc = \"13:00\"\n".into();
+    harness.notice_reference = "my-hook";
+    harness.fake("state-my-hook", "failed");
+    let report = harness.evaluate(T0 + 60);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(
+        report["delivery"]["my-hook"],
+        json!({"outcome": "skipped", "last_attempt_at": null})
+    );
+    assert_eq!(report["intents"][0]["outcome"], "route_retired");
+    let report = harness.evaluate(T0 + 3600);
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(
+        report["delivery"]["my-hook"],
+        json!({"outcome": "failed", "last_attempt_at": rfc3339(T0 + 3600)})
+    );
+    assert_eq!(harness.calls().len(), 2);
+}
+
+#[test]
+fn later_fatal_pass_rewrites_the_report_with_the_process_exit() {
+    let mut harness = Harness::new();
+    harness.raw("[digest]\nat_utc = \"13:00\"\n");
+    assert_eq!(harness.evaluate(T0)["exit_code"], 0);
+    // Fail digest persistence after evaluation and state persistence. The
+    // earlier clean report must not survive as this pass's classification.
+    fs::create_dir(harness.path("state/digest-intent.json")).unwrap();
+    let output = harness.evaluate_at(T0 + 3600, &[]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = harness.report();
+    assert_eq!(report["exit_code"], output.status.code().unwrap());
+    assert_eq!(report["exit_class"], "evaluator_error");
+    assert_eq!(report["evaluated_at"], rfc3339(T0 + 3600));
+    assert!(report["first_error"].is_string());
+}
+
+#[test]
+fn active_condition_acquires_and_retires_page_roles_without_repeating_notices() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.page_route = true;
+    for (offset, reference) in [(720, "pagerduty-ops"), (780, "new-pager")] {
+        harness.page_reference = reference;
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 0);
+        let rows = report["intents"].as_array().unwrap();
+        assert_eq!(rows.len(), if offset == 720 { 1 } else { 2 });
+        let fresh = rows.last().unwrap();
+        assert_eq!(fresh["route"], reference);
+        assert_eq!(fresh["route_role"], "page");
+        assert_eq!(fresh["outcome"], "accepted");
+        assert_eq!(
+            report["delivery"]["operations"]["last_attempt_at"],
+            rfc3339(T0 + 660)
+        );
+    }
+    harness.page_route = false;
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 840);
+    let report = harness.evaluate(T0 + 840);
+    assert_eq!(report["exit_code"], 0);
+    assert_eq!(report["intents"].as_array().unwrap().len(), 1);
+    assert_eq!(report["intents"][0]["outcome"], "route_retired");
+    assert_eq!(harness.calls().len(), 3);
+}
+
+#[test]
+fn failed_replacement_route_does_not_blame_retirement_or_inherit_acceptance() {
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    harness.notice_transport = "local_file";
+    harness.fake("command_error-operations", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(report["intents"][0]["outcome"], "route_retired");
+    assert_eq!(
+        report["delivery"]["operations"],
+        json!({"outcome": "failed", "last_attempt_at": rfc3339(T0 + 720)})
+    );
+    let error = report["first_error"].as_str().unwrap();
+    assert!(
+        error.contains("notification condition target_class is refused"),
+        "{error}"
+    );
+    assert!(!error.contains("route removed"), "{error}");
+}
+
+#[test]
+fn readding_an_accepted_page_identity_does_not_reach_the_provider_again() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let original = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"].clone();
+    // Exercise both a transport change and removing the role entirely.
+    for (offset, local) in [(720, true), (840, false)] {
+        harness.page_transport = if local { "local_file" } else { "pagerduty" };
+        harness.page_route = local;
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 0);
+        assert_eq!(report["intents"][0]["outcome"], "route_retired");
+        harness.page_route = true;
+        harness.page_transport = "pagerduty";
+        set(
+            &harness,
+            "root",
+            ProjectedStateV1::Unknown,
+            T0 + offset + 60,
+        );
+        let report = harness.evaluate(T0 + offset + 60);
+        assert_eq!(report["exit_code"], 0);
+        assert!(
+            report["intents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["outcome"] == "route_retired")
+        );
+        assert_eq!(
+            report["delivery"]["pagerduty-ops"],
+            json!({"outcome": "accepted", "last_attempt_at": rfc3339(T0 + 660)})
+        );
+        assert_eq!(
+            harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"],
+            original
+        );
+    }
+    assert_eq!(
+        harness.calls().len(),
+        3,
+        "notice, original provider page, local copy"
+    );
+    for offset in [960, 1080] {
+        set(&harness, "root", ProjectedStateV1::Healthy, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let saved: Value =
+        serde_json::from_slice(&fs::read(harness.path("state/accepted-pages.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved, json!({}), "closed incidents forget accepted pages");
+    for offset in [1140, 1800] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(
+        harness
+            .calls()
+            .iter()
+            .filter(|call| call.starts_with("submit pagerduty-ops ") && call.contains("-trigger-"))
+            .count(),
+        2,
+        "a new incident must page again"
     );
 }
