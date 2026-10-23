@@ -1,5 +1,5 @@
 """Collector tests: declared contracts must be acquired, coverage includes timers and contracts."""
-import importlib.util, json, os, pathlib, sys
+import importlib.util, json, os, pathlib, sys, time
 
 HERE = pathlib.Path(__file__).parent
 spec = importlib.util.spec_from_file_location("collect", HERE / "constellation-estate-collect.py")
@@ -261,3 +261,350 @@ def test_an_observation_past_its_own_validity_is_stale_even_when_the_producer_sa
     assert by["a.fresh"]["state"] == "PRESENT" and by["a.nodate"]["state"] == "PRESENT"
     assert by["a.old"]["state"] == "STALE" and "exceeds its 60s validity" in by["a.old"]["reason"]
     assert by["a.old"]["observed_at"] == "2020-01-01T00:00:00Z"
+
+
+def test_declared_file_probes_emit_geometry_and_age_without_sqlite_sidecars(tmp_path):
+    import sqlite3
+    db = tmp_path / "store.sqlite"
+    connection = sqlite3.connect(db)
+    connection.execute("CREATE TABLE records (x TEXT)")
+    connection.commit()
+    connection.close()
+    wal = tmp_path / "store.sqlite-wal"
+    wal.write_bytes(b"wal fixture")
+    output = tmp_path / "output.json"; output.write_text("{}")
+    backup = tmp_path / "backup.sqlite"; backup.write_bytes(b"backup")
+    before = set(tmp_path.iterdir())
+    reg = {"services": [{"name": "demo", "runtime": {"systemd": "demo.service"}, "probes": {
+        "stores": [{"name": "main", "path": str(db)}],
+        "outputs": [{"name": "report", "path": str(output)}],
+        "backups": [{"name": "daily", "path": str(backup)}]}}]}
+    specs = c.probe_specs(reg)
+    entries = c.collect_probes(specs, str(tmp_path / "state.json"), 2)
+    metrics = c.render_probes(specs, entries)
+    assert 'service_store_bytes{service="demo",store="main"} ' in metrics
+    assert 'service_store_wal_bytes{service="demo",store="main"} 11' in metrics
+    assert 'service_store_freelist_pages{service="demo",store="main"} 0' in metrics
+    assert 'service_filesystem_avail_bytes{service="demo",store="main"} ' in metrics
+    assert 'service_filesystem_avail_inodes{service="demo",store="main"} ' in metrics
+    assert 'service_output_age_seconds{service="demo",output="report"} ' in metrics
+    assert 'service_backup_created_timestamp_seconds{service="demo",backup="daily"} ' in metrics
+    assert set(tmp_path.iterdir()) - before == {tmp_path / "state.json"}
+    assert not (tmp_path / "store.sqlite-shm").exists()
+
+
+def test_hung_file_probe_does_not_delay_other_probe_or_clear_missing(tmp_path):
+    blocked = tmp_path / "blocked.sqlite"
+    os.mkfifo(blocked)
+    good = tmp_path / "good.json"; good.write_text("good")
+    missing = tmp_path / "missing.json"
+    specs = [("demo", "store", "blocked", str(blocked), "sqlite"),
+             ("demo", "output", "good", str(good), "output_mtime"),
+             ("demo", "output", "missing", str(missing), "output_mtime")]
+    started = time.monotonic()
+    entries = c.collect_probes(specs, str(tmp_path / "state.json"), 0.25, workers=3)
+    assert time.monotonic() - started < 3
+    assert entries[c.probe_key(specs[0])]["success"] is False
+    assert entries[c.probe_key(specs[1])]["success"] is True
+    assert entries[c.probe_key(specs[2])]["success"] is False
+    metrics = c.render_probes(specs, entries)
+    assert 'service_probe_success{service="demo",output="good",probe="output_mtime"} 1' in metrics
+    assert 'service_probe_success{service="demo",output="missing",probe="output_mtime"} 0' in metrics
+    assert 'service_output_age_seconds{service="demo",output="missing"}' not in metrics
+
+
+def test_slow_probe_retains_observation_time_then_reports_failure(tmp_path):
+    import sqlite3
+    db = tmp_path / "store.sqlite"
+    cx = sqlite3.connect(db); cx.execute("CREATE TABLE x (v)"); cx.close()
+    spec = ("demo", "store", "main", str(db), "sqlite")
+    state = str(tmp_path / "state.json")
+    first = c.collect_probes([spec], state, 2, slow_seconds=600)
+    observed = first[c.probe_key(spec)]["observed_at"]
+    db.unlink()
+    skipped = c.collect_probes([spec], state, 2, slow_seconds=600)
+    assert skipped[c.probe_key(spec)]["observed_at"] == observed
+    assert 'service_probe_observed_timestamp_seconds{service="demo",store="main",probe="sqlite"} ' in c.render_probes([spec], skipped)
+    due = c.collect_probes([spec], state, 2, slow_seconds=0)
+    assert due[c.probe_key(spec)]["success"] is False
+    assert due[c.probe_key(spec)]["observed_at"] == observed
+    assert 'service_store_bytes{service="demo",store="main"}' not in c.render_probes([spec], due)
+
+
+def test_command_output_capture_is_bounded_while_draining_both_pipes():
+    code = "import os; os.write(1,b'x'*2000000); os.write(2,b'y'*2000000+b'end')"
+    rc, out, err = c.run([sys.executable, "-c", code], 4, limit=128)
+    assert rc == 0 and out == b"x" * 128 and len(err) == 2000 and err.endswith("end")
+
+
+def test_filesystem_probe_uses_declared_path(monkeypatch):
+    class Stat:
+        f_bavail = 2
+        f_frsize = 4096
+        f_favail = 3
+    seen = []
+    monkeypatch.setattr(c.os, "statvfs", lambda path: (seen.append(path), Stat())[1])
+    assert c.probe_worker("filesystem", "/a/link-to-store") == {
+        "filesystem_avail_bytes": 8192, "filesystem_avail_inodes": 3}
+    assert seen == ["/a/link-to-store"]
+
+
+def test_main_publishes_probes_before_concurrent_service_checks(tmp_path, monkeypatch):
+    import threading
+    output = tmp_path / "output.json"; output.write_text("{}")
+    textfiles = tmp_path / "textfiles"; textfiles.mkdir()
+    report = tmp_path / "estate.json"
+    registry = tmp_path / "registry.json"
+    registry.write_text(json.dumps({"schema": "constellation.estate_registry/v1", "services": [
+        {"name": name, "runtime": {"systemd": name + ".service"},
+         "probes": {"outputs": [{"name": "report", "path": str(output)}]}}
+        for name in ("one", "two")]}))
+    barrier = threading.Barrier(2)
+
+    def evaluate(svc, timeout):
+        assert 'service_output_age_seconds{service="one",output="report"}' in (textfiles / "constellation-estate.prom").read_text()
+        barrier.wait(timeout=2)
+        return {"name": svc["name"], "verdict": "OK", "reason": "fixture", "concerns": []}
+
+    monkeypatch.setattr(c, "evaluate", evaluate)
+    monkeypatch.setattr(c, "coverage", lambda *args: [])
+    assert c.main(["--registry", str(registry), "--output", str(report),
+                   "--textfile-dir", str(textfiles)]) == 0
+    assert [s["name"] for s in json.loads(report.read_text())["services"][:2]] == ["one", "two"]
+    registry.write_text(json.dumps({"schema": "constellation.estate_registry/v1", "services": []}))
+    assert c.main(["--registry", str(registry), "--output", str(report),
+                   "--textfile-dir", str(textfiles)]) == 0
+    assert "service_output_age_seconds{" not in (textfiles / "constellation-estate.prom").read_text()
+
+
+def test_timeout_cleanup_reports_pending_child_pid_without_waiting_forever(monkeypatch):
+    import pytest
+    import subprocess
+    seen = []
+
+    class Pending:
+        pid = 4242
+
+        def wait(self, timeout):
+            seen.append(timeout)
+            raise subprocess.TimeoutExpired(["fixture"], timeout)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(c.os, "killpg", lambda pid, sig: seen.append((pid, sig)))
+        original = subprocess.TimeoutExpired(["fixture"], 0.1)
+        with pytest.raises(RuntimeError, match="child PID 4242 remains pending exit"):
+            c.kill_and_reap(Pending(), original)
+    assert seen == [(4242, c.signal.SIGKILL), 0.2]
+    with pytest.raises(subprocess.TimeoutExpired):
+        c.run([sys.executable, "-c", "import time; time.sleep(5)"], 0.05)
+
+
+def test_symlinked_sqlite_uses_target_wal_path(tmp_path):
+    import sqlite3
+    target = tmp_path / "real.sqlite"
+    cx = sqlite3.connect(target); cx.execute("CREATE TABLE x (v)"); cx.close()
+    link = tmp_path / "link.sqlite"
+    link.symlink_to(target)
+    (tmp_path / "real.sqlite-wal").write_bytes(b"target wal")
+    (tmp_path / "link.sqlite-wal").write_bytes(b"wrong wal")
+    assert c.probe_worker("sqlite", str(link))["store_wal_bytes"] == len(b"target wal")
+
+
+def test_malformed_cache_is_discarded_and_missing_store_is_probed(tmp_path):
+    spec = ("demo", "store", "main", str(tmp_path / "missing.sqlite"), "sqlite")
+    key = c.probe_key(spec)
+    path = tmp_path / "state.json"
+    fake_values = {"store_bytes": 100, "store_wal_bytes": 0,
+                   "store_freelist_pages": 0, "store_page_size_bytes": 4096}
+    for malformed in [[],
+                      {"schema": "constellation.estate_probes/v1", "entries": {
+                          key: {"success": True, "attempted_at": "bad", "observed_at": 1,
+                                "values": fake_values}}},
+                      {"schema": "constellation.estate_probes/v1", "entries": {
+                          key: {"success": True, "attempted_at": time.time() + 3600,
+                                "observed_at": time.time() + 3600, "values": fake_values}}},
+                      {"schema": "constellation.estate_probes/v1", "entries": {
+                          key: {"success": True, "attempted_at": time.time(),
+                                "observed_at": time.time(), "values": dict(fake_values, store_bytes=float("nan"))}}}]:
+        path.write_text(json.dumps(malformed))
+        entry = c.collect_probes([spec], str(path), 1)[key]
+        assert entry["success"] is False
+        assert entry["values"] == {}
+
+
+def test_derived_registry_is_deterministic_and_retains_absent_subjects(tmp_path, monkeypatch):
+    declaration = tmp_path / 'demo.toml'
+    declaration.write_text('name="demo"\nrole="worker"\nruntime={systemd="demo.service"}\nthresholds={output_age_seconds=60}\n')
+    base = {"schema": c.REGISTRY_SCHEMA, "site": "test", "services": [], "exclusions": {}}
+    reg = c.derive_registry(base, tmp_path)
+    assert reg == c.derive_registry(base, tmp_path)
+    assert base['services'] == []
+    declaration.unlink()
+    assert list(c.declaration_findings(reg)) == ['demo']
+    # Neither collector loss nor target host loss can mutate the approved copy.
+    assert reg['services'][0]['name'] == 'demo'
+    monkeypatch.setattr(c, 'runtime_state', lambda *a: {"up": False, "state": "absent"})
+    svc = dict(reg['services'][0], _has_declaration=True)
+    out = c.evaluate(svc, 1)
+    assert out['verdict'] == 'DOWN'
+    assert 'declaration.drift' in out['failing']
+
+
+def test_declaration_hash_drift_and_install_path(tmp_path):
+    declaration = tmp_path / 'demo.toml'
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\n')
+    base = {"schema": c.REGISTRY_SCHEMA, "services": []}
+    reg = c.derive_registry(base, tmp_path, '/etc/constellation/services.d')
+    assert reg['service_declarations'][0]['path'] == '/etc/constellation/services.d/demo.toml'
+    assert not c.declaration_findings(reg, tmp_path)
+    declaration.write_text('name="replacement"\nruntime={docker="other"}\n')
+    assert 'demo' in c.declaration_findings(reg, tmp_path)
+    assert reg['services'][0]['runtime'] == {'docker': 'demo'}
+
+
+def test_declaration_translates_health_command_and_graph(tmp_path):
+    (tmp_path / 'a.toml').write_text('name="a"\nruntime={systemd="a.service"}\nhealth_url="http://localhost/health"\ndependencies=["b"]\n')
+    (tmp_path / 'b.toml').write_text('name="b"\nruntime={docker="b"}\nstatus_command=["producer", "--json"]\nstatus_user="demo"\n')
+    reg = c.derive_registry({"schema": c.REGISTRY_SCHEMA, "services": []}, tmp_path)
+    assert reg['services'][0]['status'] == {'kind': 'http', 'url': 'http://localhost/health'}
+    assert reg['services'][1]['status']['argv'] == ['producer', '--json']
+    assert reg['services'][0]['dependencies'] == ['b']
+
+
+def test_timer_deadline_success_age_and_output_are_distinct(monkeypatch):
+    timer = {"ActiveState": "active", "Unit": "demo.service", "LastTriggerUSec": "never"}
+    service = {"ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0", "ExecMainExitTimestamp": ""}
+    monkeypatch.setattr(c, 'unit_props', lambda unit, *a: timer if unit.endswith('.timer') else service)
+    spec = {'unit': 'demo.timer', 'first_result_due_at': 100, 'max_success_age_seconds': 20}
+    assert c.timer_concern(spec, 1, now=99)['state'] == 'UNKNOWN'
+    assert c.timer_concern(spec, 1, now=100)['state'] == 'DEGRADED'
+    service['ExecMainExitTimestamp'] = 200
+    assert c.timer_concern(spec, 1, now=100)['state'] == 'UNKNOWN'
+    service['ExecMainExitTimestamp'] = 100
+    assert c.timer_concern(spec, 1, now=120)['state'] == 'PRESENT'
+    assert c.timer_concern(spec, 1, now=121)['state'] == 'STALE'
+    service.update(ActiveState='failed', ExecMainStatus='1', Result='exit-code')
+    assert c.timer_concern(spec, 1, now=121)['state'] == 'DEGRADED'
+
+
+def test_false_path_declaration_is_drift(tmp_path, monkeypatch):
+    monkeypatch.setattr(c, 'runtime_state', lambda *a: {'up': True})
+    svc = {'name': 'demo', 'runtime': {'docker': 'demo'}, '_has_declaration': True,
+           'probes': {'outputs': [{'name': 'result', 'path': str(tmp_path / 'missing')}]}}
+    assert 'declaration.drift' in c.evaluate(svc, 1)['failing']
+
+
+def test_service_limit_rendering_is_deterministic_and_not_health():
+    reg = {'services': [{'name': 'z'}, {'name': 'a', 'thresholds': {'cursor_lag_seconds': 60}}]}
+    text = c.render_service_limits(reg, now=100)
+    assert 'service_cursor_lag_seconds_limit{service="a"} 60\n' in text
+    assert 'service_declaration_observed_timestamp_seconds{service="z"} 100\n' in text
+    assert 'service_declaration_observed_timestamp_seconds{service="a"} 100\n' in text
+    assert 'service_probe_success' not in text
+    assert text == c.render_service_limits({'services': list(reversed(reg['services']))}, now=100)
+
+
+def test_unknown_threshold_is_rejected():
+    import pytest
+    with pytest.raises(ValueError, match='unknown service threshold'):
+        c.validate({'schema': c.REGISTRY_SCHEMA, 'services': [
+            {'name': 'a', 'runtime': {'docker': 'a'}, 'thresholds': {'invented': 60}}]})
+
+
+def test_application_thresholds_publish_without_file_probes(tmp_path, monkeypatch):
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'schema': c.REGISTRY_SCHEMA, 'services': [
+        {'name': 'a', 'runtime': {'docker': 'a'}, 'thresholds': {'last_success_age_seconds': 60}}]}))
+    monkeypatch.setattr(c, 'runtime_state', lambda *a: {'up': False, 'state': 'absent'})
+    monkeypatch.setattr(c, 'coverage', lambda *a: [])
+    assert c.main(['--registry', str(registry), '--output', str(tmp_path / 'output.json'),
+                   '--textfile-dir', str(tmp_path)]) == 0
+    text = (tmp_path / 'constellation-estate.prom').read_text()
+    assert 'service_last_success_age_seconds_limit{service="a"} 60\n' in text
+    assert 'service_declaration_observed_timestamp_seconds{service="a"}' in text
+    assert json.loads((tmp_path / 'output.json').read_text())['services'][0]['verdict'] == 'DOWN'
+
+
+def test_declaration_commands_require_non_root_user(tmp_path):
+    import pytest
+    declaration = tmp_path / 'demo.toml'
+    base = {'schema': c.REGISTRY_SCHEMA, 'services': []}
+    for user in (None, 'root', '0', '', ' ROOT '):
+        declaration.write_text('name="demo"\nruntime={docker="demo"}\nstatus_command=["producer"]\n' +
+                               ('status_user=' + json.dumps(user) + '\n' if user is not None else ''))
+        with pytest.raises(ValueError, match='non-root user'):
+            c.derive_registry(base, tmp_path)
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\nstatus={kind="project-ops-status",argv=["producer"],user="root"}\n')
+    with pytest.raises(ValueError, match='non-root user'):
+        c.derive_registry(base, tmp_path)
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\nstatus_command=["producer"]\nstatus_user="demo"\n')
+    assert c.derive_registry(base, tmp_path)['services'][0]['status']['user'] == 'demo'
+
+
+def test_main_retains_approved_subject_for_missing_and_changed_declaration(tmp_path, monkeypatch):
+    directory = tmp_path / 'services.d'
+    directory.mkdir()
+    declaration = directory / 'demo.toml'
+    declaration.write_text('name="demo"\nruntime={docker="demo"}\n')
+    reg = c.derive_registry({'schema': c.REGISTRY_SCHEMA, 'services': []}, directory)
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps(reg))
+    expected_bytes = registry.read_bytes()
+    monkeypatch.setattr(c, 'runtime_state', lambda runtime, *a: {'up': True, 'target': runtime['docker']})
+    monkeypatch.setattr(c, 'coverage', lambda *a: [])
+    for replacement in (None, 'name="replacement"\nruntime={docker="replacement"}\n'):
+        if replacement is None:
+            declaration.unlink()
+        else:
+            declaration.write_text(replacement)
+        assert c.main(['--registry', str(registry), '--output', str(tmp_path / 'output.json')]) == 0
+        result = json.loads((tmp_path / 'output.json').read_text())['services'][0]
+        assert result['name'] == 'demo'
+        assert result['runtime']['target'] == 'demo'
+        assert 'declaration.drift' in result['failing']
+        assert registry.read_bytes() == expected_bytes
+
+
+def test_malformed_declaration_render_has_no_execution_or_output(tmp_path, monkeypatch):
+    import pytest
+    directory = tmp_path / 'services.d'
+    directory.mkdir()
+    (directory / 'demo.toml').write_text('name="demo"\nruntime={docker="demo"}\nstatus_command=["producer"]\n')
+    registry = tmp_path / 'registry.json'
+    registry.write_text(json.dumps({'schema': c.REGISTRY_SCHEMA, 'services': []}))
+    def unexpected(*args, **kwargs):
+        raise AssertionError('render must not execute commands')
+    monkeypatch.setattr(c, 'run', unexpected)
+    output = tmp_path / 'rendered.json'
+    with pytest.raises(ValueError, match='non-root user'):
+        c.main(['--registry', str(registry), '--services-dir', str(directory), '--render-registry', str(output)])
+    assert not output.exists()
+
+
+def test_timestamp_rejects_nonfinite_and_bool():
+    assert all(c.timestamp(value) is None for value in (float('inf'), float('-inf'), float('nan'), True, False))
+
+
+def test_authored_timer_deadline_has_portable_timezone_semantics():
+    import pytest
+    assert c.deadline_timestamp('2026-10-20T12:00:00Z') == c.deadline_timestamp('2026-10-20T14:00:00+02:00')
+    assert c.deadline_timestamp(100) == 100
+    for value in ('2026-10-20', '2026-10-20T12:00:00', 'NaN', 'Tue 2026-10-20 12:00:00 UTC',
+                  float('nan'), float('inf'), True, [], {}):
+        assert c.deadline_timestamp(value) is None
+        with pytest.raises(ValueError, match='timezone-aware ISO'):
+            c.validate({'schema': c.REGISTRY_SCHEMA, 'services': [
+                {'name': 'demo', 'runtime': {'docker': 'demo'}, 'timers': [
+                    {'unit': 'demo.timer', 'first_result_due_at': value}]}]})
+    assert c.timestamp('Tue 2026-10-20 12:00:00 UTC') is not None
+
+
+def test_metrics_observation_limit_survives_absent_application(tmp_path, monkeypatch):
+    declarations = tmp_path / 'services.d'
+    declarations.mkdir()
+    (declarations / 'demo.toml').write_text('name="demo"\nruntime={systemd="absent.service"}\nthresholds={metrics_observation_age_seconds=60}\n')
+    reg = c.derive_registry({'schema': c.REGISTRY_SCHEMA, 'site': 'testbed'}, str(declarations))
+    c.validate(reg)
+    text = c.render_service_limits(reg, now=100)
+    assert 'service_metrics_observation_age_seconds_limit{service="demo"} 60' in text
+    assert 'service_observation_timestamp_seconds{' not in text  # acquisition is not app progress

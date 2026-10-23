@@ -144,3 +144,170 @@ renderer or a definitions test should run it for every site set it deploys.
 43-byte token plus `.testbed` is 51 bytes (`.labelwatch`: 54). The shared
 vector `fixtures/metric-alert-targets-v1.json` holds both implementations to
 the same derivation.
+## External file probes (P1)
+
+The registry may add read-only file probes to a service entry. P2 will derive
+these entries from service declarations; this collector reads the additive JSON
+form today:
+
+```json
+"probes": {
+  "stores": [{"name": "main", "path": "/var/lib/example/main.sqlite"}],
+  "outputs": [{"name": "report", "path": "/var/lib/example/report.json"}],
+  "backups": [{"name": "daily", "path": "/var/backups/example.sqlite"}]
+}
+```
+
+Names are unique lowercase tokens within each list. Paths are absolute host
+paths visible to the collector account. A container-only path must be exposed
+as a read-only host path before declaration. A missing path is a failed probe,
+never a zero-size file or a healthy result. A store means a SQLite database.
+The collector does not open it through SQLite or create any sibling file. It
+reads the 100-byte main database header, checks the SQLite magic and page size,
+and reads the main-header freelist count. For a declared symlink, it reads the
+resolved target and measures the WAL beside that target. The freelist count
+may lag uncheckpointed WAL changes; none of these file measurements asserts
+transactional SQLite health.
+WAL absence yields zero WAL bytes only after the database itself was read and
+validated.
+
+The existing two-minute timer is the fast schedule: filesystem capacity and
+file mtimes are checked on every pass. SQLite header and WAL geometry run every
+ten minutes by default (`--probe-slow-seconds`). Each file operation runs in a
+child process with its own three-second deadline (`--probe-timeout`), with at
+most four probe workers. Service checks run with at most four workers
+(`--service-workers`). A delayed service status producer cannot prevent probes
+from publishing, because the probe textfile is replaced before service checks
+begin. If a child remains blocked after its deadline and SIGKILL, the collector
+reports its exact PID as pending exit; it does not wait without a bound. Command
+stdout retains at most 1 MiB (4 KiB for a probe), while stderr
+retains its final 2 KiB; both pipes are drained throughout execution.
+
+`--textfile-dir` must name the existing node_exporter textfile directory when
+probes are declared. The service unit uses `/var/lib/prometheus/node-exporter`.
+The collector atomically replaces `constellation-estate.prom` there and stores
+the schedule cache as `probe-state.json` beside its estate JSON output. The
+collector discards malformed or future-dated cache entries and probes again. The
+textfile exposes `service_filesystem_avail_bytes`,
+`service_filesystem_avail_inodes`, `service_store_bytes`,
+`service_store_wal_bytes`, `service_store_freelist_pages`,
+`service_store_page_size_bytes`, `service_store_age_seconds`,
+`service_output_age_seconds`, `service_backup_age_seconds`, and
+`service_backup_created_timestamp_seconds`. The backup timestamp is file mtime,
+not a verified creation or successful restore time. Measurement labels include
+`service` and the appropriate `store`, `output`, or `backup` name.
+
+Every operation also emits `service_probe_success{service,<kind>,probe}`. A
+failure emits zero and omits its measurement families; it cannot turn missing
+data into a clear reading. `service_probe_last_success_timestamp_seconds` and
+`service_probe_observed_timestamp_seconds` retain the observation time when a
+slow probe is skipped, and last success survives a failed attempt. Rules must
+check success, observation age, and textfile freshness (node_exporter's
+`node_textfile_mtime_seconds`) before treating measurements as current. The
+collector removes old metric series when a registry removes its probes.
+
+Formalization consideration for P1: the source is Monitor revision `0c6928a`;
+the resulting revision and local test receipt are named in the immutable lane
+notice for run `fec2dc7f-8535-41e4-9bd8-18c4c6ebc08e`. The proposition is
+limited to one collector pass: for each declared file operation, a successful
+measurement has an observation time, and an unavailable or timed-out operation
+emits success zero without a fabricated measurement; one blocked operation does
+not prevent other probe results from publishing. Counterexamples outside that
+scope include the filesystem changing immediately after observation, a
+stopped collector leaving an old textfile, and a store header that does not
+reflect WAL content. The Monitor lane owns this decision. The bounded child
+deadline, atomic output, and deterministic missing/FIFO fixtures directly test
+the boundary, so practical tests and prose are sufficient for this change.
+Freshness rules and end-to-end delivery remain separate integration claims.
+
+### Authored service declarations (P2)
+
+An approved desired-state registry remains the expected set even when the service,
+collector or entire target host is unavailable. Render it before deployment from
+`/etc/constellation/services.d/<name>.toml`; retain that JSON in the existing
+versioned deployment inventory off-host. Collection never reconstructs expectations
+from a live directory, processes or advertisements. Retire a subject by reviewing
+and rendering an explicit desired-state change.
+
+```toml
+name = "demo"
+role = "worker"
+runtime = {systemd = "demo.service"}
+health_url = "http://127.0.0.1:8080/health"
+probes = {outputs = [{name = "result", path = "/var/lib/demo/result"}]}
+thresholds = {output_age_seconds = 60}
+```
+
+`runtime`, `status`, `contract`, `declared`, `probes` and `timers` retain the
+existing JSON shapes (TOML inline tables work). `health_url` is shorthand for
+HTTP status; `status_command = ["producer", "--json"]` plus `status_user = "demo"` is
+shorthand for a project-ops-status producer. New declaration command statuses
+require an explicit non-root execution user, including the full `status` table
+form. The renderer rejects missing, empty, root and UID-zero execution users.
+Legacy JSON command configuration retains its existing behavior. Choose one status source. Optional `metrics_url`
+is checked for HTTP availability; `dependencies = ["other-service"]` records
+graph edges between expected subjects. Thresholds are positive finite service
+limits preserved for the generic rule renderer; declaring one alone does not
+activate an alert. Existing collector permissions and action boundaries apply.
+
+```sh
+python3 constellation-estate-collect.py --registry base.json \
+  --services-dir ./services.d --declaration-root /etc/constellation/services.d \
+  --render-registry derived-estate.json
+```
+
+This mode makes no runtime observations. It replaces `services` in the base,
+retains its other fields, and pins each declaration's target path and exact byte
+SHA-256. Identical inputs produce identical sorted JSON. Deploy the rendered
+registry and the exact declaration files together. Ordinary `--registry` collection
+verifies those pins, retains the approved service fields when files are missing or
+changed, and reports `declaration.drift`. Unavailable declared runtime, status or
+metrics endpoints and missing declared paths also report drift. Unregistered
+workload coverage still runs. `--declaration-root` is render-only: collection always uses the approved paths.
+
+Timers can add `first_result_due_at = "2026-10-20T12:00:00Z"` and
+`max_success_age_seconds = 3600` (the latter requires a first deadline). Armed
+without an observed successful completion is UNKNOWN before that deadline and
+DEGRADED at or after it. Success means systemd reports `Result=success`, an
+accepted exit status and `ExecMainExitTimestamp`; the maximum age expires strictly
+after its limit. A failed run remains DEGRADED. Output existence/mtime is a separate
+probe and cannot establish successful execution. Legacy timers without these
+fields retain their existing armed/result checks. No earlier success is inferred
+when systemd exposes only a later unsuccessful run.
+
+P3 limits accept exactly `last_success_age_seconds`, `cursor_lag_seconds`,
+`output_age_seconds`, `store_bytes`, `wal_growth_bytes`, and `backup_age_seconds`.
+Unknown keys fail validation. Collection publishes each as
+`service_<key>_limit{service="name"}` in the same textfile, including services
+without file probes. Threshold declarations require `--textfile-dir`.
+`service_declaration_observed_timestamp_seconds{service="name"}` records the
+collector pass over an expected subject, even when its runtime is absent. It is
+not successful observation or application health. Generic rules must separately
+gate on current successful probe/application observations. Applications supply
+`service_last_success_timestamp_seconds` and `service_cursor_lag_seconds` through
+ordinary Prometheus instrumentation; authored limits do not create those facts.
+
+Service declarations and their rendered registry must be installed and approved
+by the trusted operator through the existing deployment procedure. They are not
+untrusted application input and cannot grant collector access or authorize an
+action. Command producers run with the explicitly named account using the
+existing collector execution path; installation must ensure that account has
+only its intended permissions.
+
+Authored `first_result_due_at` must be a quoted ISO timestamp with an explicit
+UTC designator or numeric timezone offset, or a finite nonnegative Unix timestamp
+in seconds. Date-only and timezone-free text, native systemd timestamp text and
+nonfinite numbers are rejected. This makes the approved deadline independent of
+the renderer's or target host's local timezone. Native systemd completion-time
+parsing retains its existing UTC text support.
+
+For application-owned textfiles, declare `thresholds.metrics_observation_age_seconds`
+and export `service_observation_timestamp_seconds{service="..."}` from the
+application's recorded observation time. A node_exporter scrape timestamp only
+proves the file was read, so it cannot establish that the application advanced.
+The collector emits the authored limit even when the application is absent;
+Cartography's optional `ServiceMetricsObservationNeedsAttention` rule detects
+missing, future or frozen observation timestamps. Declare a separate
+`last_success_age_seconds` budget for useful committed work: an application
+heartbeat is not evidence of successful output. Neither timestamp grants action
+authority. Existing declarations without this threshold keep their current rules.

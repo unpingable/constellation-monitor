@@ -1,0 +1,26 @@
+test_all_queries_pin_target_without_changing_metric_names (test_diagnostic.DiagnosticTest.test_all_queries_pin_target_without_changing_metric_names) ... ok
+test_attention_active_clear_unknown_and_removed_remain_distinct (test_diagnostic.DiagnosticTest.test_attention_active_clear_unknown_and_removed_remain_distinct) ... ok
+test_attention_pending_present_does_not_clear (test_diagnostic.DiagnosticTest.test_attention_pending_present_does_not_clear) ... ok
+test_attention_stale_active_is_unknown (test_diagnostic.DiagnosticTest.test_attention_stale_active_is_unknown) ... ok
+test_external_vm_rejected_before_network (test_diagnostic.DiagnosticTest.test_external_vm_rejected_before_network) ... ok
+test_gaps_stale_future_and_nan_cannot_clear (test_diagnostic.DiagnosticTest.test_gaps_stale_future_and_nan_cannot_clear) ... ok
+test_incident_inspection_is_history_not_current_health (test_diagnostic.DiagnosticTest.test_incident_inspection_is_history_not_current_health) ... ok
+test_insufficient_history_cannot_clear (test_diagnostic.DiagnosticTest.test_insufficient_history_cannot_clear) ... ok
+test_loopback_vm_query_range_contract (test_diagnostic.DiagnosticTest.test_loopback_vm_query_range_contract) ... ok
+test_missing_constituent_family_cannot_clear (test_diagnostic.DiagnosticTest.test_missing_constituent_family_cannot_clear) ... ok
+test_missing_metric_is_unknown (test_diagnostic.DiagnosticTest.test_missing_metric_is_unknown) ... ok
+test_missing_registry_site_or_wrong_only_site_cannot_clear (test_diagnostic.DiagnosticTest.test_missing_registry_site_or_wrong_only_site_cannot_clear) ... ok
+test_mixed_target_or_duplicate_site_cannot_clear (test_diagnostic.DiagnosticTest.test_mixed_target_or_duplicate_site_cannot_clear) ... ok
+test_no_registry_command_is_executed (test_diagnostic.DiagnosticTest.test_no_registry_command_is_executed) ... ok
+test_old_underlying_samples_do_not_clear (test_diagnostic.DiagnosticTest.test_old_underlying_samples_do_not_clear) ... ok
+test_oversize_source_is_unknown (test_diagnostic.DiagnosticTest.test_oversize_source_is_unknown) ... ok
+test_paging_is_a_symptom_not_root_cause (test_diagnostic.DiagnosticTest.test_paging_is_a_symptom_not_root_cause) ... ok
+test_record_is_exclusive (test_diagnostic.DiagnosticTest.test_record_is_exclusive) ... diagnostic incomplete: [Errno 17] File exists: '/tmp/tmp8rs35xae/record.json'
+ok
+test_subprocess_timeout_and_capture_limit (test_diagnostic.DiagnosticTest.test_subprocess_timeout_and_capture_limit) ... ok
+test_swap_occupied_without_paging_or_psi_is_not_pressure (test_diagnostic.DiagnosticTest.test_swap_occupied_without_paging_or_psi_is_not_pressure) ... ok
+
+----------------------------------------------------------------------
+Ran 20 tests in 0.696s
+
+OK
