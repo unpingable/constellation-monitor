@@ -61,6 +61,11 @@ while [ $# -gt 0 ]; do
     *) echo "unexpected flag $1" >&2; exit 64;;
   esac
 done
+if [ -n "$intent" ] && grep -q '"schema":"nq.notification_delivery_intent.v1"' "$intent" \
+  && grep -q '"runbook_url"' "$intent"; then
+  echo 'nq: unknown field `runbook_url`' >&2
+  exit 1
+fi
 if [ -n "$intent" ] && grep -q '"runbook_url":"http://' "$intent"; then
   echo "nq: notification runbook_url must be an https URL of at most 1024 bytes" >&2
   exit 1
@@ -85,6 +90,8 @@ if [ "$sub" = deliver-local ]; then
   # NQ 0.2.1: a local_file route takes no --enable-network, requires
   # destination_identity local-inbox:<route>, and refuses submit.
   $net && { echo "unexpected flag --enable-network" >&2; exit 64; }
+  grep -q '"schema":"nq.notification_delivery_intent.v1"' "$intent" || {
+    echo "local delivery requires nq.notification_delivery_intent.v1" >&2; exit 1; }
   grep -q "\"destination_identity\":\"local-inbox:$route\"" "$intent" || {
     echo "local inbox intent destination identity does not match its configured route" >&2; exit 1; }
   sub=submit

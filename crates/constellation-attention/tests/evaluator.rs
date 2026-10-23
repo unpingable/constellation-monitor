@@ -699,7 +699,14 @@ fn golden_intents_trigger_and_resolve_v2_and_v1() {
     golden("resolve-page-v2.json", &harness.submitted_intent(&id(3)));
     for index in 0..4 {
         let intent: Value = serde_json::from_slice(&harness.submitted_intent(&id(index))).unwrap();
-        assert_eq!(intent["runbook_url"], intent["inspection_reference"]);
+        if intent["schema"] == "nq.notification_delivery_intent.v1" {
+            assert!(
+                intent.get("runbook_url").is_none(),
+                "v1 refuses all unknown fields"
+            );
+        } else {
+            assert_eq!(intent["runbook_url"], intent["inspection_reference"]);
+        }
     }
     let trigger: Value = serde_json::from_slice(&harness.submitted_intent(&id(1))).unwrap();
     assert_eq!(trigger["condition"]["target_class"], "root");
