@@ -1369,10 +1369,9 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
     if let Some(note) = &stale {
         report.fault("stale", InputStatus::NotCurrent, note);
     }
-    if services.is_empty()
-        && (input.retired_services.is_empty()
-            || !document.get("services").is_some_and(Value::is_array))
-    {
+    // Retirement never excuses an empty document: an installed site always
+    // reports its system services, so an empty list is a collector fault.
+    if services.is_empty() {
         report.fault(
             "empty",
             InputStatus::NotCurrent,

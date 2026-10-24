@@ -31,9 +31,10 @@ open condition sends the existing resolve intent with "no longer evaluated;
 recovery not observed" wording. Delivery retries and accepted-page accounting
 are unchanged; intent-log history remains under the existing retention policy.
 Settled inactive conditions and unreferenced intent files follow existing cleanup. Names without a prior
-condition create no condition. An empty estate document is permitted when
-retirements are declared; stale or unreadable documents still report input
-faults, and missing open conditions for unlisted services still fault.
+condition create no condition. Retirement never excuses an empty estate
+document (an installed site always reports its system services); empty, stale
+or unreadable documents still report input faults, and missing open conditions
+for unlisted services still fault.
 
 If the document still reports a listed name, attention evaluates its observation
 normally and records a retirement-conflict warning in the estate input report's

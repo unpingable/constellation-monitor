@@ -5190,7 +5190,11 @@ fn estate_service_retirement_resolves_and_readd_restores_supervision() {
     write_estate(&harness, T0 + 720, &[]);
     assert_eq!(harness.evaluate(T0 + 720)["exit_code"], 3);
     harness.raw("retired_services = [\"api\", \"job\", \"never-open\"]\n");
-    write_estate(&harness, T0 + 780, &[]);
+    write_estate(
+        &harness,
+        T0 + 780,
+        &[("web", "OK", "systemd web.service is active/running")],
+    );
     let report = harness.evaluate(T0 + 780);
     assert_eq!(report["exit_code"], 0, "{report}");
     for name in ["api", "job"] {
@@ -5261,6 +5265,20 @@ fn estate_service_retirement_resolves_and_readd_restores_supervision() {
 }
 
 #[test]
+fn estate_retirement_never_excuses_an_empty_document() {
+    let mut harness = estate_harness();
+    harness.raw("retired_services = [\"api\"]\n");
+    write_estate(&harness, T0, &[]);
+    let report = harness.evaluate(T0);
+    assert_eq!(report["exit_code"], 3, "{report}");
+    let text = report.to_string();
+    assert!(
+        text.contains("estate document lists no services"),
+        "{report}"
+    );
+}
+
+#[test]
 fn estate_retirement_conflict_keeps_current_observations() {
     let mut harness = estate_harness();
     harness.raw("retired_services = [\"api\"]\n");
@@ -5305,7 +5323,11 @@ fn estate_retirement_retries_resolve_and_preserves_input_error_precedence() {
     }
     harness.raw("retired_services = [\"api\"]\n");
     harness.fake("next_state", "failed");
-    write_estate(&harness, T0 + 720, &[]);
+    write_estate(
+        &harness,
+        T0 + 720,
+        &[("web", "OK", "systemd web.service is active/running")],
+    );
     let report = harness.evaluate(T0 + 720);
     assert_eq!(report["exit_code"], 4);
     assert_eq!(harness.state()["conditions"][id]["active"], false);
@@ -5316,7 +5338,11 @@ fn estate_retirement_retries_resolve_and_preserves_input_error_precedence() {
     assert_eq!(report["exit_code"], 3);
     assert_eq!(report["delivery_class"], "delivery_failed");
     harness.fake("next_state", "accepted");
-    write_estate(&harness, T0 + 1620, &[]);
+    write_estate(
+        &harness,
+        T0 + 1620,
+        &[("web", "OK", "systemd web.service is active/running")],
+    );
     let report = harness.evaluate(T0 + 1620);
     assert_eq!(report["exit_code"], 0, "{report}");
     let intent = report["intents"]
