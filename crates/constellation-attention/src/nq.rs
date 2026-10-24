@@ -129,7 +129,7 @@ impl Inspections {
         if output.timed_out {
             self.timed_out = true;
             result.error = Some(format!(
-                "{}: NQ supplied no reason (inspect timed out)",
+                "{}: reason unavailable (inspect timed out)",
                 result.outcome
             ));
         } else if output.status == Some(0)

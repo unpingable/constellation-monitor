@@ -40,9 +40,11 @@ unsigned numeric HTTP status are copied; provider response bodies, messages
 and errors never enter these fields. Inspection must match the notification
 ID and delivery state. A refusal without a valid reason explicitly says so;
 a failure without one keeps the bare `failed` outcome. Capped or skipped
-queries say `reason not inspected this pass`; a timed-out query says NQ
-supplied no reason. Retained refusals between attempts use the explicit
-no-reason fallback; their reason can surface on their next attempt.
+queries say `reason not inspected this pass`; a timed-out query says
+`reason unavailable (inspect timed out)`. Retained refusals between attempts
+say `reason not inspected this pass (see intents.jsonl)`: the reason NQ gave
+at the last attempt is in that attempt's intents.jsonl row and surfaces again
+on the next attempt.
 
 ## Build-info
 

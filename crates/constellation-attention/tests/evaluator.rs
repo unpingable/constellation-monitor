@@ -1469,7 +1469,7 @@ fn retained_refusal_reason_reaches_reports_without_retry_pause_inspects() {
         let report = harness.report();
         assert_eq!(report["delivery"]["pagerduty-ops"]["outcome"], "refused");
         let expected_error = if offset == 720 {
-            "refused: NQ supplied no refusal reason"
+            "refused: reason not inspected this pass (see intents.jsonl)"
         } else {
             "refused: routing_key_malformed"
         };
@@ -1645,7 +1645,7 @@ fn inspect_timeout_skips_remaining_reads_and_completes_the_pass() {
         assert_eq!(
             pages
                 .iter()
-                .filter(|row| row["error"] == "failed: NQ supplied no reason (inspect timed out)")
+                .filter(|row| row["error"] == "failed: reason unavailable (inspect timed out)")
                 .count(),
             1
         );

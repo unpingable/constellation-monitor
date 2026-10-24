@@ -2107,7 +2107,9 @@ fn evaluate_locked(
                         && item["stable_event_id"] == attempt.stable_event_id
                 })
                 .and_then(|attempt| attempt.error.clone())
-                .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into());
+                .unwrap_or_else(|| {
+                    "refused: reason not inspected this pass (see intents.jsonl)".into()
+                });
             item["error"] = json!(error);
         }
     }
