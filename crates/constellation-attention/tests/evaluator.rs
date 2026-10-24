@@ -1708,6 +1708,12 @@ fn command_error_is_recorded_and_retried_with_the_same_bytes() {
     assert_eq!(report["exit_code"], 4);
     assert_eq!(report["exit_class"], "delivery_failed");
     assert!(
+        report["delivery"]["operations"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("notification condition target_class is refused")
+    );
+    assert!(
         report["first_error"]
             .as_str()
             .unwrap()
@@ -8893,7 +8899,8 @@ fn failed_replacement_route_does_not_blame_retirement_or_inherit_acceptance() {
     assert_eq!(report["intents"][0]["outcome"], "route_retired");
     assert_eq!(
         report["delivery"]["operations"],
-        json!({"outcome": "failed", "last_attempt_at": rfc3339(T0 + 720)})
+        json!({"outcome": "failed", "last_attempt_at": rfc3339(T0 + 720),
+               "error": report["intents"][1]["error"]})
     );
     let error = report["first_error"].as_str().unwrap();
     assert!(

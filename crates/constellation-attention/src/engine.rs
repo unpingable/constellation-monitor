@@ -78,6 +78,15 @@ struct RouteDelivery {
     last_attempt_at: Option<i64>,
 }
 
+fn delivery_outcome(outcome: &str) -> &'static str {
+    match outcome {
+        "accepted" => "accepted",
+        "refused" => "refused",
+        "skipped" => "skipped",
+        _ => "failed",
+    }
+}
+
 impl Default for RouteDelivery {
     fn default() -> Self {
         Self {
@@ -161,12 +170,7 @@ impl DeliveryRoutes<'_> {
         let outcome = if !required {
             "skipped"
         } else {
-            match outcome {
-                "accepted" => "accepted",
-                "refused" => "refused",
-                "skipped" => "skipped",
-                _ => "failed",
-            }
+            delivery_outcome(outcome)
         };
         // A route with multiple obligations fails if any of them fails.
         let rank = |value| match value {
@@ -2288,15 +2292,18 @@ fn evaluate_locked(
                     .iter()
                     .find(|item| {
                         item.route == route
-                            && item.outcome == summary.outcome
+                            && item.outcome != "route_retired"
+                            && delivery_outcome(&item.outcome) == summary.outcome
                             && item.error.is_some()
                     })
                     .and_then(|item| item.error.as_deref())
                     .or_else(|| {
                         unresolved.iter().find_map(|item| {
-                            (item["route"] == route && item["outcome"] == summary.outcome)
-                                .then(|| item["error"].as_str())
-                                .flatten()
+                            (item["route"] == route
+                                && item["outcome"].as_str().map(delivery_outcome)
+                                    == Some(summary.outcome))
+                            .then(|| item["error"].as_str())
+                            .flatten()
                         })
                     })
                 {
