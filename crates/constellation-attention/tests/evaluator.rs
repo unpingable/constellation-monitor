@@ -5473,6 +5473,61 @@ fn observation_grace_uses_the_earlier_metric_first_seen() {
 }
 
 #[test]
+fn restart_marker_warms_missing_evaluation_after_unrecovered_code_five() {
+    let harness = metric_alerts_harness();
+    write_reconfiguration(&harness, T0);
+    // Initial grant, then code 5 remains informational beyond 15 minutes.
+    // It never establishes the qualified recovery needed to rearm codes 2/3.
+    for offset in [0, 660, 1020, 1380] {
+        write_metric_alerts(&harness, T0 + offset, |doc| {
+            value_code_rule(doc, "firing", "5");
+        });
+        assert_eq!(harness.evaluate(T0 + offset)["exit_code"], 0);
+    }
+    let lifecycle_path = harness.path("state/state-attention-lifecycle.json");
+    let before: Value = serde_json::from_slice(&fs::read(&lifecycle_path).unwrap()).unwrap();
+    let identity = before["identities"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    assert_eq!(identity["faulting"], false);
+    assert_eq!(identity["grace_at"], T0);
+    assert_eq!(identity["recovered_since_grace"], false);
+
+    // Rehearsal 9: restart at 00:46:25, marker at :29, synchronous pass
+    // at 00:47:00 with a current document but an unevaluated rule.
+    let marker_at = T0 + 1437;
+    write_reconfiguration(&harness, marker_at);
+    for offset in [31, 91, 899, 900] {
+        write_metric_alerts(&harness, marker_at + offset, |doc| {
+            value_code_rule(doc, "firing", "5");
+            doc["rules"][0]["last_evaluation"] = Value::Null;
+        });
+        let report = harness.evaluate(marker_at + offset);
+        assert_eq!(
+            report["exit_code"],
+            if offset < 900 { 0 } else { 3 },
+            "{report}"
+        );
+        let input = metric_input(&report);
+        assert_eq!(input["identity"]["reconfigured_at"], rfc3339(marker_at));
+        if offset < 900 {
+            assert_eq!(causes(&input), ["warming"]);
+            assert!(input.get("error").is_none());
+            assert_eq!(input["identity"]["warming_rules"][0]["since"], rfc3339(T0));
+            assert_eq!(
+                input["identity"]["warming_rules"][0]["since_reconfiguration"],
+                true
+            );
+        }
+        assert!(!harness.path("state/reconfigured").exists());
+        assert!(alert_intents(&report).is_empty());
+    }
+}
+
+#[test]
 fn reconfiguration_warms_unevaluated_and_new_missing_rules_for_one_grace() {
     for code in ["2", "3"] {
         let harness = metric_alerts_harness();

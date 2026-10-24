@@ -1116,16 +1116,22 @@ Only identities that were not faulting at the last persisted pass before
 the marker can receive reconfiguration grace. New identities have no prior
 fault. Faulting identities keep reporting their faults, including missing
 `last_evaluation` and codes 2/3, while other identities warm. Eligibility is
-saved before the marker is consumed. Per identity, at most one grace is
-granted per `warming_bound` (default 6 h), unless a qualified healthy
-evaluation established recovery in between. Repeated markers within that
+saved before the marker is consumed. For value codes 2/3, per identity, at
+most one grace is granted per `warming_bound` (default 6 h), unless a
+qualified healthy evaluation established recovery in between. Repeated markers within that
 window retain the original grant; they cannot stretch a 15-minute grace
 into six hours of warming. After the rate limit expires a nonfaulting
 identity can be granted another grace, still subject to its continuous bound.
 
-While `now < grace_at + warmup_grace`, eligible rules with no valid
-`last_evaluation`, and value-coded rules with code 2 or 3, warm
-informationally: input `status: "ok"`, `causes: ["warming"]`, no `error`,
+The marker is read before input evaluation and applies to that same pass.
+A rule not previously faulting whose `last_evaluation` is missing warms
+while `now < reconfigured_at + warmup_grace`, even if an older code-5 warming
+interval has never established qualified recovery. The original continuous
+warming interval and `warming_bound` remain in force; consuming another
+marker does not reset them. Previously faulting rules keep faulting.
+
+While `now < grace_at + warmup_grace`, eligible value-coded rules with code
+2 or 3 warm informationally: input `status: "ok"`, `causes: ["warming"]`, no `error`,
 and exit 0 if nothing else fails. Missing evaluations hold conditions
 unknown; they establish neither presence nor recovery. During any warming
 (startup, reconfiguration or value-code), input fault classes absent from

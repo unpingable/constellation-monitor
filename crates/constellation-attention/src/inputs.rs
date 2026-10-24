@@ -2028,7 +2028,22 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 .grace_at
                 .is_some_and(|at| context.now.saturating_sub(at) < input.warmup_grace);
             let in_grace = startup_grace || reconfiguration_grace;
-            let evaluation_warming = missing_evaluation && reconfiguration_grace;
+            // A prior grant can still be waiting for qualified recovery (for
+            // example code 5). That rate limit governs codes 2/3, but must not
+            // turn a new restart's unevaluated snapshot into an input fault.
+            // Use the persisted nonfaulting identity, before this read marked
+            // unreported identities faulting, and the marker read by this pass.
+            let evaluation_grace = reconfiguration_grace
+                || (context
+                    .lifecycle
+                    .reconfigured_at
+                    .is_some_and(|at| context.now.saturating_sub(at) < input.warmup_grace)
+                    && context
+                        .lifecycle
+                        .identities
+                        .get(&keyed_target)
+                        .is_some_and(|identity| !identity.faulting));
+            let evaluation_warming = missing_evaluation && evaluation_grace;
             let unknown = stale.is_some() || !problems.is_empty() || missing_evaluation;
             let mut identity_fault = stale.is_some()
                 || drift.is_some()
@@ -2143,9 +2158,9 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                                 "elapsed_seconds": context.now - since,
                                 "bound_exceeded": expired,
                             });
-                            if reconfiguration_grace
-                                && (evaluation_warming
-                                    || warming_codes.iter().any(|code| matches!(code, 2 | 3)))
+                            if evaluation_warming
+                                || (reconfiguration_grace
+                                    && warming_codes.iter().any(|code| matches!(code, 2 | 3)))
                             {
                                 warming["since_reconfiguration"] = json!(true);
                             }
