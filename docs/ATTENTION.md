@@ -542,6 +542,15 @@ existing four-value vocabulary; `intents` and `unresolved_deliveries` describe
 the obligations independently. Retirement has only the per-intent outcome
 `route_retired`, so it cannot be confused with provider acceptance or failure.
 
+An attempted delivery whose result NQ could not establish is reported as
+`failed` in both the route summary and intent rows (including the intent log).
+Its error and `first_error` say `failed: delivery result unknown`: a transport
+error, lost response or timeout left acceptance unconfirmed. This includes
+an unreachable webhook. It does not prove the destination rejected the
+message. Internal retained state keeps NQ's `unknown` value so the retry and
+deduplication rules below still apply; reporting it as `failed` does not
+make an uncertain notice safe to resend.
+
 ## Sink failures and restarts
 
 Before submitting anything a pass writes the intent files and saves state

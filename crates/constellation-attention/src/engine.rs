@@ -235,6 +235,13 @@ struct IntentReport {
 }
 
 impl IntentReport {
+    fn normalize_outcome(&mut self) {
+        if self.outcome == "unknown" {
+            self.outcome = "failed".into();
+            self.error = Some(unknown_delivery_error(self.error.as_deref()));
+        }
+    }
+
     fn cleanup(id: &str, cleanup: &PageCleanup, dir: &Path, error: Option<String>) -> Self {
         let mut report = Self::retired(
             id,
@@ -2044,6 +2051,11 @@ fn evaluate_locked(
         prune_intents(&intents_dir, &state);
     }
 
+    // Reporting uses the route vocabulary; retained NQ state above continues
+    // to distinguish uncertainty for custody and retry decisions.
+    for item in &mut intent_reports {
+        item.normalize_outcome();
+    }
     // Deliveries still not accepted (other than deliberate refusals) keep the
     // pass visible until a resend succeeds or the condition is forgotten.
     let mut unresolved: Vec<Value> = if options.dry_run {
@@ -2092,7 +2104,7 @@ fn evaluate_locked(
         }
     }
     // After the state is saved: a failed digest never holds a transition back.
-    let digest_attempt = if options.dry_run {
+    let mut digest_attempt = if options.dry_run {
         None
     } else {
         crate::digest::send_if_due(
@@ -2231,6 +2243,12 @@ fn evaluate_locked(
             }));
         }
     }
+    for item in unresolved.iter_mut().chain(dropped_triggers.iter_mut()) {
+        normalize_delivery_outcome(item);
+    }
+    if let Some(attempt) = &mut digest_attempt {
+        normalize_delivery_outcome(attempt);
+    }
     let delivery_problem = delivery
         .values()
         .any(|route| matches!(route.outcome, "refused" | "failed"));
@@ -2329,6 +2347,20 @@ fn evaluate_locked(
 }
 
 /// First failure in report order, reduced to one line for status consumers.
+fn unknown_delivery_error(error: Option<&str>) -> String {
+    format!(
+        "failed: delivery result unknown ({})",
+        error.unwrap_or("NQ could not establish whether the destination accepted it")
+    )
+}
+
+fn normalize_delivery_outcome(item: &mut Value) {
+    if item["outcome"] == "unknown" {
+        item["error"] = json!(unknown_delivery_error(item["error"].as_str()));
+        item["outcome"] = json!("failed");
+    }
+}
+
 fn first_pass_error(report: &Value) -> Option<String> {
     if report["exit_code"] == 0 {
         return None;

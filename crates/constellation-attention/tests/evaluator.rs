@@ -1543,6 +1543,42 @@ fn required_route_failures_are_distinct_and_partial_delivery_is_explicit() {
                 }
             );
             assert_eq!(report["delivery_class"], report["exit_class"]);
+            if outcome == "unknown" {
+                for row in report["intents"].as_array().unwrap() {
+                    if row["route_role"] == "notice" || !partial {
+                        assert_eq!(row["outcome"], "failed");
+                        assert!(
+                            row["error"]
+                                .as_str()
+                                .unwrap()
+                                .contains("delivery result unknown")
+                        );
+                    }
+                }
+                assert!(
+                    report["first_error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("failed: delivery result unknown")
+                );
+                let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+                assert!(!log.contains("\"outcome\":\"unknown\""));
+                assert_eq!(
+                    harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["notice"]["outcome"],
+                    "unknown"
+                );
+                // No new attempt during the retry pause, with the same wording.
+                set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+                harness.evaluate(T0 + 720);
+                let waiting = harness.report();
+                assert_eq!(waiting["unresolved_deliveries"][0]["outcome"], "failed");
+                assert!(
+                    waiting["first_error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("failed: delivery result unknown")
+                );
+            }
             assert_eq!(
                 report["delivery"]["operations"]["outcome"],
                 if outcome == "refused" {
