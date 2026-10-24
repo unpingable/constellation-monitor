@@ -627,6 +627,7 @@ impl PageAcceptances {
         routes: &DeliveryRoutes<'_>,
         options: &PassOptions,
         abandoned: &mut Vec<Value>,
+        inspections: &mut nq::Inspections,
     ) -> Result<Vec<IntentReport>, String> {
         let config = routes.config;
         let dir = config.state_dir();
@@ -753,7 +754,7 @@ impl PageAcceptances {
                 .cleanup
                 .as_mut()
                 .unwrap();
-            let result = if options.dry_run {
+            let mut result = if options.dry_run {
                 nq::SubmitOutcome {
                     outcome: "not_submitted".into(),
                     notification_id: None,
@@ -780,6 +781,7 @@ impl PageAcceptances {
                     &cleanup.last.route,
                 )
             };
+            inspections.enrich(config, &cleanup.last.schema, &mut result);
             cleanup.last.outcome = result.outcome;
             cleanup.last.notification_id = result.notification_id;
             cleanup.last.at = options.now;
@@ -931,6 +933,7 @@ fn evaluate_locked(
     options: &PassOptions,
     completed: &mut Option<Value>,
 ) -> Result<PassResult, String> {
+    let mut inspections = nq::Inspections::default();
     let rules = config.effective_rules();
     let digest =
         intent::policy_digest_with(&rules, &config.remediation.targets, &config.suspensions);
@@ -1460,7 +1463,12 @@ fn evaluate_locked(
     let intents_dir = output_dir.join("intents");
     ensure_dir(&intents_dir)?;
     let mut abandoned = Vec::new();
-    let mut retired = page_acceptances.close_removed(&delivery_routes, options, &mut abandoned)?;
+    let mut retired = page_acceptances.close_removed(
+        &delivery_routes,
+        options,
+        &mut abandoned,
+        &mut inspections,
+    )?;
     for (id, condition) in &mut state.conditions {
         for slot in [&mut condition.last_intent, &mut condition.pending_trigger] {
             slot.retain(|role, last| {
@@ -1965,7 +1973,7 @@ fn evaluate_locked(
             {
                 withheld_count += 1;
             }
-            let result = if delivery_routes.missing(&last.route) {
+            let mut result = if delivery_routes.missing(&last.route) {
                 nq::missing_route()
             } else {
                 match (item.operation, &item.retry_of) {
@@ -1978,6 +1986,7 @@ fn evaluate_locked(
                     _ => nq::submit(config, &intents_dir.join(&last.intent_file), &last.route),
                 }
             };
+            inspections.enrich(config, &last.schema, &mut result);
             last.outcome.clone_from(&result.outcome);
             last.at = now;
             if result.notification_id.is_some() {
@@ -2098,11 +2107,6 @@ fn evaluate_locked(
                         && item["stable_event_id"] == attempt.stable_event_id
                 })
                 .and_then(|attempt| attempt.error.clone())
-                .or_else(|| {
-                    item["notification_id"]
-                        .as_str()
-                        .and_then(|id| nq::refusal_error(config, id))
-                })
                 .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into());
             item["error"] = json!(error);
         }

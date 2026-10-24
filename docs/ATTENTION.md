@@ -28,8 +28,10 @@ requires a valid page intent, route and routing key. A missing component or
 rule is a command error before custody, with NQ's validation message.
 A retained refusal is reported as `refused: <reason>` in the intent row,
 `delivery[route].error`, journal and `first_error`. In 0.2.6 submit returns
-only the ID and state, so attention obtains the reason through a bounded
-`notification inspect --notification-id ID` read. For example,
+only the ID and state, so attention obtains v2 reasons through a bounded
+local read-only `notification inspect --notification-id ID` query after an
+attempt, subject to the per-pass inspection budget below. V1 failures and
+refusals have no reason block and are never inspected. For example,
 `routing_key_malformed` is a local NQ refusal before dispatch. A provider
 rejecting a dispatched v2 key produces `failed: rejected (http 400)` in the
 same fields, with outcome `failed` and unchanged exit-code semantics. Only
@@ -37,7 +39,10 @@ a lowercase/underscore reason code of at most 120 characters and an optional
 unsigned numeric HTTP status are copied; provider response bodies, messages
 and errors never enter these fields. Inspection must match the notification
 ID and delivery state. A refusal without a valid reason explicitly says so;
-a failure without one keeps the bare `failed` outcome.
+a failure without one keeps the bare `failed` outcome. Capped or skipped
+queries say `reason not inspected this pass`; a timed-out query says NQ
+supplied no reason. Retained refusals between attempts use the explicit
+no-reason fallback; their reason can surface on their next attempt.
 
 ## Build-info
 
@@ -625,18 +630,24 @@ its outcome feed. It does not change `delivery` or `delivery_class`: a page
 NQ accepted remains accepted even when its log append fails. This log failure
 also counts when only disabled network routes were attempted.
 
-Each planned obligation gets one bounded NQ submission per pass, plus at
-most one bounded `notification inspect` call if NQ returns refused/failed.
-A retained refused obligation not attempted that pass gets one inspect;
-an attempted refusal reuses its inspection result. Each call is bounded by
-`command_timeout_seconds` (default 90 s); inspect output is limited to 64 KiB.
-The unit budgets `(I + S + F + R) x command_timeout_seconds + 60`, where I
-counts input command invocations (including each NQ history page), S all
-submissions (including retries, cleanup and digest), F inspections after
-refused/failed submissions (F <= S), and R retained refused obligations not
-attempted. Its 1860 s timeout covers I <= 2, S <= 6 and R <= 6 at the
-default command timeout; larger passes need
-a drop-in or a lower command timeout. The existing retry policy remains:
+Each planned obligation gets one bounded NQ submission per pass. Only a v2
+(PagerDuty) attempt returning refused/failed can query its exact retained
+record for a reason, at most once per attempt and twice across the entire
+pass (including cleanup). Each local read-only query has its own timeout
+`min(command_timeout_seconds, 10 s)` and a 64 KiB output limit. After the
+first inspect timeout, skip all remaining inspects that pass. Never inspect
+v1 failures/refusals or retained obligations not attempted this pass. A
+skipped query explicitly reports `reason not inspected this pass`; no
+reason is inferred. The obligation's next attempt can query its own reason.
+The unit budgets `(I + S) x command_timeout_seconds + 60`, where I counts
+input command invocations (including each NQ history page and saved-check
+command) and S all submissions (including retries, cleanup and digest).
+The 60 s margin includes a fixed inspect allowance of at most 20 s
+(`2 x min(command_timeout_seconds, 10 s)`), leaving 40 s for other overhead.
+Its restored 780 s timeout covers I <= 2 and S <= 6 at the default 90 s
+command timeout: `(2 + 6) x 90 + 60 = 780 s`, including inspections.
+Larger passes need a drop-in or a lower command timeout.
+The existing retry policy remains:
 unretained intents retry the identical bytes next pass; retained pages wait
 120 s, and definite notice failures wait 900 s. Uncertain notices are not
 resent. There is no configured finite retry-count limit to exhaust. Exit 4
@@ -1465,9 +1476,9 @@ These are operator acceptance items.
 - Saved checks need the per-reference `<reference>.json` writer deployed on
   the Linode; without it `sqlite-health` never fires and the input notice is
   permanent.
-- A pass submits in order, triggers first. Each submission, refused/failed
-  inspection and retained-refusal inspection costs up to
-  `command_timeout_seconds`; with more work than
+- A pass submits in order, triggers first. Each submission costs up to
+  `command_timeout_seconds`; v2 reason inspections add at most 20 s per
+  pass within the unit's 60 s margin. With more work than
   `TimeoutStartSec` allows (see the unit's budget formula), the pass is
   stopped and the next one starts again from the first, so later items can
   be starved while the route hangs.

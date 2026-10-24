@@ -54,6 +54,9 @@ sub="$5"; shift 5
 if [ "$sub" = inspect ]; then
   [ "$1" = --notification-id ] || exit 64
   echo "inspect $2" >> "$dir/inspections.log"
+  if [ -e "$dir/inspect_sleep" ]; then
+    exec sleep "$(cat "$dir/inspect_sleep")"
+  fi
   if [ -e "$dir/inspect_result" ]; then
     cat "$dir/inspect_result"
   else

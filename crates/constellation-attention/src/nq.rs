@@ -79,33 +79,70 @@ pub struct SubmitOutcome {
 
 pub const ROUTE_NOT_CONFIGURED: &str = "route_not_configured_in_nq";
 
-/// NQ 0.2.6 returns retained refusal details from inspect, not submit.
-pub fn refusal_error(config: &Config, notification_id: &str) -> Option<String> {
-    delivery_error(config, notification_id, "refused")
+/// Best-effort reason reads share one budget across all submissions in a pass.
+#[derive(Default)]
+pub struct Inspections {
+    count: usize,
+    timed_out: bool,
+}
+
+impl Inspections {
+    /// Only attempted v2 records have NQ's PagerDuty reason block. This never
+    /// changes custody, outcome or retry state, and never dispatches a delivery.
+    pub fn enrich(&mut self, config: &Config, schema: &str, result: &mut SubmitOutcome) {
+        if schema != crate::intent::INTENT_V2
+            || !matches!(result.outcome.as_str(), "refused" | "failed")
+            || (result.outcome == "refused"
+                && result.error.as_deref() != Some("refused: NQ supplied no refusal reason"))
+        {
+            return;
+        }
+        let Some(id) = result.notification_id.as_deref() else {
+            return;
+        };
+        if self.count >= 2 || self.timed_out {
+            result.error = Some(format!(
+                "{}: reason not inspected this pass",
+                result.outcome
+            ));
+            return;
+        }
+        self.count += 1;
+        let output = run_bounded(
+            &[
+                config.nq.program.display().to_string(),
+                "--config".into(),
+                config.nq.config.display().to_string(),
+                "--json".into(),
+                "notification".into(),
+                "inspect".into(),
+                "--notification-id".into(),
+                id.into(),
+            ],
+            Duration::from_secs(config.command_timeout_seconds.min(10)),
+            64 * 1024,
+            ChildEnvironment::Inherit,
+        );
+        let Ok(output) = output else {
+            return;
+        };
+        if output.timed_out {
+            self.timed_out = true;
+            result.error = Some(format!(
+                "{}: NQ supplied no reason (inspect timed out)",
+                result.outcome
+            ));
+        } else if output.status == Some(0)
+            && let Some(error) = delivery_error(&output.stdout, id, &result.outcome)
+        {
+            result.error = Some(error);
+        }
+    }
 }
 
 /// Inspect only the exact retained record and its expected delivery state.
-fn delivery_error(config: &Config, notification_id: &str, outcome: &str) -> Option<String> {
-    let output = run_bounded(
-        &[
-            config.nq.program.display().to_string(),
-            "--config".into(),
-            config.nq.config.display().to_string(),
-            "--json".into(),
-            "notification".into(),
-            "inspect".into(),
-            "--notification-id".into(),
-            notification_id.into(),
-        ],
-        Duration::from_secs(config.command_timeout_seconds),
-        64 * 1024,
-        ChildEnvironment::Inherit,
-    )
-    .ok()?;
-    if output.timed_out || output.status != Some(0) {
-        return None;
-    }
-    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+fn delivery_error(bytes: &[u8], notification_id: &str, outcome: &str) -> Option<String> {
+    let value: Value = serde_json::from_slice(bytes).ok()?;
     let record = value.as_array()?.iter().find(|record| {
         record["notification_id"] == notification_id && record["delivery_state"] == outcome
     })?;
@@ -227,16 +264,8 @@ fn run(config: &Config, tail: Vec<String>, network: bool) -> SubmitOutcome {
             value
                 .get("reason")
                 .and_then(|reason| reason_error(reason, "refused"))
-                .or_else(|| {
-                    notification_id
-                        .as_deref()
-                        .and_then(|id| refusal_error(config, id))
-                })
                 .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into()),
         ),
-        "failed" => notification_id
-            .as_deref()
-            .and_then(|id| delivery_error(config, id, "failed")),
         _ => None,
     };
     SubmitOutcome {

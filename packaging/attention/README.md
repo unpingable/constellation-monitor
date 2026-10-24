@@ -192,18 +192,20 @@ one per reference at `/var/lib/nq-ops-results/<reference>.json`; the
    reset-clock --config /etc/constellation-attention/attention.toml`
    (ATTENTION.md, Clock); never delete the state.
 
-`TimeoutStartSec` follows `(I + S + F + R) x command_timeout_seconds + 60`,
+`TimeoutStartSec` follows `(I + S) x command_timeout_seconds + 60`,
 with I input command invocations (nq_status, including each history page,
 plus saved-check commands), S submissions (including retries, cleanup and
-digest), F bounded inspection calls after refused/failed submissions (at
-most one each, so F <= S), and R
-retained refused obligations not attempted that pass (one inspect each).
-Each inspect retains the same command timeout and 64 KiB output bound.
-The unit assumes I <= 2, S <= 6 and R <= 6: at the default 90 s timeout,
-the worst case is `(2 + 6 + 6 + 6) x 90 + 60 = 1860 s`. The unit timeout
-is raised to cover these inspections; their individual timeout is unchanged.
-Raise it with a drop-in, or lower `command_timeout_seconds`, for more inputs,
-submissions or retained refusals.
+digest). The 60 s margin includes a fixed inspect allowance of at most
+20 s, leaving 40 s for other overhead: at most two local read-only v2
+reason queries per pass, each bounded by `min(command_timeout_seconds, 10 s)`
+and 64 KiB of output. After the first inspect timeout, remaining inspects
+are skipped. V1 records and retained obligations not attempted this pass
+are never inspected. Skipped rows explicitly say their reason was not
+inspected; the next attempt can read it within that pass's budget.
+The unit assumes I <= 2 and S <= 6: at the default 90 s timeout,
+`(2 + 6) x 90 + 60 = 780 s`, including the inspect allowance.
+Raise it with a drop-in, or lower `command_timeout_seconds`, for more inputs
+or submissions.
 
 Operator acceptance: nothing in the estate watches this unit. A pass that
 cannot run fails every minute with no report and no notification, and an

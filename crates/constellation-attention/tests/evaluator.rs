@@ -86,6 +86,7 @@ struct Harness {
     notice_transport: &'static str,
     runbook_base: &'static str,
     nq_routes_override: Option<String>,
+    command_timeout_seconds: u64,
 }
 
 impl Harness {
@@ -104,6 +105,7 @@ impl Harness {
             notice_transport: "slack",
             runbook_base: "https://docs.example.org/beta-observability/RUNBOOKS.md",
             nq_routes_override: None,
+            command_timeout_seconds: 90,
         }
     }
 
@@ -161,6 +163,7 @@ impl Harness {
             "schema = \"constellation.attention_config.v1\"\n\
              site = \"labelwatch\"\n\
              state_path = \"{state}\"\n\
+             command_timeout_seconds = {command_timeout_seconds}\n\
              [runbooks]\n\
              cartography_url = \"{runbook_base}\"\n\
              [nq]\n\
@@ -173,6 +176,7 @@ impl Harness {
              network_enabled = {network}\n\
              {extra}\n",
             state = self.path("state/state.json").display(),
+            command_timeout_seconds = self.command_timeout_seconds,
             nq_config = nq_config.display(),
             notice_reference = self.notice_reference,
             nq = Path::new(FIXTURES).join("fake-nq.sh").display(),
@@ -1450,12 +1454,12 @@ fn network_disabled_retains_refusals_without_resending() {
 
 /// All configured, enabled transports are required when they have an obligation.
 #[test]
-fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
+fn retained_refusal_reason_reaches_reports_without_retry_pause_inspects() {
     let mut harness = Harness::new();
     harness.host_posture("root");
     harness.fake("next_state", "refused");
     harness.fake("state-operations", "accepted");
-    for (offset, inspection_count) in [(0, 0), (660, 1), (720, 2), (780, 3)] {
+    for (offset, inspection_count) in [(0, 0), (660, 1), (720, 1), (780, 2)] {
         set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
         let output = harness.evaluate_at(T0 + offset, &[]);
         if offset == 0 {
@@ -1464,15 +1468,17 @@ fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
         assert_eq!(output.status.code(), Some(4));
         let report = harness.report();
         assert_eq!(report["delivery"]["pagerduty-ops"]["outcome"], "refused");
-        assert_eq!(
-            report["delivery"]["pagerduty-ops"]["error"],
+        let expected_error = if offset == 720 {
+            "refused: NQ supplied no refusal reason"
+        } else {
             "refused: routing_key_malformed"
-        );
+        };
+        assert_eq!(report["delivery"]["pagerduty-ops"]["error"], expected_error);
         assert!(
             report["first_error"]
                 .as_str()
                 .unwrap()
-                .contains("routing_key_malformed")
+                .contains(expected_error)
         );
         if offset != 720 {
             let row = report["intents"]
@@ -1490,7 +1496,7 @@ fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
                 .lines()
                 .count(),
             inspection_count,
-            "one inspect per refused submission or retained obligation, without duplication"
+            "inspect only the attempted v2 record, never a retained obligation between retries"
         );
     }
     let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
@@ -1501,6 +1507,163 @@ fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
         2
     );
     assert!(harness.calls().last().unwrap().starts_with("resubmit "));
+}
+
+#[test]
+fn v1_failures_and_refusals_never_inspect() {
+    for transport in ["slack", "discord", "webhook", "local_file"] {
+        for outcome in ["failed", "refused"] {
+            let mut harness = Harness::new();
+            harness.page_route = false;
+            if transport == "webhook" {
+                // The NQ route may change transport independently of the
+                // attention notice_transport configuration (which has no
+                // webhook variant). Route reconciliation still emits v1.
+                harness.nq_routes_override = Some(
+                    "[[notification_routes]]\nreference = \"operations\"\ntransport = \"webhook\"\n".into(),
+                );
+            } else {
+                harness.notice_transport = transport;
+            }
+            harness.host_posture("root");
+            harness.fake("next_state", outcome);
+            for offset in [0, 660, 720] {
+                set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+                let report = harness.evaluate(T0 + offset);
+                if offset > 0 {
+                    assert_eq!(report["delivery"]["operations"]["outcome"], outcome);
+                }
+            }
+            assert!(
+                !harness.path("fake/inspections.log").exists(),
+                "{transport} {outcome}"
+            );
+            assert_eq!(harness.calls().len(), 1, "retry pause is unchanged");
+        }
+    }
+}
+
+#[test]
+fn four_v2_refusals_share_two_inspects_per_pass() {
+    let mut harness = Harness::new();
+    for label in ["root", "data", "logs", "backup"] {
+        harness.host_posture(label);
+    }
+    harness.fake("state-operations", "accepted");
+    harness.fake("next_state", "refused");
+    for (offset, inspection_count) in [(0, 0), (660, 2), (720, 2), (780, 4)] {
+        for label in ["root", "data", "logs", "backup"] {
+            set(&harness, label, ProjectedStateV1::Unknown, T0 + offset);
+        }
+        let report = harness.evaluate(T0 + offset);
+        if offset == 0 {
+            continue;
+        }
+        assert_eq!(report["exit_code"], 4);
+        assert_eq!(report["delivery"]["pagerduty-ops"]["outcome"], "refused");
+        let pages: Vec<_> = report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["schema"] == "nq.notification_delivery_intent.v2")
+            .collect();
+        if offset == 720 {
+            assert!(pages.is_empty(), "no attempts during the retry pause");
+        } else {
+            assert_eq!(pages.len(), 4);
+            assert!(pages.iter().all(|row| row["outcome"] == "refused"));
+            assert_eq!(
+                pages
+                    .iter()
+                    .filter(|row| row["error"] == "refused: routing_key_malformed")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                pages
+                    .iter()
+                    .filter(|row| row["error"] == "refused: reason not inspected this pass")
+                    .count(),
+                2
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(harness.path("fake/inspections.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            inspection_count
+        );
+    }
+    assert_eq!(
+        harness.calls().len(),
+        12,
+        "eight triggers, four page retries"
+    );
+}
+
+#[test]
+fn inspect_timeout_skips_remaining_reads_and_completes_the_pass() {
+    // Exercise both the configured lower bound and the independent 10 s ceiling.
+    for timeout in [1, 90] {
+        let mut harness = Harness::new();
+        harness.command_timeout_seconds = timeout;
+        for label in ["root", "data", "logs", "backup"] {
+            harness.host_posture(label);
+            set(&harness, label, ProjectedStateV1::Unknown, T0);
+        }
+        harness.evaluate(T0);
+        harness.fake("state-operations", "accepted");
+        harness.fake("next_state", "failed");
+        harness.fake("inspect_sleep", "30");
+        for label in ["root", "data", "logs", "backup"] {
+            set(&harness, label, ProjectedStateV1::Unknown, T0 + 660);
+        }
+        let started = std::time::Instant::now();
+        let report = harness.evaluate(T0 + 660);
+        let elapsed = started.elapsed();
+        assert!(elapsed >= std::time::Duration::from_secs(timeout.min(10)));
+        assert!(
+            elapsed < std::time::Duration::from_secs(timeout.min(10) + 5),
+            "{elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(8 * timeout + 60),
+            "inside the pass budget"
+        );
+        assert_eq!(report["exit_code"], 4);
+        assert_eq!(report["exit_class"], "delivery_partial");
+        assert_eq!(harness.calls().len(), 8, "every submission completes");
+        let pages: Vec<_> = report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["schema"] == "nq.notification_delivery_intent.v2")
+            .collect();
+        assert_eq!(pages.len(), 4);
+        assert!(pages.iter().all(|row| row["outcome"] == "failed"));
+        assert_eq!(
+            pages
+                .iter()
+                .filter(|row| row["error"] == "failed: NQ supplied no reason (inspect timed out)")
+                .count(),
+            1
+        );
+        assert_eq!(
+            pages
+                .iter()
+                .filter(|row| row["error"] == "failed: reason not inspected this pass")
+                .count(),
+            3
+        );
+        assert_eq!(
+            fs::read_to_string(harness.path("fake/inspections.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]
