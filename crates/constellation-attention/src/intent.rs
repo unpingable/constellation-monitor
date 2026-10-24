@@ -134,6 +134,78 @@ fn metric_notice(input: &IntentInput<'_>) -> bool {
                 && input.reference["cause"] == "indeterminate"))
 }
 
+// Sample detail is presentation only; static labels still determine identity
+// and complete value-code counts determine whether a mode failed.
+fn endpoint_summary(reference: &Value) -> String {
+    let service = reference["service"].as_str().unwrap_or("unknown");
+    let probes = reference["probes"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut modes = Vec::new();
+    let mut urls = std::collections::BTreeSet::new();
+    for probe in probes {
+        if probe["observation"] == "present" {
+            match probe["probe"].as_str() {
+                Some("http") => modes.push("HTTP"),
+                Some("tcp") => modes.push("TCP"),
+                Some("tls") => modes.push("TLS"),
+                _ => {}
+            }
+        }
+        for instance in probe["instances"].as_array().into_iter().flatten() {
+            if let Some(url) = instance["labels"]["instance"].as_str()
+                && safe_endpoint_url(url)
+            {
+                urls.insert(url);
+            }
+        }
+    }
+    modes.sort_unstable();
+    modes.dedup();
+    let mode = if modes.is_empty() {
+        "declared".into()
+    } else {
+        modes.join("/")
+    };
+    let location = urls
+        .first()
+        .map_or(String::new(), |url| format!(" ({url})"));
+    format!("The {mode} endpoint for service {service} is unavailable{location}.")
+}
+
+fn safe_endpoint_url(url: &str) -> bool {
+    // The collector caps labels at 128 characters; conservatively bound bytes
+    // here and never display a possibly cut URL.
+    if url.len() >= 128
+        || url.chars().any(|c| c.is_control() || c.is_whitespace())
+        || url.contains(['@', '?', '#', '\\'])
+    {
+        return false;
+    }
+    let Some(rest) = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or_default();
+    if let Ok(address) = authority.parse::<std::net::SocketAddr>() {
+        return address.ip().is_loopback() && address.port() != 0;
+    }
+    if let Some(host) = authority
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+    {
+        host.parse::<std::net::Ipv6Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    } else {
+        authority
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    }
+}
+
 fn summary(input: &IntentInput<'_>) -> String {
     let id = incident_ref(&input.key.id(), input.first_seen);
     match input.action {
@@ -151,7 +223,11 @@ fn summary(input: &IntentInput<'_>) -> String {
                 format!(
                     "TRIGGER {id} [{}]: {} Persisted {} s (bound {} s).",
                     input.rule.class.as_str(),
-                    input.rule.rule.condition,
+                    if input.rule.rule.id == "service-endpoint-unavailable" {
+                        endpoint_summary(input.reference)
+                    } else {
+                        input.rule.rule.condition.to_owned()
+                    },
                     input.persisted_seconds,
                     input.rule.persistence_seconds(),
                 )
@@ -355,6 +431,41 @@ mod tests {
 
     use crate::condition::ConditionKey;
     use crate::config::Config;
+
+    #[test]
+    fn endpoint_detail_is_bounded_and_does_not_invent_missing_urls() {
+        for mode in ["http", "tcp", "tls"] {
+            let reference = json!({"service":"bar", "probes":[
+                {"probe":mode, "observation":"present", "instances":[]},
+                {"probe":"http", "observation":"unknown", "instances":[
+                    {"labels":{"instance":"https://127.0.0.1:8443/health"}}
+                ]}
+            ]});
+            let text = endpoint_summary(&reference);
+            assert!(text.contains(&format!("The {} endpoint", mode.to_uppercase())));
+            assert!(text.contains("https://127.0.0.1:8443/health"));
+        }
+        assert_eq!(
+            endpoint_summary(&json!({"service":"bar", "probes":[
+                {"probe":"tls", "observation":"present", "instances":[]}
+            ]})),
+            "The TLS endpoint for service bar is unavailable."
+        );
+        for url in [
+            "http://127.0.0.1/health#secret",
+            "http://127.0.0.1/health\nsecret",
+            "http://127.0.0.1:8080@evil/health",
+            "http://127.0.0.1:invalid/health",
+            "http://[[::1]]/health",
+            "http://127.0.0.1:0/health",
+        ] {
+            assert!(!safe_endpoint_url(url));
+        }
+        assert!(!safe_endpoint_url(&format!(
+            "http://127.0.0.1/{}",
+            "x".repeat(128)
+        )));
+    }
 
     /// The longest values the configuration admits still render a local
     /// inbox message under NQ's 4 KiB limit, with JSON escaping.

@@ -440,11 +440,41 @@ def test_maintenance_is_visible_but_recovery_and_needs_operator_are_independent(
     live = store.incidents()[0]
     assert live["needs_operator"]
     assert kinds(store, live["id"]).count("maintenance") == 1
-    assert "Open — notifications suppressed" in inc.list_view(store, now=T0 + 60)
+    view = inc.list_view(store, now=T0 + 60)
+    assert "Open — notifications suppressed" in view
+    assert "UNDER MAINTENANCE (1)" in view
+    assert "NEEDS YOU (0)" in view
+    assert "OPEN, NOTHING NEEDED FROM YOU NOW (0)" in view
+    assert "recovery unverified" in view
+    assert view.count(live["id"]) == 1
+    expired = inc.list_view(store, now=T0 + 1800)
+    assert "UNDER MAINTENANCE (0)" in expired and "NEEDS YOU (1)" in expired
+    assert expired.count(live["id"]) == 1
     recovered = report("clear", False)
     recovered["conditions"][0]["maintenance"] = window
     inc.sync(store, recovered, {}, None, RULES, T0 + 120)
     assert store.current(KEY)["state"] == "recovering"
     assert store.current(KEY)["needs_operator"] is None
+    view = inc.list_view(store, now=T0 + 120)
+    assert "UNDER MAINTENANCE (1)" in view and "[recovering; recovery unverified]" in view
+    assert view.count(live["id"]) == 1
     inc.sync(store, report("clear", False), {}, None, RULES, T0 + 180)
     assert "notifications suppressed" not in inc.list_view(store, now=T0 + 180)
+
+
+def test_maintenance_section_partitions_mixed_incidents(store):
+    ids = []
+    for name, needed, maintained in [("bar", "inspect", True), ("baz", "inspect", False),
+                                    ("suspended", "suspended by operator", True),
+                                    ("other", None, False)]:
+        iid = store.open_incident("constellation:labelwatch:service:service-down:" + name,
+                                  inc.iso(T0), inc.iso(T0))
+        store.update(iid, needs_operator=needed)
+        if maintained:
+            store.event(iid, inc.iso(T0), "maintenance", {"until": inc.iso(T0 + 1800)})
+        ids.append(iid)
+    view = inc.list_view(store, now=T0 + 60)
+    for heading in ["NEEDS YOU (1)", "SUSPENDED BY DECISION, STILL OPEN (0)",
+                    "OPEN, NOTHING NEEDED FROM YOU NOW (1)", "UNDER MAINTENANCE (2)"]:
+        assert heading in view
+    assert all(view.count(iid) == 1 for iid in ids)

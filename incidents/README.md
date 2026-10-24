@@ -136,8 +136,13 @@ Attention maintenance suppresses covered trigger delivery, not observation or
 incident creation. Sync records a `maintenance` timeline event once per window
 start, including until, reason and operator; early end is recorded when the next
 report removes the window. Active windows display
-"Open — notifications suppressed (maintenance until …)". `needs_operator` is
-unchanged. A clear condition during maintenance still enters `recovering` and
+"Open — notifications suppressed (maintenance until …)". Each unresolved
+incident appears in exactly one counted list section. An active maintenance
+window takes precedence over the other sections: the incident appears only in
+`UNDER MAINTENANCE (n)`, with its state, failing-since time and recovery unverified.
+It is still open, even if recovery confirmation is in progress. `needs_operator`
+is unchanged; expiry or early end returns it to the ordinary section appropriate
+to its state. A clear condition during maintenance still enters `recovering` and
 follows the usual confirmation rules. Provider pages accepted before maintenance
 keep escalating there; acknowledge them in the provider. Run the maintenance CLI
 as nq; see [Service maintenance](../docs/ATTENTION.md#service-maintenance).

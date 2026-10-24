@@ -9982,7 +9982,31 @@ fn maintenance_withheld_trigger_never_produces_orphan_resolve() {
         (1000, "OK"),
         (1600, "OK"),
     ] {
-        assert!(bar_intents(&service_pass(&h, T0 + offset, verdict)).is_empty());
+        let report = service_pass(&h, T0 + offset, verdict);
+        assert!(bar_intents(&report).is_empty());
+        let notes: Vec<_> = report["maintenance_withheld"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|note| note["condition_id"] == BAR)
+            .collect();
+        if matches!(offset, 660 | 720 | 1000) {
+            assert!(!notes.is_empty(), "{report}");
+            assert!(notes.iter().all(|note| {
+                note["window"]["service"] == "bar"
+                    && note["reason"]
+                        .as_str()
+                        .unwrap()
+                        .contains("withheld by maintenance")
+            }));
+            assert!(
+                notes.iter().any(
+                    |note| note["action"] == if offset == 1000 { "resolve" } else { "trigger" }
+                )
+            );
+        } else {
+            assert!(notes.is_empty(), "{report}");
+        }
     }
 }
 #[test]
@@ -10659,5 +10683,58 @@ fn maintenance_unreadable_oversized_and_foreign_files_report_errors_without_muti
         assert!(report["maintenance"]["error"].is_string());
         assert_eq!(report["maintenance"]["windows"], json!([]));
         assert_eq!(bar_intents(&report).len(), 1, "{broken}");
+    }
+}
+
+#[test]
+fn endpoint_notice_names_failed_modes_service_and_safe_declared_url() {
+    for url in [
+        "http://127.0.0.1:8081/health",
+        "https://[::1]:8443/health",
+        "http://user:secret@127.0.0.1/health",
+        "http://127.0.0.1/health?token=secret",
+        "http://example.com/secret",
+    ] {
+        let mut h = metric_alerts_harness();
+        h.raw("warmup_grace = 0\n");
+        for offset in [0, 90] {
+            write_endpoints(
+                &h,
+                T0 + offset,
+                &[
+                    ("bar", "http", "1"),
+                    ("bar", "tcp", "1"),
+                    ("bar", "tls", "2"),
+                ],
+                |doc| {
+                    doc["rules"][0]["instances"] = json!([{"state":"firing", "value":"1",
+                    "labels":{"site":"labelwatch", "instance":url}, "summary":"untrusted secret"}]);
+                },
+            );
+            let report = h.evaluate(T0 + offset);
+            if offset == 90 {
+                let row = report["intents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|i| i["condition_id"] == endpoint_id("bar"))
+                    .unwrap();
+                let body: Value = serde_json::from_slice(
+                    &h.submitted_intent(row["notification_id"].as_str().unwrap()),
+                )
+                .unwrap();
+                let summary = body["summary"].as_str().unwrap();
+                assert!(
+                    summary.contains("The HTTP/TCP endpoint for service bar is unavailable"),
+                    "{summary}"
+                );
+                assert!(!summary.contains("TLS"));
+                assert!(!summary.contains("secret"));
+                if !url.contains("secret") {
+                    assert!(summary.contains(url), "{summary}");
+                }
+                assert!(summary.len() <= 512);
+            }
+        }
     }
 }

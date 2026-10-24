@@ -661,8 +661,10 @@ def list_view(store, include_recent=True, now=None):
                "  WARNING: sync is %d s old; this view may be stale" % age if age > 300 else ""))
     open_ = store.incidents(unresolved_only=True)
     since = lambda i: i.get("first_seen") or i["opened_at"]
-    suspended = [i for i in open_ if (i.get("needs_operator") or "").startswith("suspended by ")]
-    needs = [i for i in open_ if i.get("needs_operator") and i not in suspended]
+    maintained = [i for i in open_ if maintenance_display(store, i, now)]
+    ordinary = [i for i in open_ if i not in maintained]
+    suspended = [i for i in ordinary if (i.get("needs_operator") or "").startswith("suspended by ")]
+    needs = [i for i in ordinary if i.get("needs_operator") and i not in suspended]
     out.append("")
     out.append("NEEDS YOU (%d)" % len(needs))
     for i in needs:
@@ -673,16 +675,17 @@ def list_view(store, include_recent=True, now=None):
     out.append("SUSPENDED BY DECISION, STILL OPEN (%d)" % len(suspended))
     for i in suspended:
         out.append("  %-14s %-34s failing since %s  (%s)" % (i["id"], "%s %s" % (i["rule"], i["subject"]), since(i), i["needs_operator"]))
-    others = [i for i in open_ if not i.get("needs_operator")]
+    others = [i for i in ordinary if not i.get("needs_operator")]
     out.append("")
     out.append("OPEN, NOTHING NEEDED FROM YOU NOW (%d)" % len(others))
     for i in others:
         why = {"recovering": "recovering; confirming", "acknowledged": "acknowledged by %s" % i.get("ack_by")}.get(i["state"], "remediation or confirmation in progress")
         out.append("  %-14s %-34s failing since %s  (%s; tried: %s)" % (i["id"], "%s %s" % (i["rule"], i["subject"]), since(i), why, summary_line(store, i)))
-    for i in open_:
-        maintenance = maintenance_display(store, i, now)
-        if maintenance:
-            out.append("  %s  %s" % (i["id"], maintenance))
+    out.append("")
+    out.append("UNDER MAINTENANCE (%d)" % len(maintained))
+    for i in maintained:
+        out.append("  %-14s %-34s failing since %s  [%s; recovery unverified]" % (i["id"], "%s %s" % (i["rule"], i["subject"]), since(i), i["state"]))
+        out.append("      %s" % maintenance_display(store, i, now))
     if include_recent:
         cutoff = iso(now - 86400)
         recent = [i for i in store.incidents(unresolved_only=False) if i["state"] == "resolved" and (i["resolved_at"] or "") >= cutoff]

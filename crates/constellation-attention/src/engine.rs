@@ -1595,10 +1595,8 @@ fn evaluate_locked(
         if !transitioned.contains(id) && !rule.enabled {
             continue;
         }
-        let gated = maintenance.covering(&config.site, &condition.key).is_some();
-        if gated && action == Action::Trigger {
-            continue;
-        }
+        let window = maintenance.covering(&config.site, &condition.key);
+        let gated = window.is_some();
         let mut roles: Vec<(String, String)> = Vec::new();
         match action {
             // The remediation window expired with the condition present: the
@@ -1629,7 +1627,21 @@ fn evaluate_locked(
                 for (role, last) in &condition.last_intent {
                     if !gated || (last.action == "trigger" && last.outcome == "accepted") {
                         roles.push((role.clone(), last.route.clone()));
+                    } else if last.action != "trigger" {
+                        maintenance_withheld.push(json!({
+                            "condition_id": id, "route_role": role,
+                            "action": "resolve", "window": window,
+                            "reason": "no accepted trigger; withheld by maintenance",
+                            "note": "resolve withheld by maintenance",
+                        }));
                     }
+                }
+                if roles.is_empty() && gated && condition.last_intent.is_empty() {
+                    maintenance_withheld.push(json!({
+                        "condition_id": id, "action": "resolve", "window": window,
+                        "reason": "no accepted trigger; withheld by maintenance",
+                        "note": "resolve withheld by maintenance",
+                    }));
                 }
                 if gated {
                     // Recovery settles undelivered debt without sending an orphan
@@ -1640,6 +1652,8 @@ fn evaluate_locked(
                             maintenance_withheld.push(json!({
                                 "condition_id": id, "route_role": role,
                                 "stable_event_id": last.stable_event_id,
+                                "action": "trigger_and_resolve", "window": window,
+                                "reason": "withheld by maintenance",
                                 "note": "trigger and resolve withheld by maintenance",
                             }));
                             condition.pending_trigger.remove(role);
@@ -1663,6 +1677,17 @@ fn evaluate_locked(
                         .get(role)
                         .is_none_or(|last| last.action == "resolve"))
         });
+        if gated && action == Action::Trigger {
+            for (role, _) in &roles {
+                maintenance_withheld.push(json!({
+                    "condition_id": id, "route_role": role,
+                    "action": "trigger", "window": window,
+                    "reason": "withheld by maintenance",
+                    "note": "trigger withheld by maintenance",
+                }));
+            }
+            continue;
+        }
         let stable_event_id = intent::event_id(&condition.key, action, now);
         let transition_id = if *page_only || refresh {
             intent::event_id(
@@ -1778,6 +1803,8 @@ fn evaluate_locked(
                     maintenance_withheld.push(json!({
                         "condition_id": id, "route_role": role,
                         "stable_event_id": last.stable_event_id,
+                        "action": "trigger", "window": maintenance.covering(&config.site, &snapshot.key),
+                        "reason": "withheld by maintenance",
                         "note": "trigger withheld by maintenance",
                     }));
                 }

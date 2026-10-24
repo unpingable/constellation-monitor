@@ -1613,6 +1613,14 @@ non-failure `maintenance_withheld` note ("withheld by maintenance"); they produc
 no dropped-trigger failure or delayed orphan resolve. A condition still active after
 expiry or early end gets its owed trigger on the next pass, bound to the original
 transition. This includes recovery followed by another failure during the window.
+`report.json` retains `maintenance_withheld` as a per-pass list, including newly
+withheld triggers (also repeated while still owed), withheld retries, and recovery
+resolves without an accepted trigger. Each entry includes `condition_id`, `action`
+(`trigger`, `resolve`, or `trigger_and_resolve`), the covering `window` (including
+operator, reason and deadline), and a suppression `reason`. Existing intent roles
+also include `route_role` and `stable_event_id`. These are delivery-policy notes,
+not delivery failures or acquired evidence; an already accepted trigger alone
+creates no withheld entry. The list is empty when this pass withholds nothing.
 A window is active exactly when `started_at <= now < until`; reboot does not
 extend it. A re-added service with the same name inherits the remainder of its
 window. A retired service's window is harmless until expiry.
@@ -1643,7 +1651,14 @@ The condition is `constellation:<site>:service:service-endpoint-unavailable:<ser
 one service endpoint incident, folded across TCP, HTTP and TLS modes. It is a
 notice, with 60 seconds attention persistence after vmalert's own hold, and cannot
 be configured as a page. Inspect the failing modes, endpoint URL and rule value
-codes in the report reference before acting.
+codes in the report reference before acting. Trigger summaries name the service
+and observed failing modes (HTTP/TCP/TLS), plus the declared HTTP(S) health URL
+from available probe instance detail. The URL is presentation only: it does not
+select the condition or establish failure. Only credential-free numeric-loopback
+URLs without queries, fragments or control characters are shown. Missing, unsafe
+or possibly truncated URL detail is omitted rather than guessed; the notice still
+names the service and failing modes. The existing 512-byte notice bound applies.
+Unknown and clear modes are not described as failing.
 
 Opted-in metric rules identify obligations through static `constellation_service`,
 `site` and `probe` labels. Service tokens must pass the 48-byte condition-token
