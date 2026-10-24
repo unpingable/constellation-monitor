@@ -1641,6 +1641,60 @@ pub fn admit_metric_alert<'s>(name: &str, sites: &[Option<&'s str>]) -> Admissio
     admission
 }
 
+/// Static labels, never the bounded instance sample, identify a probe obligation.
+fn admit_endpoint<'a>(rule: &'a Value, site: &'a str) -> Admission<'a> {
+    let labels = &rule["labels"];
+    let service = labels["constellation_service"].as_str().unwrap_or_default();
+    let probe = labels["probe"].as_str().unwrap_or_default();
+    // Separate lifecycle/admission identity per mode, with no collision with
+    // legacy tokens. The emitted condition target remains the service itself.
+    let target = format!("endpoint:{service}:{probe}");
+    let mut admission = Admission {
+        target: target.clone(),
+        keyed: Vec::new(),
+        rejected: Vec::new(),
+    };
+    let valid = (|| -> Result<(), String> {
+        validate_token("constellation_service", service, 48)?;
+        if labels["site"].as_str() != Some(site) {
+            return Err("endpoint site does not match configured site".into());
+        }
+        if !matches!(probe, "tcp" | "http" | "tls") {
+            return Err("probe must be tcp, http or tls".into());
+        }
+        if let Some(labels) = labels.as_object() {
+            for key in labels.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "constellation_service"
+                        | "probe"
+                        | "site"
+                        | "attention"
+                        | "constellation_value_codes"
+                        | "family"
+                        | "severity"
+                        | "area"
+                        | "runbook"
+                ) {
+                    return Err(format!(
+                        "unsupported endpoint label {key:?}; no additional subjects allowed"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    })();
+    match valid {
+        Ok(()) => admission.keyed.push((Some(site), target)),
+        Err(reason) => admission.rejected.push(Rejection {
+            site: Some(site),
+            target,
+            reason,
+        }),
+    }
+    admission
+}
+
 /// The `site` label of an alert instance.
 fn instance_site(instance: &Value) -> Option<&str> {
     instance.pointer("/labels/site").and_then(Value::as_str)
@@ -1874,7 +1928,14 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         .iter()
         .map(|rule| {
             let name = rule.get("name").and_then(Value::as_str).unwrap_or_default();
-            (name, admit_metric_alert(name, &sites))
+            (
+                name,
+                if rule["labels"].get("constellation_service").is_some() {
+                    admit_endpoint(rule, &context.config.site)
+                } else {
+                    admit_metric_alert(name, &sites)
+                },
+            )
         })
         .collect();
     if stale.is_none() && drift.is_none() && !opted.is_empty() {
@@ -1903,6 +1964,7 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
                 .push(name);
         }
     }
+    let mut endpoints: BTreeMap<String, Vec<(Observation, Value, String)>> = BTreeMap::new();
     let mut observations = Vec::new();
     let mut value_code_notes = Vec::new();
     let mut indeterminate_rules = BTreeMap::new();
@@ -2337,7 +2399,26 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
             if !unknown && !code_unknown && !no_data && drift.is_none() {
                 identity.recovered_since_grace = true;
             }
-            observations.push((keyed_target, observation, reference, note));
+            if let Some(service) = rule["labels"]["constellation_service"].as_str() {
+                reference["probe"] = rule["labels"]["probe"].clone();
+                reference["observation"] = json!(observation);
+                let mode = rule["labels"]["probe"].as_str().unwrap_or_default();
+                endpoints.entry(service.to_owned()).or_default().push((
+                    observation,
+                    reference,
+                    format!(
+                        "{}: {note}",
+                        match (mode, observation) {
+                            ("http", Observation::Present) => "HTTP probe failed",
+                            ("tcp", Observation::Present) => "TCP listener connect failed",
+                            ("tls", Observation::Present) => "TLS handshake failed",
+                            _ => mode,
+                        }
+                    ),
+                ));
+            } else {
+                observations.push((keyed_target, observation, reference, note));
+            }
         }
     }
     if !warming_rules.is_empty() {
@@ -2375,7 +2456,53 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
     if !value_code_notes.is_empty() {
         report.identity["value_code_notes"] = json!(value_code_notes);
     }
+    // A refused sibling cannot attest recovery through a remaining clear mode.
+    // With no admitted modes, omit the condition and let existing unreported
+    // semantics hold any prior incident open.
+    for rule in &opted {
+        if let Some(parts) = rule["labels"]["constellation_service"]
+            .as_str()
+            .and_then(|service| endpoints.get_mut(service))
+            && !parts.iter().any(|(_, reference, _)| {
+                reference["alert"] == rule["name"] && reference["probe"] == rule["labels"]["probe"]
+            })
+        {
+            parts.push((Observation::Unknown, json!({"alert": rule["name"], "probe": rule["labels"]["probe"], "observation": "unknown", "reason": "definition refused"}), "probe definition refused".into()));
+        }
+    }
     read.reports.push(report);
+    for (service, parts) in endpoints {
+        let observation = if parts.iter().any(|(o, _, _)| *o == Observation::Present) {
+            Observation::Present
+        } else if parts.iter().any(|(o, _, _)| *o == Observation::Unknown) {
+            Observation::Unknown
+        } else {
+            Observation::Clear
+        };
+        let note = format!(
+            "service {service} endpoint: {}",
+            parts
+                .iter()
+                .filter(
+                    |(o, _, _)| observation != Observation::Present || *o == Observation::Present
+                )
+                .map(|(_, _, n)| n.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        let reference = json!({"service": service, "probes": parts.iter().map(|(_, r, _)| r).collect::<Vec<_>>()});
+        push(
+            context,
+            read,
+            "service-endpoint-unavailable",
+            "service",
+            Some(&service),
+            &input.label,
+            observation,
+            &reference,
+            note,
+        );
+    }
     for (target, observation, reference, note) in observations {
         push(
             context,

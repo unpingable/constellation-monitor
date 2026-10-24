@@ -129,3 +129,22 @@ port 13100, forward `13100:127.0.0.1:3100` and set `base_url` to
 `http://localhost:13100`. This setting describes the operator browser's endpoint;
 it does not publish Grafana. The helper CLI also accepts `--first-seen`,
 `--last-observed`, `--site`, `--host`, and `--base-url` for offline link creation.
+
+### Service maintenance and endpoint retirement
+
+Attention maintenance suppresses covered trigger delivery, not observation or
+incident creation. Sync records a `maintenance` timeline event once per window
+start, including until, reason and operator; early end is recorded when the next
+report removes the window. Active windows display
+"Open — notifications suppressed (maintenance until …)". `needs_operator` is
+unchanged. A clear condition during maintenance still enters `recovering` and
+follows the usual confirmation rules. Provider pages accepted before maintenance
+keep escalating there; acknowledge them in the provider. Run the maintenance CLI
+as nq; see [Service maintenance](../docs/ATTENTION.md#service-maintenance).
+
+Endpoint probe modes fold into one
+`service:service-endpoint-unavailable:<service>` condition and incident. Migration
+retires the old site-wide probe aggregates as "no longer evaluated". Their
+incidents remain open with "recovery not observed"; use the existing operator
+resolution procedure. Endpoint conditions retired with a service have the same
+semantics. Maintenance never supplies evidence of recovery.

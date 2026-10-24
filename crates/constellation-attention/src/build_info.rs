@@ -58,6 +58,8 @@ pub const CAPABILITIES: &[&str] = &[
     DELIVERY_EXIT_CODE,
     ROUTE_CHANGE_RECONCILE,
     ESTATE_SERVICE_RETIREMENT,
+    "service_maintenance_v1",
+    "service_endpoint_conditions_v1",
 ];
 
 #[derive(Debug, Serialize)]

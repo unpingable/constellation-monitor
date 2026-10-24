@@ -19,6 +19,7 @@ use serde_json::json;
 const USAGE: &str = "usage:
   constellation-attention --version | --build-info
   constellation-attention evaluate --config FILE [--dry-run] [--now RFC3339]
+  constellation-attention maintenance start|end|list --config FILE [--service NAME --unit UNIT --until RFC3339 --reason TEXT --by NAME --replace]
   constellation-attention state --config FILE
   constellation-attention reset-clock --config FILE
   constellation-attention rules
@@ -107,6 +108,9 @@ fn run() -> Result<u8, (u8, String)> {
         }
         _ => {}
     }
+    if raw.first().is_some_and(|s| s == "maintenance") {
+        return maintenance_cli(&raw[1..]);
+    }
     let arguments = parse(raw.into_iter()).map_err(|error| (2, error))?;
     match arguments.command.as_str() {
         "rules" => {
@@ -183,6 +187,74 @@ fn run() -> Result<u8, (u8, String)> {
         }
         _ => Err((2, USAGE.to_owned())),
     }
+}
+
+fn maintenance_cli(raw: &[String]) -> Result<u8, (u8, String)> {
+    use constellation_attention::maintenance::{self, Window};
+    let result = (|| -> Result<serde_json::Value, String> {
+        let action = raw.first().ok_or("maintenance requires start|end|list")?;
+        if !matches!(action.as_str(), "start" | "end" | "list") {
+            return Err("maintenance requires start|end|list".into());
+        }
+        let mut flags = std::collections::BTreeMap::new();
+        let mut units = Vec::new();
+        let mut replace = false;
+        let mut args = raw[1..].iter();
+        while let Some(flag) = args.next() {
+            if flag == "--replace" && action == "start" {
+                replace = true;
+                continue;
+            }
+            let valid = flag == "--config"
+                || (action != "list" && matches!(flag.as_str(), "--service" | "--reason"))
+                || (action == "start" && matches!(flag.as_str(), "--unit" | "--until" | "--by"));
+            if !valid {
+                return Err(format!("unexpected maintenance argument {flag}"));
+            }
+            let value = args
+                .next()
+                .ok_or_else(|| format!("{flag} requires a value"))?;
+            if flag == "--unit" {
+                units.push(value.clone());
+            } else if flags.insert(flag.as_str(), value.as_str()).is_some() {
+                return Err(format!("duplicate {flag}"));
+            }
+        }
+        let config = Config::load(&PathBuf::from(
+            flags.get("--config").ok_or("--config is required")?,
+        ))?;
+        let (now, _) = clock(None).map_err(|(_, e)| e)?;
+        let required = |key| {
+            flags
+                .get(key)
+                .copied()
+                .ok_or_else(|| format!("{key} is required"))
+        };
+        let window = if action == "start" {
+            Some(Window {
+                service: required("--service")?.into(),
+                units,
+                started_at: constellation_attention::util::format_seconds(now),
+                until: required("--until")?.into(),
+                reason: required("--reason")?.into(),
+                by: required("--by")?.into(),
+            })
+        } else {
+            None
+        };
+        maintenance::command(
+            &config,
+            action,
+            window,
+            flags.get("--service").copied(),
+            flags.get("--reason").copied(),
+            replace,
+            now,
+        )
+    })()
+    .map_err(|e| (2, e))?;
+    print(&result);
+    Ok(0)
 }
 
 fn main() -> ExitCode {

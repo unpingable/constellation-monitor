@@ -16,6 +16,7 @@ pub mod digest;
 pub mod engine;
 pub mod inputs;
 pub mod intent;
+pub mod maintenance;
 pub mod nq;
 pub mod registry;
 pub mod remediation;

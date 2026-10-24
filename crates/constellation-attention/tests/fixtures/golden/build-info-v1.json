@@ -20,6 +20,8 @@
     "reconfiguration_grace",
     "delivery_exit_code",
     "route_change_reconcile",
-    "estate_service_retirement"
+    "estate_service_retirement",
+    "service_maintenance_v1",
+    "service_endpoint_conditions_v1"
   ]
 }

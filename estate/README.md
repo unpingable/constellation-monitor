@@ -384,3 +384,28 @@ missing, future or frozen observation timestamps. Declare a separate
 `last_success_age_seconds` budget for useful committed work: an application
 heartbeat is not evidence of successful output. Neither timestamp grants action
 authority. Existing declarations without this threshold keep their current rules.
+
+### Per-service endpoint conditions and maintenance
+
+The attention adapter accepts opted-in probe rules with static
+`constellation_service`, `site`, and `probe` (tcp/http/tls) labels. These identify
+one service endpoint condition, folded across modes, rather than legacy alert-name
+targets. `metric-alerts-collect.py --check-targets --declared FILE --key-site SITE`
+reports the service targets and refuses invalid labels or duplicate (service,
+probe) definitions. It never infers identity from instance samples. The collected
+document and scrape jobs are unchanged; complete value-code counts continue to
+supply observations. See [ATTENTION.md](../docs/ATTENTION.md#service-endpoint-unavailable).
+
+Maintenance does not change estate collection, verdicts, concerns or PAUSED.
+`service-not-doing-its-job` and endpoint conditions remain observable; delivery is
+gated by the attention evaluator. The monitored page overlays UNDER MAINTENANCE
+and retains the observed estate verdict. Use the CLI as nq as documented in
+[Service maintenance](../docs/ATTENTION.md#service-maintenance).
+
+During upgrade, configure `inputs.metric_alerts.retired_targets` with the old
+site-wide probe targets (`probe-down.<site>`, `probe-http-failing.<site>`,
+`probe-tls-handshake-failing.<site>`). Their removal resolves attention as
+"no longer evaluated", not recovery. `inputs.estate.retired_services` also retires
+service endpoint conditions. Re-adding a service during its maintenance window
+inherits the remaining bounded window. Rollback restores old aggregate policy
+and removes the new config field; the old evaluator ignores maintenance windows.

@@ -812,11 +812,11 @@ impl PageAcceptances {
     }
 }
 
-struct Lock {
+pub(crate) struct Lock {
     _file: Option<File>,
 }
 
-fn lock(config: &Config, dry_run: bool) -> Result<Lock, String> {
+pub(crate) fn lock(config: &Config, dry_run: bool) -> Result<Lock, String> {
     let path = config.state_dir().join(format!(
         "{}.lock",
         config
@@ -1052,6 +1052,10 @@ fn evaluate_locked(
         }),
     };
     let now = options.now;
+    let maintenance = crate::maintenance::read(config, now);
+    if let Some(error) = &maintenance.error {
+        eprintln!("maintenance: {error}; notifications are not suppressed");
+    }
     if now < state.updated_at {
         // Event identities carry the decision time; a pass earlier than the
         // last one could replay an identity NQ already holds for another
@@ -1422,6 +1426,7 @@ fn evaluate_locked(
             "remediation_window_until": window_until,
             "page_deferred": condition.page_deferred,
             "suspended": suspension,
+            "maintenance": maintenance.covering(&config.site, &condition.key),
         }));
     }
 
@@ -1589,6 +1594,10 @@ fn evaluate_locked(
         if !transitioned.contains(id) && !rule.enabled {
             continue;
         }
+        let gated = maintenance.covering(&config.site, &condition.key).is_some();
+        if gated && action == Action::Trigger {
+            continue;
+        }
         let mut roles: Vec<(String, String)> = Vec::new();
         match action {
             // The remediation window expired with the condition present: the
@@ -1617,9 +1626,11 @@ fn evaluate_locked(
             }
             Action::Resolve => {
                 for (role, last) in &condition.last_intent {
-                    roles.push((role.clone(), last.route.clone()));
+                    if !gated || last.action == "trigger" {
+                        roles.push((role.clone(), last.route.clone()));
+                    }
                 }
-                if roles.is_empty() {
+                if roles.is_empty() && !gated {
                     roles.push(("notice".into(), notice_route.clone()));
                 }
             }
@@ -1629,7 +1640,11 @@ fn evaluate_locked(
         let refresh = !transitioned.contains(id);
         roles.retain(|(role, route)| {
             delivery_routes.reference(role) == Some(route.as_str())
-                && (!refresh || !condition.last_intent.contains_key(role))
+                && (!refresh
+                    || condition
+                        .last_intent
+                        .get(role)
+                        .is_none_or(|last| last.action == "resolve"))
         });
         let stable_event_id = intent::event_id(&condition.key, action, now);
         let transition_id = if *page_only || refresh {
@@ -1710,9 +1725,9 @@ fn evaluate_locked(
             if previous.action != Action::Trigger.as_str() {
                 continue;
             }
-            if previous.notification_id.is_none() {
-                // A resolve never replaces a trigger NQ did not retain: the
-                // trigger goes first in this pass.
+            if previous.notification_id.is_none() && !gated {
+                // Outside maintenance, a resolve never replaces a trigger NQ
+                // did not retain: the trigger goes first in this pass.
                 condition.pending_trigger.insert(role, previous);
             } else if previous.outcome != "accepted"
                 && (previous.outcome != "refused" || previous.network)
@@ -1739,6 +1754,11 @@ fn evaluate_locked(
     for (id, condition) in &mut state.conditions {
         let snapshot = condition.clone();
         for (role, last) in &mut condition.last_intent {
+            if last.action == "trigger"
+                && maintenance.covering(&config.site, &snapshot.key).is_some()
+            {
+                continue;
+            }
             if planned.contains(&(id.clone(), role.clone())) {
                 continue;
             }
@@ -1876,6 +1896,9 @@ fn evaluate_locked(
         }
     }
     for (id, condition) in &state.conditions {
+        if maintenance.covering(&config.site, &condition.key).is_some() {
+            continue;
+        }
         for (role, pending) in &condition.pending_trigger {
             if options.dry_run {
                 let source = state_dir.join("intents").join(&pending.intent_file);
@@ -1995,6 +2018,20 @@ fn evaluate_locked(
             (result.outcome, result.notification_id, result.error)
         };
         let last = last.clone();
+        // A crash may have left an unretained trigger queued ahead of its
+        // resolve. Maintenance cannot submit that trigger; once the resolve
+        // is accepted, it must never be resurrected after the window either.
+        if item.action == Action::Resolve
+            && outcome == "accepted"
+            && maintenance.covering(&config.site, &condition.key).is_some()
+            && let Some(pending) = condition.pending_trigger.remove(&item.role)
+        {
+            dropped_triggers.push(json!({
+                "condition_id": item.condition_id, "route_role": item.role,
+                "stable_event_id": pending.stable_event_id, "route": pending.route, "outcome": pending.outcome,
+                "error": "trigger superseded by accepted recovery during maintenance",
+            }));
+        }
         if before_resolve && !options.dry_run && !delivery_routes.missing(&last.route) {
             // Retained or not, the pending trigger is settled by this attempt.
             condition.pending_trigger.remove(&item.role);
@@ -2331,6 +2368,7 @@ fn evaluate_locked(
         "rules": rules_report(&rules, config),
         "inputs": read.reports.iter().collect::<Vec<&InputReport>>(),
         "conditions": condition_reports,
+        "maintenance": maintenance,
         "intents": intent_reports,
         "unresolved_deliveries": unresolved,
         "dropped_triggers": dropped_triggers,
@@ -2520,6 +2558,17 @@ fn rejected_note(report: &InputReport) -> String {
 
 /// A condition explicitly retired in its own input configuration.
 fn retired_condition(config: &Config, condition: &ConditionState) -> bool {
+    if config.inputs.metric_alerts.as_ref().is_some_and(|input| {
+        condition.input_label == input.label
+            && condition.key.rule == "metric-alert-firing"
+            && condition
+                .key
+                .target_class
+                .as_ref()
+                .is_some_and(|target| input.retired_targets.contains(target))
+    }) {
+        return true;
+    }
     config.inputs.nq_status.as_ref().is_some_and(|input| {
         condition.input_label == input.label
             && condition
@@ -2528,9 +2577,15 @@ fn retired_condition(config: &Config, condition: &ConditionState) -> bool {
                 .as_ref()
                 .is_some_and(|target| input.retired_targets.contains(target))
     }) || config.inputs.estate.as_ref().is_some_and(|input| {
-        condition.input_label == crate::inputs::ESTATE_LABEL
-            && condition.key.component == "service"
-            && condition.key.rule == "service-not-doing-its-job"
+        condition.key.component == "service"
+            && ((condition.input_label == crate::inputs::ESTATE_LABEL
+                && condition.key.rule == "service-not-doing-its-job")
+                || (condition.key.rule == "service-endpoint-unavailable"
+                    && config
+                        .inputs
+                        .metric_alerts
+                        .as_ref()
+                        .is_some_and(|metric| condition.input_label == metric.label)))
             && condition
                 .key
                 .target_class

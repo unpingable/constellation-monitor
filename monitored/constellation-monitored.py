@@ -123,6 +123,7 @@ ATTENTION_MEANINGS = {
     'sqlite-health': 'A declared SQLite saved check reports failure.',
     'service-not-doing-its-job': 'A service is DOWN or DEGRADED because required observations do not hold.',
     'remediation-journal-critical': 'The remediation journal has at least 15 sealed segments; custody is due before refusal at 16.',
+    'service-endpoint-unavailable': 'A declared service endpoint has an observed failing probe; modes fold into one condition and codes 2–5 hold unknown.',
     'metric-alert-firing': 'An opted-in vmalert detector is firing under its declared policy; value codes 2–5 hold unknown.',
     'evaluator-input-unavailable': 'A configured monitoring input is unreadable, not current, indeterminate or rejected.',
     'docket-unsettled': 'A Docket attempt has not settled within its age bound.',
@@ -449,6 +450,10 @@ def build(args, now):
                'supervision': 'timers: ' + ', '.join(t if isinstance(t, str) else t.get('unit', '?') for t in timers) if timers else 'runtime acquisition only; no timer declared',
                'evidence': source_pointer(pointer, name),
                'state': fault['attention_report'] or '; '.join(str(c.get('observation', 'unknown')) + ': ' + str(c.get('note', '')) for c in condition) or 'no active condition'}
+        maintenance = next((w for w in (report.get('maintenance') or {}).get('windows', []) if w.get('service') == name), None) if not fault['attention_report'] else None
+        if maintenance:
+            row['verdict'] = 'UNDER MAINTENANCE until %s (observed: %s)' % (maintenance.get('until'), row['verdict'])
+            row['route'] = 'notifications suppressed until %s: %s' % (maintenance.get('until'), maintenance.get('reason'))
         service_rows.append(row)
         if error:
             gaps.append({'item': name, 'reason': error, 'evidence': pointer})

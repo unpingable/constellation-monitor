@@ -88,6 +88,26 @@ pub fn summary(
     suspensions: &[crate::config::Suspension],
     now: i64,
 ) -> String {
+    summary_with_maintenance(
+        site,
+        state,
+        rules,
+        inputs,
+        suspensions,
+        now,
+        &crate::maintenance::View::default(),
+    )
+}
+
+fn summary_with_maintenance(
+    site: &str,
+    state: &State,
+    rules: &[EffectiveRule],
+    inputs: &[InputReport],
+    suspensions: &[crate::config::Suspension],
+    now: i64,
+    maintenance: &crate::maintenance::View,
+) -> String {
     let suspended: Vec<String> = suspensions
         .iter()
         .map(|s| {
@@ -108,7 +128,9 @@ pub fn summary(
         .conditions
         .values()
         .filter(|condition| {
-            condition.active && !suspensions.iter().any(|s| s.covers(&condition.key))
+            condition.active
+                && maintenance.covering(site, &condition.key).is_none()
+                && !suspensions.iter().any(|s| s.covers(&condition.key))
         })
         .map(|condition| {
             let class = rules
@@ -144,11 +166,23 @@ pub fn summary(
         .map(|input| format!("{} ({})", input.label, input.causes.join(", ")))
         .collect();
     let mut text = format!("DIGEST {site} {}: ", day(now));
+    for window in &maintenance.windows {
+        text.push_str(&format!(
+            "Maintenance: {} until {} ({}). ",
+            window.service, window.until, window.by
+        ));
+    }
     let metric_values: Vec<&str> = inputs
         .iter()
         .filter_map(|input| input.identity["value_code_notes"].as_array())
         .flatten()
         .filter_map(Value::as_str)
+        .filter(|note| {
+            !maintenance
+                .windows
+                .iter()
+                .any(|w| note.starts_with(&format!("endpoint:{}:", w.service)))
+        })
         .collect();
     if !metric_values.is_empty() {
         text.push_str("Metric values: ");
@@ -258,7 +292,7 @@ pub fn send_if_due(
         "transition_id": stable_event_id,
         "route_reference": route,
         "destination_identity": format!("{label}:{route}"),
-        "summary": summary(&config.site, state, rules, inputs, &config.suspensions, now),
+        "summary": summary_with_maintenance(&config.site, state, rules, inputs, &config.suspensions, now, &crate::maintenance::read(config, now)),
         "inspection_reference": truncate(&inspection_reference, 1024),
         "response_class": "attention",
     });

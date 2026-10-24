@@ -66,6 +66,16 @@ class MonitoredTest(unittest.TestCase):
             entries.append(dict(binding, path=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
         (self.root / 'receipts/index.json').write_text(json.dumps({'schema': 'constellation.monitored_receipts/v1', 'receipts': entries}))
 
+    def test_maintenance_badge_preserves_observed_verdict(self):
+        self.edit('report.json', lambda d: d.update(maintenance={'windows': [{'service': 'web', 'until': '2026-10-22T23:00:00Z', 'reason': 'upgrade'}], 'error': None}))
+        row = self.service()
+        self.assertIn('UNDER MAINTENANCE', row['verdict'])
+        self.assertIn('observed: DEGRADED', row['verdict'])
+        self.assertIn('notifications suppressed', row['route'])
+        self.assertIn('UNDER MAINTENANCE', m.render(self.build()))
+        self.edit('report.json', lambda d: d.update(maintenance={'windows': [], 'error': None}))
+        self.assertEqual(self.service()['verdict'], 'DEGRADED')
+
     def test_attention_delivery_failure_is_named_without_changing_conditions(self):
         for code, exit_class in [(4, 'delivery_failed'), (4, 'delivery_partial'), (4, 'intent_log_unwritable'), (3, 'input_error')]:
             with self.subTest(exit_class=exit_class):

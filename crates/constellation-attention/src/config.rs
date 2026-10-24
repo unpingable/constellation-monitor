@@ -250,6 +250,8 @@ const fn default_estate_age() -> i64 {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MetricAlertsInput {
+    #[serde(default)]
+    pub retired_targets: Vec<String>,
     /// Input label (`evaluator-input-unavailable` target prefix).
     #[serde(default = "default_metric_alerts_label")]
     pub label: String,
@@ -601,6 +603,13 @@ impl Config {
                 ));
             }
             age("inputs.metric_alerts.warming_bound", input.warming_bound)?;
+            let mut retired = BTreeSet::new();
+            for target in &input.retired_targets {
+                validate_token("inputs.metric_alerts.retired_targets", target, 48)?;
+                if !retired.insert(target) {
+                    return Err("duplicate metric retired target".into());
+                }
+            }
             if let Some(sites) = &input.sites {
                 if sites.is_empty() || sites.len() > METRIC_ALERTS_MAX_SITES {
                     return Err(format!(

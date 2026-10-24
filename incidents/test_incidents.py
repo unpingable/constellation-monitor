@@ -429,3 +429,22 @@ def test_handover_never_overwrites_an_incident_the_new_host_already_has():
     inc.sync(b, report("present", True), {}, None, RULES, T0 + 5)
     adopted, skipped = inc.import_unresolved(b, inc.export_unresolved(a, "host-a", T0 + 10), "host-b", T0 + 20)
     assert adopted == [] and "already exists here" in skipped[0][1]
+
+
+def test_maintenance_is_visible_but_recovery_and_needs_operator_are_independent(store):
+    window = dict(started_at=inc.iso(T0), until=inc.iso(T0 + 1800), reason="upgrade", by="operator")
+    current = report("present", True)
+    current["conditions"][0]["maintenance"] = window
+    for offset in [0, 60]:
+        inc.sync(store, current, {}, None, RULES, T0 + offset)
+    live = store.incidents()[0]
+    assert live["needs_operator"]
+    assert kinds(store, live["id"]).count("maintenance") == 1
+    assert "Open — notifications suppressed" in inc.list_view(store, now=T0 + 60)
+    recovered = report("clear", False)
+    recovered["conditions"][0]["maintenance"] = window
+    inc.sync(store, recovered, {}, None, RULES, T0 + 120)
+    assert store.current(KEY)["state"] == "recovering"
+    assert store.current(KEY)["needs_operator"] is None
+    inc.sync(store, report("clear", False), {}, None, RULES, T0 + 180)
+    assert "notifications suppressed" not in inc.list_view(store, now=T0 + 180)

@@ -224,3 +224,23 @@ def test_check_targets_refuses_only_the_site_that_overflows(tmp_path, capsys):
 def test_check_targets_needs_the_declared_policy():
     with pytest.raises(SystemExit):
         m.main(["--check-targets"])
+
+
+def test_endpoint_targets_use_static_service_labels_and_refuse_duplicates():
+    labels = dict(attention="true", constellation_service="bar", site="example", probe="http")
+    policy = {"groups": [{"name": "probes", "rules": [{"name": "UnrelatedName", "labels": labels}]}]}
+    row = m.check_targets(policy, ["example"])[0]
+    assert row["admitted"] and row["targets"] == ["bar"]
+    policy["groups"][0]["rules"].append({"name": "OtherName", "labels": labels.copy()})
+    assert all(not r["admitted"] and not r["targets"] for r in m.check_targets(policy, ["example"]))
+    policy["groups"][0]["rules"][1]["labels"]["probe"] = "tcp"
+    assert all(r["admitted"] for r in m.check_targets(policy, ["example"]))
+
+
+@pytest.mark.parametrize("field,value", [("constellation_service", "1234"), ("site", "foreign"), ("probe", "icmp"), ("instance", "some-host")])
+def test_endpoint_target_invalid_subject_never_falls_back(field, value):
+    labels = dict(attention="true", constellation_service="bar", site="example", probe="http")
+    labels[field] = value
+    policy = {"groups": [{"rules": [{"name": "ValidLegacyName", "labels": labels}]}]}
+    row = m.check_targets(policy, ["example"])[0]
+    assert not row["admitted"] and not row["targets"]

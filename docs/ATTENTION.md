@@ -1550,3 +1550,119 @@ These are operator acceptance items.
   `state`: NQ reports `healthy` for both instance and evaluation components
   while a unit is down. It cannot tell failed from inactive or not-found.
 - Docket and AG inputs are not deployed; their rules stay disabled.
+
+## Service maintenance
+
+Maintenance is a bounded delivery policy, not a health assertion. Observation,
+condition transitions, incident history, remediation policy and page deferral
+continue normally. It does not write suspensions, declare estate PAUSED, disable
+rules or revoke watchers. Reports expose active windows in `maintenance.windows`,
+and each owned condition carries `maintenance` including its start, deadline,
+reason and operator. The monitored page says **UNDER MAINTENANCE**, retaining the
+observed verdict.
+
+Run the maintenance CLI **as `nq`**, the same account as the evaluator. Its atomic
+0600 sidecar must be readable by that evaluator; do not run it as root and leave
+a root-owned file. The site controller resolves declared service/unit ownership
+and invokes this CLI using `runuser -u nq`. Direct operators must verify the
+service declaration and that its unit is not shared with another service.
+
+```sh
+runuser -u nq -- constellation-attention maintenance start \
+  --config /etc/constellation-attention/attention.toml \
+  --service bar --unit bar.service --until 2026-10-25T02:00:00Z \
+  --reason 'database upgrade' --by operator
+runuser -u nq -- constellation-attention maintenance list \
+  --config /etc/constellation-attention/attention.toml
+runuser -u nq -- constellation-attention maintenance end \
+  --config /etc/constellation-attention/attention.toml --service bar \
+  --reason 'upgrade complete'
+```
+
+`start` requires a future absolute RFC3339 deadline at most 24 hours away, a
+1–300-byte reason and an operator name. An active window can only be replaced
+with explicit `start --replace`; replacement is audited. This is also how longer
+work is extended. `--unit` may be repeated. There are at most 64 windows and the
+file is bounded to 64 KiB. `end` is idempotent. `list` shows windows active at the
+current clock time and marks configured retired services `(not declared)`.
+The existing backward-clock guard applies; `reset-clock`
+remains the explicit correction procedure.
+
+The CLI holds the evaluator's existing state lock (waiting at most 30 seconds),
+prunes expired windows on write, and atomically writes `maintenance.json` beside
+`state.json`. Only this CLI writes the sidecar; evaluation reads it. Operations
+are logged in `maintenance.jsonl`, rotated at 1 MiB with one predecessor. The
+released state schema is unchanged. A missing file means no windows. A corrupt,
+oversized, wrong-site or unreadable file means **no suppression**, with a stderr
+error and `report.maintenance.error`. Repair the file as nq; do not assume a broken
+maintenance file mutes anything.
+
+A window covers only component `service`, on this site:
+
+- `service-not-doing-its-job:<service>` and `service-endpoint-unavailable:<service>`;
+- `service-down:<unit>` for the exact units recorded in the window.
+
+New triggers, deferred pages, refresh triggers and trigger retries are withheld.
+Recovery resolves are sent only on roles with an earlier trigger; an entirely
+withheld outage produces no orphan resolve. A condition still active after
+expiry or early end gets its owed trigger on the next pass, bound to the original
+transition. This includes recovery followed by another failure during the window.
+A window is active exactly when `started_at <= now < until`; reboot does not
+extend it. A re-added service with the same name inherits the remainder of its
+window. A retired service's window is harmless until expiry.
+
+Maintenance guarantees only that Constellation sends nothing new for covered
+conditions. **Provider escalation continues for already accepted pages**;
+`start` lists them and directs the operator to acknowledge them in the provider.
+Truthful recovery resolves can still stop those pages. A pass already holding
+the lock when start is issued may send before the command completes.
+
+The daily digest omits covered faults and includes one neutral
+`Maintenance: <service> until <time> (<by>)` segment. A previously pending digest
+is not rebuilt. Start and end do not themselves send notifications.
+
+Not covered: site-wide service metric thresholds (`ServiceLastSuccessNeedsAttention`,
+`ServiceCursorLagNeedsAttention`, `ServiceOutputNeedsAttention`,
+`ServiceStoreSizeNeedsAttention`, `ServiceWalGrowthNeedsAttention`,
+`ServiceBackupNeedsAttention`, `ServiceMetricsObservation`); shared input faults,
+`ProbeExporterDown`, `remediation-journal-critical`, host posture, saved checks,
+Nightshift, Docket and AG; manual NQ submit/resubmit and other producers; recurring,
+group and dependency-cascading maintenance. Muting a shared aggregate could hide
+another service's failure, so those notifications remain enabled.
+
+## service-endpoint-unavailable
+
+A declared service's loopback endpoint probe reports an observed failure (code 1).
+The condition is `constellation:<site>:service:service-endpoint-unavailable:<service>`:
+one service endpoint incident, folded across TCP, HTTP and TLS modes. It is a
+notice, with 60 seconds attention persistence after vmalert's own hold, and cannot
+be configured as a page. Inspect the failing modes, endpoint URL and rule value
+codes in the report reference before acting.
+
+Opted-in metric rules identify obligations through static `constellation_service`,
+`site` and `probe` labels. Service tokens must pass the 48-byte condition-token
+validation, site must match the configured site, and probe must be tcp/http/tls.
+Additional subject labels and duplicate (service, probe) definitions are refused
+and named through the input's admission fault; there is no legacy-key fallback.
+Condition identity never comes from the truncated instance detail. References
+retain each mode's observation and value-code counts. Any Present mode makes the
+endpoint Present; otherwise any Unknown mode makes it Unknown; otherwise Clear.
+A refused sibling cannot establish recovery through a clear mode.
+
+Codes 2–5 remain Unknown, preserving open conditions and never opening a new
+endpoint condition. Indeterminate rules share the existing single input fault.
+The separately generated `ProbeExporterDown` rule uses the legacy host-posture
+adapter; infrastructure failure is not N service outages.
+
+For one-shot migration, `inputs.metric_alerts.retired_targets` lists unique exact
+legacy `metric-alert-firing` targets (48-byte validated tokens). Removed aggregate
+rules resolve as **no longer evaluated**; incidents stay open with **recovery not
+observed**. Estate `retired_services` also retires endpoint conditions from the
+metric input. A still-failing service can then open its correctly attributed
+endpoint condition. Current observations take precedence over retirement hints.
+
+Build capabilities are `service_maintenance_v1` and `service_endpoint_conditions_v1`.
+Rollback must restore the older aggregate rules/config without `retired_targets`.
+The older evaluator reads the unchanged state schema, removes unknown endpoint
+conditions without claiming recovery, and ignores maintenance.json, so delivery
+resumes. It does not send endpoint-rule recovery intents it cannot render.

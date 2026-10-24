@@ -2226,13 +2226,14 @@ fn rules_lists_the_closed_registry() {
             "sqlite-health",
             "service-not-doing-its-job",
             "remediation-journal-critical",
+            "service-endpoint-unavailable",
             "metric-alert-firing",
             "evaluator-input-unavailable",
             "docket-unsettled",
             "ag-executor-unavailable",
         ]
     );
-    assert_eq!(value["rules"][12]["disabled"], "input not deployed");
+    assert_eq!(value["rules"][13]["disabled"], "input not deployed");
 }
 
 #[test]
@@ -9869,4 +9870,733 @@ fn readding_page_role_finishes_pending_cleanup_before_retriggering() {
     assert_eq!(report["exit_code"], 0);
     assert!(report["intents"].as_array().unwrap().is_empty());
     assert_eq!(harness.calls().len(), 4);
+}
+
+// Maintenance changes delivery alone; each pass below is a fresh process.
+const BAR: &str = "constellation:labelwatch:service:service-not-doing-its-job:bar";
+fn maintenance(h: &Harness, start: i64, until: i64) {
+    let config = constellation_attention::config::Config::load(&h.config_path()).unwrap();
+    constellation_attention::maintenance::command(
+        &config,
+        "start",
+        Some(constellation_attention::maintenance::Window {
+            service: "bar".into(),
+            units: vec!["bar.service".into()],
+            started_at: rfc3339(start),
+            until: rfc3339(until),
+            reason: "upgrade".into(),
+            by: "operator".into(),
+        }),
+        Some("bar"),
+        None,
+        false,
+        start,
+    )
+    .unwrap();
+}
+fn service_pass(h: &Harness, at: i64, bar: &str) -> Value {
+    write_estate(
+        h,
+        at,
+        &[("bar", bar, "fixture"), ("baz", "DEGRADED", "fixture")],
+    );
+    h.evaluate(at)
+}
+fn bar_intents(report: &Value) -> Vec<(String, String, String)> {
+    intents(report)
+        .into_iter()
+        .filter(|(id, _, _)| id == BAR)
+        .collect()
+}
+#[test]
+fn maintenance_defers_only_owned_triggers_and_preserves_observation() {
+    let h = estate_harness();
+    let control = estate_harness();
+    maintenance(&h, T0, T0 + 1200);
+    for offset in [0, 660, 900] {
+        let report = service_pass(&h, T0 + offset, "DEGRADED");
+        let baseline = service_pass(&control, T0 + offset, "DEGRADED");
+        assert!(bar_intents(&report).is_empty());
+        assert!(condition(&report, BAR).unwrap()["maintenance"].is_object());
+        if offset == 660 {
+            assert_eq!(intents(&report).len(), 1, "baz still submits");
+        }
+        let mut a = h.state()["conditions"][BAR].clone();
+        let mut b = control.state()["conditions"][BAR].clone();
+        a.as_object_mut().unwrap().remove("last_intent");
+        b.as_object_mut().unwrap().remove("last_intent");
+        assert_eq!(a, b);
+        for field in [
+            "observation",
+            "active",
+            "first_seen",
+            "response_policy",
+            "page_deferred",
+            "remediation_window_until",
+        ] {
+            assert_eq!(
+                condition(&report, BAR).unwrap()[field],
+                condition(&baseline, BAR).unwrap()[field]
+            );
+        }
+    }
+    let original = h.state()["conditions"][BAR]["transition_at"]
+        .as_i64()
+        .unwrap();
+    let report = service_pass(&h, T0 + 1200, "DEGRADED");
+    assert_eq!(bar_intents(&report).len(), 1);
+    let intent = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == BAR)
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&h.submitted_intent(intent["notification_id"].as_str().unwrap()))
+            .unwrap();
+    let key = constellation_attention::condition::ConditionKey::new(
+        "labelwatch",
+        "service",
+        "service-not-doing-its-job",
+        Some("bar"),
+    )
+    .unwrap();
+    assert_eq!(
+        body["transition_id"],
+        constellation_attention::intent::event_id(
+            &key,
+            constellation_attention::intent::Action::Trigger,
+            original
+        )
+    );
+    assert!(bar_intents(&service_pass(&h, T0 + 1300, "DEGRADED")).is_empty());
+}
+#[test]
+fn maintenance_withheld_trigger_never_produces_orphan_resolve() {
+    let h = estate_harness();
+    maintenance(&h, T0, T0 + 1600);
+    for (offset, verdict) in [
+        (0, "DEGRADED"),
+        (660, "DEGRADED"),
+        (720, "OK"),
+        (1000, "OK"),
+        (1600, "OK"),
+    ] {
+        assert!(bar_intents(&service_pass(&h, T0 + offset, verdict)).is_empty());
+    }
+}
+#[test]
+fn maintenance_recovery_then_recurrence_owes_one_trigger_and_refresh_is_inert_without_it() {
+    for gated in [false, true] {
+        let h = estate_harness();
+        service_pass(&h, T0, "DEGRADED");
+        assert_eq!(
+            bar_intents(&service_pass(&h, T0 + 660, "DEGRADED")).len(),
+            1
+        );
+        if gated {
+            maintenance(&h, T0 + 700, T0 + 2400);
+        }
+        service_pass(&h, T0 + 720, "OK");
+        let resolved = service_pass(&h, T0 + 1000, "OK");
+        assert_eq!(bar_intents(&resolved)[0].2, "resolve");
+        service_pass(&h, T0 + 1100, "DEGRADED");
+        let recurrence = service_pass(&h, T0 + 1760, "DEGRADED");
+        assert_eq!(bar_intents(&recurrence).len(), usize::from(!gated));
+        assert!(bar_intents(&service_pass(&h, T0 + 2000, "DEGRADED")).is_empty());
+        assert_eq!(
+            bar_intents(&service_pass(&h, T0 + 2400, "DEGRADED")).len(),
+            usize::from(gated)
+        );
+        assert!(bar_intents(&service_pass(&h, T0 + 2500, "DEGRADED")).is_empty());
+    }
+}
+#[test]
+fn maintenance_end_is_immediate_and_corruption_over_notifies() {
+    for corrupt in [false, true] {
+        let h = estate_harness();
+        maintenance(&h, T0, T0 + 2000);
+        service_pass(&h, T0, "DEGRADED");
+        service_pass(&h, T0 + 660, "DEGRADED");
+        if corrupt {
+            fs::write(h.path("state/maintenance.json"), b"broken").unwrap();
+        } else {
+            let config = constellation_attention::config::Config::load(&h.config_path()).unwrap();
+            constellation_attention::maintenance::command(
+                &config,
+                "end",
+                None,
+                Some("bar"),
+                Some("done"),
+                false,
+                T0 + 700,
+            )
+            .unwrap();
+        }
+        let report = service_pass(&h, T0 + 720, "DEGRADED");
+        assert_eq!(bar_intents(&report).len(), 1);
+        assert_eq!(report["maintenance"]["error"].is_string(), corrupt);
+    }
+}
+#[test]
+fn maintenance_digest_omits_fault_and_names_window() {
+    let mut h = estate_harness();
+    h.raw("[digest]\nat_utc = \"12:10\"\n");
+    maintenance(&h, T0, T0 + 2000);
+    service_pass(&h, T0, "DEGRADED");
+    service_pass(&h, T0 + 660, "DEGRADED");
+    let body: Value =
+        serde_json::from_slice(&fs::read(h.path("state/digest-intent.json")).unwrap()).unwrap();
+    let summary = body["summary"].as_str().unwrap();
+    assert!(summary.contains("Maintenance: bar until"), "{summary}");
+    assert!(
+        !summary.contains("service-not-doing-its-job/bar"),
+        "{summary}"
+    );
+    assert!(
+        summary.contains("service-not-doing-its-job/baz"),
+        "{summary}"
+    );
+}
+
+fn endpoint_id(service: &str) -> String {
+    format!("constellation:labelwatch:service:service-endpoint-unavailable:{service}")
+}
+fn write_endpoints(h: &Harness, at: i64, parts: &[(&str, &str, &str)], edit: impl Fn(&mut Value)) {
+    write_metric_alerts(h, at, |doc| {
+        value_code_rows(doc, "firing", &["1"]);
+        let template = doc["rules"][0].clone();
+        let rules: Vec<_> = parts.iter().enumerate().map(|(i, (service, mode, code))| {
+            let mut r = template.clone();
+            r["name"] = json!(format!("DeliberatelyUnrelatedName{i}"));
+            r["labels"] = json!({"attention":"true", "constellation_value_codes":"v1", "constellation_service": service, "probe": mode, "site":"labelwatch"});
+            r["instances"] = json!([]); // identity never comes from this sample
+            if *code == "clear" {
+                r["state"] = json!("inactive"); r["value_code_counts"] = json!([]); r["instance_count"] = json!(0);
+            } else { r["value_code_counts"][0]["value"] = json!(code); }
+            r
+        }).collect();
+        doc["rules"] = json!(rules);
+        edit(doc);
+    });
+}
+#[test]
+fn endpoint_static_identity_folds_present_unknown_clear_and_isolates_services() {
+    let mut h = metric_alerts_harness();
+    h.raw("warmup_grace = 0\n");
+    for (offset, a, b, expected) in [
+        (0, "1", "2", "present"),
+        (90, "1", "2", "present"),
+        (150, "clear", "2", "unknown"),
+        (180, "clear", "clear", "clear"),
+    ] {
+        write_endpoints(
+            &h,
+            T0 + offset,
+            &[
+                ("bar", "http", a),
+                ("bar", "tcp", b),
+                ("baz", "http", "clear"),
+            ],
+            |_| {},
+        );
+        let report = h.evaluate(T0 + offset);
+        assert_eq!(
+            condition(&report, &endpoint_id("bar")).unwrap()["observation"],
+            expected
+        );
+        assert_eq!(
+            condition(&report, &endpoint_id("baz")).unwrap()["observation"],
+            "clear"
+        );
+        assert!(alert_intents(&report).is_empty());
+        if offset == 90 {
+            assert!(
+                intents(&report)
+                    .iter()
+                    .any(|(id, _, _)| id == &endpoint_id("bar"))
+            );
+        }
+    }
+}
+#[test]
+fn endpoint_exporter_loss_is_unknown_with_one_indeterminate_fault() {
+    let mut h = metric_alerts_harness();
+    h.raw("warmup_grace = 0\n");
+    write_endpoints(
+        &h,
+        T0,
+        &[
+            ("bar", "http", "2"),
+            ("bar", "tcp", "2"),
+            ("baz", "http", "2"),
+        ],
+        |_| {},
+    );
+    let report = h.evaluate(T0);
+    for service in ["bar", "baz"] {
+        assert_eq!(
+            condition(&report, &endpoint_id(service)).unwrap()["observation"],
+            "unknown"
+        );
+    }
+    let faults: Vec<_> = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["observation"] == "present")
+        .collect();
+    assert_eq!(faults.len(), 1, "{report}");
+    assert!(
+        faults[0]["id"]
+            .as_str()
+            .unwrap()
+            .ends_with("metric_alerts.indeterminate")
+    );
+}
+#[test]
+fn endpoint_duplicate_and_invalid_subjects_are_refused_without_legacy_fallback() {
+    for invalid in ["duplicate", "site", "service", "subject", "probe"] {
+        let h = metric_alerts_harness();
+        write_endpoints(&h, T0, &[("bar", "http", "1")], |doc| {
+            if invalid == "duplicate" {
+                let r = doc["rules"][0].clone();
+                doc["rules"].as_array_mut().unwrap().push(r);
+            } else {
+                let key = match invalid {
+                    "site" => "site",
+                    "service" => "constellation_service",
+                    "subject" => "instance",
+                    _ => "probe",
+                };
+                doc["rules"][0]["labels"][key] = json!("12345");
+            }
+        });
+        let report = h.evaluate(T0);
+        assert!(
+            !metric_input(&report)["rejected_rules"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{invalid}: {report}"
+        );
+        assert!(condition(&report, &endpoint_id("bar")).is_none());
+        assert!(alert_intents(&report).is_empty());
+    }
+}
+#[test]
+fn endpoint_and_legacy_retirement_resolve_without_claiming_recovery() {
+    let mut h = metric_alerts_harness();
+    for offset in [0, 90] {
+        write_metric_alerts(&h, T0 + offset, |_| {});
+        h.evaluate(T0 + offset);
+    }
+    h.raw("retired_targets = [\"host-swap-exhausted\"]\n");
+    write_endpoints(&h, T0 + 150, &[("bar", "http", "1")], |_| {});
+    let report = h.evaluate(T0 + 150);
+    assert_eq!(condition(&report, SWAP).unwrap()["observation"], "removed");
+    assert!(
+        intents(&report)
+            .iter()
+            .any(|(id, _, action)| id == SWAP && action == "resolve")
+    );
+    write_endpoints(&h, T0 + 240, &[("bar", "http", "1")], |_| {});
+    h.evaluate(T0 + 240);
+    let path = h.path("estate.json");
+    h.raw(&format!(
+        "[inputs.estate]\npath = {:?}\nretired_services = [\"bar\"]\n",
+        path
+    ));
+    write_estate(&h, T0 + 300, &[("baz", "OK", "fine")]);
+    write_endpoints(&h, T0 + 300, &[("baz", "http", "clear")], |_| {});
+    let report = h.evaluate(T0 + 300);
+    assert_eq!(
+        condition(&report, &endpoint_id("bar")).unwrap()["observation"],
+        "removed"
+    );
+    assert!(
+        intents(&report)
+            .iter()
+            .any(|(id, _, action)| id == &endpoint_id("bar") && action == "resolve")
+    );
+}
+
+#[test]
+fn maintenance_holds_failed_delivery_custody_and_resumes_retry() {
+    let h = estate_harness();
+    service_pass(&h, T0, "DEGRADED");
+    h.fake("next_state", "failed");
+    service_pass(&h, T0 + 660, "DEGRADED");
+    let prior = h.state()["conditions"][BAR]["last_intent"].clone();
+    maintenance(&h, T0 + 700, T0 + 3000);
+    h.fake("next_state", "accepted");
+    assert!(bar_intents(&service_pass(&h, T0 + 2400, "DEGRADED")).is_empty());
+    assert_eq!(h.state()["conditions"][BAR]["last_intent"], prior);
+    assert_eq!(
+        bar_intents(&service_pass(&h, T0 + 3000, "DEGRADED")).len(),
+        1
+    );
+    assert!(bar_intents(&service_pass(&h, T0 + 3100, "DEGRADED")).is_empty());
+}
+#[test]
+fn maintenance_recovery_does_not_submit_previously_unretained_trigger() {
+    let h = estate_harness();
+    service_pass(&h, T0, "DEGRADED");
+    h.fake("command_error", "notification submit");
+    service_pass(&h, T0 + 660, "DEGRADED");
+    maintenance(&h, T0 + 700, T0 + 3000);
+    fs::remove_file(h.path("fake/command_error")).unwrap();
+    service_pass(&h, T0 + 720, "OK");
+    let report = service_pass(&h, T0 + 1000, "OK");
+    assert!(
+        bar_intents(&report)
+            .iter()
+            .all(|(_, _, action)| action == "resolve")
+    );
+    assert!(bar_intents(&service_pass(&h, T0 + 3000, "OK")).is_empty());
+}
+#[test]
+fn endpoint_refused_sibling_does_not_establish_recovery() {
+    let h = metric_alerts_harness();
+    for offset in [0, 90, 150] {
+        write_endpoints(
+            &h,
+            T0 + offset,
+            &[
+                ("bar", "http", if offset == 150 { "clear" } else { "1" }),
+                ("bar", "tcp", "clear"),
+            ],
+            |doc| {
+                if offset == 150 {
+                    doc["rules"][1]["labels"]["site"] = json!("foreign");
+                }
+            },
+        );
+        let report = h.evaluate(T0 + offset);
+        if offset == 150 {
+            assert_eq!(
+                condition(&report, &endpoint_id("bar")).unwrap()["observation"],
+                "unknown"
+            );
+        }
+    }
+}
+
+/// Build the frozen base separately; run with ATTENTION_ROLLBACK_BINARY pointing
+/// to that executable. No live host, daemon, or credentials are involved.
+#[test]
+#[ignore = "requires the frozen 6e24b06 evaluator binary"]
+fn rollback_to_beta2_reads_state_retires_endpoint_and_ignores_maintenance() {
+    let old = std::env::var("ATTENTION_ROLLBACK_BINARY").expect("set frozen evaluator path");
+    let mut h = metric_alerts_harness();
+    for offset in [0, 90] {
+        write_metric_alerts(&h, T0 + offset, |_| {});
+        h.evaluate(T0 + offset);
+    }
+    h.raw("retired_targets = [\"host-swap-exhausted\"]\n");
+    for offset in [150, 240] {
+        write_endpoints(&h, T0 + offset, &[("bar", "http", "1")], |_| {});
+        h.evaluate(T0 + offset);
+    }
+    maintenance(&h, T0 + 250, T0 + 3000);
+    let sidecar = fs::read(h.path("state/maintenance.json")).unwrap();
+    h.extra_config = h
+        .extra_config
+        .replace("retired_targets = [\"host-swap-exhausted\"]\n", "");
+    let estate = h.path("estate.json");
+    h.raw(&format!("[inputs.estate]\npath = {:?}\n", estate));
+    for offset in [300, 390, 960] {
+        write_metric_alerts(&h, T0 + offset, |_| {});
+        write_estate(&h, T0 + offset, &[("bar", "DEGRADED", "still failing")]);
+        let output = Command::new(&old)
+            .args([
+                "evaluate",
+                "--config",
+                h.config_path().to_str().unwrap(),
+                "--now",
+                &rfc3339(T0 + offset),
+            ])
+            .env("FAKE_NQ_DIR", h.path("fake"))
+            .output()
+            .unwrap();
+        assert!(
+            matches!(output.status.code(), Some(0 | 3 | 4)),
+            "{output:?}"
+        );
+        let report = h.report();
+        if offset == 300 {
+            let endpoint = condition(&report, &endpoint_id("bar")).unwrap();
+            assert_eq!(endpoint["observation"], "removed");
+            assert_eq!(endpoint["active"], false);
+            assert_eq!(endpoint["transition"], "resolve");
+            assert!(
+                endpoint["note"]
+                    .as_str()
+                    .unwrap()
+                    .contains("rule disabled or its input kind not configured")
+            );
+        }
+        assert_eq!(condition(&report, SWAP).unwrap()["observation"], "present");
+        if offset == 960 {
+            assert_eq!(
+                bar_intents(&report).len(),
+                1,
+                "older evaluator resumes notifications"
+            );
+        }
+    }
+    assert_eq!(fs::read(h.path("state/maintenance.json")).unwrap(), sidecar);
+}
+
+fn cron_maintenance(h: &Harness, now: i64, until: i64) -> Value {
+    let config = constellation_attention::config::Config::load(&h.config_path()).unwrap();
+    constellation_attention::maintenance::command(
+        &config,
+        "start",
+        Some(constellation_attention::maintenance::Window {
+            service: "bar".into(),
+            units: vec!["cron.service".into()],
+            started_at: rfc3339(now),
+            until: rfc3339(until),
+            reason: "upgrade".into(),
+            by: "operator".into(),
+        }),
+        Some("bar"),
+        None,
+        false,
+        now,
+    )
+    .unwrap()
+}
+#[test]
+fn maintenance_lists_accepted_pages_and_holds_provider_resubmits() {
+    let (h, status) = nq_status_harness();
+    let t = trigger_cron(&h, &status) + 3;
+    let result = cron_maintenance(&h, t, t + 600);
+    assert_eq!(result["accepted_pages"], json!([CRON]));
+    assert!(
+        result["provider_warning"]
+            .as_str()
+            .unwrap()
+            .contains("provider escalation continues")
+    );
+    let prior = h.state()["conditions"][CRON]["last_intent"].clone();
+    write_status(&status, &retimed("cron-down.json", t + 200, |_| {}));
+    let report = h.evaluate(t + 200);
+    assert!(intents(&report).is_empty());
+    assert_eq!(h.state()["conditions"][CRON]["last_intent"], prior);
+    for offset in [210, 400] {
+        write_status(
+            &status,
+            &retimed(
+                "cron-down.json",
+                t + offset,
+                cron_state("explicitly_absent"),
+            ),
+        );
+        let report = h.evaluate(t + offset);
+        if offset == 400 {
+            assert_eq!(
+                intents(&report)
+                    .iter()
+                    .filter(|(id, _, a)| id == CRON && a == "resolve")
+                    .count(),
+                2
+            );
+        }
+    }
+}
+#[test]
+fn maintenance_gates_deferred_page_without_changing_remediation_policy() {
+    let (h, status) = remediation_harness(None);
+    let t = at("2026-10-02T21:32:17Z");
+    for offset in [0, 60, 120, 181] {
+        write_status(&status, &retimed("cron-down.json", t + offset, |_| {}));
+        h.evaluate(t + offset + 3);
+    }
+    cron_maintenance(&h, t + 190, t + 500);
+    write_status(&status, &retimed("cron-down.json", t + 240, |_| {}));
+    let report = h.evaluate(t + 243);
+    assert!(intents(&report).is_empty());
+    assert_eq!(
+        cron_row(&report)["response_policy"],
+        "auto_remediate_then_page"
+    );
+    assert_eq!(
+        cron_row(&report)["page_deferred"],
+        false,
+        "observation still advances page decision"
+    );
+    write_status(&status, &retimed("cron-down.json", t + 500, |_| {}));
+    let report = h.evaluate(t + 500);
+    assert_eq!(
+        intents(&report),
+        vec![(CRON.into(), "page".into(), "trigger".into())]
+    );
+}
+#[test]
+fn maintenance_cli_roundtrip_is_locked_bounded_and_keeps_file_private() {
+    let h = estate_harness();
+    let config = h.config_path();
+    let config = config.to_str().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let until = rfc3339(now + 3600);
+    let args = [
+        "maintenance",
+        "start",
+        "--config",
+        config,
+        "--service",
+        "bar",
+        "--unit",
+        "bar.service",
+        "--until",
+        &until,
+        "--reason",
+        "upgrade",
+        "--by",
+        "operator",
+    ];
+    let first = h.command(&args);
+    assert!(first.status.success(), "{first:?}");
+    assert!(!h.command(&args).status.success());
+    let list = h.command(&["maintenance", "list", "--config", config]);
+    let view: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(view["windows"][0]["service"], "bar");
+    assert_eq!(
+        fs::metadata(h.path("state/maintenance.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let end = h.command(&[
+        "maintenance",
+        "end",
+        "--config",
+        config,
+        "--service",
+        "bar",
+        "--reason",
+        "done",
+    ]);
+    assert!(end.status.success());
+    assert!(
+        h.command(&["maintenance", "end", "--config", config, "--service", "bar"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        fs::read_to_string(h.path("state/maintenance.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn refresh_after_resolve_waits_for_known_route_without_maintenance() {
+    let mut h = estate_harness();
+    service_pass(&h, T0, "DEGRADED");
+    service_pass(&h, T0 + 660, "DEGRADED");
+    service_pass(&h, T0 + 720, "OK");
+    service_pass(&h, T0 + 1000, "OK");
+    let mut state = h.state();
+    // Settled inactive conditions may already be pruned. Seed the real saved
+    // active recurrence's latest role with a resolve to model route filtering.
+    service_pass(&h, T0 + 1100, "DEGRADED");
+    service_pass(&h, T0 + 1760, "DEGRADED");
+    state["conditions"][BAR] = h.state()["conditions"][BAR].clone();
+    state["updated_at"] = json!(T0 + 1760);
+    state["conditions"][BAR]["last_intent"]["notice"]["action"] = json!("resolve");
+    fs::write(
+        h.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    h.nq_routes_override = Some(
+        "[[notification_routes]]\nreference = \"pagerduty-ops\"\ntransport = \"pagerduty\"\n"
+            .into(),
+    );
+    let calls = h.calls().len();
+    let unavailable = service_pass(&h, T0 + 1800, "DEGRADED");
+    assert_eq!(
+        bar_intents(&unavailable).len(),
+        1,
+        "owed intent retained as a failed delivery"
+    );
+    assert_eq!(h.calls().len(), calls, "missing route cannot submit");
+    h.nq_routes_override = None;
+    assert_eq!(
+        bar_intents(&service_pass(&h, T0 + 1860, "DEGRADED")).len(),
+        1
+    );
+    assert!(bar_intents(&service_pass(&h, T0 + 2700, "DEGRADED")).is_empty());
+    assert!(bar_intents(&service_pass(&h, T0 + 2800, "DEGRADED")).is_empty());
+}
+
+#[test]
+fn maintenance_never_replays_crash_retained_pending_trigger_after_recovery() {
+    let h = estate_harness();
+    service_pass(&h, T0, "DEGRADED");
+    h.fake("command_error", "fail");
+    service_pass(&h, T0 + 660, "DEGRADED");
+    let trigger = h.state()["conditions"][BAR]["last_intent"]["notice"].clone();
+    service_pass(&h, T0 + 720, "OK");
+    service_pass(&h, T0 + 1000, "OK");
+    let mut state = h.state();
+    state["conditions"][BAR]["pending_trigger"]["notice"] = trigger;
+    fs::write(
+        h.path("state/state.json"),
+        serde_json::to_vec(&state).unwrap(),
+    )
+    .unwrap();
+    maintenance(&h, T0 + 1100, T0 + 3000);
+    fs::remove_file(h.path("fake/command_error")).unwrap();
+    let report = service_pass(&h, T0 + 2000, "OK");
+    assert_eq!(
+        bar_intents(&report),
+        vec![(BAR.into(), "notice".into(), "resolve".into())]
+    );
+    assert!(bar_intents(&service_pass(&h, T0 + 3000, "OK")).is_empty());
+}
+
+#[test]
+fn maintenance_unreadable_oversized_and_foreign_files_report_errors_without_muting() {
+    for broken in ["directory", "oversized", "foreign", "dangling"] {
+        let h = estate_harness();
+        maintenance(&h, T0, T0 + 2000);
+        service_pass(&h, T0, "DEGRADED");
+        let path = h.path("state/maintenance.json");
+        match broken {
+            "directory" => {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            "dangling" => {
+                fs::remove_file(&path).unwrap();
+                std::os::unix::fs::symlink(h.path("missing"), &path).unwrap();
+            }
+            "oversized" => fs::write(&path, vec![b'x'; 65537]).unwrap(),
+            _ => {
+                let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                doc["site"] = json!("foreign");
+                fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+            }
+        }
+        write_estate(&h, T0 + 660, &[("bar", "DEGRADED", "fixture")]);
+        let output = h.evaluate_at(T0 + 660, &[]);
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("notifications are not suppressed")
+        );
+        let report = h.report();
+        assert!(report["maintenance"]["error"].is_string());
+        assert_eq!(report["maintenance"]["windows"], json!([]));
+        assert_eq!(bar_intents(&report).len(), 1, "{broken}");
+    }
 }

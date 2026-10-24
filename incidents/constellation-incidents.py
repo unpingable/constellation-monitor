@@ -368,6 +368,15 @@ def sync(store, report, state, consumer, rules, now, intent_log=()):
         paged_after = verified_fix and any(
             json.loads(e["detail"]).get("role") == "page" and e["at"] >= iso((latest.get("settled_at_unix_ms") or 0) / 1000)
             for e in store.events(inc_id) if e["kind"] == "notified")
+        # Delivery policy is independent of recovery and operator obligations.
+        if c and c.get("maintenance"):
+            m = c["maintenance"]
+            store.event(inc_id, at, "maintenance", {k: m.get(k) for k in ("started_at", "until", "reason", "by")},
+                        dedup="maintenance:%s:%s" % (inc_id, m.get("started_at")))
+        elif c is not None:
+            previous = [e for e in store.events(inc_id) if e["kind"] in ("maintenance", "maintenance-ended")]
+            if previous and previous[-1]["kind"] == "maintenance":
+                store.event(inc_id, at, "maintenance-ended", {"note": "notifications no longer suppressed"})
         # what the evaluator says now
         if c is None:
             if live["state"] == "recovering":
@@ -633,6 +642,15 @@ def summary_line(store, inc):
     return tried
 
 
+def maintenance_display(store, inc, now):
+    events = [e for e in store.events(inc["id"]) if e["kind"] in ("maintenance", "maintenance-ended")]
+    if inc["state"] != "resolved" and events and events[-1]["kind"] == "maintenance":
+        detail = json.loads(events[-1]["detail"])
+        if now < (parse_ts(detail.get("until")) or 0):
+            return "Open — notifications suppressed (maintenance until %s)" % detail["until"]
+    return None
+
+
 def list_view(store, include_recent=True, now=None):
     now = now or time.time()
     meta = store.meta()
@@ -661,6 +679,10 @@ def list_view(store, include_recent=True, now=None):
     for i in others:
         why = {"recovering": "recovering; confirming", "acknowledged": "acknowledged by %s" % i.get("ack_by")}.get(i["state"], "remediation or confirmation in progress")
         out.append("  %-14s %-34s failing since %s  (%s; tried: %s)" % (i["id"], "%s %s" % (i["rule"], i["subject"]), since(i), why, summary_line(store, i)))
+    for i in open_:
+        maintenance = maintenance_display(store, i, now)
+        if maintenance:
+            out.append("  %s  %s" % (i["id"], maintenance))
     if include_recent:
         cutoff = iso(now - 86400)
         recent = [i for i in store.incidents(unresolved_only=False) if i["state"] == "resolved" and (i["resolved_at"] or "") >= cutoff]
@@ -703,6 +725,9 @@ def show_view(store, ref, config=None, now=None):
            "opened %s; last observed %s (%s)%s" % (i["opened_at"], i["last_observed_at"], i["last_observation"],
                                                  "; resolved %s: %s" % (i["resolved_at"], i["resolution"]) if i["resolved_at"] else ""),
            "needs you: %s" % (i["needs_operator"] or "nothing now")]
+    maintenance = maintenance_display(store, i, time.time() if now is None else now)
+    if maintenance:
+        out.append(maintenance)
     links = metric_links(i, config, time.time() if now is None else now)
     out.append("metrics (Grafana):")
     for name, url in links['metric_links'].items():

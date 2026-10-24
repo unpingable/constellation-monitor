@@ -212,7 +212,26 @@ def admit(name, sites=None):
     return out
 
 
-def check_targets(policy, sites=None):
+def admit_endpoint(labels, expected_site):
+    service, probe, site = (labels.get(k) for k in ("constellation_service", "probe", "site"))
+    target = "endpoint:%s:%s" % (service, probe)
+    out = {"target": target, "keyed": [], "rejected": [], "service": service}
+    error = token_error(service) if isinstance(service, str) else "constellation_service must be a string"
+    if not error and (not site or expected_site != site):
+        error = "endpoint site does not match configured site (supply --site or one --key-site)"
+    if not error and probe not in ("tcp", "http", "tls"):
+        error = "probe must be tcp, http or tls"
+    allowed = {"constellation_service", "probe", "site", "attention", "constellation_value_codes", "family", "severity", "area", "runbook"}
+    if not error and set(labels) - allowed:
+        error = "unsupported endpoint labels; no additional subjects allowed"
+    if error:
+        out["rejected"].append((site, target, error))
+    else:
+        out["keyed"].append((site, service))
+    return out
+
+
+def check_targets(policy, sites=None, site=None):
     """Every attention-labelled alerting rule of a declared policy with its admitted targets and refusals, in policy
     order. Rules that share a token are all refused, as the evaluator refuses them.
     Every value-coded rule must expose its evidence code in the summary."""
@@ -221,7 +240,7 @@ def check_targets(policy, sites=None):
         for rule in group.get("rules", []):
             labels = rule.get("labels") or {}
             if labels.get("attention") == "true" or VALUE_CODES_LABEL in labels:
-                verdict = admit(rule.get("name", ""), sites)
+                verdict = admit_endpoint(labels, site or (sites[0] if sites and len(sites) == 1 else None)) if "constellation_service" in labels else admit(rule.get("name", ""), sites)
                 if VALUE_CODES_LABEL in labels and "evidence code=" not in str((rule.get("annotations") or {}).get("summary", "")):
                     verdict["rejected"].append((None, verdict["target"], "value-coded rule summary must contain evidence code="))
                     verdict["summary_invalid"] = True
@@ -290,7 +309,7 @@ def main(argv=None):
             parser.error("--check-targets needs --declared")
         with open(args.declared, "rb") as fh:
             policy = json.loads(fh.read())
-        rows = check_targets(policy, args.key_sites)
+        rows = check_targets(policy, args.key_sites, args.site)
         rejected = [r for r in rows if not r["admitted"]]
         print(json.dumps({"schema": "constellation.metric_alert_admission/v1", "declared_policy_sha256": declared_sha256(args.declared),
                           "sites": args.key_sites, "rules": rows, "rejected": len(rejected)}, indent=1, sort_keys=True))

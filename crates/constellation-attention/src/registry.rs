@@ -196,7 +196,7 @@ pub struct Rule {
 const CARTOGRAPHY: &str = "cartography:architecture/beta-observability/docs/RUNBOOKS.md";
 const MONITOR: &str = "constellation-monitor:docs/ATTENTION.md";
 
-pub const RULES: [Rule; 14] = [
+pub const RULES: [Rule; 15] = [
     Rule {
         id: "host-posture-unknown",
         version: 1,
@@ -405,6 +405,30 @@ pub const RULES: [Rule; 14] = [
         runbook_document: MONITOR,
         operator_response: "Follow the remediation consumer's segment custody procedure (packaging/remediation/README.md, Segment custody and retention): verify each sealed segment against its sidecar and move it out of the state directory, oldest first.",
         condition: "The estate row of service remediation-consumer carries its required concern remediation.journal.generations-critical ABSENT: 15 or more sealed journal segments, one below the consumer's refusal at 16.",
+        disabled: None,
+    },
+    Rule {
+        id: "service-endpoint-unavailable",
+        version: 1,
+        default_class: Class::Notice,
+        page_allowed: false,
+        response_class: ResponseClass::Attention,
+        operator_action: "",
+        escalation_reason: "",
+        response_policy: ResponsePolicy::ObserveOnly,
+        severity: "warning",
+        // The NQ v2 contract's closed component set has no "metrics"; the
+        // alerts this input is for describe the host, and the rule's
+        // reference carries the alert's own labels (area, site, instance).
+        component: Some("service"),
+        input: InputKind::MetricAlerts,
+        threshold_meaning: ThresholdMeaning::Persistence,
+        default_threshold_seconds: 60,
+        fixed_persistence_seconds: 0,
+        runbook_anchor: "service-endpoint-unavailable",
+        runbook_document: MONITOR,
+        operator_response: "Open the alert in vmalert (the rule's `runbook` label names the Cartography RUNBOOKS.md anchor): the notice carries the alert's own summary per instance. A firing metric alert is an observation, not qualified evidence; inspect the host before acting.",
+        condition: "A declared service's loopback endpoint probe reports an observed failure (code 1).",
         disabled: None,
     },
     Rule {
