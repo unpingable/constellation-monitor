@@ -1582,11 +1582,15 @@ runuser -u nq -- constellation-attention maintenance end \
 `start` requires a future absolute RFC3339 deadline at most 24 hours away, a
 1–300-byte reason and an operator name. An active window can only be replaced
 with explicit `start --replace`; replacement is audited. This is also how longer
-work is extended. `--unit` may be repeated. There are at most 64 windows and the
+work is extended. `--unit` accepts at most one unit, the service’s declared unit; repeated values
+are refused. The controller verifies the declaration and refuses shared units. There are at most 64 windows and the
 file is bounded to 64 KiB. `end` is idempotent. `list` shows windows active at the
 current clock time and marks configured retired services `(not declared)`.
 The existing backward-clock guard applies; `reset-clock`
 remains the explicit correction procedure.
+
+`start` and `end` refuse when the invoking user does not own the attention state
+directory; run them as the evaluator user (`nq`) so its private sidecar is readable.
 
 The CLI holds the evaluator's existing state lock (waiting at most 30 seconds),
 prunes expired windows on write, and atomically writes `maintenance.json` beside
@@ -1603,8 +1607,10 @@ A window covers only component `service`, on this site:
 - `service-down:<unit>` for the exact units recorded in the window.
 
 New triggers, deferred pages, refresh triggers and trigger retries are withheld.
-Recovery resolves are sent only on roles with an earlier trigger; an entirely
-withheld outage produces no orphan resolve. A condition still active after
+Recovery resolves are sent only on roles whose earlier trigger outcome was
+`accepted`. Undelivered triggers and their recovery resolves are withheld with a
+non-failure `maintenance_withheld` note ("withheld by maintenance"); they produce
+no dropped-trigger failure or delayed orphan resolve. A condition still active after
 expiry or early end gets its owed trigger on the next pass, bound to the original
 transition. This includes recovery followed by another failure during the window.
 A window is active exactly when `started_at <= now < until`; reboot does not

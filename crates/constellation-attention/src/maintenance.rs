@@ -1,7 +1,7 @@
 //! Bounded service delivery windows. Only the maintenance CLI writes this sidecar.
 use std::collections::BTreeSet;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -37,8 +37,8 @@ pub struct Window {
 impl Window {
     fn validate(&self) -> Result<(), String> {
         validate_token("service", &self.service, 48)?;
-        if self.units.len() > 64 {
-            return Err("too many units".into());
+        if self.units.len() > 1 {
+            return Err("at most one declared unit per maintenance window".into());
         }
         for unit in &self.units {
             validate_token("unit", unit, 48)?;
@@ -135,6 +135,17 @@ pub fn read(config: &Config, now: i64) -> View {
     }
 }
 
+fn require_owner(path: &std::path::Path, uid: u32) -> Result<(), String> {
+    let owner = std::fs::metadata(path).map_err(|e| e.to_string())?.uid();
+    if owner != uid {
+        return Err(format!(
+            "maintenance start|end requires the attention state directory owner (UID {owner}); invoking UID {uid} does not own {}; run as the evaluator user (nq)",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Run as nq, just like the evaluator: atomic files deliberately retain mode 0600.
 pub fn command(
     config: &Config,
@@ -146,6 +157,22 @@ pub fn command(
     now: i64,
 ) -> Result<Value, String> {
     std::fs::create_dir_all(config.state_dir()).map_err(|e| e.to_string())?;
+    if matches!(action, "start" | "end") {
+        // Linux exposes the effective UID without an external command or a
+        // new dependency. Atomic sidecars are private to this identity.
+        let status = std::fs::read_to_string("/proc/self/status").map_err(|e| e.to_string())?;
+        let uid = status
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Uid:")?
+                    .split_whitespace()
+                    .nth(1)?
+                    .parse::<u32>()
+                    .ok()
+            })
+            .ok_or("cannot determine invoking user UID")?;
+        require_owner(&config.state_dir(), uid)?;
+    }
     let start = Instant::now();
     let _lock = loop {
         match crate::engine::lock(config, false) {
@@ -369,6 +396,40 @@ mod tests {
         }
         w.reason = "x".repeat(300);
         assert!(w.validate().is_ok());
+    }
+    #[test]
+    fn rejects_multiple_units_and_foreign_directory_owner() {
+        let mut w = window();
+        w.units.push("baz.service".into());
+        assert!(
+            w.validate()
+                .unwrap_err()
+                .contains("at most one declared unit")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let owner = std::fs::metadata(dir.path()).unwrap().uid();
+        assert!(require_owner(dir.path(), owner).is_ok());
+        let error = require_owner(dir.path(), owner.wrapping_add(1)).unwrap_err();
+        assert!(error.contains("does not own"));
+        assert!(error.contains("run as the evaluator user (nq)"));
+        // Exercise both command entry points against a real foreign-owned
+        // directory when running as the ordinary development account.
+        if std::fs::metadata("/").unwrap().uid() != owner {
+            let foreign = config(std::path::Path::new("/"));
+            for action in ["start", "end"] {
+                let error = command(
+                    &foreign,
+                    action,
+                    Some(window()),
+                    Some("bar"),
+                    None,
+                    false,
+                    1000,
+                )
+                .unwrap_err();
+                assert!(error.contains("does not own"), "{error}");
+            }
+        }
     }
     #[test]
     fn start_replace_end_prune_and_audit() {

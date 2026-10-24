@@ -166,12 +166,6 @@ fn summary_with_maintenance(
         .map(|input| format!("{} ({})", input.label, input.causes.join(", ")))
         .collect();
     let mut text = format!("DIGEST {site} {}: ", day(now));
-    for window in &maintenance.windows {
-        text.push_str(&format!(
-            "Maintenance: {} until {} ({}). ",
-            window.service, window.until, window.by
-        ));
-    }
     let metric_values: Vec<&str> = inputs
         .iter()
         .filter_map(|input| input.identity["value_code_notes"].as_array())
@@ -200,6 +194,12 @@ fn summary_with_maintenance(
                 .collect::<Vec<_>>()
                 .join("; "),
         );
+    }
+    for window in &maintenance.windows {
+        text.push_str(&format!(
+            ". Maintenance: {} until {} ({})",
+            window.service, window.until, window.by
+        ));
     }
     if !suspended.is_empty() {
         text.push_str(". Suspended: ");

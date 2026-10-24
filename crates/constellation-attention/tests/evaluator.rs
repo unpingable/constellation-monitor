@@ -10043,11 +10043,26 @@ fn maintenance_digest_omits_fault_and_names_window() {
     let mut h = estate_harness();
     h.raw("[digest]\nat_utc = \"12:10\"\n");
     maintenance(&h, T0, T0 + 2000);
+    // Enough neutral windows to exceed the cap if placed before faults.
+    let path = h.path("state/maintenance.json");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for i in 0..12 {
+        let mut window = doc["windows"][0].clone();
+        window["service"] = json!(format!("other{i}"));
+        window["units"] = json!([]);
+        doc["windows"].as_array_mut().unwrap().push(window);
+    }
+    fs::write(path, serde_json::to_vec(&doc).unwrap()).unwrap();
     service_pass(&h, T0, "DEGRADED");
     service_pass(&h, T0 + 660, "DEGRADED");
     let body: Value =
         serde_json::from_slice(&fs::read(h.path("state/digest-intent.json")).unwrap()).unwrap();
     let summary = body["summary"].as_str().unwrap();
+    assert!(summary.len() <= 512);
+    assert!(
+        summary.find("service-not-doing-its-job/baz").unwrap()
+            < summary.find("Maintenance:").unwrap()
+    );
     assert!(summary.contains("Maintenance: bar until"), "{summary}");
     assert!(
         !summary.contains("service-not-doing-its-job/bar"),
@@ -10240,20 +10255,60 @@ fn maintenance_holds_failed_delivery_custody_and_resumes_retry() {
 }
 #[test]
 fn maintenance_recovery_does_not_submit_previously_unretained_trigger() {
+    maintenance_recovery_withholds_undelivered("command_error");
+}
+#[test]
+fn maintenance_recovery_does_not_resolve_failed_trigger() {
+    maintenance_recovery_withholds_undelivered("failed");
+}
+fn maintenance_recovery_withholds_undelivered(outcome: &str) {
     let h = estate_harness();
-    service_pass(&h, T0, "DEGRADED");
-    h.fake("command_error", "notification submit");
-    service_pass(&h, T0 + 660, "DEGRADED");
-    maintenance(&h, T0 + 700, T0 + 3000);
-    fs::remove_file(h.path("fake/command_error")).unwrap();
-    service_pass(&h, T0 + 720, "OK");
-    let report = service_pass(&h, T0 + 1000, "OK");
-    assert!(
-        bar_intents(&report)
-            .iter()
-            .all(|(_, _, action)| action == "resolve")
+    let pass = |at, bar| {
+        write_estate(&h, at, &[("bar", bar, "fixture"), ("baz", "OK", "fixture")]);
+        h.evaluate(at)
+    };
+    pass(T0, "DEGRADED");
+    if outcome == "command_error" {
+        h.fake("command_error", "notification submit");
+    } else {
+        h.fake("next_state", "failed");
+    }
+    pass(T0 + 660, "DEGRADED");
+    let last = h.state()["conditions"][BAR]["last_intent"]["notice"].clone();
+    assert_eq!(last["outcome"], outcome);
+    assert_eq!(
+        last["notification_id"].is_null(),
+        outcome == "command_error"
     );
-    assert!(bar_intents(&service_pass(&h, T0 + 3000, "OK")).is_empty());
+    maintenance(&h, T0 + 700, T0 + 3000);
+    if outcome == "command_error" {
+        fs::remove_file(h.path("fake/command_error")).unwrap();
+    } else {
+        h.fake("next_state", "accepted");
+    }
+    let recovering = pass(T0 + 720, "OK");
+    assert_eq!(recovering["exit_code"], 0);
+    assert!(bar_intents(&recovering).is_empty());
+    let calls = h.calls();
+    let report = pass(T0 + 1000, "OK");
+    assert!(bar_intents(&report).is_empty(), "{report}");
+    assert_eq!(report["exit_code"], 0, "{report}");
+    assert!(report["dropped_triggers"].as_array().unwrap().is_empty());
+    assert!(
+        report["maintenance_withheld"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|note| {
+                note["condition_id"] == BAR
+                    && note["note"] == "trigger and resolve withheld by maintenance"
+            })
+    );
+    assert_eq!(h.calls(), calls, "no resolve reaches NQ");
+    let expired = pass(T0 + 3000, "OK");
+    assert!(bar_intents(&expired).is_empty());
+    assert_eq!(expired["exit_code"], 0);
+    assert_eq!(h.calls(), calls, "no delayed orphan after expiry");
 }
 #[test]
 fn endpoint_refused_sibling_does_not_establish_recovery() {
@@ -10460,6 +10515,12 @@ fn maintenance_cli_roundtrip_is_locked_bounded_and_keeps_file_private() {
         "--by",
         "operator",
     ];
+    let mut multiple = args.to_vec();
+    multiple.extend(["--unit", "baz.service"]);
+    let refused = h.command(&multiple);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("at most one declared unit"));
+    assert!(!h.path("state/maintenance.json").exists());
     let first = h.command(&args);
     assert!(first.status.success(), "{first:?}");
     assert!(!h.command(&args).status.success());

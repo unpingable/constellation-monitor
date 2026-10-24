@@ -1560,6 +1560,7 @@ fn evaluate_locked(
     }
     let mut plan: Vec<Planned> = Vec::new();
     let mut superseded: Vec<Value> = Vec::new();
+    let mut maintenance_withheld = Vec::new();
     let notice_route = config.routes.notice_route.clone();
     let mut work: Vec<(String, Action, ResolveReason, bool)> = transitions
         .iter()
@@ -1626,9 +1627,25 @@ fn evaluate_locked(
             }
             Action::Resolve => {
                 for (role, last) in &condition.last_intent {
-                    if !gated || last.action == "trigger" {
+                    if !gated || (last.action == "trigger" && last.outcome == "accepted") {
                         roles.push((role.clone(), last.route.clone()));
                     }
+                }
+                if gated {
+                    // Recovery settles undelivered debt without sending an orphan
+                    // resolve or resurrecting the trigger after maintenance.
+                    condition.last_intent.retain(|role, last| {
+                        let withheld = last.action == "trigger" && last.outcome != "accepted";
+                        if withheld {
+                            maintenance_withheld.push(json!({
+                                "condition_id": id, "route_role": role,
+                                "stable_event_id": last.stable_event_id,
+                                "note": "trigger and resolve withheld by maintenance",
+                            }));
+                            condition.pending_trigger.remove(role);
+                        }
+                        !withheld
+                    });
                 }
                 if roles.is_empty() && !gated {
                     roles.push(("notice".into(), notice_route.clone()));
@@ -1757,6 +1774,13 @@ fn evaluate_locked(
             if last.action == "trigger"
                 && maintenance.covering(&config.site, &snapshot.key).is_some()
             {
+                if last.outcome != "accepted" {
+                    maintenance_withheld.push(json!({
+                        "condition_id": id, "route_role": role,
+                        "stable_event_id": last.stable_event_id,
+                        "note": "trigger withheld by maintenance",
+                    }));
+                }
                 continue;
             }
             if planned.contains(&(id.clone(), role.clone())) {
@@ -2115,22 +2139,26 @@ fn evaluate_locked(
             .conditions
             .iter()
             .flat_map(|(id, condition)| {
+                let gated = maintenance.covering(&config.site, &condition.key).is_some();
                 condition
                     .last_intent
                     .iter()
                     .filter_map(move |(role, last)| {
                         let deliberate = last.outcome == "refused" && !last.network;
-                        (last.outcome != "accepted" && !deliberate).then(|| {
-                            json!({
-                                "condition_id": id,
-                                "route_role": role,
-                                "route": last.route,
-                                "stable_event_id": last.stable_event_id,
-                                "outcome": last.outcome,
-                                "notification_id": last.notification_id,
-                                "attempted_at": format_seconds(last.at),
+                        (last.outcome != "accepted"
+                            && !deliberate
+                            && !(gated && last.action == "trigger"))
+                            .then(|| {
+                                json!({
+                                    "condition_id": id,
+                                    "route_role": role,
+                                    "route": last.route,
+                                    "stable_event_id": last.stable_event_id,
+                                    "outcome": last.outcome,
+                                    "notification_id": last.notification_id,
+                                    "attempted_at": format_seconds(last.at),
+                                })
                             })
-                        })
                     })
             })
             .collect()
@@ -2188,6 +2216,12 @@ fn evaluate_locked(
     }
     for (id, condition) in &state.conditions {
         for (role, last) in &condition.last_intent {
+            if last.action == "trigger"
+                && last.outcome != "accepted"
+                && maintenance.covering(&config.site, &condition.key).is_some()
+            {
+                continue;
+            }
             if delivery_routes.reference(role) == Some(last.route.as_str())
                 && delivery_routes.missing(&last.route)
                 && !options.dry_run
@@ -2369,6 +2403,7 @@ fn evaluate_locked(
         "inputs": read.reports.iter().collect::<Vec<&InputReport>>(),
         "conditions": condition_reports,
         "maintenance": maintenance,
+        "maintenance_withheld": maintenance_withheld,
         "intents": intent_reports,
         "unresolved_deliveries": unresolved,
         "dropped_triggers": dropped_triggers,
