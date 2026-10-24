@@ -81,6 +81,11 @@ pub const ROUTE_NOT_CONFIGURED: &str = "route_not_configured_in_nq";
 
 /// NQ 0.2.6 returns retained refusal details from inspect, not submit.
 pub fn refusal_error(config: &Config, notification_id: &str) -> Option<String> {
+    delivery_error(config, notification_id, "refused")
+}
+
+/// Inspect only the exact retained record and its expected delivery state.
+fn delivery_error(config: &Config, notification_id: &str, outcome: &str) -> Option<String> {
     let output = run_bounded(
         &[
             config.nq.program.display().to_string(),
@@ -102,12 +107,19 @@ pub fn refusal_error(config: &Config, notification_id: &str) -> Option<String> {
     }
     let value: Value = serde_json::from_slice(&output.stdout).ok()?;
     let record = value.as_array()?.iter().find(|record| {
-        record["notification_id"] == notification_id && record["delivery_state"] == "refused"
+        record["notification_id"] == notification_id && record["delivery_state"] == outcome
     })?;
-    refusal_reason(record.pointer("/pagerduty/last_event/detail/reason")?)
+    let detail = record.pointer("/pagerduty/last_event/detail")?;
+    let mut error = reason_error(&detail["reason"], outcome)?;
+    if outcome == "failed"
+        && let Some(status) = detail["http_status"].as_u64()
+    {
+        error.push_str(&format!(" (http {status})"));
+    }
+    Some(error)
 }
 
-fn refusal_reason(value: &Value) -> Option<String> {
+fn reason_error(value: &Value, outcome: &str) -> Option<String> {
     // Only NQ's bounded reason code crosses this boundary, never event detail
     // or provider response bodies. NQ's fixed codes contain no secrets.
     let reason = value.as_str()?;
@@ -116,7 +128,7 @@ fn refusal_reason(value: &Value) -> Option<String> {
         && reason
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte == b'_'))
-    .then(|| format!("refused: {reason}"))
+    .then(|| format!("{outcome}: {reason}"))
 }
 
 #[must_use]
@@ -210,17 +222,23 @@ fn run(config: &Config, tail: Vec<String>, network: bool) -> SubmitOutcome {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_owned();
-    let error = (outcome == "refused").then(|| {
-        value
-            .get("reason")
-            .and_then(refusal_reason)
-            .or_else(|| {
-                notification_id
-                    .as_deref()
-                    .and_then(|id| refusal_error(config, id))
-            })
-            .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into())
-    });
+    let error = match outcome.as_str() {
+        "refused" => Some(
+            value
+                .get("reason")
+                .and_then(|reason| reason_error(reason, "refused"))
+                .or_else(|| {
+                    notification_id
+                        .as_deref()
+                        .and_then(|id| refusal_error(config, id))
+                })
+                .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into()),
+        ),
+        "failed" => notification_id
+            .as_deref()
+            .and_then(|id| delivery_error(config, id, "failed")),
+        _ => None,
+    };
     SubmitOutcome {
         notification_id,
         outcome,

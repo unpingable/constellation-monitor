@@ -1455,7 +1455,7 @@ fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
     harness.host_posture("root");
     harness.fake("next_state", "refused");
     harness.fake("state-operations", "accepted");
-    for offset in [0, 660, 720, 780] {
+    for (offset, inspection_count) in [(0, 0), (660, 1), (720, 2), (780, 3)] {
         set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
         let output = harness.evaluate_at(T0 + offset, &[]);
         if offset == 0 {
@@ -1484,6 +1484,14 @@ fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
             assert_eq!(row["error"], "refused: routing_key_malformed");
             assert!(String::from_utf8_lossy(&output.stderr).contains("routing_key_malformed"));
         }
+        assert_eq!(
+            fs::read_to_string(harness.path("fake/inspections.log"))
+                .unwrap()
+                .lines()
+                .count(),
+            inspection_count,
+            "one inspect per refused submission or retained obligation, without duplication"
+        );
     }
     let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
     assert_eq!(
@@ -1512,6 +1520,132 @@ fn retained_refusal_does_not_guess_a_missing_or_foreign_reason() {
         assert_eq!(
             harness.report()["delivery"]["pagerduty-ops"]["error"],
             "refused: NQ supplied no refusal reason"
+        );
+    }
+}
+
+#[test]
+fn dispatched_key_rejection_preserves_only_reason_and_http_status() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("next_state", "failed");
+    harness.fake("state-operations", "accepted");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    harness.evaluate(T0);
+    for (offset, notification_id) in [(660, "n2"), (780, "n3")] {
+        harness.fake(
+            "inspect_result",
+            &json!([{
+                "notification_id": notification_id,
+                "delivery_state": "failed",
+                "pagerduty": {"last_event": {"detail": {
+                    "reason": "rejected",
+                    "http_status": 400,
+                    "pagerduty_message": "provider_body_must_not_escape",
+                    "pagerduty_errors": ["provider_body_must_not_escape"],
+                    "response_body": "provider_body_must_not_escape",
+                }}},
+            }])
+            .to_string(),
+        );
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(4));
+        let report = harness.report();
+        assert_eq!(report["exit_class"], "delivery_partial");
+        let row = report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["route_role"] == "page")
+            .unwrap();
+        assert_eq!(row["outcome"], "failed");
+        assert_eq!(row["error"], "failed: rejected (http 400)");
+        assert_eq!(report["delivery"]["pagerduty-ops"]["outcome"], "failed");
+        assert_eq!(
+            report["delivery"]["pagerduty-ops"]["error"],
+            "failed: rejected (http 400)"
+        );
+        assert!(
+            report["first_error"]
+                .as_str()
+                .unwrap()
+                .ends_with("failed: rejected (http 400)")
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("failed: rejected (http 400)"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("provider_body_must_not_escape"));
+        assert!(!report.to_string().contains("provider_body_must_not_escape"));
+    }
+    let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+    assert!(!log.contains("provider_body_must_not_escape"));
+    assert_eq!(log.matches("failed: rejected (http 400)").count(), 2);
+    let inspections = fs::read_to_string(harness.path("fake/inspections.log")).unwrap();
+    assert_eq!(
+        inspections.lines().collect::<Vec<_>>(),
+        ["inspect n2", "inspect n3"]
+    );
+    assert!(harness.calls().last().unwrap().starts_with("resubmit "));
+}
+
+#[test]
+fn failed_inspection_validates_identity_reason_and_numeric_status() {
+    let record = json!({
+        "notification_id": "n2",
+        "delivery_state": "failed",
+        "pagerduty": {"last_event": {"detail": {"reason": "rejected", "http_status": 400}}},
+    });
+    let reason_path = "/pagerduty/last_event/detail/reason";
+    let status_path = "/pagerduty/last_event/detail/http_status";
+    for (field, value, expected) in [
+        ("/notification_id", json!("other"), None),
+        ("/delivery_state", json!("refused"), None),
+        (reason_path, json!(""), None),
+        (reason_path, json!("Rejected"), None),
+        (
+            reason_path,
+            json!("rejected\nprovider_body_must_not_escape"),
+            None,
+        ),
+        (reason_path, json!("rejected_400"), None),
+        (reason_path, json!("a".repeat(121)), None),
+        (reason_path, Value::Null, None),
+        (reason_path, json!(42), None),
+        (
+            reason_path,
+            json!("a".repeat(120)),
+            Some(format!("failed: {} (http 400)", "a".repeat(120))),
+        ),
+        (
+            status_path,
+            json!("400 provider_body_must_not_escape"),
+            Some("failed: rejected".into()),
+        ),
+        (status_path, json!(400.5), Some("failed: rejected".into())),
+        (status_path, json!(-400), Some("failed: rejected".into())),
+        (status_path, Value::Null, Some("failed: rejected".into())),
+    ] {
+        let mut harness = Harness::new();
+        harness.host_posture("root");
+        harness.fake("state-pagerduty-ops", "failed");
+        let mut inspection = record.clone();
+        *inspection.pointer_mut(field).unwrap() = value;
+        harness.fake("inspect_result", &json!([inspection]).to_string());
+        for offset in [0, 660] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate(T0 + offset);
+        }
+        let report = harness.report();
+        let row = report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["route_role"] == "page")
+            .unwrap();
+        assert_eq!(row["outcome"], "failed");
+        assert_eq!(row["error"].as_str(), expected.as_deref(), "{field}");
+        assert_eq!(
+            report["delivery"]["pagerduty-ops"]["error"].as_str(),
+            expected.as_deref()
         );
     }
 }
