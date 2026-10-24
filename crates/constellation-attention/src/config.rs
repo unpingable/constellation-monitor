@@ -230,6 +230,9 @@ pub struct Inputs {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EstateInput {
+    /// Exact estate service names deliberately removed from supervision.
+    #[serde(default)]
+    pub retired_services: Vec<String>,
     /// JSON file written by `constellation-estate-collect`.
     pub path: PathBuf,
     /// The document's `generated_at` must be at most this old.
@@ -568,6 +571,18 @@ impl Config {
         if let Some(input) = &self.inputs.estate {
             absolute("inputs.estate.path", &input.path)?;
             age("inputs.estate.max_age_seconds", input.max_age_seconds)?;
+            let mut names = std::collections::BTreeSet::new();
+            for name in &input.retired_services {
+                if name.is_empty()
+                    || name.len() > 48
+                    || !name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                    || !names.insert(name)
+                {
+                    return Err("inputs.estate.retired_services requires unique estate service names (1..=48 lowercase letters, digits or hyphens)".into());
+                }
+            }
         }
         if let Some(input) = &self.inputs.metric_alerts {
             label(&input.label)?;

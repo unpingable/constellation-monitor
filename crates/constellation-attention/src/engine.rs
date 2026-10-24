@@ -1182,7 +1182,7 @@ fn evaluate_locked(
             || observed.contains_key(id)
             || condition.key.rule == INPUT_UNAVAILABLE
             || !current_labels.contains(&condition.input_label)
-            || retired_target(config, condition)
+            || retired_condition(config, condition)
         {
             continue;
         }
@@ -1300,7 +1300,7 @@ fn evaluate_locked(
         let rule = rule_for(&rules, &condition.key.rule);
         let (observation, note) = if let Some(item) = item {
             (item.observation, item.note.clone())
-        } else if retired_target(config, condition) {
+        } else if retired_condition(config, condition) {
             (
                 Observation::Removed,
                 "target retired from supervision by the operator".into(),
@@ -2518,9 +2518,8 @@ fn rejected_note(report: &InputReport) -> String {
         .join("; ")
 }
 
-/// An NQ-status condition whose target the operator listed in
-/// `[inputs.nq_status] retired_targets`.
-fn retired_target(config: &Config, condition: &ConditionState) -> bool {
+/// A condition explicitly retired in its own input configuration.
+fn retired_condition(config: &Config, condition: &ConditionState) -> bool {
     config.inputs.nq_status.as_ref().is_some_and(|input| {
         condition.input_label == input.label
             && condition
@@ -2528,6 +2527,15 @@ fn retired_target(config: &Config, condition: &ConditionState) -> bool {
                 .target_class
                 .as_ref()
                 .is_some_and(|target| input.retired_targets.contains(target))
+    }) || config.inputs.estate.as_ref().is_some_and(|input| {
+        condition.input_label == crate::inputs::ESTATE_LABEL
+            && condition.key.component == "service"
+            && condition.key.rule == "service-not-doing-its-job"
+            && condition
+                .key
+                .target_class
+                .as_ref()
+                .is_some_and(|name| input.retired_services.contains(name))
     })
 }
 

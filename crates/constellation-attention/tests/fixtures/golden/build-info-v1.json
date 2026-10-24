@@ -19,6 +19,7 @@
     "value_codes_v1",
     "reconfiguration_grace",
     "delivery_exit_code",
-    "route_change_reconcile"
+    "route_change_reconcile",
+    "estate_service_retirement"
   ]
 }

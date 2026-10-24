@@ -21,6 +21,32 @@ A deliberate pause is declared in the registry (`"declared": {"state":
 "paused", "since", "reason"}`). The service then shows as `PAUSED`: never an
 alert, always visible on the dashboard and in the digest.
 
+An operator removing a declared service can add its exact estate name to
+`[inputs.estate] retired_services = ["api", "job"]` in attention configuration.
+The list defaults to empty; names must be unique, 1–48 characters, using only
+lowercase ASCII letters, digits and hyphens (the estate service-name rules).
+When the estate document no longer reports a listed service, its retained
+`service:service-not-doing-its-job:<name>` condition becomes `Removed` and an
+open condition sends the existing resolve intent with "no longer evaluated;
+recovery not observed" wording. Delivery retries and accepted-page accounting
+are unchanged; intent-log history remains under the existing retention policy.
+Settled inactive conditions and unreferenced intent files follow existing cleanup. Names without a prior
+condition create no condition. An empty estate document is permitted when
+retirements are declared; stale or unreadable documents still report input
+faults, and missing open conditions for unlisted services still fault.
+
+If the document still reports a listed name, attention evaluates its observation
+normally and records a retirement-conflict warning in the estate input report's
+`identity.warnings`. Retirement does not hide a still-monitored service or turn
+an unknown observation into recovery. Remove the name from `retired_services`
+on re-add to restore ordinary supervision, including missing-condition faults.
+This field only retires the estate service condition; NQ watcher retirement,
+shared metric/probe alerts and `remediation-journal-critical` are separate.
+
+Installers must gate this field on the `estate_service_retirement` capability
+in `constellation-attention --build-info`. Older binaries reject the field
+through unknown-field denial rather than silently ignoring it.
+
 Host registries are deployment data, not code: they name units, paths and
 contracts of a real host, so they live in the private deployment repository
 (for labelwatch-host: cartography

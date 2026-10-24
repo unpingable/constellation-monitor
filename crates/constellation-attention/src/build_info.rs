@@ -41,6 +41,9 @@ pub const DELIVERY_EXIT_CODE: &str = "delivery_exit_code";
 /// Reconcile retained routes, preserve delivery obligations, and close removed pages.
 pub const ROUTE_CHANGE_RECONCILE: &str = "route_change_reconcile";
 
+/// Retire missing estate service conditions by exact declared service name.
+pub const ESTATE_SERVICE_RETIREMENT: &str = "estate_service_retirement";
+
 /// Supported behaviours. Published identifiers are never renamed or removed
 /// without a build-info schema bump.
 pub const CAPABILITIES: &[&str] = &[
@@ -54,6 +57,7 @@ pub const CAPABILITIES: &[&str] = &[
     RECONFIGURATION_GRACE,
     DELIVERY_EXIT_CODE,
     ROUTE_CHANGE_RECONCILE,
+    ESTATE_SERVICE_RETIREMENT,
 ];
 
 #[derive(Debug, Serialize)]

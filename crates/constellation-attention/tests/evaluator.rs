@@ -5175,6 +5175,197 @@ fn estate_degraded_service_triggers_with_reason_and_pause_stays_quiet() {
     );
 }
 
+/// Declared removal resolves both runtime kinds without claiming recovery.
+#[test]
+fn estate_service_retirement_resolves_and_readd_restores_supervision() {
+    let mut harness = estate_harness();
+    let rows = [
+        ("api", "DOWN", "systemd api.service is inactive/dead"),
+        ("job", "DOWN", "systemd job.timer is inactive/dead"),
+    ];
+    for offset in [0, 660] {
+        write_estate(&harness, T0 + offset, &rows);
+        harness.evaluate(T0 + offset);
+    }
+    write_estate(&harness, T0 + 720, &[]);
+    assert_eq!(harness.evaluate(T0 + 720)["exit_code"], 3);
+    harness.raw("retired_services = [\"api\", \"job\", \"never-open\"]\n");
+    write_estate(&harness, T0 + 780, &[]);
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 0, "{report}");
+    for name in ["api", "job"] {
+        let id = format!("constellation:labelwatch:service:service-not-doing-its-job:{name}");
+        let condition = report["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap();
+        assert_eq!(condition["observation"], "removed");
+        assert_eq!(condition["active"], false);
+        let intent = report["intents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["condition_id"] == id)
+            .unwrap();
+        assert_eq!(intent["action"], "resolve");
+        assert_eq!(intent["outcome"], "accepted");
+        let sent: Value = serde_json::from_slice(
+            &harness.submitted_intent(intent["notification_id"].as_str().unwrap()),
+        )
+        .unwrap();
+        assert!(
+            sent["summary"]
+                .as_str()
+                .unwrap()
+                .contains("no longer evaluated; recovery not observed")
+        );
+        let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+        let retained: Vec<Value> = log
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|i| i["condition_id"] == id)
+            .collect();
+        assert!(retained.iter().any(|i| i["action"] == "trigger"));
+        assert!(retained.iter().any(|i| i["action"] == "resolve"));
+    }
+    assert!(
+        !harness.state()["conditions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .any(|id| id.ends_with(":never-open"))
+    );
+    // Remove the declaration, then observe a fresh persistence interval.
+    harness.extra_config = harness.extra_config.replace(
+        "retired_services = [\"api\", \"job\", \"never-open\"]",
+        "retired_services = []",
+    );
+    for offset in [840, 1500] {
+        write_estate(&harness, T0 + offset, &rows);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 0);
+        if offset == 1500 {
+            assert_eq!(
+                intents(&report)
+                    .iter()
+                    .filter(|(_, _, action)| action == "trigger")
+                    .count(),
+                2
+            );
+        }
+    }
+    write_estate(&harness, T0 + 1560, &[]);
+    assert_eq!(harness.evaluate(T0 + 1560)["exit_code"], 3);
+}
+
+#[test]
+fn estate_retirement_conflict_keeps_current_observations() {
+    let mut harness = estate_harness();
+    harness.raw("retired_services = [\"api\"]\n");
+    for offset in [0, 660] {
+        write_estate(
+            &harness,
+            T0 + offset,
+            &[("api", "DOWN", "systemd api.service is inactive/dead")],
+        );
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 0);
+        let input = report["inputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["kind"] == "estate")
+            .unwrap();
+        assert!(
+            input["identity"]["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("retirement conflict")
+        );
+        let condition = report["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"].as_str().unwrap().ends_with(":api"))
+            .unwrap();
+        assert_eq!(condition["observation"], "present");
+        assert_eq!(condition["active"], offset == 660);
+    }
+}
+
+#[test]
+fn estate_retirement_retries_resolve_and_preserves_input_error_precedence() {
+    let mut harness = estate_harness();
+    let id = "constellation:labelwatch:service:service-not-doing-its-job:api";
+    for offset in [0, 660] {
+        write_estate(&harness, T0 + offset, &[("api", "DOWN", "inactive")]);
+        harness.evaluate(T0 + offset);
+    }
+    harness.raw("retired_services = [\"api\"]\n");
+    harness.fake("next_state", "failed");
+    write_estate(&harness, T0 + 720, &[]);
+    let report = harness.evaluate(T0 + 720);
+    assert_eq!(report["exit_code"], 4);
+    assert_eq!(harness.state()["conditions"][id]["active"], false);
+    assert_eq!(report["intents"][0]["action"], "resolve");
+    // An unrelated input fault still outranks the pending delivery failure.
+    fs::write(harness.path("estate.json"), "invalid JSON").unwrap();
+    let report = harness.evaluate(T0 + 780);
+    assert_eq!(report["exit_code"], 3);
+    assert_eq!(report["delivery_class"], "delivery_failed");
+    harness.fake("next_state", "accepted");
+    write_estate(&harness, T0 + 1620, &[]);
+    let report = harness.evaluate(T0 + 1620);
+    assert_eq!(report["exit_code"], 0, "{report}");
+    let intent = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["condition_id"] == id)
+        .unwrap();
+    assert_eq!(intent["action"], "resolve");
+    assert_eq!(intent["outcome"], "accepted");
+    let sent: Value = serde_json::from_slice(
+        &harness.submitted_intent(intent["notification_id"].as_str().unwrap()),
+    )
+    .unwrap();
+    assert!(
+        sent["summary"]
+            .as_str()
+            .unwrap()
+            .contains("no longer evaluated; recovery not observed")
+    );
+}
+
+#[test]
+fn estate_retired_services_are_validated_at_config_load() {
+    use constellation_attention::config::Config;
+    for list in [
+        json!([""]),
+        json!(["a".repeat(49)]),
+        json!(["API"]),
+        json!(["api.service"]),
+        json!(["api job"]),
+        json!(["é"]),
+        json!(["api", "api"]),
+        json!([1]),
+    ] {
+        let mut harness = estate_harness();
+        harness.raw(&format!("retired_services = {list}\n"));
+        assert!(Config::load(&harness.config_path()).is_err(), "{list}");
+    }
+    let mut harness = estate_harness();
+    harness.raw(&format!(
+        "retired_services = {}\n",
+        json!(["a".repeat(48), "job-2"])
+    ));
+    assert!(Config::load(&harness.config_path()).is_ok());
+    harness.raw("unknown_field = []\n");
+    assert!(Config::load(&harness.config_path()).is_err());
+}
+
 /// A stale estate document changes no condition and marks the input not current.
 #[test]
 fn stale_estate_is_unknown_not_clear() {

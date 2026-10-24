@@ -1354,6 +1354,11 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
         "generated_at": document.get("generated_at"),
         "counts": document.get("counts"),
         "paused": paused,
+        "warnings": services.iter()
+            .filter_map(|service| service.get("name").and_then(Value::as_str))
+            .filter(|name| input.retired_services.iter().any(|retired| retired == name))
+            .map(|name| format!("retirement conflict: estate still reports service {name}; current observation retained"))
+            .collect::<Vec<_>>(),
     });
     report.status = InputStatus::Ok;
     let stale = match generated {
@@ -1364,7 +1369,10 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
     if let Some(note) = &stale {
         report.fault("stale", InputStatus::NotCurrent, note);
     }
-    if services.is_empty() {
+    if services.is_empty()
+        && (input.retired_services.is_empty()
+            || !document.get("services").is_some_and(Value::is_array))
+    {
         report.fault(
             "empty",
             InputStatus::NotCurrent,
