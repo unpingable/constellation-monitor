@@ -79,6 +79,46 @@ pub struct SubmitOutcome {
 
 pub const ROUTE_NOT_CONFIGURED: &str = "route_not_configured_in_nq";
 
+/// NQ 0.2.6 returns retained refusal details from inspect, not submit.
+pub fn refusal_error(config: &Config, notification_id: &str) -> Option<String> {
+    let output = run_bounded(
+        &[
+            config.nq.program.display().to_string(),
+            "--config".into(),
+            config.nq.config.display().to_string(),
+            "--json".into(),
+            "notification".into(),
+            "inspect".into(),
+            "--notification-id".into(),
+            notification_id.into(),
+        ],
+        Duration::from_secs(config.command_timeout_seconds),
+        64 * 1024,
+        ChildEnvironment::Inherit,
+    )
+    .ok()?;
+    if output.timed_out || output.status != Some(0) {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&output.stdout).ok()?;
+    let record = value.as_array()?.iter().find(|record| {
+        record["notification_id"] == notification_id && record["delivery_state"] == "refused"
+    })?;
+    refusal_reason(record.pointer("/pagerduty/last_event/detail/reason")?)
+}
+
+fn refusal_reason(value: &Value) -> Option<String> {
+    // Only NQ's bounded reason code crosses this boundary, never event detail
+    // or provider response bodies. NQ's fixed codes contain no secrets.
+    let reason = value.as_str()?;
+    (!reason.is_empty()
+        && reason.len() <= 120
+        && reason
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_'))
+    .then(|| format!("refused: {reason}"))
+}
+
 #[must_use]
 pub fn missing_route() -> SubmitOutcome {
     SubmitOutcome {
@@ -170,10 +210,21 @@ fn run(config: &Config, tail: Vec<String>, network: bool) -> SubmitOutcome {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_owned();
+    let error = (outcome == "refused").then(|| {
+        value
+            .get("reason")
+            .and_then(refusal_reason)
+            .or_else(|| {
+                notification_id
+                    .as_deref()
+                    .and_then(|id| refusal_error(config, id))
+            })
+            .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into())
+    });
     SubmitOutcome {
         notification_id,
         outcome,
-        error: None,
+        error,
     }
 }
 

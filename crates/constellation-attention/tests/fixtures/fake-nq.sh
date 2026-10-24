@@ -51,6 +51,16 @@ fi
 [ "$1" = --config ] && [ "$3" = --json ] && [ "$4" = notification ] || { echo "unexpected argv: $*" >&2; exit 64; }
 nq_config="$2"
 sub="$5"; shift 5
+if [ "$sub" = inspect ]; then
+  [ "$1" = --notification-id ] || exit 64
+  echo "inspect $2" >> "$dir/inspections.log"
+  if [ -e "$dir/inspect_result" ]; then
+    cat "$dir/inspect_result"
+  else
+    printf '[{"notification_id":"%s","delivery_state":"refused","pagerduty":{"last_event":{"detail":{"reason":"routing_key_malformed"}}}}]\n' "$2"
+  fi
+  exit 0
+fi
 net=false; intent=""; route=""; from=""; event=""
 while [ $# -gt 0 ]; do
   case "$1" in

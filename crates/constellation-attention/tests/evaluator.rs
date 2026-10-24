@@ -1450,6 +1450,73 @@ fn network_disabled_retains_refusals_without_resending() {
 
 /// All configured, enabled transports are required when they have an obligation.
 #[test]
+fn retained_refusal_reason_reaches_reports_log_and_retry_pause() {
+    let mut harness = Harness::new();
+    harness.host_posture("root");
+    harness.fake("next_state", "refused");
+    harness.fake("state-operations", "accepted");
+    for offset in [0, 660, 720, 780] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        if offset == 0 {
+            continue;
+        }
+        assert_eq!(output.status.code(), Some(4));
+        let report = harness.report();
+        assert_eq!(report["delivery"]["pagerduty-ops"]["outcome"], "refused");
+        assert_eq!(
+            report["delivery"]["pagerduty-ops"]["error"],
+            "refused: routing_key_malformed"
+        );
+        assert!(
+            report["first_error"]
+                .as_str()
+                .unwrap()
+                .contains("routing_key_malformed")
+        );
+        if offset != 720 {
+            let row = report["intents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["route_role"] == "page")
+                .unwrap();
+            assert_eq!(row["error"], "refused: routing_key_malformed");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("routing_key_malformed"));
+        }
+    }
+    let log = fs::read_to_string(harness.path("state/intents.jsonl")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("routing_key_malformed"))
+            .count(),
+        2
+    );
+    assert!(harness.calls().last().unwrap().starts_with("resubmit "));
+}
+
+#[test]
+fn retained_refusal_does_not_guess_a_missing_or_foreign_reason() {
+    for inspection in [
+        "[]",
+        r#"[{"notification_id":"other","delivery_state":"refused","pagerduty":{"last_event":{"detail":{"reason":"routing_key_malformed"}}}}]"#,
+    ] {
+        let mut harness = Harness::new();
+        harness.host_posture("root");
+        harness.fake("state-pagerduty-ops", "refused");
+        harness.fake("inspect_result", inspection);
+        for offset in [0, 660] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate(T0 + offset);
+        }
+        assert_eq!(
+            harness.report()["delivery"]["pagerduty-ops"]["error"],
+            "refused: NQ supplied no refusal reason"
+        );
+    }
+}
+
+#[test]
 fn required_route_failures_are_distinct_and_partial_delivery_is_explicit() {
     for outcome in ["failed", "refused", "unknown", "pending"] {
         for partial in [false, true] {

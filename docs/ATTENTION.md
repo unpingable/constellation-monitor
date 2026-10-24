@@ -18,6 +18,22 @@ reaches the notice route but its page is refused at every attempt
 (`command_error`, retried each pass, exit 4 unless an input error takes
 precedence).
 
+NQ 0.2.6's compiled allowlist lives in `crates/nq-app/src/notification.rs`
+(NQ commit `50ef404`): `PAGERDUTY_COMPONENTS` and `PAGERDUTY_RULES`.
+The checks are independent: any listed component/rule combination passes
+these two checks, including `service` / `service-down`. The components are
+`nq`, `host_posture`, `nightshift`, `docket`, `ag`, and `service`; the 17 rule
+anchors are maintained in `PAGERDUTY_RULES`. Passing these checks still
+requires a valid page intent, route and routing key. A missing component or
+rule is a command error before custody, with NQ's validation message.
+A retained refusal is reported as `refused: <reason>` in the intent row,
+`delivery[route].error`, journal and `first_error`. In 0.2.6 submit returns
+only the ID and state, so attention obtains the reason through a bounded
+`notification inspect --notification-id ID` read. For example,
+`routing_key_malformed` is a local NQ refusal before dispatch; a provider
+rejecting a dispatched key produces a delivery failure. If NQ cannot supply
+a reason, attention reports that explicitly instead of guessing the cause.
+
 ## Build-info
 
 `constellation-attention --build-info` prints JSON without loading runtime

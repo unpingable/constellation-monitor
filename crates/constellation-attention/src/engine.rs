@@ -2073,6 +2073,24 @@ fn evaluate_locked(
             })
             .collect()
     };
+    for item in &mut unresolved {
+        if item["outcome"] == "refused" {
+            let error = intent_reports
+                .iter()
+                .find(|attempt| {
+                    item["route"] == attempt.route
+                        && item["stable_event_id"] == attempt.stable_event_id
+                })
+                .and_then(|attempt| attempt.error.clone())
+                .or_else(|| {
+                    item["notification_id"]
+                        .as_str()
+                        .and_then(|id| nq::refusal_error(config, id))
+                })
+                .unwrap_or_else(|| "refused: NQ supplied no refusal reason".into());
+            item["error"] = json!(error);
+        }
+    }
     // After the state is saved: a failed digest never holds a transition back.
     let digest_attempt = if options.dry_run {
         None
@@ -2248,6 +2266,23 @@ fn evaluate_locked(
                 });
                 if summary.outcome == "failed" && delivery_routes.missing(&route) {
                     value["error"] = json!(nq::ROUTE_NOT_CONFIGURED);
+                } else if let Some(error) = intent_reports
+                    .iter()
+                    .find(|item| {
+                        item.route == route
+                            && item.outcome == summary.outcome
+                            && item.error.is_some()
+                    })
+                    .and_then(|item| item.error.as_deref())
+                    .or_else(|| {
+                        unresolved.iter().find_map(|item| {
+                            (item["route"] == route && item["outcome"] == summary.outcome)
+                                .then(|| item["error"].as_str())
+                                .flatten()
+                        })
+                    })
+                {
+                    value["error"] = json!(error);
                 }
                 value
             })
