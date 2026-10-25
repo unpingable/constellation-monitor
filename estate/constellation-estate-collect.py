@@ -65,6 +65,8 @@ def run(argv, timeout, user=None, cwd=None, env=None, limit=1 << 20):
             raise ValueError("command execution requires a non-root account: %r has UID 0" % user)
         # Resolve membership without changing this multithreaded collector's groups.
         groups = os.getgrouplist(account.pw_name, account.pw_gid)
+        if 0 in groups:
+            raise ValueError("command execution account %r must not belong to group 0" % user)
         argv = ["setpriv", "--reuid", str(account.pw_uid), "--regid", str(account.pw_gid),
                 "--groups", ",".join(str(gid) for gid in groups), "--"] + argv
     full_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LC_ALL": "C.UTF-8"}

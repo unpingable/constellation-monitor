@@ -745,4 +745,12 @@ def test_run_refuses_unknown_and_root_accounts_before_launch(monkeypatch):
         with pytest.raises(ValueError, match='non-root account'):
             c.run(['producer'], 10, user=user)
     groups.assert_not_called()
+    lookup.return_value = pwd.struct_passwd(('wheelish', 'x', 1001, 0, '', '/', '/bin/sh'))
+    groups.side_effect = None
+    groups.return_value = [0, 1001]
+    with pytest.raises(ValueError, match='must not belong to group 0'):
+        c.run(['producer'], 10, user='wheelish')
+    groups.return_value = [1001, 0]
+    with pytest.raises(ValueError, match='must not belong to group 0'):
+        c.run(['producer'], 10, user='wheelish')
     launch.assert_not_called()

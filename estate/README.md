@@ -334,7 +334,8 @@ the primary group need not share the username (for example, `nobody:nogroup`).
 Supplementary groups come from `os.getgrouplist` and are passed explicitly with
 `setpriv --groups`, alongside numeric `--reuid` and `--regid`. This preserves
 account membership without changing the multithreaded collector's own groups.
-Unknown accounts and UID-zero accounts (including aliases) are refused before
+Unknown accounts, UID-zero accounts (including aliases) and accounts whose
+primary or supplementary groups include GID 0 are refused before
 starting the producer; unavailable acquisition remains UNKNOWN/input fault.
 Rendering does not resolve host accounts. Legacy JSON commands without a user
 retain their existing behavior; explicit users receive the same account checks.
