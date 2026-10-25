@@ -700,3 +700,49 @@ def test_timer_without_observed_result_is_unknown_but_overdue_success_degrades(m
     assert c.evaluate(svc, 1)["verdict"] == "UNKNOWN"
     service["ExecMainExitTimestamp"] = 100
     assert c.evaluate(svc, 1)["verdict"] == "DEGRADED"
+
+
+def test_run_resolves_primary_and_supplementary_groups(monkeypatch):
+    import pwd
+    from unittest.mock import Mock
+    import pytest
+
+    # Both the nobody:nogroup shape and a conventional same-name group.
+    for name, uid, gid, group_name in [('nobody', 65534, 60001, 'nogroup'),
+                                       ('demo', 1001, 1001, 'demo')]:
+        account = pwd.struct_passwd((name, 'x', uid, gid, '', '/', '/bin/false'))
+        lookup = Mock(return_value=account)
+        memberships = Mock(return_value=[gid, 2002])
+        launch = Mock(side_effect=RuntimeError('fixture launch intercepted'))
+        monkeypatch.setattr(c.pwd, 'getpwnam', lookup)
+        monkeypatch.setattr(c.os, 'getgrouplist', memberships)
+        monkeypatch.setattr(c.subprocess, 'Popen', launch)
+        with pytest.raises(RuntimeError, match='fixture launch intercepted'):
+            c.run(['producer', '--json'], 10, user=name)
+        lookup.assert_called_once_with(name)
+        memberships.assert_called_once_with(name, gid)
+        assert launch.call_args.args[0] == [
+            'setpriv', '--reuid', str(uid), '--regid', str(gid),
+            '--groups', '%s,2002' % gid, '--', 'producer', '--json'], group_name
+
+
+def test_run_refuses_unknown_and_root_accounts_before_launch(monkeypatch):
+    import pwd
+    from unittest.mock import Mock
+    import pytest
+
+    lookup = Mock(side_effect=KeyError('missing'))
+    groups = Mock()
+    launch = Mock()
+    monkeypatch.setattr(c.pwd, 'getpwnam', lookup)
+    monkeypatch.setattr(c.os, 'getgrouplist', groups)
+    monkeypatch.setattr(c.subprocess, 'Popen', launch)
+    with pytest.raises(ValueError, match="unknown command execution account 'missing'"):
+        c.run(['producer'], 10, user='missing')
+    lookup.side_effect = None
+    lookup.return_value = pwd.struct_passwd(('root-alias', 'x', 0, 123, '', '/', '/bin/sh'))
+    for user in ('root', '0', 'root-alias'):
+        with pytest.raises(ValueError, match='non-root account'):
+            c.run(['producer'], 10, user=user)
+    groups.assert_not_called()
+    launch.assert_not_called()

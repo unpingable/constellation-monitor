@@ -41,3 +41,12 @@ Formalization consideration: the proposition is timezone-invariant authored
 absolute deadline interpretation, limited to explicit ISO offsets/epoch seconds.
 Direct parser cases suffice; no host clock accuracy or global ordering claim.
 Decision owner: P2 lane, subject to parent integration review. Custody unchanged.
+
+Primary-group follow-up (2026-10-25): acquisition now resolves the declared
+account name via `pwd` and supplies its numeric UID and primary GID to `setpriv`.
+A same-named group is not required. `os.getgrouplist` supplies explicit
+supplementary groups without mutating the collector's process credentials.
+Unknown accounts and all resolved UID-zero accounts are refused before launch;
+rendering remains independent of target-host account availability. Explicit
+legacy JSON users receive these checks too; commands without a user are unchanged.
+See `estate/README.md` for the current declaration execution contract.

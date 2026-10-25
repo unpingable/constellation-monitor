@@ -20,7 +20,7 @@ the telemetry exporter and the dashboard read. Verdicts:
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
-import argparse, concurrent.futures, fnmatch, hashlib, json, math, os, selectors, shutil, signal, subprocess, sys, tempfile, time, urllib.request
+import argparse, concurrent.futures, fnmatch, hashlib, json, math, os, pwd, selectors, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 from datetime import datetime, timezone
 try:
     import tomllib
@@ -54,8 +54,19 @@ def kill_and_reap(p, original):
 
 
 def run(argv, timeout, user=None, cwd=None, env=None, limit=1 << 20):
-    if user:
-        argv = ["setpriv", "--reuid", user, "--regid", user, "--init-groups", "--"] + argv
+    if user is not None:
+        if not isinstance(user, str) or not user.strip() or user.strip().lower() in {"root", "0"}:
+            raise ValueError("command execution requires a non-root account name")
+        try:
+            account = pwd.getpwnam(user)
+        except KeyError as exc:
+            raise ValueError("unknown command execution account %r" % user) from exc
+        if account.pw_uid == 0:
+            raise ValueError("command execution requires a non-root account: %r has UID 0" % user)
+        # Resolve membership without changing this multithreaded collector's groups.
+        groups = os.getgrouplist(account.pw_name, account.pw_gid)
+        argv = ["setpriv", "--reuid", str(account.pw_uid), "--regid", str(account.pw_gid),
+                "--groups", ",".join(str(gid) for gid in groups), "--"] + argv
     full_env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "LC_ALL": "C.UTF-8"}
     full_env.update(env or {})
     # Drain pipes throughout the run. communicate()/subprocess.run() retains all

@@ -328,7 +328,17 @@ HTTP status; `status_command = ["producer", "--json"]` plus `status_user = "demo
 shorthand for a project-ops-status producer. New declaration command statuses
 require an explicit non-root execution user, including the full `status` table
 form. The renderer rejects missing, empty, root and UID-zero execution users.
-Legacy JSON command configuration retains its existing behavior. Choose one status source. Optional `metrics_url`
+At acquisition time, the user must name an existing account on the collector
+host. The collector resolves its numeric UID and primary GID through `pwd`;
+the primary group need not share the username (for example, `nobody:nogroup`).
+Supplementary groups come from `os.getgrouplist` and are passed explicitly with
+`setpriv --groups`, alongside numeric `--reuid` and `--regid`. This preserves
+account membership without changing the multithreaded collector's own groups.
+Unknown accounts and UID-zero accounts (including aliases) are refused before
+starting the producer; unavailable acquisition remains UNKNOWN/input fault.
+Rendering does not resolve host accounts. Legacy JSON commands without a user
+retain their existing behavior; explicit users receive the same account checks.
+Choose one status source. Optional `metrics_url`
 is checked for HTTP availability; `dependencies = ["other-service"]` records
 graph edges between expected subjects. Thresholds are positive finite service
 limits preserved for the generic rule renderer; declaring one alone does not
