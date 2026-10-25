@@ -5279,6 +5279,251 @@ fn estate_retirement_never_excuses_an_empty_document() {
     );
 }
 
+fn estate_input_report(report: &Value) -> &Value {
+    report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|input| input["kind"] == "estate")
+        .unwrap()
+}
+
+fn estate_condition_row<'a>(report: &'a Value, service: &str) -> &'a Value {
+    let suffix = format!(":service-not-doing-its-job:{service}");
+    report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"].as_str().unwrap().ends_with(&suffix))
+        .unwrap()
+}
+
+/// An UNKNOWN verdict on a current document holds the service's open
+/// condition and is an `indeterminate` input fault; its siblings are still
+/// observed, and recovery resolves both.
+#[test]
+fn estate_unknown_verdict_is_an_input_fault_and_never_clears() {
+    let harness = estate_harness();
+    let service = "constellation:labelwatch:service:service-not-doing-its-job:weatherwatch";
+    let fault = "constellation:labelwatch:estate:evaluator-input-unavailable:estate.indeterminate";
+    let degraded = [
+        ("weatherwatch", "DEGRADED", "observation.loss DEGRADED"),
+        ("factsapi", "OK", "running"),
+    ];
+    for offset in [0, 660] {
+        write_estate(&harness, T0 + offset, &degraded);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 0, "{report}");
+        assert_eq!(estate_input_report(&report)["status"], "ok", "{report}");
+    }
+    assert_eq!(harness.state()["conditions"][service]["active"], true);
+    let unknown = [
+        ("weatherwatch", "UNKNOWN", "status producer timed out"),
+        ("factsapi", "OK", "running"),
+    ];
+    for offset in (720..=1080).step_by(60) {
+        write_estate(&harness, T0 + offset, &unknown);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 3, "{report}");
+        let input = estate_input_report(&report);
+        assert_eq!(input["status"], "not_current", "{report}");
+        assert!(
+            input["causes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cause| cause == "indeterminate"),
+            "{report}"
+        );
+        assert!(
+            input["error"]
+                .as_str()
+                .unwrap()
+                .contains("weatherwatch UNKNOWN: status producer timed out"),
+            "{report}"
+        );
+        let row = estate_condition_row(&report, "weatherwatch");
+        assert_eq!(row["observation"], "unknown", "{report}");
+        assert_eq!(row["active"], true, "{report}");
+        let sibling = estate_condition_row(&report, "factsapi");
+        assert_eq!(sibling["observation"], "clear", "{report}");
+        let fired = intents(&report);
+        assert!(fired.iter().all(|(id, _, _)| id != service), "{report}");
+        let triggers = fired
+            .iter()
+            .filter(|(id, _, action)| id == fault && action == "trigger")
+            .count();
+        assert_eq!(triggers, usize::from(offset == 1080), "{report}");
+    }
+    let healthy = [
+        ("weatherwatch", "OK", "running"),
+        ("factsapi", "OK", "running"),
+    ];
+    let mut resolved = Vec::new();
+    for offset in [1140, 1200, 1320] {
+        write_estate(&harness, T0 + offset, &healthy);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(estate_input_report(&report)["status"], "ok", "{report}");
+        resolved.extend(
+            intents(&report)
+                .into_iter()
+                .filter(|(_, _, action)| action == "resolve")
+                .map(|(id, _, _)| id),
+        );
+    }
+    for id in [service, fault] {
+        assert!(resolved.iter().any(|done| done == id), "{id}: {resolved:?}");
+        assert!(
+            harness.state()["conditions"]
+                .get(id)
+                .is_none_or(|c| c["active"] == false),
+            "{id}"
+        );
+    }
+}
+
+/// A DEGRADED row carrying required acquisition-indeterminate concerns stays
+/// present and also faults the input; timer STALE and PAUSED rows do not.
+#[test]
+fn estate_degraded_row_with_unacquired_required_evidence_faults_input() {
+    let harness = estate_harness();
+    let set = |rows: &[(&str, &str, &str)], concerns: &[(&str, Value)]| {
+        write_estate(&harness, T0, rows);
+        let path = harness.path("estate.json");
+        let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        for service in doc["services"].as_array_mut().unwrap() {
+            for (name, list) in concerns {
+                if service["name"] == *name {
+                    service["concerns"] = list.clone();
+                }
+            }
+        }
+        fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        harness.evaluate(T0)
+    };
+    let report = set(
+        &[
+            ("weatherwatch", "DEGRADED", "output ABSENT"),
+            ("factsapi", "OK", "running"),
+        ],
+        &[(
+            "weatherwatch",
+            json!([
+            {"id": "w.output", "required": true, "state": "ABSENT"},
+            {"id": "w.progress", "required": true, "state": "MISSING_REQUIRED_OBSERVATION"},
+            {"id": "w.optional", "required": false, "state": "UNKNOWN"}]),
+        )],
+    );
+    assert_eq!(report["exit_code"], 3, "{report}");
+    let input = estate_input_report(&report);
+    assert_eq!(input["status"], "not_current", "{report}");
+    assert!(
+        input["causes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "indeterminate"),
+        "{report}"
+    );
+    let error = input["error"].as_str().unwrap();
+    assert!(
+        error.contains("w.progress MISSING_REQUIRED_OBSERVATION"),
+        "{report}"
+    );
+    assert!(
+        !error.contains("w.optional") && !error.contains("w.output"),
+        "{report}"
+    );
+    assert_eq!(
+        estate_condition_row(&report, "weatherwatch")["observation"],
+        "present",
+        "{report}"
+    );
+    assert_eq!(
+        estate_condition_row(&report, "factsapi")["observation"],
+        "clear",
+        "{report}"
+    );
+    let report = set(
+        &[
+            ("weatherwatch", "DEGRADED", "output ABSENT"),
+            ("factsapi", "OK", "running"),
+        ],
+        &[(
+            "weatherwatch",
+            json!([
+            {"id": "w.output", "required": true, "state": "ABSENT"},
+            {"id": "timer.w.timer", "required": true, "state": "STALE"}]),
+        )],
+    );
+    assert_eq!(estate_input_report(&report)["status"], "ok", "{report}");
+    assert_eq!(report["exit_code"], 0, "{report}");
+    let report = set(
+        &[
+            ("weatherwatch", "PAUSED", "declared paused"),
+            ("factsapi", "OK", "running"),
+        ],
+        &[(
+            "weatherwatch",
+            json!([{"id": "w.progress", "required": true, "state": "UNKNOWN"}]),
+        )],
+    );
+    assert_eq!(estate_input_report(&report)["status"], "ok", "{report}");
+}
+
+/// A future-dated document is not current evidence: an open condition is
+/// held, never resolved, until a current document says the service is OK.
+#[test]
+fn estate_future_dated_document_is_stale_and_never_resolves() {
+    let harness = estate_harness();
+    let id = "constellation:labelwatch:service:service-not-doing-its-job:api";
+    for offset in [0, 660] {
+        write_estate(&harness, T0 + offset, &[("api", "DOWN", "inactive")]);
+        harness.evaluate(T0 + offset);
+    }
+    assert_eq!(harness.state()["conditions"][id]["active"], true);
+    let ok = [("api", "OK", "running")];
+    for offset in [720, 780, 900, 1000] {
+        write_estate(&harness, T0 + 4000, &ok);
+        let report = harness.evaluate(T0 + offset);
+        assert_eq!(report["exit_code"], 3, "{report}");
+        let input = estate_input_report(&report);
+        assert_eq!(input["status"], "not_current", "{report}");
+        assert!(
+            input["causes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cause| cause == "stale"),
+            "{report}"
+        );
+        assert!(
+            input["error"].as_str().unwrap().contains("in the future"),
+            "{report}"
+        );
+        let row = estate_condition_row(&report, "api");
+        assert_eq!(row["observation"], "unknown", "{report}");
+        assert_eq!(row["active"], true, "{report}");
+        assert!(intents(&report).is_empty(), "{report}");
+    }
+    let mut actions = Vec::new();
+    for offset in [1020, 1080, 1200] {
+        write_estate(&harness, T0 + offset, &ok);
+        actions.extend(intents(&harness.evaluate(T0 + offset)));
+    }
+    assert!(
+        actions
+            .iter()
+            .any(|(fired, _, action)| fired == id && action == "resolve"),
+        "{actions:?}"
+    );
+    assert!(
+        harness.state()["conditions"]
+            .get(id)
+            .is_none_or(|condition| condition["active"] == false)
+    );
+}
+
 #[test]
 fn estate_retirement_conflict_keeps_current_observations() {
     let mut harness = estate_harness();

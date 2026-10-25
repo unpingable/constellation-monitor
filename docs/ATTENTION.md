@@ -850,11 +850,30 @@ one condition, `service:service-not-doing-its-job:<name>`:
 
 - `DOWN` or `DEGRADED` is present. After 600 s a notice is sent, and its text
   ends with the service's own reason (for example `Now: stream_coverage
-  STALE; cursor_continuity STALE`).
+  ABSENT; cursor_continuity DEGRADED`).
 - `OK`, and a declared `PAUSED`, are clear. A pause never alerts. The daily
   digest lists it under "Declared paused" with its start date.
-- `UNKNOWN`, or a document older than `max_age_seconds`, changes nothing.
-  The input is reported `not_current`.
+- `UNKNOWN` (or any unrecognised verdict) changes nothing for that service:
+  an open condition is held, never resolved. On an otherwise current
+  document it makes the input `not_current` with fault class
+  `indeterminate` (`estate.indeterminate`), naming the service and its
+  reason; the other services in the same document are still evaluated.
+- A document older than `max_age_seconds`, or whose `generated_at` is later
+  than the evaluator's clock, makes every service unknown and the input
+  `not_current` (`stale`). A future-dated document never resolves anything.
+- The collector reports `UNKNOWN`, not `DEGRADED`, when a running service's
+  only failing required concerns are evidence that is not current (`STALE`
+  or `UNKNOWN` from its status producer or watcher report, or a timer with no
+  observed result, a missing required observation, an observation past its
+  `valid_for_seconds`, or one with a parsed future `observed_at`). An invalid
+  or timezone-less `observed_at` is unknown when a finite positive
+  `valid_for_seconds` is supplied; these optional fields remain optional.
+  An acquired `ABSENT` or `DEGRADED`, drift, a failed or overdue timer, or a
+  timer `STALE` still make it `DEGRADED`.
+- A `DEGRADED` row whose required concerns also include
+  `MISSING_REQUIRED_OBSERVATION`, `UNKNOWN` or non-timer `STALE` stays present.
+  It additionally makes the input `not_current` (`indeterminate`), naming those
+  concerns. `PAUSED` rows are not scanned.
 
 The rule is notice-only. Slack is the operator's channel, and the rule is not
 in NQ's page anchor set.
@@ -1432,11 +1451,11 @@ and does not notify:
 | Class | Meaning |
 |---|---|
 | `unreadable` | missing path, permission, command failure, malformed JSON, wrong schema, a host-posture `CURRENT` of another projection, a saved-check result naming another reference |
-| `stale` | NQ snapshot older than `max_age_seconds`, or an evaluation-history page that is not complete or whose upper bound moved; a watcher whose last collection (status export) or newest evaluation (evaluation history) is older than `stale_after_seconds` at the snapshot's `generated_at` (default 180 s; a stopped nqd still answers from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds` |
+| `stale` | NQ snapshot older than `max_age_seconds`, or an evaluation-history page that is not complete or whose upper bound moved; a watcher whose last collection (status export) or newest evaluation (evaluation history) is older than `stale_after_seconds` at the snapshot's `generated_at` (default 180 s; a stopped nqd still answers from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds`; an estate document older than its `max_age_seconds` or whose `generated_at` is in the future |
 | `unrecognised` | an NQ evaluation with an unrecognised profile id or version, or that cannot be parsed; a saved-check result without a valid `read_attempted_at` |
 | `untargetable` | a systemd unit with no bounded target class |
 | `rejected` | metric alerts only: a definition admission refused, listed in `rejected_rules`; the input stays `ok` for its other definitions (see [Admission](#admission-of-metric-alert-definitions)) |
-| `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed` |
+| `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed`; an estate service whose verdict is `UNKNOWN` (or unrecognised) on a current document |
 | `unreported` | an open condition the input no longer reports |
 | `empty` | no closed Nightshift cycle yet; an estate document listing no services; a metric alerts document with no rule labelled `attention: "true"` |
 

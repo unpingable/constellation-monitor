@@ -1362,6 +1362,12 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
     });
     report.status = InputStatus::Ok;
     let stale = match generated {
+        // A future-dated document is not current evidence: a negative age
+        // must never make it fresh enough to clear a condition.
+        Some(Ok(at)) if at > context.now => Some(format!(
+            "estate document generated_at is {} s in the future",
+            at - context.now
+        )),
         Some(Ok(at)) if context.now - at <= input.max_age_seconds => None,
         Some(Ok(at)) => Some(format!("estate document is {} s old", context.now - at)),
         _ => Some("estate document has no valid generated_at".to_owned()),
@@ -1377,6 +1383,72 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
             InputStatus::NotCurrent,
             "estate document lists no services",
         );
+    }
+    // An UNKNOWN verdict holds that service's condition; on an otherwise
+    // current document it is still an input fault, never a quiet `ok`.
+    if stale.is_none() {
+        let mut indeterminate = Vec::new();
+        for service in &services {
+            let Some(name) = service.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let verdict = service
+                .get("verdict")
+                .and_then(Value::as_str)
+                .unwrap_or("UNKNOWN");
+            // A DEGRADED row stays present, but required concerns whose evidence was not
+            // acquired are reported separately. Timer STALE is an acquired overdue result;
+            // PAUSED is explicitly unobserved and keeps its existing semantics.
+            if verdict == "DEGRADED" {
+                let unacquired: Vec<String> = service
+                    .get("concerns")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| c.get("required").and_then(Value::as_bool) != Some(false))
+                    .filter_map(|c| {
+                        let id = c.get("id").and_then(Value::as_str).unwrap_or("?");
+                        let state = c.get("state").and_then(Value::as_str).unwrap_or("UNKNOWN");
+                        let unknown = match state {
+                            "MISSING_REQUIRED_OBSERVATION" | "UNKNOWN" => true,
+                            "STALE" => !id.starts_with("timer."),
+                            _ => false,
+                        };
+                        unknown.then(|| format!("{} {}", truncate(id, 80), truncate(state, 32)))
+                    })
+                    .collect();
+                if !unacquired.is_empty() {
+                    indeterminate.push(format!(
+                        "{name} DEGRADED with required evidence not acquired: {}",
+                        unacquired.join(", ")
+                    ));
+                }
+                continue;
+            }
+            if matches!(verdict, "DOWN" | "OK" | "PAUSED") {
+                continue;
+            }
+            let reason = service
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            indeterminate.push(format!(
+                "{name} {}: {}",
+                truncate(verdict, 32),
+                truncate(reason, 120)
+            ));
+        }
+        if !indeterminate.is_empty() {
+            let message = format!(
+                "estate verdict not determinable; condition held: {}",
+                indeterminate.join("; ")
+            );
+            report.fault(
+                "indeterminate",
+                InputStatus::NotCurrent,
+                &truncate(&message, 600),
+            );
+        }
     }
     read.reports.push(report);
     for service in &services {

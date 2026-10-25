@@ -47,7 +47,7 @@ def test_parse_concerns_refuses_an_unreadable_contract(tmp_path):
     raise AssertionError("an empty contract must not read as satisfied")
 
 
-def test_declared_but_not_acquired_concern_degrades(tmp_path, monkeypatch):
+def test_declared_but_not_acquired_concern_is_unknown_not_degraded(tmp_path, monkeypatch):
     p = tmp_path / "concerns.toml"; p.write_text(CONCERNS)
     status = {"schema": "project.ops.status/v1", "concerns": [
         {"id": "demo.ingest.progress", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok"}}]}
@@ -57,8 +57,8 @@ def test_declared_but_not_acquired_concern_degrades(tmp_path, monkeypatch):
     svc = {"name": "demo", "runtime": {"systemd": "demo.service"},
            "status": {"kind": "project-ops-status", "argv": ["producer"]}, "contract": {"concerns": str(p)}}
     out = c.evaluate(svc, 10)
-    assert out["verdict"] == "DEGRADED", out
-    assert "demo.output.fresh" in out["failing"]
+    assert out["verdict"] == "UNKNOWN", out  # missing information, not a service-failure assertion
+    assert "demo.output.fresh" in out["failing"] and "not current" in out["reason"]
     missing = [x for x in out["concerns"] if x["id"] == "demo.output.fresh"][0]
     assert missing["state"] == "MISSING_REQUIRED_OBSERVATION"
 
@@ -250,8 +250,10 @@ def test_vmalert_loaded_policy_matches_shared_declared_vector():
 
 def test_an_observation_past_its_own_validity_is_stale_even_when_the_producer_says_present(monkeypatch):
     import json as _json
+    now = 1800000000
+    monkeypatch.setattr(c.time, "time", lambda: now)
     doc = {"schema": "project.ops.status/v1", "concerns": [
-        {"id": "a.fresh", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok", "observed_at": "2099-01-01T00:00:00Z", "valid_for_seconds": 60}},
+        {"id": "a.fresh", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok", "observed_at": c.now_iso(now - 30), "valid_for_seconds": 60}},
         {"id": "a.old", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok", "observed_at": "2020-01-01T00:00:00Z", "valid_for_seconds": 60}},
         {"id": "a.nodate", "required": True, "observation": {"local_state": "PRESENT", "reason": "ok"}}]}
     monkeypatch.setattr(c, "run", lambda argv, timeout, user=None, cwd=None, env=None, limit=1 << 20: (0, _json.dumps(doc).encode(), ""))
@@ -261,6 +263,48 @@ def test_an_observation_past_its_own_validity_is_stale_even_when_the_producer_sa
     assert by["a.fresh"]["state"] == "PRESENT" and by["a.nodate"]["state"] == "PRESENT"
     assert by["a.old"]["state"] == "STALE" and "exceeds its 60s validity" in by["a.old"]["reason"]
     assert by["a.old"]["observed_at"] == "2020-01-01T00:00:00Z"
+
+
+def test_observed_at_boundaries_future_expired_negative_and_naive(monkeypatch):
+    now = 1800000000
+    monkeypatch.setattr(c.time, "time", lambda: now)
+    def obs(state, at, valid=60):
+        return {"local_state": state, "reason": "r", "observed_at": at, "valid_for_seconds": valid}
+    cases = {"at.now": obs("PRESENT", c.now_iso(now)), "future": obs("PRESENT", c.now_iso(now + 1)),
+             "future.novalidity": {"local_state": "PRESENT", "observed_at": c.now_iso(now + 3600)},
+             "edge": obs("PRESENT", c.now_iso(now - 60)), "expired": obs("PRESENT", c.now_iso(now - 61)),
+             "neg.fresh": obs("ABSENT", c.now_iso(now - 10)), "neg.expired": obs("ABSENT", c.now_iso(now - 61)),
+             "neg.future": obs("DEGRADED", c.now_iso(now + 60)), "naive": obs("PRESENT", "2027-01-15T08:00:00"),
+             "boolvalid": obs("PRESENT", c.now_iso(now - 3600), True)}
+    doc = {"schema": "project.ops.status/v1", "concerns": [{"id": k, "observation": v} for k, v in cases.items()]}
+    monkeypatch.setattr(c, "run", lambda *a, **k: (0, json.dumps(doc).encode(), ""))
+    concerns, err = c.project_status({"argv": ["x"]}, 5)
+    assert err is None
+    by = {x["id"]: x["state"] for x in concerns}
+    assert by == {"at.now": "PRESENT", "future": "UNKNOWN", "future.novalidity": "UNKNOWN", "edge": "PRESENT",
+                  "expired": "STALE", "neg.fresh": "ABSENT", "neg.expired": "STALE", "neg.future": "UNKNOWN",
+                  "naive": "UNKNOWN", "boolvalid": "PRESENT"}, by
+    assert "was ABSENT" in [x for x in concerns if x["id"] == "neg.expired"][0]["reason"]
+
+
+def test_future_observation_never_recovers_and_missing_only_is_unknown(tmp_path, monkeypatch):
+    now = 1800000000
+    monkeypatch.setattr(c.time, "time", lambda: now)
+    p = tmp_path / "concerns.toml"; p.write_text(CONCERNS)
+    svc = {"name": "demo", "runtime": {"systemd": "demo.service"},
+           "status": {"kind": "project-ops-status", "argv": ["producer"]}, "contract": {"concerns": str(p)}}
+    def run_with(*concerns):
+        doc = {"schema": "project.ops.status/v1", "concerns": [{"id": i, "observation": o} for i, o in concerns]}
+        monkeypatch.setattr(c, "run", fake_run({"systemctl show demo.service": (0, "ActiveState=active\nSubState=running\n"),
+                                               "producer": (0, json.dumps(doc))}))
+        return c.evaluate(svc, 10)
+    ok = {"local_state": "PRESENT", "observed_at": c.now_iso(now - 5), "valid_for_seconds": 60}
+    future = dict(ok, observed_at=c.now_iso(now + 120))
+    assert run_with(("demo.ingest.progress", ok), ("demo.output.fresh", ok))["verdict"] == "OK"
+    assert run_with(("demo.ingest.progress", ok), ("demo.output.fresh", future))["verdict"] == "UNKNOWN"
+    assert run_with(("demo.ingest.progress", ok))["verdict"] == "UNKNOWN"
+    out = run_with(("demo.ingest.progress", {"local_state": "ABSENT"}))
+    assert out["verdict"] == "DEGRADED" and "demo.output.fresh" in out["failing"], out
 
 
 def test_declared_file_probes_emit_geometry_and_age_without_sqlite_sidecars(tmp_path):
@@ -617,3 +661,42 @@ def test_attention_delivery_exit_is_named_and_not_an_allowed_input_status(monkey
     out = c.timer_concern({"unit": "constellation-attention.timer", "ok_status": [0, 3]}, 10)
     assert out["state"] == "DEGRADED"
     assert "delivery_failed or delivery_partial or intent_log_unwritable" in out["reason"]
+
+
+def test_stale_required_evidence_is_unknown_and_acquired_absence_stays_degraded(monkeypatch):
+    stale = {"local_state": "PRESENT", "reason": "ok", "observed_at": "2020-01-01T00:00:00Z", "valid_for_seconds": 60}
+    svc = {"name": "demo", "runtime": {"systemd": "demo.service"},
+           "status": {"kind": "project-ops-status", "argv": ["producer"]}}
+
+    def evaluate_with(*concerns):
+        doc = {"schema": "project.ops.status/v1", "concerns": [
+            {"id": cid, "required": True, "observation": obs} for cid, obs in concerns]}
+        monkeypatch.setattr(c, "run", fake_run({
+            "systemctl show demo.service": (0, "ActiveState=active\nSubState=running\n"),
+            "producer": (0, json.dumps(doc))}))
+        return c.evaluate(svc, 10)
+
+    out = evaluate_with(("demo.ingest.progress", stale))
+    assert out["verdict"] == "UNKNOWN", out
+    assert out["failing"] == ["demo.ingest.progress"] and "STALE" in out["reason"], out
+    out = evaluate_with(("demo.ingest.progress", {"local_state": "UNKNOWN", "reason": "cannot tell"}))
+    assert out["verdict"] == "UNKNOWN", out
+    out = evaluate_with(("demo.ingest.progress", stale),
+                        ("demo.output.fresh", {"local_state": "ABSENT", "reason": "no output"}))
+    assert out["verdict"] == "DEGRADED", out
+    out = evaluate_with(("demo.output.fresh", {"local_state": "DEGRADED", "reason": "late"}))
+    assert out["verdict"] == "DEGRADED", out
+    out = evaluate_with(("demo.output.fresh", {"local_state": "PRESENT", "reason": "ok"}))
+    assert out["verdict"] == "OK", out
+
+
+def test_timer_without_observed_result_is_unknown_but_overdue_success_degrades(monkeypatch):
+    timer = {"ActiveState": "active", "Unit": "demo-job.service", "LastTriggerUSec": "never"}
+    service = {"ActiveState": "inactive", "Result": "success", "ExecMainStatus": "0", "ExecMainExitTimestamp": ""}
+    monkeypatch.setattr(c, "unit_props", lambda unit, *a: timer if unit.endswith(".timer") else service)
+    monkeypatch.setattr(c, "runtime_state", lambda *a: {"up": True})
+    svc = {"name": "demo", "runtime": {"systemd": "demo.service"}, "timers": [
+        {"unit": "demo-job.timer", "first_result_due_at": 4102444800, "max_success_age_seconds": 20}]}
+    assert c.evaluate(svc, 1)["verdict"] == "UNKNOWN"
+    service["ExecMainExitTimestamp"] = 100
+    assert c.evaluate(svc, 1)["verdict"] == "DEGRADED"

@@ -9,7 +9,18 @@ Constellation's operational promise for a host, in four parts:
    contract. That contract is the `.ops/observation.toml` producer emitting
    `project.ops.status/v1`, a Labelwatch-recent watcher report, or an HTTP
    probe. A required concern that is not `PRESENT` makes the service
-   `DEGRADED`, including a missing observation. A container that Docker calls
+   `DEGRADED` when the failure is acquired (`ABSENT`, `DEGRADED`, contract or
+   declaration drift, a failed or overdue timer; a timer `STALE` is an acquired
+   overdue result). Evidence that is not current is not a failure claim:
+   `MISSING_REQUIRED_OBSERVATION`, producer `STALE`/`UNKNOWN`, an observation
+   older than its `valid_for_seconds` (negative evidence too, shown as `STALE`
+   with `was ABSENT`), and a parsed `observed_at` later than the collector clock
+   (`UNKNOWN`, never current). An invalid or timezone-less `observed_at` is
+   `UNKNOWN` when a finite positive `valid_for_seconds` is supplied. These
+   optional fields are not made mandatory by this check. If only such concerns
+   fail, the service is `UNKNOWN`. Mixed with an acquired failure it stays
+   `DEGRADED`, and the attention estate input also raises `indeterminate`,
+   naming the unacquired concerns. A container that Docker calls
    healthy is not thereby doing its job.
 3. Fix what it is authorized to fix: the remediation consumer (unchanged here).
 4. Say when it cannot: the attention evaluator reads `[inputs.estate]`. Its

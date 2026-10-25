@@ -9,10 +9,14 @@ One pass reads the estate registry (JSON, `constellation.estate_registry/v1`), a
 and writes one verdict per service to `constellation.estate/v1` (atomic JSON), which the attention evaluator,
 the telemetry exporter and the dashboard read. Verdicts:
   DOWN      runtime not running
-  DEGRADED  running, but a required concern is not PRESENT (missing required observation counts, as in
-            Monitor's project-concern contract), or the probe failed
+  DEGRADED  running, and a required concern has an acquired failure (ABSENT/DEGRADED, contract or declaration
+            drift, failed or overdue timer, timer STALE, failed probe)
   PAUSED    declared paused by the operator (never alerts; shown with since/reason)
-  UNKNOWN   status producer could not be run or returned an unrecognised document
+  UNKNOWN   status producer could not be run or returned an unrecognised document, or every failing required
+            concern is evidence that is not current (STALE/UNKNOWN, MISSING_REQUIRED_OBSERVATION, expired or future-dated observed_at;
+            an invalid or timezone-less observed_at when a valid validity interval is supplied;
+            a timer without an observed result):
+            missing evidence never asserts the service is failing its job
   OK        running and every required concern PRESENT (or NOT_APPLICABLE)
 Read-only towards services. Never shells out through a shell; argv is executed directly with a timeout.
 """
@@ -283,13 +287,20 @@ def project_status(spec, timeout):
         state, reason = obs.get("local_state") or "ABSENT", obs.get("reason") or ""
         # the observation's own time and validity travel with it: a fresh estate document must not refresh old evidence
         observed_at, valid_for = obs.get("observed_at"), obs.get("valid_for_seconds")
-        if observed_at and isinstance(valid_for, (int, float)) and valid_for > 0:
-            try:
-                at = datetime.strptime(observed_at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
-                if now - at > valid_for and state in ("PRESENT", "NOT_APPLICABLE"):
-                    state, reason = "STALE", "observation %ds old exceeds its %ds validity; was %s: %s" % (now - at, valid_for, obs.get("local_state"), reason)
-            except ValueError:
-                state, reason = "UNKNOWN", "observed_at %r is not a timestamp" % observed_at
+        valid = (isinstance(valid_for, (int, float)) and not isinstance(valid_for, bool)
+                 and math.isfinite(valid_for) and valid_for > 0)
+        if observed_at is not None and observed_at != "":
+            at = deadline_timestamp(observed_at)
+            was = obs.get("local_state")
+            if at is None:
+                if valid:
+                    state, reason = "UNKNOWN", "observed_at %r is not a timezone-aware timestamp" % (observed_at,)
+            elif at > now:
+                # A future observation is never current, whatever it claims (positive or negative).
+                state, reason = "UNKNOWN", "observed_at %s is %ds in the future; was %s: %s" % (observed_at, at - now, was, reason)
+            elif valid and now - at > valid_for:
+                # Expired evidence, negative included, must not pretend to be freshly acquired.
+                state, reason = "STALE", "observation %ds old exceeds its %ds validity; was %s: %s" % (now - at, valid_for, was, reason)
         concerns.append({"id": c.get("id"), "required": bool(c.get("required", True)), "state": state, "reason": reason,
                          "observed_at": observed_at, "valid_for_seconds": valid_for})
     return concerns, None
@@ -326,6 +337,14 @@ def http_status(spec, timeout):
     return [{"id": spec.get("concern", "http.health"), "required": True,
              "state": "PRESENT" if code == want else "DEGRADED",
              "reason": "HTTP %d from %s" % (code, spec["url"]) }], None
+
+
+def acquisition_indeterminate(concern):
+    """Required evidence that is not current says nothing about the service either way. A timer's STALE is
+    acquired evidence (its job has not succeeded within its declared age), so for timers only UNKNOWN is."""
+    if str(concern.get("id", "")).startswith("timer."):
+        return concern["state"] == "UNKNOWN"
+    return concern["state"] in ("STALE", "UNKNOWN", "MISSING_REQUIRED_OBSERVATION")
 
 
 def evaluate(svc, timeout):
@@ -402,9 +421,14 @@ def evaluate(svc, timeout):
         verdict, reason = "DOWN", "%s %s is %s" % (out["runtime"].get("kind", ""), out["runtime"].get("target", ""), out["runtime"].get("state"))
     elif error:
         verdict, reason = "UNKNOWN", error
-    elif failing:
+    elif any(not acquisition_indeterminate(c) for c in failing):
         verdict = "DEGRADED"
         reason = "; ".join("%s %s" % (c["id"].split(".", 1)[-1], c["state"]) for c in failing)
+    elif failing:
+        # Only not-current evidence fails: the service is not known to be failing its job.
+        verdict = "UNKNOWN"
+        reason = "required evidence not current: " + "; ".join(
+            "%s %s" % (c["id"].split(".", 1)[-1], c["state"]) for c in failing)
     else:
         required = sum(1 for c in out["concerns"] if c["required"])
         verdict, reason = "OK", "running" + (", %d required concerns present" % required if required else "")
