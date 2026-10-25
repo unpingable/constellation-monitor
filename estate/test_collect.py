@@ -274,16 +274,15 @@ def test_observed_at_boundaries_future_expired_negative_and_naive(monkeypatch):
              "future.novalidity": {"local_state": "PRESENT", "observed_at": c.now_iso(now + 3600)},
              "edge": obs("PRESENT", c.now_iso(now - 60)), "expired": obs("PRESENT", c.now_iso(now - 61)),
              "neg.fresh": obs("ABSENT", c.now_iso(now - 10)), "neg.expired": obs("ABSENT", c.now_iso(now - 61)),
-             "neg.future": obs("DEGRADED", c.now_iso(now + 60)), "naive": obs("PRESENT", "2027-01-15T08:00:00"),
-             "boolvalid": obs("PRESENT", c.now_iso(now - 3600), True)}
-    doc = {"schema": "project.ops.status/v1", "concerns": [{"id": k, "observation": v} for k, v in cases.items()]}
+             "neg.future": obs("DEGRADED", c.now_iso(now + 60)), "naive": obs("PRESENT", "2027-01-15T08:00:00")}
+    doc = {"schema": "project.ops.status/v1", "concerns": [{"id": k, "required": True, "observation": v} for k, v in cases.items()]}
     monkeypatch.setattr(c, "run", lambda *a, **k: (0, json.dumps(doc).encode(), ""))
     concerns, err = c.project_status({"argv": ["x"]}, 5)
     assert err is None
     by = {x["id"]: x["state"] for x in concerns}
     assert by == {"at.now": "PRESENT", "future": "UNKNOWN", "future.novalidity": "UNKNOWN", "edge": "PRESENT",
                   "expired": "STALE", "neg.fresh": "ABSENT", "neg.expired": "STALE", "neg.future": "UNKNOWN",
-                  "naive": "UNKNOWN", "boolvalid": "PRESENT"}, by
+                  "naive": "UNKNOWN"}, by
     assert "was ABSENT" in [x for x in concerns if x["id"] == "neg.expired"][0]["reason"]
 
 
@@ -294,7 +293,7 @@ def test_future_observation_never_recovers_and_missing_only_is_unknown(tmp_path,
     svc = {"name": "demo", "runtime": {"systemd": "demo.service"},
            "status": {"kind": "project-ops-status", "argv": ["producer"]}, "contract": {"concerns": str(p)}}
     def run_with(*concerns):
-        doc = {"schema": "project.ops.status/v1", "concerns": [{"id": i, "observation": o} for i, o in concerns]}
+        doc = {"schema": "project.ops.status/v1", "concerns": [{"id": i, "required": True, "observation": o} for i, o in concerns]}
         monkeypatch.setattr(c, "run", fake_run({"systemctl show demo.service": (0, "ActiveState=active\nSubState=running\n"),
                                                "producer": (0, json.dumps(doc))}))
         return c.evaluate(svc, 10)

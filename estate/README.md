@@ -108,6 +108,58 @@ Install on the host:
     systemctl daemon-reload && systemctl enable --now constellation-estate-collect.timer
     # attention.toml:  [inputs.estate]  path = "/var/lib/constellation-estate/estate.json"
 
+## Status-command output contract
+
+`status_command` (or `status.kind = "project-ops-status"`) executes an argv
+array without a shell. Exit zero and write one JSON object to stdout, at most
+1 MiB including whitespace. A nonzero exit or timeout is unavailable acquisition.
+The collector validates the entire document before admitting any concerns.
+
+| Field | Contract |
+| --- | --- |
+| `schema` | Optional; if present, exactly `"project.ops.status/v1"`. |
+| `concerns` | Required array of objects; an empty array is allowed. Declared contract concerns still must be acquired. |
+| `concerns[].id` | Required nonblank string, at most 256 characters. |
+| `concerns[].required` | Required JSON boolean; strings and numbers are rejected. |
+| `concerns[].observation` | Optional object or null. Missing/null means `ABSENT`, with an empty reason. |
+| `observation.local_state` | Required when observation is an object: `PRESENT`, `NOT_APPLICABLE`, `ABSENT`, `DEGRADED`, `STALE`, `UNKNOWN`, or `MISSING_REQUIRED_OBSERVATION`. |
+| `observation.reason` | Optional string, at most 4096 characters; defaults to empty. |
+| `observation.observed_at` | Optional/null, string of at most 128 characters, or finite nonnegative Unix timestamp (seconds, at most 1e308). Booleans are rejected. Prefer a timezone-aware ISO 8601 string. |
+| `observation.valid_for_seconds` | Optional/null, positive finite number at most 1e308; booleans are rejected. |
+
+Extra fields at any level are ignored for forward compatibility. String limits
+count characters. A future timestamp makes the observation UNKNOWN. A supplied
+validity interval makes an expired observation STALE and a nonempty unparseable
+or timezone-less timestamp UNKNOWN. Missing/null/empty timestamps retain the
+producer state; omitting a validity interval supplies no expiry bound.
+
+```json
+{
+  "schema": "project.ops.status/v1",
+  "concerns": [
+    {
+      "id": "demo.output.fresh",
+      "required": true,
+      "observation": {
+        "local_state": "PRESENT",
+        "reason": "output refreshed",
+        "observed_at": "2026-10-25T12:00:00Z",
+        "valid_for_seconds": 120
+      }
+    }
+  ]
+}
+```
+
+Malformed output discards all concerns from that producer and reports the
+running service as UNKNOWN/input fault, for example
+`producer input fault: concerns[0].id must be a nonempty string of at most 256 characters`.
+Invalid JSON and oversized output name `document`. Diagnostics do not echo
+malformed values and the service reason is capped at 400 characters. Healthy
+siblings remain usable and the host pass continues. An operator-declared pause
+still takes precedence as PAUSED; an unavailable runtime is DOWN. Independently
+collected timer and declaration findings remain visible.
+
 ## Metric alerts: vmalert as an attention input
 
 `metric-alerts-collect.py` reads vmalert's `/api/v1/rules` once (1 MiB bound)

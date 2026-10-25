@@ -284,15 +284,66 @@ def runtime_state(spec, timeout):
     raise ValueError("runtime needs systemd or docker")
 
 
+def validate_status(doc):
+    """Validate the entire untrusted document before admitting any concerns."""
+    def fault(field, expected):
+        raise ValueError("producer input fault: %s must be %s" % (field, expected))
+
+    def string(value, field, limit, nonempty=False):
+        if not isinstance(value, str) or len(value) > limit or (nonempty and not value.strip()):
+            fault(field, "%sstring of at most %d characters" % ("a nonempty " if nonempty else "a ", limit))
+
+    if not isinstance(doc, dict):
+        fault("document", "an object")
+    if doc.get("schema", STATUS_SCHEMA) != STATUS_SCHEMA:
+        fault("schema", STATUS_SCHEMA)
+    if not isinstance(doc.get("concerns"), list):
+        fault("concerns", "an array")
+    for index, concern in enumerate(doc["concerns"]):
+        field = "concerns[%d]" % index
+        if not isinstance(concern, dict):
+            fault(field, "an object")
+        string(concern.get("id"), field + ".id", 256, nonempty=True)
+        if not isinstance(concern.get("required"), bool):
+            fault(field + ".required", "a boolean")
+        obs = concern.get("observation")
+        if obs is None:
+            continue  # No observation is acquired absence, as before.
+        field += ".observation"
+        if not isinstance(obs, dict):
+            fault(field, "an object or null")
+        string(obs.get("local_state"), field + ".local_state", 64, nonempty=True)
+        if obs["local_state"] not in {"PRESENT", "NOT_APPLICABLE", "ABSENT", "DEGRADED",
+                                     "STALE", "UNKNOWN", "MISSING_REQUIRED_OBSERVATION"}:
+            fault(field + ".local_state", "a supported local state")
+        if "reason" in obs:
+            string(obs["reason"], field + ".reason", 4096)
+        at = obs.get("observed_at")
+        if isinstance(at, str):
+            string(at, field + ".observed_at", 128)
+        elif at is not None and (type(at) not in (int, float) or not 0 <= at <= 1e308):
+            fault(field + ".observed_at", "a string, finite nonnegative Unix timestamp, or null")
+        valid = obs.get("valid_for_seconds")
+        if valid is not None and (type(valid) not in (int, float) or not 0 < valid <= 1e308):
+            fault(field + ".valid_for_seconds", "a positive finite number or null")
+
+
 def project_status(spec, timeout):
     """Run a project.ops.status/v1 producer; return (concerns, error)."""
     rc, out, err = run(spec["argv"], spec.get("timeout_seconds", timeout), user=spec.get("user"),
-                       cwd=spec.get("cwd"), env=spec.get("environment"))
+                       cwd=spec.get("cwd"), env=spec.get("environment"), limit=(1 << 20) + 1)
     if rc != 0:
         return None, "producer exited %d: %s" % (rc, err.strip().splitlines()[-1] if err.strip() else "")
-    doc = json.loads(out)
-    if doc.get("schema", STATUS_SCHEMA) != STATUS_SCHEMA or not isinstance(doc.get("concerns"), list):
-        return None, "producer output is not %s" % STATUS_SCHEMA
+    if len(out) > 1 << 20:
+        return None, "producer input fault: document exceeds 1 MiB"
+    try:
+        doc = json.loads(out)
+    except (ValueError, UnicodeError, RecursionError):
+        return None, "producer input fault: document must be valid JSON"
+    try:
+        validate_status(doc)
+    except (ValueError, OverflowError) as exc:
+        return None, str(exc)[:300]
     concerns = []
     now = time.time()
     for c in doc["concerns"]:
@@ -314,7 +365,7 @@ def project_status(spec, timeout):
             elif valid and now - at > valid_for:
                 # Expired evidence, negative included, must not pretend to be freshly acquired.
                 state, reason = "STALE", "observation %ds old exceeds its %ds validity; was %s: %s" % (now - at, valid_for, was, reason)
-        concerns.append({"id": c.get("id"), "required": bool(c.get("required", True)), "state": state, "reason": reason,
+        concerns.append({"id": c.get("id"), "required": c["required"], "state": state, "reason": reason,
                          "observed_at": observed_at, "valid_for_seconds": valid_for})
     return concerns, None
 
