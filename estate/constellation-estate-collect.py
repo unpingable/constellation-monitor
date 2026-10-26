@@ -304,7 +304,7 @@ def validate_status(doc):
         if not isinstance(concern, dict):
             fault(field, "an object")
         string(concern.get("id"), field + ".id", 256, nonempty=True)
-        if not isinstance(concern.get("required"), bool):
+        if not isinstance(concern.get("required", True), bool):
             fault(field + ".required", "a boolean")
         obs = concern.get("observation")
         if obs is None:
@@ -312,20 +312,16 @@ def validate_status(doc):
         field += ".observation"
         if not isinstance(obs, dict):
             fault(field, "an object or null")
-        string(obs.get("local_state"), field + ".local_state", 64, nonempty=True)
-        if obs["local_state"] not in {"PRESENT", "NOT_APPLICABLE", "ABSENT", "DEGRADED",
-                                     "STALE", "UNKNOWN", "MISSING_REQUIRED_OBSERVATION"}:
-            fault(field + ".local_state", "a supported local state")
+        if obs.get("local_state") is not None:
+            string(obs["local_state"], field + ".local_state", 64, nonempty=True)
         if "reason" in obs:
             string(obs["reason"], field + ".reason", 4096)
         at = obs.get("observed_at")
         if isinstance(at, str):
             string(at, field + ".observed_at", 128)
-        elif at is not None and (type(at) not in (int, float) or not 0 <= at <= 1e308):
-            fault(field + ".observed_at", "a string, finite nonnegative Unix timestamp, or null")
         valid = obs.get("valid_for_seconds")
-        if valid is not None and (type(valid) not in (int, float) or not 0 < valid <= 1e308):
-            fault(field + ".valid_for_seconds", "a positive finite number or null")
+        if isinstance(valid, str):
+            string(valid, field + ".valid_for_seconds", 128)
 
 
 def project_status(spec, timeout):
@@ -348,6 +344,8 @@ def project_status(spec, timeout):
     now = time.time()
     for c in doc["concerns"]:
         obs = c.get("observation") or {}
+        if c.get("observation_present") is False or obs.get("observation_present") is False:
+            obs = {}
         state, reason = obs.get("local_state") or "ABSENT", obs.get("reason") or ""
         # the observation's own time and validity travel with it: a fresh estate document must not refresh old evidence
         observed_at, valid_for = obs.get("observed_at"), obs.get("valid_for_seconds")
@@ -357,7 +355,7 @@ def project_status(spec, timeout):
             at = deadline_timestamp(observed_at)
             was = obs.get("local_state")
             if at is None:
-                if valid:
+                if valid or (isinstance(observed_at, float) and math.isnan(observed_at)):
                     state, reason = "UNKNOWN", "observed_at %r is not a timezone-aware timestamp" % (observed_at,)
             elif at > now:
                 # A future observation is never current, whatever it claims (positive or negative).
@@ -365,7 +363,7 @@ def project_status(spec, timeout):
             elif valid and now - at > valid_for:
                 # Expired evidence, negative included, must not pretend to be freshly acquired.
                 state, reason = "STALE", "observation %ds old exceeds its %ds validity; was %s: %s" % (now - at, valid_for, was, reason)
-        concerns.append({"id": c.get("id"), "required": c["required"], "state": state, "reason": reason,
+        concerns.append({"id": c.get("id"), "required": c.get("required", True), "state": state, "reason": reason,
                          "observed_at": observed_at, "valid_for_seconds": valid_for})
     return concerns, None
 
@@ -499,6 +497,19 @@ def evaluate(svc, timeout):
     out["verdict"], out["reason"] = verdict, reason[:400]
     out["failing"] = [c["id"] for c in failing]
     return out
+
+
+def evaluate_safely(svc, timeout):
+    """Contain unexpected evaluator failures at the concurrent service boundary."""
+    try:
+        return evaluate(svc, timeout)
+    except Exception as exc:  # noqa: BLE001 - one service must never stop the host pass
+        return {"name": svc["name"], "role": svc.get("role", ""),
+                "declared": svc.get("declared"),
+                "runtime": {"up": False, "state": "unknown"},
+                "verdict": "UNKNOWN", "concerns": [], "failing": [],
+                "reason": ("service evaluation failed: %s: %s" %
+                           (type(exc).__name__, str(exc)))[:400]}
 
 
 def coverage(reg, timeout):
@@ -1003,7 +1014,7 @@ def main(argv=None):
     # File metrics are already published above. A slow status producer cannot
     # keep unrelated service evaluations waiting behind it in registry order.
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.service_workers) as pool:
-        evaluated = list(pool.map(lambda svc: evaluate(svc, a.timeout), reg["services"]))
+        evaluated = list(pool.map(lambda svc: evaluate_safely(svc, a.timeout), reg["services"]))
     for s in evaluated:
         prev = previous.get(s["name"])
         s["since"] = prev["since"] if prev and prev.get("verdict") == s["verdict"] and prev.get("since") else now_iso(started)

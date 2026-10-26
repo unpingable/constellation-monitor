@@ -113,19 +113,22 @@ Install on the host:
 `status_command` (or `status.kind = "project-ops-status"`) executes an argv
 array without a shell. Exit zero and write one JSON object to stdout, at most
 1 MiB including whitespace. A nonzero exit or timeout is unavailable acquisition.
-The collector validates the entire document before admitting any concerns.
+The collector validates the entire document's structure before admitting any
+concerns. The [shared project concern contract](../docs/project-concern-contract.md)
+defines observation semantics; this table describes the estate adapter's structural
+limits and compatibility defaults, not a separate state vocabulary.
 
-| Field | Contract |
+| Field | Structural check / compatibility behavior |
 | --- | --- |
 | `schema` | Optional; if present, exactly `"project.ops.status/v1"`. |
 | `concerns` | Required array of objects; an empty array is allowed. Declared contract concerns still must be acquired. |
 | `concerns[].id` | Required nonblank string, at most 256 characters. |
-| `concerns[].required` | Required JSON boolean; strings and numbers are rejected. |
-| `concerns[].observation` | Optional object or null. Missing/null means `ABSENT`, with an empty reason. |
-| `observation.local_state` | Required when observation is an object: `PRESENT`, `NOT_APPLICABLE`, `ABSENT`, `DEGRADED`, `STALE`, `UNKNOWN`, or `MISSING_REQUIRED_OBSERVATION`. |
+| `concerns[].required` | Optional JSON boolean, default true; other types fault. |
+| `concerns[].observation` | Optional object or null. Missing/null uses the estate `ABSENT` fallback. `observation_present = false` also uses that fallback. |
+| `observation.local_state` | Opaque project-owned nonblank string, at most 64 characters. Missing/null uses the estate `ABSENT` fallback. States including `REFUSED`, `DRIFT_OBSERVED`, and unfamiliar future states are preserved. |
 | `observation.reason` | Optional string, at most 4096 characters; defaults to empty. |
-| `observation.observed_at` | Optional/null, string of at most 128 characters, or finite nonnegative Unix timestamp (seconds, at most 1e308). Booleans are rejected. Prefer a timezone-aware ISO 8601 string. |
-| `observation.valid_for_seconds` | Optional/null, positive finite number at most 1e308; booleans are rejected. |
+| `observation.observed_at` | Strings bounded to 128 characters. Existing timestamp parsing tolerance is retained; NaN makes only that concern `UNKNOWN`. Prefer timezone-aware ISO 8601. |
+| `observation.valid_for_seconds` | Strings bounded to 128 characters. Only finite positive numbers supply a bound; invalid values, booleans and NaN supply none. |
 
 Extra fields at any level are ignored for forward compatibility. String limits
 count characters. A future timestamp makes the observation UNKNOWN. A supplied
@@ -158,7 +161,9 @@ Invalid JSON and oversized output name `document`. Diagnostics do not echo
 malformed values and the service reason is capped at 400 characters. Healthy
 siblings remain usable and the host pass continues. An operator-declared pause
 still takes precedence as PAUSED; an unavailable runtime is DOWN. Independently
-collected timer and declaration findings remain visible.
+collected timer and declaration findings remain visible. Unexpected exceptions
+from service evaluation are contained at the worker boundary and yield a bounded
+UNKNOWN result for that service; the host pass continues.
 
 ## Metric alerts: vmalert as an attention input
 
