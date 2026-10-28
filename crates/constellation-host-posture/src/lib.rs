@@ -5,6 +5,9 @@
 //! Pulse reactor, owner consequence adapter, and status projector. It owns no
 //! diagnostic threshold or consequence rule.
 
+mod publication_budget;
+use publication_budget::PublicationBudget;
+
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::os::unix::fs::{
@@ -27,7 +30,7 @@ use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
     FactRequirementV1, LiveSupportSelectorV1, OutputComponentV1, PROJECTION_POLICY_SCHEMA_V1,
     ProjectedStateV1, ProjectionMomentV1, ProjectionPolicyV1, SourceFactClassV1,
-    project_with_details, read_current_artifact, stage_publication,
+    project_with_details, read_current_artifact,
 };
 use pulse_nq_load_correspondence::{
     Coproducer, CorrespondenceError, CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NqEnrollmentV1,
@@ -1249,23 +1252,9 @@ fn publish_projection(
     verified: Option<&VerifiedCorrespondenceV1>,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
+    budget: &mut PublicationBudget<'_>,
 ) -> Result<(String, ProjectedStateV1)> {
-    let objects = count_regular_store_entries(
-        &config.publication_root.join("objects"),
-        config.maximum_publications,
-        "publication object store",
-    )?;
-    let temporary = count_regular_store_entries(
-        &config.publication_root.join("tmp"),
-        config.maximum_publications,
-        "publication temporary store",
-    )?;
-    if objects.saturating_add(temporary) >= config.maximum_publications {
-        return Err(HostPostureError::new(
-            "publication_capacity",
-            "configured aggregate publication capacity is exhausted",
-        ));
-    }
+    budget.admit()?;
     let mut facts = Vec::new();
     let mut support = Vec::new();
     let mut details = Vec::new();
@@ -1299,10 +1288,7 @@ fn publish_projection(
     let artifact = project_with_details(policy, &facts, &support, &[], &details, moment)
         .map_err(|error| map_error("projection", error))?;
     let aggregate_state = artifact.aggregate_state;
-    let artifact_id = stage_publication(&config.publication_root, &artifact)
-        .map_err(|error| map_error("publication", error))?
-        .commit()
-        .map_err(|error| map_error("publication", error))?;
+    let artifact_id = budget.publish(&artifact)?;
     *last_published_unix_ms = generated_at;
     Ok((artifact_id, aggregate_state))
 }
@@ -1348,6 +1334,7 @@ fn projection_cycle(
     verified: Option<&VerifiedCorrespondenceV1>,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
+    budget: &mut PublicationBudget<'_>,
 ) -> Result<ProjectionCycle> {
     let custody_lost = reactor_custody_lost(&reactor.snapshot());
     let (artifact, state) = publish_projection(
@@ -1357,6 +1344,7 @@ fn projection_cycle(
         verified,
         nonce_sequence,
         last_published_unix_ms,
+        budget,
     )?;
     Ok(ProjectionCycle {
         artifact,
@@ -1388,6 +1376,11 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
     let _lock = StateLock::acquire(&config.lock_path())?;
     ensure_service_store_directories(config)?;
     let existing_occurrences = validate_store_bounds(config)?;
+    let mut publication_budget = PublicationBudget::new(
+        &config.publication_root,
+        config.maximum_publications,
+        &_lock,
+    )?;
     let profile = load_profile(config)?;
     let port = PinnedNqExecutable::from_enrollment(&profile.nq)
         .map_err(|error| map_error("nq_pin", error))?;
@@ -1419,6 +1412,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         None,
         nonce_sequence,
         &mut last_published,
+        &mut publication_budget,
     )?;
     println!(
         "initial_state={} artifact={initial}",
@@ -1580,6 +1574,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     latest.as_ref(),
                     nonce_sequence,
                     &mut last_published,
+                    &mut publication_budget,
                 ) {
                     Ok(cycle) => {
                         println!(
@@ -1627,6 +1622,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         None,
         nonce_sequence,
         &mut last_published,
+        &mut publication_budget,
     );
     if let Ok((artifact, state)) = &final_result {
         println!("final_state={} artifact={artifact}", state.as_str());
@@ -1763,6 +1759,172 @@ mod tests {
     }
 
     #[test]
+    fn publication_budget_reuses_census_and_recounts_external_entries() {
+        let root = ScratchDir::new("publication-budget");
+        let status = root.path().join("status");
+        fs::create_dir_all(status.join("objects")).unwrap();
+        fs::create_dir(status.join("tmp")).unwrap();
+        for n in 0..128 {
+            fs::write(
+                status.join("objects").join(format!("{n}.json")),
+                b"retained",
+            )
+            .unwrap();
+        }
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 130, &lock).unwrap();
+        assert!(
+            !budget.refresh().unwrap(),
+            "unchanged history needs no census"
+        );
+        fs::write(status.join("tmp/abandoned"), b"retained scratch").unwrap();
+        assert!(
+            budget.refresh().unwrap(),
+            "foreign entries need a fresh census"
+        );
+        budget.admit().unwrap();
+        fs::write(status.join("objects/last.json"), b"retained").unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "publication_capacity");
+    }
+
+    #[test]
+    fn publication_budget_refuses_symlinks_after_initial_census() {
+        let root = ScratchDir::new("publication-symlink");
+        let status = root.path().join("status");
+        fs::create_dir_all(status.join("objects")).unwrap();
+        fs::create_dir(status.join("tmp")).unwrap();
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 10, &lock).unwrap();
+        std::os::unix::fs::symlink("missing", status.join("objects/unexpected")).unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "store_bound");
+        fs::remove_file(status.join("objects/unexpected")).unwrap();
+        fs::remove_dir(status.join("tmp")).unwrap();
+        std::os::unix::fs::symlink("objects", status.join("tmp")).unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "store_bound");
+    }
+
+    #[test]
+    fn publication_budget_latches_lost_event_continuity() {
+        let root = ScratchDir::new("publication-event-bound");
+        let status = root.path().join("status");
+        fs::create_dir(&status).unwrap();
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 10000, &lock).unwrap();
+        // More than the finite 16 * 4096-byte drain allowance, regardless of
+        // the host's larger kernel queue setting. An event-loss disposition
+        // must remain refused after the overflowing batch has been consumed.
+        for n in 0..5000 {
+            fs::write(status.join("objects").join(format!("external-{n:05}")), b"").unwrap();
+        }
+        assert_eq!(budget.admit().unwrap_err().code, "publication_changed");
+        assert_eq!(budget.admit().unwrap_err().code, "publication_changed");
+        drop(budget);
+        let mut reconstructed = PublicationBudget::new(&status, 10000, &lock).unwrap();
+        reconstructed.admit().unwrap();
+    }
+
+    #[test]
+    fn publication_budget_counts_commits_and_reconstructs_after_restart() {
+        let root = ScratchDir::new("publication-commits");
+        let (profile, reactor) = fixture_reactor(root.path(), "publication-commits");
+        let mut config = toml::from_str::<HostPostureConfig>(&example_config()).unwrap();
+        config.state_root = root.path().to_owned();
+        config.publication_root = root.path().join("status");
+        config.maximum_publications = 2;
+        fs::create_dir_all(config.publication_root.join("objects")).unwrap();
+        fs::set_permissions(&config.publication_root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(
+            config.publication_root.join("objects"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::create_dir(config.publication_root.join("tmp")).unwrap();
+        fs::set_permissions(
+            config.publication_root.join("tmp"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let lock = StateLock::acquire(&config.lock_path()).unwrap();
+        assert!(
+            StateLock::acquire(&config.lock_path()).is_err(),
+            "one writer owns the count"
+        );
+        let mut budget = PublicationBudget::new(&config.publication_root, 2, &lock).unwrap();
+        let selector = live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap();
+        let policy = condition_policy(selector, "/");
+        let mut last_published = 0;
+        publish_projection(
+            &config,
+            &reactor,
+            &policy,
+            None,
+            1,
+            &mut last_published,
+            &mut budget,
+        )
+        .unwrap();
+        assert!(
+            !budget.refresh().unwrap(),
+            "own commit reconciles namespace events without recensus"
+        );
+        // A repeated identical artifact reuses its object and consumes no slot.
+        budget
+            .publish(&read_current_artifact(&config.publication_root).unwrap())
+            .unwrap();
+        budget.admit().unwrap();
+        last_published += policy.timestamp_granularity_ms;
+        publish_projection(
+            &config,
+            &reactor,
+            &policy,
+            None,
+            2,
+            &mut last_published,
+            &mut budget,
+        )
+        .unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "publication_capacity");
+        drop(budget);
+        drop(lock);
+        let restarted_lock = StateLock::acquire(&config.lock_path()).unwrap();
+        let mut restarted =
+            PublicationBudget::new(&config.publication_root, 2, &restarted_lock).unwrap();
+        assert_eq!(restarted.admit().unwrap_err().code, "publication_capacity");
+        reactor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn publication_budget_recounts_object_retained_by_failed_commit() {
+        let root = ScratchDir::new("publication-failed-commit");
+        let (profile, reactor) = fixture_reactor(root.path(), "publication-failed-commit");
+        let mut config = toml::from_str::<HostPostureConfig>(&example_config()).unwrap();
+        config.state_root = root.path().to_owned();
+        config.publication_root = root.path().join("status");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&config.publication_root)
+            .unwrap();
+        let lock = StateLock::acquire(&config.lock_path()).unwrap();
+        let mut budget = PublicationBudget::new(&config.publication_root, 2, &lock).unwrap();
+        let selector = live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap();
+        let policy = condition_policy(selector, "/");
+        publish_projection(&config, &reactor, &policy, None, 1, &mut 0, &mut budget).unwrap();
+        let mut wrong_projection = read_current_artifact(&config.publication_root).unwrap();
+        wrong_projection.projection_id = "different-projection".to_owned();
+        wrong_projection.artifact_id = wrong_projection.compute_id().unwrap();
+        assert_eq!(
+            budget.publish(&wrong_projection).unwrap_err().code,
+            "publication"
+        );
+        assert_eq!(
+            budget.admit().unwrap_err().code,
+            "publication_capacity",
+            "failed commit retained an immutable object; it still consumes a slot"
+        );
+        reactor.shutdown().unwrap();
+    }
+
+    #[test]
     fn only_a_latched_reactor_condition_ends_the_runner() {
         let root = ScratchDir::new("custody-classifier");
         let (_, reactor) = fixture_reactor(root.path(), "custody-classifier");
@@ -1823,13 +1985,23 @@ mod tests {
         let mut config = toml::from_str::<HostPostureConfig>(&example_config())
             .expect("packaged example decodes");
         config.publication_root = root.path().join("status");
-        fs::create_dir(&config.publication_root).expect("publication root");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&config.publication_root)
+            .expect("publication root");
         let selector =
             live_support_selector(&reactor.snapshot(), &profile.consumer()).expect("selector");
         let policy = condition_policy(selector, "/");
         policy.validate().expect("runner policy");
         let mut last_published = 0;
 
+        let publication_lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut publication_budget = PublicationBudget::new(
+            &config.publication_root,
+            config.maximum_publications,
+            &publication_lock,
+        )
+        .unwrap();
         let healthy = projection_cycle(
             &config,
             &reactor,
@@ -1837,6 +2009,7 @@ mod tests {
             Some(&verified),
             1,
             &mut last_published,
+            &mut publication_budget,
         )
         .expect("operational cycle publishes");
         assert!(healthy.custody_lost.is_none());
@@ -1858,6 +2031,7 @@ mod tests {
             Some(&verified),
             2,
             &mut last_published,
+            &mut publication_budget,
         )
         .expect("latched cycle still publishes");
         let error = latched

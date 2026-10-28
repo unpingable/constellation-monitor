@@ -73,6 +73,31 @@ entry ceilings that survive restart and fail closed when exhausted. Retention
 or rotation is an explicit governed installation operation, not an automatic
 runner cleanup policy.
 
+The publication count is reconstructed from all retained objects and temporary
+files after taking the writer lock. During that process occurrence, successful
+new immutable objects increase the count; publishing identical bytes again
+uses the existing object. Each cycle checks directory identities and drains a
+bounded Linux inotify stream, rather than statting every retained object.
+Ordinary changes outside the publisher invalidate the count and require a new
+complete census; symlinks and non-regular entries still refuse. An unexpected
+change during a publication, directory replacement, lost watch, queue overflow
+or more than sixteen 4096-byte event batches refuses the operation. Lost event
+continuity stays latched until a new process constructs new watches and a new
+census. A failed stage or commit invalidates the count because it may have
+retained an immutable object; a subsequent terminal withdrawal must recount it.
+No artifacts are deleted and no capacity limit is increased.
+
+This accounting depends on the same exclusive writer custody as publication.
+It does not authorize another principal to mutate the namespace while ignoring
+the lock, nor make publication atomic against such a concurrent writer. The
+publisher's existing exact-object and pointer checks remain in force. The
+namespace watcher reconciles the existing projector's candidate/create/link/
+rename sequence; changes to that sequence must update its behavioral tests.
+Startup census and journal recovery still scale with retained history, so this
+change does not supply a retention policy or bound startup latency. Ordinary
+steady-state projection no longer repeats that history scan. Linux inotify
+availability is required; allocation or watch failures refuse startup.
+
 ## Reactor custody failure
 
 The Pulse reactor latches every custody failure for the life of its process.

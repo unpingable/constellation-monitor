@@ -63,6 +63,7 @@ dependencies = [
  "constellation-status-nq-filesystem-capacity",
  "constellation-status-projection",
  "ctrlc",
+ "nix",
  "pulse-nq-load-correspondence",
  "pulse-runtime",
  "pulse-types",
