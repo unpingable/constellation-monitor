@@ -73,6 +73,30 @@ entry ceilings that survive restart and fail closed when exhausted. Retention
 or rotation is an explicit governed installation operation, not an automatic
 runner cleanup policy.
 
+Before each occurrence the acquisition worker runs `nq admin expire-due`
+through the same pinned NQ executable and configuration, under a 120 s bound
+that is separate from the unchanged 60 s acquisition deadline. NQ performs its
+scheduled ordinary-history expiry there, before the Pulse frame is sealed, so
+a due expiry batch no longer runs inside the sealed acquisition. When NQ's
+schedule is not due the step reports `deferred` from the persisted schedule
+alone. A completion lets the occurrence proceed. When it committed (the
+retention generation advanced), the following acquisition finds its schedule
+satisfied; a completion that committed nothing leaves the schedule due, and
+the acquisition repeats NQ's attempt as before. A refusal, an invalid report,
+an NQ failure or the 120 s bound ends the turn with
+`maintenance_refused code=… detail=…` on stderr: no intent is written, no
+sequence is used and nothing is delivered. Existing support then expires on
+its own schedule, and the projection becomes unknown if maintenance keeps
+failing. A non-deferred step writes
+`due_expiry_maintenance attempt=… pending=… elapsed_ms=…`. The bound permits
+about twice the observed cost of one due batch on a large store; it is not a
+latency guarantee. A store whose due batch persistently exceeds it stops
+producing support until its retained history is reduced. Because the step
+requires an NQ executable that provides `admin expire-due`, adopting it means
+re-enrolling the pinned executable. The report format is pinned by the shared
+vector `crates/pulse-nq-load-correspondence/tests/fixtures/expire_due_report_v1.json`,
+which NQ carries with identical bytes.
+
 The publication count is reconstructed from all retained objects and temporary
 files after taking the writer lock. During that process occurrence, successful
 new immutable objects increase the count; publishing identical bytes again

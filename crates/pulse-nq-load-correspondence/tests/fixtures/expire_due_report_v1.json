@@ -1,0 +1,9 @@
+{
+  "vector": "nq.admin.expire_due.v1 shared conformance",
+  "reports": [
+    {"schema": "nq.admin.expire_due.v1", "attempt": "deferred", "scope": "schedule_hint_only", "next_attempt_in_seconds": 1800, "scheduled_expiry_pending": false, "elapsed_ms": 3},
+    {"schema": "nq.admin.expire_due.v1", "attempt": "completed", "scope": "engine_validated_expiry", "deleted_rows": 12, "candidates_remaining": false, "generation_before": 3, "generation_after": 4, "scheduled_expiry_pending": false, "elapsed_ms": 51234},
+    {"schema": "nq.admin.expire_due.v1", "attempt": "completed", "scope": "engine_validated_expiry", "deleted_rows": 0, "candidates_remaining": false, "generation_before": 4, "generation_after": 4, "scheduled_expiry_pending": true, "elapsed_ms": 812},
+    {"schema": "nq.admin.expire_due.v1", "attempt": "refused", "scope": "engine_validated_expiry", "refusal": {"class": "contention", "detail": "operation lock held"}, "generation_before": 4, "generation_after": 4, "scheduled_expiry_pending": true, "elapsed_ms": 40}
+  ]
+}

@@ -33,10 +33,11 @@ use constellation_status_projection::{
     project_with_details, read_current_artifact,
 };
 use pulse_nq_load_correspondence::{
-    Coproducer, CorrespondenceError, CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NqEnrollmentV1,
-    NqProducerV1, OccurrenceOutcomeV1, PinnedNqExecutable, PulseEnrollmentV1, QuestionV1,
-    SemanticIdentityV1, SubjectIncarnationWitness, VerifiedCorrespondenceV1, read_regular_bounded,
-    sha256_hex_of_file, write_create_new,
+    Coproducer, CorrespondenceError, CorrespondenceProfileV1, DueExpiryAttemptV1,
+    NQ_ARTIFACT_SCHEMA, NqEnrollmentV1, NqProducerV1, OccurrenceOutcomeV1, OccurrenceResultV1,
+    PinnedNqExecutable, PulseEnrollmentV1, QuestionV1, SemanticIdentityV1,
+    SubjectIncarnationWitness, VerifiedCorrespondenceV1, maintenance_admits_seal,
+    read_regular_bounded, sha256_hex_of_file, write_create_new,
 };
 use pulse_runtime::{
     HistoricalJournal, JournalBoundsV1, JournalConfigV1, LocalCrashReactor,
@@ -1441,6 +1442,10 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
             code: &'static str,
             detail: String,
         },
+        MaintenanceRefused {
+            code: &'static str,
+            detail: String,
+        },
         Exhausted,
         Stopped,
     }
@@ -1480,8 +1485,27 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     break;
                 }
                 occurrences = occurrences.saturating_add(1);
-                let message = match coproducer.run_occurrence(worker_reactor) {
-                    Ok(result) => {
+                let message = match run_maintained_occurrence(
+                    || {
+                        let report = worker_port.maintain_due_expiry()?;
+                        if !matches!(report.attempt, DueExpiryAttemptV1::Deferred { .. }) {
+                            eprintln!(
+                                "due_expiry_maintenance attempt={:?} pending={} elapsed_ms={}",
+                                report.attempt, report.scheduled_expiry_pending, report.elapsed_ms
+                            );
+                        }
+                        maintenance_admits_seal(&report)
+                    },
+                    &mut coproducer,
+                    worker_reactor,
+                ) {
+                    MaintainedOccurrence::MaintenanceRefused(error) => {
+                        AcquisitionMessage::MaintenanceRefused {
+                            code: error.code,
+                            detail: error.detail,
+                        }
+                    }
+                    MaintainedOccurrence::Occurred(Ok(result)) => {
                         let sequence = result.sequence;
                         match result.outcome {
                             OccurrenceOutcomeV1::Verified(value) => AcquisitionMessage::Verified {
@@ -1498,7 +1522,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                             }
                         }
                     }
-                    Err(error) => AcquisitionMessage::Refused {
+                    MaintainedOccurrence::Occurred(Err(error)) => AcquisitionMessage::Refused {
                         code: error.code,
                         detail: error.detail,
                     },
@@ -1545,6 +1569,9 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                 }
                 Ok(AcquisitionMessage::Refused { code, detail }) => {
                     eprintln!("acquisition_refused code={code} detail={detail}");
+                }
+                Ok(AcquisitionMessage::MaintenanceRefused { code, detail }) => {
+                    eprintln!("maintenance_refused code={code} detail={detail}");
                 }
                 Ok(AcquisitionMessage::Exhausted) => {
                     terminal_error = Some(HostPostureError::new(
@@ -1651,6 +1678,26 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
     }
     shutdown_result?;
     Ok(())
+}
+
+/// One acquisition turn. NQ's due-expiry maintenance runs first, under its
+/// own bound and before anything is sealed. A maintenance failure or refusal
+/// ends the turn with no intent, sequence, acquisition or delivery; existing
+/// support then expires on its own schedule.
+pub(crate) enum MaintainedOccurrence {
+    MaintenanceRefused(CorrespondenceError),
+    Occurred(std::result::Result<OccurrenceResultV1, CorrespondenceError>),
+}
+
+pub(crate) fn run_maintained_occurrence(
+    maintain: impl FnOnce() -> std::result::Result<(), CorrespondenceError>,
+    coproducer: &mut Coproducer<'_>,
+    reactor: &LocalCrashReactor,
+) -> MaintainedOccurrence {
+    if let Err(error) = maintain() {
+        return MaintainedOccurrence::MaintenanceRefused(error);
+    }
+    MaintainedOccurrence::Occurred(coproducer.run_occurrence(reactor))
 }
 
 #[cfg(test)]
@@ -1955,6 +2002,82 @@ mod tests {
             assert!(error.detail.contains(&format!("{condition:?}")));
             assert!(error.detail.contains("timer custody unavailable"));
         }
+        reactor.shutdown().expect("clean fixture shutdown");
+    }
+
+    #[test]
+    fn maintenance_precedes_the_seal_and_a_refusal_burns_no_sequence() {
+        let root = ScratchDir::new("preseal-maintenance");
+        let (profile, reactor) = fixture_reactor(root.path(), "preseal-maintenance");
+        let nq = pulse_nq_load_correspondence::fixture::FakeNq::new(
+            profile.clone(),
+            pulse_nq_load_correspondence::fixture::SyntheticOutcome::Present,
+        );
+        let witness = pulse_nq_load_correspondence::FixedSubjectIncarnation(IncarnationId::new(
+            pulse_nq_load_correspondence::fixture::SYNTHETIC_SUBJECT_INCARNATION,
+        ));
+        let intent_dir = root.path().join("intent");
+        let audit_dir = root.path().join("audit");
+        let mut coproducer = Coproducer::begin(&profile, &nq, &witness, &intent_dir, &audit_dir)
+            .expect("coproducer");
+        let entries = |directory: &Path| fs::read_dir(directory).map_or(0, Iterator::count);
+        let occurred = |turn: MaintainedOccurrence| match turn {
+            MaintainedOccurrence::Occurred(Ok(result)) => result,
+            MaintainedOccurrence::Occurred(Err(error)) => panic!("occurrence failed: {error:?}"),
+            MaintainedOccurrence::MaintenanceRefused(error) => {
+                panic!("maintenance unexpectedly refused: {error:?}")
+            }
+        };
+
+        // Maintenance runs before anything is sealed or acquired.
+        let first = occurred(run_maintained_occurrence(
+            || {
+                assert_eq!(entries(&intent_dir), 0, "maintenance precedes the seal");
+                assert_eq!(nq.acquire_attempt_count(), 0);
+                Ok(())
+            },
+            &mut coproducer,
+            &reactor,
+        ));
+        assert!(matches!(first.outcome, OccurrenceOutcomeV1::Verified(_)));
+        assert_eq!(entries(&intent_dir), 1);
+
+        // A failed maintenance step ends the turn: no intent, audit record,
+        // acquisition, or delivery.
+        let audits = entries(&audit_dir);
+        match run_maintained_occurrence(
+            || {
+                Err(CorrespondenceError::new(
+                    "nq_maintenance_timeout",
+                    "fixture: maintenance exceeded its bound",
+                ))
+            },
+            &mut coproducer,
+            &reactor,
+        ) {
+            MaintainedOccurrence::MaintenanceRefused(error) => {
+                assert_eq!(error.code, "nq_maintenance_timeout");
+            }
+            MaintainedOccurrence::Occurred(_) => {
+                panic!("a maintenance failure must not reach the occurrence")
+            }
+        }
+        assert_eq!(entries(&intent_dir), 1);
+        assert_eq!(entries(&audit_dir), audits);
+        assert_eq!(nq.acquire_attempt_count(), 1);
+
+        // The next turn continues the lineage without a gap; a burned
+        // sequence would make the certificate DEGRADED (audit only).
+        let next = occurred(run_maintained_occurrence(
+            || Ok(()),
+            &mut coproducer,
+            &reactor,
+        ));
+        assert_eq!(next.sequence, first.sequence + 1, "no sequence was burned");
+        assert!(
+            matches!(next.outcome, OccurrenceOutcomeV1::Verified(_)),
+            "continuous lineage keeps CURRENT support"
+        );
         reactor.shutdown().expect("clean fixture shutdown");
     }
 
