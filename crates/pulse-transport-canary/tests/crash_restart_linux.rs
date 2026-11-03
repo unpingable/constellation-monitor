@@ -6,8 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pulse_runtime::{
-    EphemeralPrivateKeyFileV1, HistoricalJournal, ReceiverSchedulerRuntime, RuntimeBoundsV1,
-    RuntimeConfigV1,
+    EphemeralPrivateKeyFileV1, HistoricalJournal, JournalDamageClassV1, JournalRecoveryOutcomeV1,
+    ReceiverSchedulerRuntime, RuntimeBoundsV1, RuntimeConfigV1,
 };
 use pulse_transport_canary::{
     CANARY_CONSUMER_A, CANARY_SUBJECT, CrashChildReadyV1, canary_registration,
@@ -102,7 +102,7 @@ fn ephemeral_private_key_file_is_mode_0600_and_removed_on_drop() {
 }
 
 #[test]
-fn sigkill_while_remote_current_recovers_history_but_no_session_evidence_or_standing() {
+fn sigkill_after_last_observed_current_recovers_history_but_no_session_evidence_or_standing() {
     let marker = std::env::temp_dir().join(format!(
         "monitor-custody-crash-ready-{}.json",
         std::process::id()
@@ -149,8 +149,39 @@ fn sigkill_while_remote_current_recovers_history_but_no_session_evidence_or_stan
     let receiver_journal = std::path::Path::new(&ready.receiver_journal_path);
     let report = HistoricalJournal::scan(receiver_journal, &receiver_journal_config())
         .expect("scan crash journal");
+    // The ready marker records Current before the asynchronous kill. The
+    // reactor keeps running and may be appending an expiry or withdrawal.
+    // Accept only the documented clean EOF or permitted incomplete suffix.
+    match (report.outcome, report.damage) {
+        (JournalRecoveryOutcomeV1::Clean, None) => {
+            assert!(report.history_complete);
+            assert!(!report.operator_action_required);
+        }
+        (
+            JournalRecoveryOutcomeV1::RecoveredThroughValidPrefix,
+            Some(
+                JournalDamageClassV1::TruncatedHeader
+                | JournalDamageClassV1::TruncatedPayload
+                | JournalDamageClassV1::TruncatedTrailer
+                | JournalDamageClassV1::UncommittedSuffix
+                | JournalDamageClassV1::TruncatedCommitMarker
+                | JournalDamageClassV1::UnexpectedTrailingBytes,
+            ),
+        ) => {
+            assert!(!report.history_complete);
+            assert!(report.operator_action_required);
+            assert!(report.records_recovered > 0);
+        }
+        _ => panic!("crash journal is outside the permitted recovery contract: {report:?}"),
+    }
     let projection = report.project_history().expect("history projection");
-    assert!(projection.history_complete);
+    assert_eq!(projection.recovery_outcome, report.outcome);
+    assert_eq!(projection.recovery_damage, report.damage);
+    assert_eq!(projection.history_complete, report.history_complete);
+    assert_eq!(
+        projection.operator_action_required,
+        report.operator_action_required
+    );
     assert!(!projection.current_standing_reconstructed);
     assert!(!projection.active_escalation_suppression_restored);
     assert!(

@@ -591,7 +591,7 @@ pub fn write_campaign_artifacts(
                 {"point": "sender_qualified", "test": "sigkill_before_session_during_session_and_after_signing_restores_no_live_custody"},
                 {"point": "session_active", "test": "sigkill_before_session_during_session_and_after_signing_restores_no_live_custody"},
                 {"point": "envelope_signed", "test": "sigkill_before_session_during_session_and_after_signing_restores_no_live_custody"},
-                {"point": "receiver_current", "test": "sigkill_while_remote_current_recovers_history_but_no_session_evidence_or_standing"}
+                {"point": "receiver_current", "test": "sigkill_after_last_observed_current_recovers_history_but_no_session_evidence_or_standing"}
             ],
             "required_crash_points": [
                 {"point": "receiver after challenge creation but before send", "executed_exactly": false, "status": "live pending challenge is nonserializable; exact instruction boundary is not exposed"},
@@ -605,7 +605,7 @@ pub fn write_campaign_artifacts(
                 {"point": "receiver after acceptance receipt journaling but before evaluator admission", "executed_exactly": false, "status": "atomic instruction boundary is not exposed"},
                 {"point": "receiver after evidence admission but before support-certificate journaling", "executed_exactly": false, "status": "atomic instruction boundary is not exposed"},
                 {"point": "sender while locally QualifiedAndMatched", "executed_exactly": true, "fixture_point": "sender_qualified"},
-                {"point": "receiver while CURRENT", "executed_exactly": true, "fixture_point": "receiver_current"},
+                {"point": "receiver while CURRENT", "executed_exactly": false, "fixture_point": "receiver_current", "status": "CURRENT is observed before the ready marker; no barrier holds currentness until asynchronous SIGKILL"},
                 {"point": "either peer during clean shutdown", "executed_exactly": false, "status": "clean reactor termination is tested; SIGKILL within canary shutdown is not exposed"}
             ],
             "additional_executed_point": {
