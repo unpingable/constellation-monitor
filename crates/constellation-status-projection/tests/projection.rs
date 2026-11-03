@@ -1,6 +1,6 @@
 mod common;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use constellation_status_projection::{
     AvailabilityV1, DependencyEffectV1, ImpactV1, MAINTENANCE_ASSERTION_SCHEMA_V1,
@@ -153,17 +153,27 @@ fn reusing_one_live_observation_never_moves_its_absolute_presentation_deadline()
     let mut expiry_policy = policy(true);
     expiry_policy.timestamp_granularity_ms = 1;
     expiry_policy.admitted_clock_uncertainty_ms = 0;
-    let short_support = vec![
-        live_support("evidence:service", 5, 0),
-        live_support("evidence:subordinate", 5, 0),
-    ];
-    std::thread::sleep(Duration::from_millis(10));
+    // Reuse admitted support: constructing a five-millisecond exchange assumed
+    // admission always ran before a scheduler delay could consume its lifetime.
+    // Observe expiry through the public consumer instead of assuming a sleep
+    // crossed the deadline.
+    let wait_started = Instant::now();
+    while support
+        .iter()
+        .any(|live| live.usable_remaining_ms_at(Instant::now()).is_some())
+    {
+        assert!(
+            wait_started.elapsed() < Duration::from_secs(35),
+            "the original thirty-second support did not expire within the wait bound"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let expired = project(
         &expiry_policy,
         &facts,
-        &short_support,
+        &support,
         &[],
-        ProjectionMomentV1::now(NOW + 10),
+        ProjectionMomentV1::now(NOW + 30_000),
     )
     .unwrap();
     assert_eq!(expired.aggregate_state, ProjectedStateV1::Unknown);
