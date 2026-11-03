@@ -293,7 +293,6 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         ROW_FRAME_VALIDITY_MS,
     )
     .expect("live");
-    std::thread::sleep(Duration::from_millis(5));
     let second = admit_live(
         &verified,
         &policy,
@@ -303,10 +302,23 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         ROW_FRAME_VALIDITY_MS,
     )
     .expect("a repeated query is a new measurement, not a refresh");
+    // Fresh queries may discard different amounts of caller elapsed time.
+    // A more precise second measurement can therefore have a later local bound
+    // without moving the source deadline. Each observation must consume its own
+    // remaining interval and remain bounded by its original trusted lifetime.
     let now = std::time::Instant::now();
-    let first_remaining = first.usable_remaining_ms_at(now).unwrap_or(0);
-    let second_remaining = second.usable_remaining_ms_at(now).unwrap_or(0);
-    assert!(second_remaining <= first_remaining + 1);
+    for observation in [&first, &second] {
+        let remaining = observation.usable_remaining_ms_at(now).unwrap_or(0);
+        let later = observation
+            .usable_remaining_ms_at(now + Duration::from_millis(5))
+            .unwrap_or(0);
+        assert!(later <= remaining.saturating_sub(5));
+        assert!(
+            observation
+                .usable_remaining_ms_at(now + Duration::from_millis(ROW_FRAME_VALIDITY_MS))
+                .is_none()
+        );
+    }
     let deadline_after_queries = harness
         .reactor
         .snapshot()
