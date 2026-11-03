@@ -49,6 +49,61 @@ The explicit target labels select observations; they do not authenticate target
 identity or establish coverage of other expected targets. They do not cover OOMs, memory
 capacity or service productivity. Cross-service causal inference is not delivered.
 
+For one declared worker's useful-work history, select the service and its actual
+scrape target instead of the memory sweep:
+
+```sh
+python3 diagnostic/constellation-diagnostic.py \
+  --registry /etc/constellation-estate/estate.json \
+  --attention /var/lib/constellation-attention/report.json \
+  --vm-url http://127.0.0.1:8428 \
+  --service demo-worker --instance 127.0.0.1:18080 --job service-demo-worker \
+  --record /path/to/new-worker-investigation.json
+```
+
+`--service` and `--condition` are alternative selections. A direct application
+endpoint normally uses the existing declaration renderer's `service-<name>` job;
+application textfiles use their actual node_exporter instance/job. The exact
+site and service come from the approved registry. The worker must already supply
+the standard `service_last_success_timestamp_seconds` (last committed useful
+work) and `service_observation_timestamp_seconds` (application observation
+clock), with declared positive `last_success_age_seconds` and
+`metrics_observation_age_seconds` thresholds. See the
+[existing instrumentation contract](../estate/README.md#authored-service-declarations-p2).
+A counter alone has no generic useful-work meaning here; the application records
+its successful-work timestamp when its own commit succeeds. No Constellation
+library, agent-status protocol or process attribution is introduced.
+
+The diagnostic makes four bounded range queries: both timestamp families and
+the underlying scrape sample time of each. Each must contain exactly one
+complete, aligned history for the selected site/service/instance/job. Missing,
+duplicated, wrong-target, stale, future, nonfinite, gapped or backwards/reset
+history is unknown. A fresh scrape of a frozen application textfile cannot prove
+fresh application observations. Missing declarations or either authored limit
+also remain unknown. These are source-labelled observations, not authentication
+of the exporter or proof that its claim is true.
+
+Fresh application observations with an overdue committed-work timestamp produce
+`probably_wrong`, naming the observed age and the authored useful-work budget.
+Timestamp advancement with a latest success inside that budget supports only
+sampled progress (`checked_not_wrong_within_scope`). No advancement inside an
+unexpired budget is unknown: quiet work is not a stall finding. An active unit
+or HTTP 200 cannot replace useful-work observations, establish worker loss or
+identify a failure cause. Optional unit/journal reads remain context; this
+command does not perform health probes, execute declaration/status argv, restart
+work, retry work or change any authority. Service mode has at most 32 sources /
+96 seconds of reader budget, and never expands into unrelated service queries.
+
+For offline replay, `--metrics-fixture` reads `service_work.json`,
+`service_observation.json`, `service_work_source_time.json` and
+`service_observation_source_time.json` as captured `query_range` responses.
+The result retains each response's query/path, byte hash and excerpt. The
+operator owns the investigation record and retires it when its incident/replay
+dependency ends. Local HTTP fixtures exercise fresh progress and overdue useful
+work while the fixture's health endpoint still returns 200; they do not claim
+an installed worker or live VictoriaMetrics acceptance. The root disposable
+operator campaign owns that separate runtime demonstration.
+
 The CLI accepts literal loopback HTTP only, disables proxies and redirects, and
 performs GET query_range requests. Each source has a hard three-second deadline
 and a 1 MiB cap. Registry services are capped at 100; conditions/incidents at

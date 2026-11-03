@@ -28,6 +28,8 @@ QUERIES = {
     "required_families": '{__name__=~"node_memory_SwapTotal_bytes|node_memory_SwapFree_bytes|node_vmstat_pswpin|node_vmstat_pswpout|node_pressure_memory_waiting_seconds_total"}',
 }
 BINS = ("wrong", "probably_wrong", "checked_not_wrong_within_scope", "unknown")
+SERVICE_WORK = "service_last_success_timestamp_seconds"
+SERVICE_OBSERVATION = "service_observation_timestamp_seconds"
 
 
 def target_query(query, instance, job, site):
@@ -138,6 +140,22 @@ def history(document, now, window):
     return [v for _, v in values]
 
 
+def service_history(document, labels, now, window, family=None):
+    history(document, now, window)
+    series = document["data"]["result"][0]
+    metric = series.get("metric", {})
+    if (any(metric.get(key) != value for key, value in labels.items())
+            or (family is not None and metric.get("__name__") != family)):
+        raise ValueError("insufficient history: wrong service target or metric family")
+    if any(isinstance(t, bool) or not isinstance(t, (int, float)) or not isinstance(v, str)
+           for t, v in series["values"]):
+        raise ValueError("unsupported service metric sample encoding")
+    values = [(float(t), float(v)) for t, v in series["values"]]
+    if any(v < 0 or v > min(t, now) for t, v in values):
+        raise ValueError("invalid negative or future service timestamp")
+    return values
+
+
 class Investigation:
     def __init__(self, args, now):
         self.args, self.now = args, now
@@ -185,6 +203,80 @@ class Investigation:
             self.finding("unknown", name, str(error), [name], "Provide a current supported source.")
             return None
 
+    def service_progress(self, registry):
+        args = self.args
+        subject = f"service:{args.service}:useful-work"
+        ids = ["registry"]
+        try:
+            if not registry or not isinstance(registry.get("site"), str) or not registry["site"]:
+                raise ValueError("registry has no usable expected site identity")
+            matches = [service for service in registry.get("services", [])
+                       if isinstance(service, dict) and service.get("name") == args.service]
+            if len(matches) != 1:
+                raise ValueError("expected exactly one approved service declaration")
+            limits = matches[0].get("thresholds", {})
+            for name in ("last_success_age_seconds", "metrics_observation_age_seconds"):
+                value = limits.get(name)
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or value <= 0):
+                    raise ValueError(f"unsupported or missing declared {name} limit")
+            labels = {"site": registry["site"], "service": args.service,
+                      "instance": args.instance, "job": args.job}
+            selector = ",".join(key + "=" + json.dumps(value) for key, value in labels.items())
+            histories = {}
+            unavailable = False
+            for name, family, sample_time in (
+                    ("work", SERVICE_WORK, False), ("observation", SERVICE_OBSERVATION, False),
+                    ("work_source_time", SERVICE_WORK, True), ("observation_source_time", SERVICE_OBSERVATION, True)):
+                query = family + "{" + selector + "}"
+                if sample_time:
+                    query = "timestamp(" + query + ")"
+                identity = "metric:service:" + name
+                ids.append(identity)
+                path = Path(args.metrics_fixture) / ("service_" + name + ".json") if args.metrics_fixture else None
+                raw = self.source(identity, path or (args.vm_url + " query=" + query),
+                                  lambda p=path, q=query: read_bytes(p) if p else vm_query(args.vm_url, q, self.now, args.window))
+                if raw is None:
+                    unavailable = True
+                    continue
+                histories[name] = service_history(json.loads(raw), labels, self.now, args.window,
+                                                  None if sample_time else family)
+            if unavailable or len(histories) != 4:
+                raise ValueError("insufficient service history: a required query is unavailable")
+            times = [t for t, _ in histories["work"]]
+            if any([t for t, _ in values] != times for values in histories.values()):
+                raise ValueError("insufficient history: service query windows do not align")
+            for name in ("work_source_time", "observation_source_time"):
+                values = histories[name]
+                if (any(t - v > args.max_age for t, v in values)
+                        or self.now - values[-1][1] > args.max_age):
+                    raise ValueError("insufficient history: underlying service samples are stale")
+            for name in ("work", "observation"):
+                values = [v for _, v in histories[name]]
+                if any(b < a for a, b in zip(values, values[1:])):
+                    raise ValueError("service timestamp moved backwards; generation or clock change is unsupported")
+            observations = histories["observation"]
+            if (any(t - v > limits["metrics_observation_age_seconds"] for t, v in observations)
+                    or self.now - observations[-1][1] > limits["metrics_observation_age_seconds"]):
+                raise ValueError("application observation clock is stale; a fresh scrape does not establish application progress")
+            work = [v for _, v in histories["work"]]
+            advances = sum(b > a for a, b in zip(work, work[1:]))
+            age = self.now - work[-1]
+            budget = limits["last_success_age_seconds"]
+            if age > budget:
+                self.finding("probably_wrong", subject,
+                             f"Recorded useful work is overdue: latest committed success is {age:g} s old, exceeding the declared {budget:g} s budget; {advances} timestamp advances in the sampled window. Application observations are fresh; process state and HTTP availability do not establish useful work or its failure cause.",
+                             ids, "Inspect the worker's inputs, backlog and output path; follow the existing incident or governed remediation procedure.")
+            elif advances:
+                self.finding("checked_not_wrong_within_scope", subject,
+                             f"Recorded useful-work timestamp advanced {advances} times in the sampled window; latest committed success is {age:g} s old, within the declared {budget:g} s budget. This supports sampled progress, not whole-service health.",
+                             ids, "No useful-work deadline failure shown by these observations; other failure modes remain outside this check.")
+            else:
+                raise ValueError("no useful-work timestamp advance observed, but the declared budget is not overdue; quiet work is not a stall finding")
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError) as error:
+            self.finding("unknown", subject, str(error), ids,
+                         "Acquire complete fresh standard service observations and approved limits before diagnosing useful work.")
+
     def run(self):
         args = self.args
         registry = self.document("registry", args.registry, "constellation.estate_registry/v1")
@@ -195,7 +287,10 @@ class Investigation:
             self.finding("unknown", "declared services", "Declarations describe expectations; they do not establish current health.",
                          ["registry"], "Read current observations for the declared services.")
             if args.local_readers:
-                for service in services[:args.unit_limit]:
+                context_services = ([service for service in services
+                                     if isinstance(service, dict) and service.get("name") == args.service]
+                                    if args.service else services)
+                for service in context_services[:args.unit_limit]:
                     unit = service.get("runtime", {}).get("systemd")
                     if unit and re.fullmatch(r"[A-Za-z0-9_.@:-]+\.(service|timer)", unit):
                         raw = self.source("unit:" + unit, unit, lambda u=unit: command([
@@ -246,7 +341,9 @@ class Investigation:
         for index, path in enumerate(args.runbook):
             self.source("runbook:" + str(index), path, lambda p=path: read_bytes(p))
         site = registry.get("site") if registry else None
-        memory_requested = not args.condition or args.condition == "host.memory_pressure"
+        if args.service:
+            self.service_progress(registry)
+        memory_requested = not args.service and (not args.condition or args.condition == "host.memory_pressure")
         if memory_requested and (not isinstance(site, str) or not site):
             self.finding("unknown", "host.memory_pressure", "Registry has no usable expected site identity.", ["registry"], "Restore the expected host registry before diagnosing memory.")
         if memory_requested and isinstance(site, str) and site:
@@ -280,7 +377,7 @@ class Investigation:
                     self.finding("probably_wrong", "host.memory_pressure",
                                  f"Paging or memory stalls observed (maximum pages/s={paging}, PSI ratio={psi}); severity and cause not established.",
                                  ids, "Inspect history and workload before considering governed remediation.")
-        return dict(schema="constellation.diagnostic/v1", asked=dict(vars(args), mode="condition" if args.condition else "host-sweep",
+        return dict(schema="constellation.diagnostic/v1", asked=dict(vars(args), mode="service" if args.service else "condition" if args.condition else "host-sweep",
                     at=self.now),
                     scope="Read-only observations; no action authority, no whole-host health assertion.",
                     sources=self.sources, bins=self.bins)
@@ -291,10 +388,12 @@ def main(argv=None):
     parser.add_argument("--registry", required=True)
     parser.add_argument("--attention", required=True)
     parser.add_argument("--incidents", help="JSON from constellation-incidents inspect")
-    parser.add_argument("--condition", help="Exact attention condition ID, or host.memory_pressure")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--condition", help="Exact attention condition ID, or host.memory_pressure")
+    selection.add_argument("--service", help="Exact declared service to investigate useful-work history")
     parser.add_argument("--vm-url", default="http://127.0.0.1:8428")
-    parser.add_argument("--instance", required=True, help="Exact expected node_exporter instance label")
-    parser.add_argument("--job", required=True, help="Exact expected node_exporter job label")
+    parser.add_argument("--instance", required=True, help="Exact expected metric scrape instance label")
+    parser.add_argument("--job", required=True, help="Exact expected metric scrape job label")
     parser.add_argument("--metrics-fixture", help="Directory of captured query_range responses (one per named query)")
     parser.add_argument("--window", type=int, default=900)
     parser.add_argument("--max-age", type=int, default=300)
@@ -303,6 +402,8 @@ def main(argv=None):
     parser.add_argument("--runbook", action="append", default=[])
     parser.add_argument("--record", required=True, help="New exclusive asked/result JSON file (never overwritten)")
     args = parser.parse_args(argv)
+    if args.service and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,47}", args.service):
+        parser.error("service must be a declared lowercase service token of at most 48 characters")
     if not 300 <= args.window <= 3600 or not 1 <= args.max_age <= 3600 or not 0 <= args.unit_limit <= 10 or len(args.runbook) > 5:
         parser.error("bounds: window 300..3600, max-age 1..3600, units 0..10, runbooks <=5")
     # Reserve the record before collecting, ensuring every started investigation records its question.
