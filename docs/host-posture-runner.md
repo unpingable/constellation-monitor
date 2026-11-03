@@ -122,6 +122,14 @@ change does not supply a retention policy or bound startup latency. Ordinary
 steady-state projection no longer repeats that history scan. Linux inotify
 availability is required; allocation or watch failures refuse startup.
 
+The census uses directory-entry file types instead of reading each child's
+inode metadata when the filesystem provides the type. The standard library
+falls back to no-follow metadata where necessary. Symlinks and non-regular
+entries still refuse, and the exact counts and capacity limits are unchanged.
+On Linux with native entry types, run the explicit syscall regression with
+`cargo test -p constellation-host-posture --lib store_census_avoids_per_entry_metadata_syscalls -- --ignored --nocapture`
+and `strace` installed. This measures child metadata calls, not startup latency.
+
 ## Reactor custody failure
 
 The Pulse reactor latches every custody failure for the life of its process.

@@ -956,9 +956,12 @@ fn count_regular_store_entries(path: &Path, bound: u64, name: &str) -> Result<u6
     let mut count = 0_u64;
     for entry in fs::read_dir(path).map_err(|error| map_error("store_bound", error))? {
         let entry = entry.map_err(|error| map_error("store_bound", error))?;
-        let metadata =
-            fs::symlink_metadata(entry.path()).map_err(|error| map_error("store_bound", error))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        // Use the directory's native type where available. The standard
+        // library falls back to no-follow metadata when the type is unknown.
+        let file_type = entry
+            .file_type()
+            .map_err(|error| map_error("store_bound", error))?;
+        if file_type.is_symlink() || !file_type.is_file() {
             return Err(HostPostureError::new(
                 "store_bound",
                 format!("{name} contains a non-regular entry"),
@@ -1786,6 +1789,155 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn store_census_counts_entries_and_deletions_at_the_exact_bound() {
+        let root = ScratchDir::new("store-census-count");
+        fs::write(root.path().join("a"), b"retained").unwrap();
+        fs::write(root.path().join("b"), b"retained").unwrap();
+        assert_eq!(
+            count_regular_store_entries(root.path(), 2, "test").unwrap(),
+            2
+        );
+        assert_eq!(
+            count_regular_store_entries(root.path(), 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+        fs::remove_file(root.path().join("a")).unwrap();
+        assert_eq!(
+            count_regular_store_entries(root.path(), 1, "test").unwrap(),
+            1
+        );
+        fs::remove_file(root.path().join("b")).unwrap();
+        assert_eq!(
+            count_regular_store_entries(root.path(), 0, "test").unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn store_census_refuses_symlinks_directories_and_fifos() {
+        let root = ScratchDir::new("store-census-types");
+        let store = root.path().join("store");
+        fs::create_dir(&store).unwrap();
+        fs::write(root.path().join("target"), b"retained").unwrap();
+        let entry = store.join("unexpected");
+        for target in ["../target", "../missing"] {
+            std::os::unix::fs::symlink(target, &entry).unwrap();
+            assert_eq!(
+                count_regular_store_entries(&store, 1, "test")
+                    .unwrap_err()
+                    .code,
+                "store_bound"
+            );
+            fs::remove_file(&entry).unwrap();
+        }
+        fs::create_dir(&entry).unwrap();
+        assert_eq!(
+            count_regular_store_entries(&store, 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+        fs::remove_dir(&entry).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&entry)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            count_regular_store_entries(&store, 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+        fs::remove_file(&entry).unwrap();
+        let link = root.path().join("linked-store");
+        std::os::unix::fs::symlink(&store, &link).unwrap();
+        assert_eq!(
+            count_regular_store_entries(&link, 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+    }
+
+    /// Explicit Linux performance regression; run with strace on a filesystem
+    /// that supplies directory entry types. This observes the real census,
+    /// without a wall-clock threshold or instrumentation in production code.
+    #[test]
+    #[ignore = "requires Linux strace and native directory entry types"]
+    fn store_census_avoids_per_entry_metadata_syscalls() {
+        const TRACE_PATH: &str = "CONSTELLATION_HOST_POSTURE_CENSUS_TRACE_PATH";
+        if let Some(path) = std::env::var_os(TRACE_PATH) {
+            assert_eq!(
+                count_regular_store_entries(Path::new(&path), 256, "trace").unwrap(),
+                256
+            );
+            return;
+        }
+        let root = ScratchDir::new("store-census-trace");
+        let store = root.path().join("objects");
+        fs::create_dir(&store).unwrap();
+        for n in 0..256 {
+            fs::write(store.join(format!("entry-{n}")), b"retained").unwrap();
+        }
+        let trace = root.path().join("syscalls");
+        let output = std::process::Command::new("strace")
+            .args(["-f", "-qq", "-e", "trace=statx,newfstatat", "-o"])
+            .arg(&trace)
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "tests::store_census_avoids_per_entry_metadata_syscalls",
+                "--nocapture",
+            ])
+            .env(TRACE_PATH, &store)
+            .output()
+            .expect("run the actual census under strace");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let child_path = format!("{}/entry-", store.display());
+        let child_stats = fs::read_to_string(&trace)
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                line.contains(&child_path)
+                    && (line.contains("statx(") || line.contains("newfstatat("))
+            })
+            .count();
+        println!("per-child metadata syscalls: {child_stats}");
+        assert_eq!(
+            child_stats, 0,
+            "directory entry types must avoid one inode read per retained object"
+        );
+    }
+
+    #[test]
+    fn publication_budget_recounts_deleted_objects() {
+        let root = ScratchDir::new("publication-delete");
+        let status = root.path().join("status");
+        fs::create_dir_all(status.join("objects")).unwrap();
+        fs::create_dir(status.join("tmp")).unwrap();
+        fs::write(status.join("objects/a"), b"retained").unwrap();
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 1, &lock).unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "publication_capacity");
+        fs::remove_file(status.join("objects/a")).unwrap();
+        assert!(
+            budget.refresh().unwrap(),
+            "deletion invalidates the prior census"
+        );
+        budget.admit().unwrap();
     }
 
     fn fixture_reactor(root: &Path, label: &str) -> (CorrespondenceProfileV1, LocalCrashReactor) {
