@@ -20,8 +20,8 @@ use crate::inputs::{
 use crate::intent::{self, Action, INTENT_V1, INTENT_V2, IntentInput, ResolveReason};
 use crate::nq;
 use crate::registry::{
-    Class, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS,
-    UNKNOWN_GAP_SECONDS,
+    Class, InputKind, PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS,
+    RESOLVE_CONFIRM_SECONDS, UNKNOWN_GAP_SECONDS,
 };
 use crate::remediation::{self, PageDecision};
 use crate::state::{
@@ -1094,7 +1094,9 @@ fn evaluate_locked(
         read.reports.push(InputReport {
             label: "reconfiguration_marker".into(),
             kind: "reconfiguration_marker",
-            component: "host_posture",
+            component: InputKind::HostPosture
+                .fault_component()
+                .expect("concrete input component"),
             source: marker_path.display().to_string(),
             status: InputStatus::Unavailable,
             causes: vec!["unreadable"],

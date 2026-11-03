@@ -2,6 +2,8 @@
 //! may only enable or disable a rule, change its one threshold, and choose
 //! `page` or `notice` where the rule allows it. There are no user-defined rules.
 
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
@@ -109,6 +111,23 @@ pub enum InputKind {
     Evaluator,
     /// Not deployed; the rule exists so the registry matches Cartography.
     NotDeployed,
+}
+
+impl InputKind {
+    /// Component of this input's own availability report. The runtime reports
+    /// and the install-time registry export share these existing identities.
+    #[must_use]
+    pub const fn fault_component(self) -> Option<&'static str> {
+        match self {
+            Self::HostPosture | Self::HostPostureOrNqStatus | Self::MetricAlerts => {
+                Some("host_posture")
+            }
+            Self::NqStatus | Self::SavedCheck => Some("nq"),
+            Self::Nightshift => Some("nightshift"),
+            Self::Estate => Some("estate"),
+            Self::Evaluator | Self::NotDeployed => None,
+        }
+    }
 }
 
 /// What the rule's single tunable threshold bounds.
@@ -523,6 +542,51 @@ pub const RULES: [Rule; 15] = [
 #[must_use]
 pub fn rule(id: &str) -> Option<&'static Rule> {
     RULES.iter().find(|rule| rule.id == id)
+}
+
+/// NQ's strict install-time consumer format. This describes notification
+/// capabilities; it contains no configured routes or escalation grants.
+#[derive(Debug, Serialize)]
+pub struct EscalationRegistry {
+    schema: &'static str,
+    anchors: Vec<EscalationAnchor>,
+}
+
+#[derive(Debug, Serialize)]
+struct EscalationAnchor {
+    rule: &'static str,
+    components: Vec<&'static str>,
+    response_classes: Vec<ResponseClass>,
+}
+
+/// Export every compiled producer, including disabled rules, for NQ's
+/// `notification policy --check-registry` operation. Existing intent rendering
+/// permits attention notices for page rules when downgraded or removed.
+#[must_use]
+pub fn escalation_registry() -> EscalationRegistry {
+    let input_components: Vec<_> = RULES
+        .iter()
+        .filter_map(|rule| rule.input.fault_component())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    EscalationRegistry {
+        schema: "nq.escalation_registry.v1",
+        anchors: RULES
+            .iter()
+            .map(|rule| EscalationAnchor {
+                rule: rule.id,
+                components: rule
+                    .component
+                    .map_or_else(|| input_components.clone(), |component| vec![component]),
+                response_classes: if rule.response_class == ResponseClass::Page {
+                    vec![ResponseClass::Attention, ResponseClass::Page]
+                } else {
+                    vec![ResponseClass::Attention]
+                },
+            })
+            .collect(),
+    }
 }
 
 /// The rule anchors NQ accepts in a v2 (`PagerDuty`) intent: NQ 0.2.1's 17

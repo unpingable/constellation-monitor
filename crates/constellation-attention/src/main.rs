@@ -10,7 +10,7 @@ use constellation_attention::engine::{self, PassOptions};
 use constellation_attention::intent::policy_digest_with;
 use constellation_attention::registry::{
     PAGE_RESEND_SECONDS, REGISTRY_VERSION, RESEND_INTERVAL_SECONDS, RESOLVE_CONFIRM_SECONDS, RULES,
-    UNKNOWN_GAP_SECONDS,
+    UNKNOWN_GAP_SECONDS, escalation_registry,
 };
 use constellation_attention::state::State;
 use constellation_attention::util::parse_rfc3339;
@@ -23,6 +23,7 @@ const USAGE: &str = "usage:
   constellation-attention state --config FILE
   constellation-attention reset-clock --config FILE
   constellation-attention rules
+  constellation-attention escalation-registry
   constellation-attention check-config --config FILE";
 
 struct Arguments {
@@ -113,6 +114,16 @@ fn run() -> Result<u8, (u8, String)> {
     }
     let arguments = parse(raw.into_iter()).map_err(|error| (2, error))?;
     match arguments.command.as_str() {
+        "escalation-registry" => {
+            if arguments.config.is_some() {
+                return Err((2, USAGE.to_owned()));
+            }
+            print(
+                &serde_json::to_value(escalation_registry())
+                    .map_err(|error| (1, error.to_string()))?,
+            );
+            Ok(0)
+        }
         "rules" => {
             if arguments.config.is_some() {
                 return Err((2, USAGE.to_owned()));

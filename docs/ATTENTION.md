@@ -10,13 +10,14 @@ whose inputs exist today.
 refuses every intent from this build before custody: nothing would be
 delivered. Do not install the evaluator against an NQ older than 0.2.2.
 
-**`remediation-journal-critical` needs NQ to carry its anchor.** NQ refuses
-a v2 (PagerDuty) submission whose rule is not in its closed anchor set (the
-17 Cartography anchors through at least NQ 0.2.6), before custody. Until NQ
-adds `remediation-journal-critical` to that set, this rule's notice copy
-reaches the notice route but its page is refused at every attempt
+**`remediation-journal-critical` needs an authorized NQ policy anchor.** NQ
+releases with the compiled anchor set (the 17 Cartography anchors through at
+least NQ 0.2.6) refuse this rule's v2 page before custody. Its notice copy
+reaches the notice route but the page is refused at every attempt
 (`command_error`, retried each pass, exit 4 unless an input error takes
-precedence).
+precedence). NQ builds with declared escalation policy require the operator
+to install and pin a document that explicitly permits this anchor and route;
+the registry export below does not grant that permission.
 
 NQ 0.2.6's compiled allowlist lives in `crates/nq-app/src/notification.rs`
 (NQ commit `50ef404`): `PAGERDUTY_COMPONENTS` and `PAGERDUTY_RULES`.
@@ -45,6 +46,34 @@ queries say `reason not inspected this pass`; a timed-out query says
 say `reason not inspected this pass (see intents.jsonl)`: the reason NQ gave
 at the last attempt is in that attempt's intents.jsonl row and surfaces again
 on the next attempt.
+
+## Check the installed escalation policy
+
+On an NQ build supporting declared policy (`notification policy
+--check-registry`), export this attention build's complete producer set and
+check it against the operator-approved installed document:
+
+```sh
+constellation-attention escalation-registry > attention-escalation-registry.json
+nq --config /etc/nq/nqd-ops.toml --json notification policy \
+  --check-registry attention-escalation-registry.json --route pagerduty-ops
+```
+
+Use `pagerduty-test` for a qualification installation. The export command
+accepts no arguments and reads no configuration, store, secret or external
+program. It emits `nq.escalation_registry.v1` with only `schema` and `anchors`.
+Every compiled rule is included, even when disabled or not configured. Page
+rules also include the attention class used for downgraded and removal notices;
+notice rules never acquire page capability. Input-fault components come from
+the runtime input types, including estate. Historical identities in the old
+NQ anchor mirror without a current rule are not producers and are not exported.
+
+NQ validates rule/component/class permission and a deliverable page route in
+the selected policy. A missing anchor (including `remediation-journal-critical`)
+or missing page route must fail the check. This does not submit a notification,
+resolve credentials, enable networking, install policy or change attention's
+evaluation policy digest. Review and install policy through the existing
+deployment procedure before enabling the submitting units.
 
 ## Build-info
 

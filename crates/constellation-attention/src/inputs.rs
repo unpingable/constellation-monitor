@@ -16,6 +16,7 @@ use crate::config::{
     Config, EffectiveRule, EstateInput, HostPostureInput, MetricAlertsInput, NightshiftInput,
     NqStatusInput, NqStatusSource, SavedCheckInput, default_metric_warmup_grace,
 };
+use crate::registry::InputKind;
 use crate::state::{AttentionLifecycle, IdentityLifecycle, MetricAlertsHistory};
 use crate::util::{
     ChildEnvironment, excerpt, format_seconds, parse_rfc3339, read_bounded, rfc3339_seconds,
@@ -297,7 +298,9 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
                 rejected_rules: Vec::new(),
                 label: input.label.clone(),
                 kind: "host_posture",
-                component: "host_posture",
+                component: InputKind::HostPosture
+                    .fault_component()
+                    .expect("concrete input component"),
                 source,
                 status: InputStatus::Unavailable,
                 error: Some(error.to_string()),
@@ -317,7 +320,9 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
             rejected_rules: Vec::new(),
             label: input.label.clone(),
             kind: "host_posture",
-            component: "host_posture",
+            component: InputKind::HostPosture
+                .fault_component()
+                .expect("concrete input component"),
             source,
             status: InputStatus::Unavailable,
             error: Some(format!(
@@ -358,7 +363,9 @@ fn host_posture(context: &Context<'_>, input: &HostPostureInput, read: &mut Inpu
         rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "host_posture",
-        component: "host_posture",
+        component: InputKind::HostPosture
+            .fault_component()
+            .expect("concrete input component"),
         source,
         status: if current {
             InputStatus::Ok
@@ -697,7 +704,9 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
         rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "nq_status",
-        component: "nq",
+        component: InputKind::NqStatus
+            .fault_component()
+            .expect("concrete input component"),
         source: input
             .command
             .as_ref()
@@ -1083,7 +1092,9 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
         rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "nightshift",
-        component: "nightshift",
+        component: InputKind::Nightshift
+            .fault_component()
+            .expect("concrete input component"),
         source: input.store_path.display().to_string(),
         status: InputStatus::Unavailable,
         error: None,
@@ -1201,7 +1212,9 @@ fn saved_check(context: &Context<'_>, input: &SavedCheckInput, read: &mut Inputs
         rejected_rules: Vec::new(),
         label: label.to_owned(),
         kind: "saved_check",
-        component: "nq",
+        component: InputKind::SavedCheck
+            .fault_component()
+            .expect("concrete input component"),
         source: input
             .command
             .as_ref()
@@ -1307,7 +1320,9 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
         rejected_rules: Vec::new(),
         label: ESTATE_LABEL.to_owned(),
         kind: "estate",
-        component: "estate",
+        component: InputKind::Estate
+            .fault_component()
+            .expect("concrete input component"),
         source: input.path.display().to_string(),
         status: InputStatus::Unavailable,
         error: None,
@@ -1881,7 +1896,9 @@ fn metric_alerts(context: &Context<'_>, input: &MetricAlertsInput, read: &mut In
         rejected_rules: Vec::new(),
         label: input.label.clone(),
         kind: "metric_alerts",
-        component: "host_posture",
+        component: InputKind::MetricAlerts
+            .fault_component()
+            .expect("concrete input component"),
         source: input.path.display().to_string(),
         status: InputStatus::Unavailable,
         error: None,
