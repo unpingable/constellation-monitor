@@ -1,0 +1,44 @@
+schema = "project.concerns/v1"
+project = "bounded-engineering-work"
+
+[[concerns]]
+id = "work.obligation"
+question = "work.obligation/v1"
+profile = "work.native-build/v1"
+required = true
+description = "The owner explicitly identifies assigned work or fresh no assigned work."
+
+[[concerns]]
+id = "work.admission"
+question = "work.admission/v1"
+profile = "work.native-build/v1"
+required = true
+description = "The owner's resource admission decision is observable."
+
+[[concerns]]
+id = "work.worker"
+question = "work.worker/v1"
+profile = "work.native-build/v1"
+required = true
+description = "The original source-bound native worker is observable while its obligation is unsettled."
+
+[[concerns]]
+id = "work.progress"
+question = "work.progress/v1"
+profile = "work.native-build/v1"
+required = true
+description = "The bound worker has no observed breach of its authored compiler-progress budget."
+
+[[concerns]]
+id = "work.outcome"
+question = "work.outcome/v1"
+profile = "work.native-build/v1"
+required = true
+description = "Any explicit completion claim or due result has independent source-bound artifact support."
+
+[[concerns]]
+id = "work.publication"
+question = "work.publication/v1"
+profile = "work.native-build/v1"
+required = true
+description = "Any published or due result names the exact independent receipt and artifact."
