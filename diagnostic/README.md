@@ -1,11 +1,14 @@
 # Read-only diagnostic, first slice (P7)
 
-Run on the monitored host with Python 3 (standard library only, Linux). No model,
+The `constellation-monitored` package installs `/usr/bin/constellation-diagnostic`
+and this guide at `/usr/share/doc/constellation-monitored/DIAGNOSTIC.md`. It adds
+no diagnostic service. Run on the monitored host with Python 3.10 or newer
+(standard library only, Linux). No model,
 API key or provider is required. Use the existing rendered registry; declarations
 and dependency edges remain expectations and grant no access or action authority.
 
 ```sh
-python3 diagnostic/constellation-diagnostic.py \
+constellation-diagnostic \
   --registry /etc/constellation-estate/estate.json \
   --attention /var/lib/constellation-attention/report.json \
   --vm-url http://127.0.0.1:8428 \
@@ -53,7 +56,7 @@ For one declared worker's useful-work history, select the service and its actual
 scrape target instead of the memory sweep:
 
 ```sh
-python3 diagnostic/constellation-diagnostic.py \
+constellation-diagnostic \
   --registry /etc/constellation-estate/estate.json \
   --attention /var/lib/constellation-attention/report.json \
   --vm-url http://127.0.0.1:8428 \
@@ -69,7 +72,7 @@ the standard `service_last_success_timestamp_seconds` (last committed useful
 work) and `service_observation_timestamp_seconds` (application observation
 clock), with declared positive `last_success_age_seconds` and
 `metrics_observation_age_seconds` thresholds. See the
-[existing instrumentation contract](../estate/README.md#authored-service-declarations-p2).
+[existing instrumentation contract](https://github.com/unpingable/constellation-monitor-private-history/blob/ecef18e52af998bcd63165e03fdf134a40f0c523/estate/README.md#authored-service-declarations-p2).
 A counter alone has no generic useful-work meaning here; the application records
 its successful-work timestamp when its own commit succeeds. No Constellation
 library, agent-status protocol or process attribution is introduced.

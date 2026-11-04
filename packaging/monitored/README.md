@@ -11,6 +11,11 @@ five-minute timer after reviewing the rendered page. See
 [MONITORED.md](../../docs/MONITORED.md) for commands, input contracts, activation,
 rollback and the human-session acceptance procedure.
 
+The package also installs the read-only `constellation-diagnostic` command and
+its canonical guide at `/usr/share/doc/constellation-monitored/DIAGNOSTIC.md`.
+It adds no diagnostic service or activation. Exit 0 records a completed
+investigation, including unknown findings; it does not establish host health.
+
 `status-site-monitored-link.patch` is the source handoff for Cartography’s
 separate status renderer. Apply it in the Cartography re-cut alongside the
 rule `family` labels, receipt release index, incident helper and Grafana config.

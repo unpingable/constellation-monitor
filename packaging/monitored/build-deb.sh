@@ -15,9 +15,11 @@ name=constellation-monitored_${version}_all
 d=$stage/$name
 install -d -m 0755 "$d/DEBIAN" "$d/usr/bin" "$d/usr/lib/constellation-monitored" "$d/lib/systemd/system" "$d/usr/share/doc/constellation-monitored" "$d/var/www/constellation-status"
 install -m 0755 "$root/packaging/monitored/constellation-monitored" "$d/usr/bin/constellation-monitored"
+install -m 0755 "$root/diagnostic/constellation-diagnostic.py" "$d/usr/bin/constellation-diagnostic"
 install -m 0644 "$root/monitored/constellation-monitored.py" "$root/monitored/toml_subset.py" "$d/usr/lib/constellation-monitored/"
 install -m 0644 "$root/packaging/monitored/constellation-monitored.service" "$root/packaging/monitored/constellation-monitored.timer" "$d/lib/systemd/system/"
 install -m 0644 "$root/docs/MONITORED.md" "$d/usr/share/doc/constellation-monitored/"
+install -m 0644 "$root/diagnostic/README.md" "$d/usr/share/doc/constellation-monitored/DIAGNOSTIC.md"
 cat > "$d/DEBIAN/control" <<EOF
 Package: constellation-monitored
 Version: $version
