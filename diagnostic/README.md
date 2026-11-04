@@ -71,8 +71,7 @@ site and service come from the approved registry. The worker must already supply
 the standard `service_last_success_timestamp_seconds` (last committed useful
 work) and `service_observation_timestamp_seconds` (application observation
 clock), with declared positive `last_success_age_seconds` and
-`metrics_observation_age_seconds` thresholds. See the
-[existing instrumentation contract](https://github.com/unpingable/constellation-monitor-private-history/blob/ecef18e52af998bcd63165e03fdf134a40f0c523/estate/README.md#authored-service-declarations-p2).
+`metrics_observation_age_seconds` thresholds.
 A counter alone has no generic useful-work meaning here; the application records
 its successful-work timestamp when its own commit succeeds. No Constellation
 library, agent-status protocol or process attribution is introduced.
@@ -135,5 +134,5 @@ occupied swap, zero paging and zero PSI. It is synthetic observation data at
 2026-10-20 00:00 UTC, not a retained production capture or proof of that host's
 history. Tests replay it at its captured time and remove history as the negative
 control. The HTTP test uses a temporary loopback server. P6's unfamiliar
-application and crow-disconnected live witness remain later acceptance; this
+application and controller-disconnected live witness remain later acceptance; this
 source delivery does not claim P7's full product acceptance or production use.
