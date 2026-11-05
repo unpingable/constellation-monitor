@@ -237,6 +237,31 @@ def acquire(binding_path, previous=None):
         sample["source_ok"] = False
         return sample
 
+    # A later assertion cannot be written into OWNER without replacing the
+    # accepted bytes bound by admission/launch. Read it as a separate assertion,
+    # with the same custody and exact original-job binding as other checkpoints.
+    sample["completion_claim_status"] = "absent"
+    try:
+        if "completion_claim" in binding:
+            claim = document(binding["completion_claim"])
+            if claim is not None:
+                claim_at = source_time(claim.get("at"))
+                if (not launch or claim.get("completion_claimed") is not True
+                        or not sample["started_at"] <= claim_at <= time.time()
+                        or claim.get("job_id") != owner["job_id"]
+                        or claim.get("accepted_record_sha256") != owner_hash
+                        or claim.get("source_commit") != source_binding["commit"]
+                        or claim.get("source_capsule_sha256") != source_binding["capsule_sha256"]
+                        or claim.get("native_invocation_id") != identity["invocation_id"]
+                        or claim.get("boot_id") != identity["boot_id"]):
+                    raise ValueError("completion claim source binding or time invalid")
+                sample["sources"][-1]["source_at"] = claim["at"]
+                sample["completion_claim"] = True
+                sample["completion_claim_status"] = "claimed"
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
+        sample["completion_claim_status"] = "unknown"
+        sample["errors"].append(str(error)[:500])
+
     try:
         receipt = document(binding["verification"], optional=True)
         if receipt is not None:
@@ -303,6 +328,7 @@ def project(sample, previous=None, now=None):
                                                    "owner_source_at_epoch": owner.get("updated_at_epoch"),
                                                    "deadline_at_epoch": owner.get("deadline_at_epoch"),
                                                    "completion_claimed": sample.get("completion_claim", False),
+                                                   "completion_claim_status": sample.get("completion_claim_status"),
                                                    "admission_source_at_epoch": sample.get("admission_at"),
                                                    "progress": sample.get("progress"),
                                                    "verification_scope": sample.get("verification_scope")}}})
@@ -389,10 +415,10 @@ def project(sample, previous=None, now=None):
         overdue = now > owner.get("deadline_at_epoch", float("inf"))
         claim = sample.get("completion_claim") is True
         unbound_pending = worker == "ACCEPTED_NOT_STARTED"
-        outcome = ("UNKNOWN" if (not identity_ok and not unbound_pending) or sample.get("verification") == "unknown" else "ARTIFACT_VERIFIED" if verified else
+        outcome = ("UNKNOWN" if (not identity_ok and not unbound_pending) or sample.get("verification") == "unknown" or sample.get("completion_claim_status") == "unknown" else "ARTIFACT_VERIFIED" if verified else
                    "COMPLETION_WITHOUT_INDEPENDENT_OUTCOME" if claim else "NATIVE_SUCCESS_OUTCOME_UNKNOWN" if success else "INDEPENDENT_OUTCOME_MISSING")
         add("outcome", outcome, "Independent outcome %s. %s Native exit alone does not claim task completion or verify output." %
-            ("ARTIFACT_VERIFIED" if verified else "UNKNOWN", "Required support is due or explicitly claimed." if overdue or claim else "Independent result duty is not due before the fixed deadline."),
+            ("ARTIFACT_VERIFIED" if verified else "UNKNOWN", "Selected completion claim source is invalid or unavailable." if sample.get("completion_claim_status") == "unknown" else "Required support is due or explicitly claimed." if overdue or claim else "Independent result duty is not due before the fixed deadline."),
             "UNKNOWN" if outcome == "UNKNOWN" else "PRESENT" if verified or not (overdue or claim) else "DEGRADED")
         published = verified and sample.get("publication") == "published"
         publication = ("UNKNOWN" if (not identity_ok and not unbound_pending) or sample.get("publication") == "unknown" else "RESULT_PUBLISHED" if published else

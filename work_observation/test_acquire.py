@@ -65,7 +65,7 @@ class AcquisitionTests(unittest.TestCase):
                         "-p", "CPUQuota=100%", "-p", "MemoryMax=64M", "-p", "RuntimeMaxSec=60",
                         *(["/usr/bin/true"] if finish else ["/usr/bin/sleep", "45"])], check=True, capture_output=True, timeout=5)
         iid = subprocess.check_output(["systemctl", "show", self.unit, "--value", "-p", "InvocationID"], text=True).strip()
-        write(self.trusted / "LAUNCH.json", {"job_id": "fixture-job", "unit": self.unit,
+        write(self.trusted / "LAUNCH.json", {"job_id": self.owner["job_id"], "unit": self.unit,
               "at": self.verified_at,
               "source_commit": "a" * 40, "accepted_record_sha256": hashlib.sha256((self.trusted / "OWNER.json").read_bytes()).hexdigest(),
               "invocation_id": iid, "boot_id": self.binding["boot_id"]})
@@ -286,6 +286,101 @@ class AcquisitionTests(unittest.TestCase):
         report = self.estate()
         self.assertEqual(report["verdict"], "DEGRADED", report)
         self.assertIn("work.outcome", report["failing"])
+
+    def claim(self, iid, **changes):
+        self.binding["completion_claim"] = str(self.trusted / "completion.json")
+        write(self.path, self.binding)
+        claim = {"job_id": self.owner["job_id"], "completion_claimed": True,
+                 "accepted_record_sha256": hashlib.sha256((self.trusted / "OWNER.json").read_bytes()).hexdigest(),
+                 "source_commit": "a" * 40, "source_capsule_sha256": "b" * 64,
+                 "native_invocation_id": iid, "boot_id": self.binding["boot_id"],
+                 "at": self.verified_at}
+        claim.update(changes)
+        write(self.trusted / "completion.json", claim)
+
+    def test_later_claim_breaches_outcome_without_rewriting_original_owner_or_launch(self):
+        iid = self.launch(finish=True)
+        original = (self.trusted / "OWNER.json").read_bytes()
+        self.assertEqual(self.estate()["verdict"], "OK")
+        self.claim(iid)
+        report = self.estate()
+        self.assertEqual(report["verdict"], "DEGRADED", report)
+        self.assertIn("work.outcome", report["failing"])
+        sample = self.acquire()
+        self.assertTrue(sample["identity_matches"], sample["errors"])
+        outcome = next(c["observation"] for c in module.project(sample)["concerns"] if c["id"] == "work.outcome")
+        self.assertEqual(outcome["domain_state"], "COMPLETION_WITHOUT_INDEPENDENT_OUTCOME")
+        self.assertEqual((self.trusted / "OWNER.json").read_bytes(), original)
+
+    def test_invalid_later_claim_cannot_hide_as_healthy_pending_outcome(self):
+        iid = self.launch(finish=True)
+        for changes in ({"job_id": "another-worker"}, {"accepted_record_sha256": "c" * 64},
+                        {"source_commit": "c" * 40}, {"source_capsule_sha256": "c" * 64},
+                        {"native_invocation_id": "c" * 32}, {"boot_id": "wrong-boot"},
+                        {"completion_claimed": "true"}, {"at": "1970-01-01T00:00:00+00:00"},
+                        {"at": "2999-01-01T00:00:00+00:00"}, {"at": "bad"}):
+            with self.subTest(changes=changes):
+                self.claim(iid, **changes)
+                sample = self.acquire()
+                outcome = next(c["observation"] for c in module.project(sample)["concerns"] if c["id"] == "work.outcome")
+                self.assertEqual(outcome["local_state"], "UNKNOWN", outcome)
+                self.assertTrue(sample["identity_matches"], sample["errors"])
+                self.assertNotEqual(self.estate()["verdict"], "OK")
+
+    def test_unreadable_or_malformed_later_claim_is_unknown(self):
+        iid = self.launch(finish=True)
+        self.claim(iid)
+        path = self.trusted / "completion.json"
+        for contents, mode in (("{}", 0o644), ("not-json", 0o644), ("{}", 0o666)):
+            with self.subTest(contents=contents, mode=mode):
+                path.write_text(contents)
+                path.chmod(mode)
+                outcome = next(c["observation"] for c in module.project(self.acquire())["concerns"] if c["id"] == "work.outcome")
+                self.assertEqual(outcome["local_state"], "UNKNOWN", outcome)
+        path.unlink()
+        outcome = next(c["observation"] for c in module.project(self.acquire())["concerns"] if c["id"] == "work.outcome")
+        self.assertEqual(outcome["local_state"], "UNKNOWN", outcome)
+
+    def test_one_workers_verified_published_result_does_not_clear_another_due_obligation(self):
+        other = AcquisitionTests("runTest")
+        other.setUp()
+        self.addCleanup(other.tearDown)
+        other.owner.update(job_id="other-job", accepted_at_epoch=other.now - 10,
+                           updated_at_epoch=other.now - 10, deadline_at_epoch=other.now - 1)
+        write(other.trusted / "OWNER.json", other.owner)
+        other.launch()
+        (other.worker / "cargo.jsonl").write_text('{"reason":"compiler-artifact"}\n')
+        iid = self.launch(finish=True)
+        self.claim(iid)
+        artifact = self.worker / "artifact"
+        artifact.write_bytes(b"independently checked fixture output")
+        receipt = {"job_id": self.owner["job_id"], "verified": True,
+                   "source_commit": "a" * 40, "source_capsule_sha256": "b" * 64,
+                   "native_producer": {"InvocationID": iid}, "verified_at": self.verified_at,
+                   "package_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+                   "scope": "Exact fixture bytes only"}
+        write(self.trusted / "verification.json", receipt)
+        write(self.trusted / "publication.json", {
+            "job_id": self.owner["job_id"], "native_invocation_id": iid,
+            "accepted_record_sha256": hashlib.sha256((self.trusted / "OWNER.json").read_bytes()).hexdigest(),
+            "verification_sha256": hashlib.sha256((self.trusted / "verification.json").read_bytes()).hexdigest(),
+            "package_sha256": receipt["package_sha256"]})
+        self.assertEqual(self.estate()["verdict"], "OK")
+        self.assertIn("work.outcome", other.estate()["failing"])
+        self.assertIn("work.publication", other.estate()["failing"])
+        # A receipt from the first worker cannot support the other worker,
+        # even when copied into the other's trusted checkpoint directory.
+        (other.worker / "artifact").write_bytes(artifact.read_bytes())
+        write(other.trusted / "verification.json", receipt)
+        self.assertNotEqual(other.acquire()["verification"], "verified")
+        previous = module.project(self.acquire())
+        current = module.project(other.acquire(previous), previous)
+        states = {c["id"]: c["observation"] for c in current["concerns"]}
+        self.assertEqual(states["work.progress"]["domain_state"], "UNKNOWN")
+        self.assertEqual(states["work.obligation"]["domain_state"], "ASSIGNED")
+        self.assertEqual(states["work.outcome"]["local_state"], "DEGRADED")
+        self.assertEqual(states["work.publication"]["local_state"], "DEGRADED")
+        self.assertEqual(other.owner["deadline_at_epoch"], other.now - 1)
 
     def test_identity_uses_exact_consumed_owner_bytes_instead_of_a_second_path_read(self):
         self.launch()

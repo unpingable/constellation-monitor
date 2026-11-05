@@ -124,9 +124,40 @@ verification still pending before the fixed deadline has domain
 and an explicit unknown-outcome reason. This does not label the artifact
 verified or the task successful.
 
-The optional root-custodied owner field `completion_claimed = true` is an
-explicit completed-task claim, distinct from native process exit. Such a claim
-without independent support breaches `work.outcome` immediately. An existing
+The optional root-custodied owner field `completion_claimed = true` can record
+an explicit completed-task claim already present at acceptance. After admission
+or launch, preserve those accepted OWNER bytes: their hash is bound by both
+records. A later claim belongs in a separate root-custodied checkpoint selected
+by optional binding key `completion_claim`, for example:
+
+```json
+{
+  "job_id": "THE-ORIGINAL-JOB",
+  "completion_claimed": true,
+  "accepted_record_sha256": "SHA256-OF-UNCHANGED-OWNER-BYTES",
+  "source_commit": "ORIGINAL-40-HEX-COMMIT",
+  "source_capsule_sha256": "ORIGINAL-64-HEX-CAPSULE-HASH",
+  "native_invocation_id": "ORIGINAL-32-HEX-INVOCATION",
+  "boot_id": "ORIGINAL-WORKER-BOOT-ID",
+  "at": "2026-11-05T10:00:00+00:00"
+}
+```
+
+The claim time must be between the original launch and current acquisition.
+It is a persistent assertion for those exact identities, so its age alone does
+not expire it. Create the checkpoint before selecting its path in the binding.
+A selected missing, malformed, stale-before-launch, future, wrongly bound or
+worker-controlled checkpoint makes the outcome observation `UNKNOWN` while
+preserving independently known obligation and native worker facts. Omit the
+binding key when no later assertion is selected; removing selected input cannot
+silently restore a healthy pending duty. The current consumer of this optional
+input is the Constellation qualification workflow, not a cross-project job
+protocol. Keep a separate binding, trusted directory and observer history for
+each worker. A result for one worker never supplies another worker's support.
+
+A valid completion claim without independent support breaches `work.outcome`
+immediately, even before the original fixed deadline. It supplies no verifier,
+publication, owner acceptance, settlement or discharge authority. An existing
 publication that does not name the exact independent result breaches
 `work.publication`; ordinary absent publication is due only at the original
 fixed deadline. Lost/failed workers, measured stale progress and overdue
