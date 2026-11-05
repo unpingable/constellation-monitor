@@ -22,7 +22,6 @@ sha2.workspace = true
 time = { workspace = true, features = ["formatting", "parsing"] }
 toml.workspace = true
 
-[dev-dependencies]
 tempfile = "3.23"
 
 [lints]

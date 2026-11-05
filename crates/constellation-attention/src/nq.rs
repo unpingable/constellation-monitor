@@ -87,7 +87,7 @@ pub struct Inspections {
 }
 
 impl Inspections {
-    /// Only attempted v2 records have NQ's PagerDuty reason block. This never
+    /// Attempted v2 records have condition-delivery or PagerDuty reasons. This never
     /// changes custody, outcome or retry state, and never dispatches a delivery.
     pub fn enrich(&mut self, config: &Config, schema: &str, result: &mut SubmitOutcome) {
         if schema != crate::intent::INTENT_V2
@@ -146,7 +146,9 @@ fn delivery_error(bytes: &[u8], notification_id: &str, outcome: &str) -> Option<
     let record = value.as_array()?.iter().find(|record| {
         record["notification_id"] == notification_id && record["delivery_state"] == outcome
     })?;
-    let detail = record.pointer("/pagerduty/last_event/detail")?;
+    let detail = record
+        .pointer("/condition_delivery/last_event/detail")
+        .or_else(|| record.pointer("/pagerduty/last_event/detail"))?;
     let mut error = reason_error(&detail["reason"], outcome)?;
     if outcome == "failed"
         && let Some(status) = detail["http_status"].as_u64()
@@ -162,9 +164,10 @@ fn reason_error(value: &Value, outcome: &str) -> Option<String> {
     let reason = value.as_str()?;
     (!reason.is_empty()
         && reason.len() <= 120
-        && reason
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte == b'_'))
+        && (reason == "discord_content_exceeds_2000_utf16_units"
+            || reason
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')))
     .then(|| format!("{outcome}: {reason}"))
 }
 
@@ -180,6 +183,7 @@ pub fn missing_route() -> SubmitOutcome {
 /// Check locally readable NQ configuration without making it a prerequisite
 /// for offline configuration inspection.
 pub fn check_routes(config: &Config) -> Result<(), String> {
+    check_page_mode(config)?;
     if std::fs::File::open(&config.nq.config).is_err() {
         return Ok(());
     }
@@ -190,6 +194,55 @@ pub fn check_routes(config: &Config) -> Result<(), String> {
         if !current.contains_key(reference) {
             return Err(format!("{ROUTE_NOT_CONFIGURED}: {reference}"));
         }
+    }
+    Ok(())
+}
+
+/// Opt-in admission uses the consumer's native policy check, with the complete
+/// producer registry as declaration input. The separately pinned NQ policy is
+/// the authority; this does not generate or install a policy or send anything.
+pub fn check_page_mode(config: &Config) -> Result<(), String> {
+    if config.routes.page_mode != crate::config::PageMode::ConditionV2 {
+        return Ok(());
+    }
+    let route = config
+        .routes
+        .page_route
+        .as_deref()
+        .ok_or("condition_v2 requires page_route")?;
+    let current = routes(config)?;
+    let selected = current.get(route).ok_or(ROUTE_NOT_CONFIGURED)?;
+    if !["local_file", "slack", "discord", "pagerduty"].contains(&selected.transport.as_str()) {
+        return Err("condition_v2 requires a supported NQ Page transport".into());
+    }
+    let mut registry = tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
+    serde_json::to_writer(&mut registry, &crate::registry::escalation_registry())
+        .map_err(|error| error.to_string())?;
+    let output = run_bounded(
+        &[
+            config.nq.program.display().to_string(),
+            "--config".into(),
+            config.nq.config.display().to_string(),
+            "--json".into(),
+            "notification".into(),
+            "policy".into(),
+            "--check-registry".into(),
+            registry.path().display().to_string(),
+            "--route".into(),
+            route.into(),
+        ],
+        Duration::from_secs(config.command_timeout_seconds.min(10)),
+        1024 * 1024,
+        ChildEnvironment::Minimal,
+    )
+    .map_err(|error| format!("condition_v2_policy_preflight_failed: {error}"))?;
+    if output.timed_out || output.status != Some(0) {
+        return Err("condition_v2_policy_preflight_refused: native NQ must authorize the complete producer registry on the selected Page route".into());
+    }
+    let result: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "condition_v2_policy_preflight_invalid_result".to_owned())?;
+    if result["source"] != "installed" || result["policy"]["schema"] != "nq.escalation_policy.v1" {
+        return Err("condition_v2_policy_preflight_invalid_result".into());
     }
     Ok(())
 }
@@ -319,4 +372,27 @@ pub fn resubmit(config: &Config, notification_id: &str, stable_event_id: &str) -
         ],
         true,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::delivery_error;
+    use serde_json::json;
+
+    #[test]
+    fn condition_delivery_reason_keeps_native_discord_projection_bound_code() {
+        let bytes = serde_json::to_vec(&json!([{
+            "notification_id":"exact-id", "delivery_state":"refused",
+            "condition_delivery":{"last_event":{"detail":{
+                "reason":"discord_content_exceeds_2000_utf16_units"
+            }}}
+        }]))
+        .unwrap();
+        assert_eq!(
+            delivery_error(&bytes, "exact-id", "refused").as_deref(),
+            Some("refused: discord_content_exceeds_2000_utf16_units")
+        );
+        assert!(delivery_error(&bytes, "other-id", "refused").is_none());
+        assert!(delivery_error(&bytes, "exact-id", "failed").is_none());
+    }
 }

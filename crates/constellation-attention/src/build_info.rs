@@ -49,6 +49,7 @@ pub const ESTATE_SERVICE_RETIREMENT: &str = "estate_service_retirement";
 pub const CAPABILITIES: &[&str] = &[
     RUNBOOK_URL_WITHHELD_FOR_HTTP,
     LOCAL_PAGE_ROUTE_V1_COPY,
+    "condition_bound_page_v2",
     VALUE_CODE_WARMING_INFORMATIONAL,
     REPORT_EXIT_FIELDS,
     LOOPBACK_HTTP_RUNBOOKS,

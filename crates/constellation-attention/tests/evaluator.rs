@@ -81,12 +81,14 @@ struct Harness {
     page_route: bool,
     page_reference: &'static str,
     page_transport: &'static str,
+    page_mode: Option<&'static str>,
     notice_reference: &'static str,
     network: bool,
     notice_transport: &'static str,
     runbook_base: &'static str,
     nq_routes_override: Option<String>,
     command_timeout_seconds: u64,
+    native_program: Option<PathBuf>,
 }
 
 impl Harness {
@@ -100,12 +102,14 @@ impl Harness {
             page_route: true,
             page_reference: "pagerduty-ops",
             page_transport: "pagerduty",
+            page_mode: None,
             notice_reference: "operations",
             network: true,
             notice_transport: "slack",
             runbook_base: "https://docs.example.org/beta-observability/RUNBOOKS.md",
             nq_routes_override: None,
             command_timeout_seconds: 90,
+            native_program: None,
         }
     }
 
@@ -135,25 +139,27 @@ impl Harness {
 
     fn config_path(&self) -> PathBuf {
         let nq_config = self.path("nq.toml");
-        fs::write(
-            &nq_config,
-            self.nq_routes_override.clone().unwrap_or_else(|| {
-                format!(
-                    "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n{}",
-                    self.page_reference,
-                    self.page_transport,
-                    if self.notice_reference == self.page_reference {
-                        String::new()
-                    } else {
-                        format!(
-                            "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n",
-                            self.notice_reference, self.notice_transport
-                        )
-                    },
-                )
-            }),
-        )
-        .unwrap();
+        if self.native_program.is_none() {
+            fs::write(
+                &nq_config,
+                self.nq_routes_override.clone().unwrap_or_else(|| {
+                    format!(
+                        "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n{}",
+                        self.page_reference,
+                        self.page_transport,
+                        if self.notice_reference == self.page_reference {
+                            String::new()
+                        } else {
+                            format!(
+                                "[[notification_routes]]\nreference = {:?}\ntransport = {:?}\n",
+                                self.notice_reference, self.notice_transport
+                            )
+                        },
+                    )
+                }),
+            )
+            .unwrap();
+        }
         let page = if self.page_route {
             format!("page_route = {:?}\n", self.page_reference)
         } else {
@@ -173,13 +179,22 @@ impl Harness {
              notice_route = \"{notice_reference}\"\n\
              notice_transport = \"{transport}\"\n\
              {page}\
+             {page_mode}\
              network_enabled = {network}\n\
              {extra}\n",
             state = self.path("state/state.json").display(),
             command_timeout_seconds = self.command_timeout_seconds,
             nq_config = nq_config.display(),
             notice_reference = self.notice_reference,
-            nq = Path::new(FIXTURES).join("fake-nq.sh").display(),
+            nq = self
+                .native_program
+                .clone()
+                .unwrap_or_else(|| Path::new(FIXTURES).join("fake-nq.sh"))
+                .display(),
+            page_mode = self
+                .page_mode
+                .map(|mode| format!("page_mode = {mode:?}\n"))
+                .unwrap_or_default(),
             network = self.network,
             transport = self.notice_transport,
             runbook_base = self.runbook_base,
@@ -873,6 +888,308 @@ fn rehearsal_local_page_route_delivers_v1_with_loopback_runbooks() {
             );
         }
     }
+}
+
+#[test]
+fn explicit_condition_v2_local_page_keeps_loopback_links_and_condition() {
+    let mut harness = Harness::new();
+    harness.page_mode = Some("condition_v2");
+    harness.runbook_base = "http://127.0.0.1:8088/RUNBOOKS.md";
+    harness.page_reference = "site-page-inbox";
+    harness.page_transport = "local_file";
+    harness.network = false;
+    harness.host_posture("root");
+    for (offset, state) in [
+        (0, ProjectedStateV1::Unknown),
+        (660, ProjectedStateV1::Unknown),
+        (720, ProjectedStateV1::Healthy),
+        (840, ProjectedStateV1::Healthy),
+    ] {
+        set(&harness, "root", state, T0 + offset);
+        assert_eq!(harness.evaluate_at(T0 + offset, &[]).status.code(), Some(0));
+    }
+    assert_eq!(harness.calls().len(), 4);
+    let mut actions = Vec::new();
+    for call in harness
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("submit local:"))
+    {
+        let intent: Value =
+            serde_json::from_slice(&harness.submitted_intent(call.split(' ').nth(3).unwrap()))
+                .unwrap();
+        assert_eq!(intent["schema"], "nq.notification_delivery_intent.v2");
+        assert_eq!(
+            intent["destination_identity"],
+            "local-inbox:site-page-inbox"
+        );
+        assert_eq!(intent["condition"]["rule"], "host-posture-unknown");
+        assert_eq!(intent["response_class"], "page");
+        assert_eq!(
+            intent["inspection_reference"],
+            "http://127.0.0.1:8088/RUNBOOKS.md#host-posture-unknown"
+        );
+        assert!(intent.get("runbook_url").is_none());
+        actions.push(intent["action"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(actions, ["trigger", "resolve"]);
+    assert_eq!(harness.report()["page_delivery"], "condition-bound v2");
+}
+
+#[test]
+fn explicit_condition_v2_non_pagerduty_never_resubmits_unknown_attempt() {
+    for transport in ["local_file", "slack", "discord"] {
+        let mut harness = Harness::new();
+        harness.page_mode = Some("condition_v2");
+        harness.page_transport = transport;
+        harness.host_posture("root");
+        harness.fake("next_state", "unknown");
+        for offset in [0, 660, 1600] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate_at(T0 + offset, &[]);
+        }
+        assert_eq!(
+            harness.calls().len(),
+            2,
+            "{transport}: {:?}",
+            harness.calls()
+        );
+        assert!(
+            !harness
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("resubmit "))
+        );
+    }
+}
+
+#[test]
+fn condition_v2_compatible_handler_requires_explicit_mode_and_retries_only_definite_failure() {
+    let mut legacy = Harness::new();
+    legacy.page_transport = "slack";
+    legacy.host_posture("root");
+    for offset in [0, 660] {
+        set(&legacy, "root", ProjectedStateV1::Unknown, T0 + offset);
+        legacy.evaluate_at(T0 + offset, &[]);
+    }
+    assert_eq!(
+        legacy.calls().len(),
+        1,
+        "legacy still cannot submit a Slack v2 Page"
+    );
+    for transport in ["local_file", "slack", "discord"] {
+        let mut harness = Harness::new();
+        harness.page_mode = Some("condition_v2");
+        harness.page_transport = transport;
+        harness.host_posture("root");
+        harness.fake("next_state", "failed");
+        for offset in [0, 660, 780] {
+            set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+            harness.evaluate_at(T0 + offset, &[]);
+        }
+        assert_eq!(
+            harness.calls().len(),
+            2,
+            "no PagerDuty 120s retry: {transport}"
+        );
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + 1560);
+        harness.fake("next_state", "accepted");
+        harness.evaluate_at(T0 + 1560, &[]);
+        assert_eq!(harness.calls().len(), 4, "900s new events: {transport}");
+        assert!(
+            !harness
+                .calls()
+                .iter()
+                .any(|call| call.starts_with("resubmit "))
+        );
+    }
+}
+
+#[test]
+fn condition_v2_mode_change_keeps_historical_local_intent_and_no_provider_sidecar() {
+    let mut harness = Harness::new();
+    harness.page_reference = "site-page-inbox";
+    harness.page_transport = "local_file";
+    harness.host_posture("root");
+    for offset in [0, 660] {
+        set(&harness, "root", ProjectedStateV1::Unknown, T0 + offset);
+        harness.evaluate(T0 + offset);
+    }
+    let old = harness.state()["conditions"][UNKNOWN_ROOT]["last_intent"]["page"].clone();
+    let path = harness
+        .path("state/intents")
+        .join(old["intent_file"].as_str().unwrap());
+    let bytes = fs::read(&path).unwrap();
+    harness.page_mode = Some("condition_v2");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 720);
+    harness.evaluate(T0 + 720);
+    assert_eq!(
+        harness.submitted_intent(old["notification_id"].as_str().unwrap()),
+        bytes,
+        "NQ's historical retained intent stays byte-identical after local lifecycle pruning"
+    );
+    let state = harness.state();
+    let current = &state["conditions"][UNKNOWN_ROOT]["last_intent"]["page"];
+    assert_eq!(current["schema"], "nq.notification_delivery_intent.v2");
+    assert_ne!(current["stable_event_id"], old["stable_event_id"]);
+    assert_eq!(current["transition_id"], old["transition_id"]);
+    let accepted = harness.path("state/accepted-pages.json");
+    if accepted.exists() {
+        let accepted: Value = serde_json::from_slice(&fs::read(accepted).unwrap()).unwrap();
+        assert_eq!(accepted, serde_json::json!({}));
+    }
+}
+
+#[test]
+fn condition_v2_preflight_refuses_before_delivery_and_without_state_progress() {
+    let mut harness = Harness::new();
+    harness.page_mode = Some("condition_v2");
+    harness.host_posture("root");
+    harness.fake("policy_refuse", "");
+    set(&harness, "root", ProjectedStateV1::Unknown, T0);
+    let output = harness.evaluate_at(T0, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("condition_v2_policy_preflight_refused")
+    );
+    assert!(harness.calls().is_empty());
+    assert!(!harness.path("state/state.json").exists());
+}
+
+#[test]
+#[ignore = "requires accepted native NQ executable in ATTENTION_TEST_NQ; no network delivery"]
+fn native_condition_v2_local_monitor_and_shared_nq_vector() {
+    use sha2::{Digest, Sha256};
+    let mut harness = Harness::new();
+    let nq = PathBuf::from(std::env::var("ATTENTION_TEST_NQ").expect("native NQ path"));
+    harness.native_program = Some(nq.clone());
+    harness.page_mode = Some("condition_v2");
+    harness.page_reference = "site-page-inbox";
+    harness.page_transport = "local_file";
+    harness.notice_reference = "site-notice-inbox";
+    harness.notice_transport = "local_file";
+    harness.network = false;
+    harness.runbook_base = "http://127.0.0.1:8088/RUNBOOKS.md";
+    harness.host_posture("root");
+    let inbox = harness.path("inbox");
+    fs::create_dir(&inbox).unwrap();
+    fs::set_permissions(&inbox, fs::Permissions::from_mode(0o711)).unwrap();
+    // Fixed, reviewed test policy is distinct from the producer registry.
+    let policy = include_bytes!("fixtures/condition-page-local-policy.json");
+    fs::write(harness.path("policy.json"), policy).unwrap();
+    let pin = format!("sha256:{:x}", Sha256::digest(policy));
+    let base = harness.dir.path().display();
+    let config = format!(
+        r#"schema = "nq.config.v1"
+database_path = "{base}/notification.db"
+socket_path = "{base}/nqd.sock"
+admissions_dir = "{base}/admissions"
+helper_runtime_dir = "{base}/helpers"
+[escalation_policy]
+path = "{base}/policy.json"
+sha256 = "{pin}"
+[[notification_routes]]
+reference = "site-notice-inbox"
+transport = "local_file"
+local_inbox_directory = "{base}/inbox"
+[[notification_routes]]
+reference = "site-page-inbox"
+transport = "local_file"
+local_inbox_directory = "{base}/inbox"
+"#
+    );
+    fs::write(harness.path("nq.toml"), &config).unwrap();
+    let native = |args: &[&str]| {
+        let output = Command::new(&nq)
+            .arg("--config")
+            .arg(harness.path("nq.toml"))
+            .arg("--json")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    native(&["init"]);
+    for (offset, state) in [
+        (0, ProjectedStateV1::Unknown),
+        (660, ProjectedStateV1::Unknown),
+        (720, ProjectedStateV1::Healthy),
+        (840, ProjectedStateV1::Healthy),
+    ] {
+        set(&harness, "root", state, T0 + offset);
+        let output = harness.evaluate_at(T0 + offset, &[]);
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+    }
+    let messages: Vec<Value> = fs::read_dir(&inbox)
+        .unwrap()
+        .map(|entry| serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap())
+        .collect();
+    assert_eq!(messages.len(), 4);
+    let pages: Vec<_> = messages
+        .iter()
+        .filter(|m| m["schema"] == "nq.local-inbox-message/v2")
+        .collect();
+    assert_eq!(pages.len(), 2);
+    for page in pages {
+        assert_eq!(page["condition"]["rule"], "host-posture-unknown");
+        assert_eq!(page["condition"]["target_class"], "root");
+        assert_eq!(
+            page["inspection_reference"],
+            "http://127.0.0.1:8088/RUNBOOKS.md#host-posture-unknown"
+        );
+    }
+    // Byte-identical to the existing public NQ conformance vector, copied
+    // public -> private. No new wire format and no private source export.
+    let vector = include_bytes!("fixtures/condition-page-v2.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(vector)),
+        "e8b1272b6536bb0929ad4c61d95260ceb58dace57e8ca8cd0404ecc88c58c881"
+    );
+    let mut document: Value = serde_json::from_slice(vector).unwrap();
+    document["route_reference"] = serde_json::json!("site-page-inbox");
+    document["destination_identity"] = serde_json::json!("local-inbox:site-page-inbox");
+    fs::write(
+        harness.path("shared-vector.json"),
+        serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    let receipt = native(&[
+        "notification",
+        "deliver-local",
+        "--intent",
+        harness.path("shared-vector.json").to_str().unwrap(),
+        "--route",
+        "site-page-inbox",
+    ]);
+    assert_eq!(receipt["delivery_state"], "accepted");
+    let message: Value = serde_json::from_slice(
+        &fs::read(inbox.join(format!(
+            "{}.json",
+            receipt["notification_id"].as_str().unwrap()
+        )))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(message["condition"], document["condition"]);
+    assert_eq!(message["action"], document["action"]);
+    // Actual authority failure has no fallback to v1 and adds no message.
+    let mut denied: Value = serde_json::from_slice(policy).unwrap();
+    denied["routes"][1]["response_classes"] = serde_json::json!(["attention"]);
+    let denied = serde_json::to_vec(&denied).unwrap();
+    fs::write(harness.path("policy.json"), &denied).unwrap();
+    fs::write(
+        harness.path("nq.toml"),
+        config.replace(&pin, &format!("sha256:{:x}", Sha256::digest(&denied))),
+    )
+    .unwrap();
+    set(&harness, "root", ProjectedStateV1::Unknown, T0 + 900);
+    let output = harness.evaluate_at(T0 + 900, &[]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("condition_v2_policy_preflight_refused")
+    );
+    assert_eq!(fs::read_dir(inbox).unwrap().count(), 5);
 }
 
 #[test]

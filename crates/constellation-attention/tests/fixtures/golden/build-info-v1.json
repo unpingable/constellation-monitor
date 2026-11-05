@@ -12,6 +12,7 @@
   "capabilities": [
     "runbook_url_withheld_for_http",
     "local_page_route_v1_copy",
+    "condition_bound_page_v2",
     "value_code_warming_informational",
     "report_exit_fields",
     "loopback_http_runbooks",

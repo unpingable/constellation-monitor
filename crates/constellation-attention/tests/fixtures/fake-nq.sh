@@ -9,7 +9,7 @@
 # `submit` for a local_file route and is logged under route `local:<route>`;
 # `local_route` names a route that `submit` must refuse as local_file.
 set -eu
-dir="$FAKE_NQ_DIR"
+dir="${FAKE_NQ_DIR:-$(dirname "$2")/fake}"
 if [ "${4:-}" = evaluations ]; then
   # `evaluations export --limit N [--after A --through T]` answers like NQ's
   # nq.evaluation_history.v1 from $FAKE_NQ_DIR/history/<sequence>.json
@@ -51,6 +51,12 @@ fi
 [ "$1" = --config ] && [ "$3" = --json ] && [ "$4" = notification ] || { echo "unexpected argv: $*" >&2; exit 64; }
 nq_config="$2"
 sub="$5"; shift 5
+if [ "$sub" = policy ]; then
+  echo policy >> "$dir/policy_checks.log"
+  [ ! -e "$dir/policy_refuse" ] || exit 1
+  printf '{"source":"installed","policy":{"schema":"nq.escalation_policy.v1"}}\n'
+  exit 0
+fi
 if [ "$sub" = inspect ]; then
   [ "$1" = --notification-id ] || exit 64
   echo "inspect $2" >> "$dir/inspections.log"
@@ -126,7 +132,7 @@ if [ "$sub" = deliver-local ]; then
   # NQ 0.2.1: a local_file route takes no --enable-network, requires
   # destination_identity local-inbox:<route>, and refuses submit.
   $net && { echo "unexpected flag --enable-network" >&2; exit 64; }
-  grep -q '"schema":"nq.notification_delivery_intent.v1"' "$intent" || {
+  grep -Eq '"schema":"nq.notification_delivery_intent.v[12]"' "$intent" || {
     echo "local delivery requires nq.notification_delivery_intent.v1" >&2; exit 1; }
   grep -q "\"destination_identity\":\"local-inbox:$route\"" "$intent" || {
     echo "local inbox intent destination identity does not match its configured route" >&2; exit 1; }

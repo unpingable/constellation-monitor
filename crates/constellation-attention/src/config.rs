@@ -185,14 +185,26 @@ pub struct Routes {
     /// Transport of `notice_route`; it names the destination identity label
     /// and, for `local_file`, selects `nq notification deliver-local`.
     pub notice_transport: NoticeTransport,
-    /// NQ route reference of a pagerduty route (v2 intents), or a local_file
-    /// qualification route (v1 copies). Without it, page rules reach the
+    /// NQ Page route: legacy PagerDuty v2 or local v1 copy; condition_v2
+    /// uses the actual configured transport. Without it, page rules reach the
     /// operator through `notice_route` only.
     pub page_route: Option<String>,
+    /// Explicitly opt into strict condition-bound v2 on the actual page transport.
+    #[serde(default)]
+    pub page_mode: PageMode,
     /// Pass `--enable-network` to `nq notification submit`. When false NQ
     /// retains a refusal and sends nothing. A `local_file` notice route
     /// needs no network and ignores it.
     pub network_enabled: bool,
+}
+
+/// Legacy preserves local v1 copies and ordinary PagerDuty delivery.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PageMode {
+    #[default]
+    Legacy,
+    ConditionV2,
 }
 
 impl Routes {
@@ -534,6 +546,9 @@ impl Config {
             {
                 return Err("page_route and notice_route must be different NQ routes".into());
             }
+        }
+        if self.routes.page_mode == PageMode::ConditionV2 && self.routes.page_route.is_none() {
+            return Err("routes.page_mode condition_v2 requires page_route".into());
         }
         let mut labels = BTreeSet::new();
         let mut label = |value: &str| -> Result<(), String> {

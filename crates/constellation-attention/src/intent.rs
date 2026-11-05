@@ -301,9 +301,9 @@ fn details(input: &IntentInput<'_>) -> Value {
     Value::Object(details)
 }
 
-/// A v2 intent for a `PagerDuty` route.
+/// A strict condition-bound v2 intent for a configured Page route.
 #[must_use]
-pub fn v2(input: &IntentInput<'_>, route: &str) -> Value {
+pub fn v2(input: &IntentInput<'_>, route: &str, label: &str) -> Value {
     let mut condition = json!({
         "site": input.key.site,
         "component": input.key.component,
@@ -320,7 +320,7 @@ pub fn v2(input: &IntentInput<'_>, route: &str) -> Value {
         "attention_policy_digest": input.policy_digest,
         "transition_id": input.transition_id,
         "route_reference": route,
-        "destination_identity": format!("pagerduty:{route}"),
+        "destination_identity": format!("{label}:{route}"),
         "summary": truncate(&summary(input), V2_SUMMARY_MAX),
         "inspection_reference": truncate(&inspection_reference(input), 1024),
         "action": input.action.as_str(),

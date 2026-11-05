@@ -1,0 +1,21 @@
+{
+  "schema": "nq.notification_delivery_intent.v2",
+  "attention_kind": "operator_assertion",
+  "stable_event_id": "condition-page-trigger",
+  "attention_policy_id": "condition-page-qualification",
+  "attention_policy_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "transition_id": "condition-page-trigger",
+  "route_reference": "local-pages",
+  "destination_identity": "local-inbox:local-pages",
+  "response_class": "page",
+  "summary": "TEST: authorized condition page projection",
+  "inspection_reference": "nq notification inspect",
+  "action": "trigger",
+  "condition": {
+    "site": "page-qualification",
+    "component": "service",
+    "rule": "service-down",
+    "target_class": "nginx"
+  },
+  "severity": "critical"
+}

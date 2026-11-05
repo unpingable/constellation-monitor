@@ -121,7 +121,7 @@ impl DeliveryRoutes<'_> {
     }
 
     fn local(&self, schema: &str, route: &str) -> bool {
-        schema == INTENT_V1
+        [INTENT_V1, INTENT_V2].contains(&schema)
             && self.current.get(route).map_or_else(
                 || !self.known && self.config.routes.local(schema),
                 nq::Route::local,
@@ -136,7 +136,10 @@ impl DeliveryRoutes<'_> {
         let Some(route) = self.route(role) else {
             return true;
         };
-        let schema = if role == "page" && !route.local() {
+        let schema = if role == "page"
+            && (!route.local()
+                || self.config.routes.page_mode == crate::config::PageMode::ConditionV2)
+        {
             INTENT_V2
         } else {
             INTENT_V1
@@ -386,7 +389,15 @@ fn follow_up(
         // A deliberate refusal (no network) is final until network is enabled.
         (_, Some(_)) if !routes.delivers(&last.schema, &last.route) => None,
         // PagerDuty: NQ allows resubmitting the newest failed/unknown/refused/pending record.
-        (_, Some(_)) if last.schema == INTENT_V2 => Some((Operation::Resubmit, true)),
+        (_, Some(_))
+            if last.schema == INTENT_V2
+                && routes
+                    .current
+                    .get(&last.route)
+                    .is_some_and(|route| route.transport == "pagerduty") =>
+        {
+            Some((Operation::Resubmit, true))
+        }
         // Slack/Discord/local inbox: a new event only after a definite
         // non-delivery, never over an uncertain attempt.
         ("failed" | "refused", Some(_)) => Some((Operation::Submit, true)),
@@ -512,7 +523,11 @@ impl PageAcceptances {
                 let body = read_bounded(&dir.join("intents").join(&last.intent_file), 64 * 1024)
                     .ok()
                     .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-                if body.is_none() {
+                // Only PagerDuty has an open provider incident to close. Other
+                // condition-bound handlers retain ordinary notification custody.
+                if !body.as_ref().is_some_and(|body: &Value| {
+                    body["destination_identity"] == format!("pagerduty:{}", last.route)
+                }) {
                     continue;
                 }
                 let routes = self.0.entry(id.clone()).or_default();
@@ -933,6 +948,7 @@ fn evaluate_locked(
     options: &PassOptions,
     completed: &mut Option<Value>,
 ) -> Result<PassResult, String> {
+    nq::check_page_mode(config)?;
     let mut inspections = nq::Inspections::default();
     let rules = config.effective_rules();
     let digest =
@@ -1721,9 +1737,25 @@ fn evaluate_locked(
         };
         let mut written = Vec::new();
         for (role, route) in roles {
-            let local_page = role == "page" && delivery_routes.page_local;
+            let local_page = role == "page"
+                && delivery_routes.page_local
+                && config.routes.page_mode == crate::config::PageMode::Legacy;
             let (value, schema) = if role == "page" && !local_page {
-                (intent::v2(&input, &route), INTENT_V2)
+                (
+                    intent::v2(
+                        &input,
+                        &route,
+                        if config.routes.page_mode == crate::config::PageMode::ConditionV2 {
+                            delivery_routes
+                                .current
+                                .get(&route)
+                                .map_or("pagerduty", nq::Route::destination_label)
+                        } else {
+                            "pagerduty"
+                        },
+                    ),
+                    INTENT_V2,
+                )
             } else {
                 (
                     intent::v1(
@@ -2427,7 +2459,9 @@ fn evaluate_locked(
         "registry": REGISTRY_VERSION,
         "attention_policy_digest": digest,
         "network_enabled": config.routes.network_enabled,
-        "page_delivery": delivery_routes.page_local.then_some("local_file route; v1 copy"),
+        "page_delivery": if config.routes.page_mode == crate::config::PageMode::ConditionV2 {
+            Some("condition-bound v2")
+        } else { delivery_routes.page_local.then_some("local_file route; v1 copy") },
         "rules": rules_report(&rules, config),
         "inputs": read.reports.iter().collect::<Vec<&InputReport>>(),
         "conditions": condition_reports,

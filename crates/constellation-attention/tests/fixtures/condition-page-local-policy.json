@@ -1,0 +1,208 @@
+{
+  "schema": "nq.escalation_policy.v1",
+  "anchors": [
+    {
+      "rule": "host-posture-unknown",
+      "components": [
+        "host_posture"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    },
+    {
+      "rule": "host-disk",
+      "components": [
+        "host_posture"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "nq-no-fresh-acquisition",
+      "components": [
+        "nq"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    },
+    {
+      "rule": "service-down",
+      "components": [
+        "service"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    },
+    {
+      "rule": "memory-pressure",
+      "components": [
+        "host_posture"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "io-pressure",
+      "components": [
+        "host_posture"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "nightshift-recurrence-missing",
+      "components": [
+        "nightshift"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    },
+    {
+      "rule": "sqlite-health",
+      "components": [
+        "nq"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "service-not-doing-its-job",
+      "components": [
+        "service"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "remediation-journal-critical",
+      "components": [
+        "service"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    },
+    {
+      "rule": "service-endpoint-unavailable",
+      "components": [
+        "service"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "metric-alert-firing",
+      "components": [
+        "host_posture"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "evaluator-input-unavailable",
+      "components": [
+        "estate",
+        "host_posture",
+        "nightshift",
+        "nq"
+      ],
+      "response_classes": [
+        "attention"
+      ]
+    },
+    {
+      "rule": "docket-unsettled",
+      "components": [
+        "docket"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    },
+    {
+      "rule": "ag-executor-unavailable",
+      "components": [
+        "ag"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "reference": "site-notice-inbox",
+      "anchors": [
+        "host-posture-unknown",
+        "host-disk",
+        "nq-no-fresh-acquisition",
+        "service-down",
+        "memory-pressure",
+        "io-pressure",
+        "nightshift-recurrence-missing",
+        "sqlite-health",
+        "service-not-doing-its-job",
+        "remediation-journal-critical",
+        "service-endpoint-unavailable",
+        "metric-alert-firing",
+        "evaluator-input-unavailable",
+        "docket-unsettled",
+        "ag-executor-unavailable"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ],
+      "handler": {
+        "kind": "local_file",
+        "max_message_bytes": 4096
+      }
+    },
+    {
+      "reference": "site-page-inbox",
+      "anchors": [
+        "host-posture-unknown",
+        "host-disk",
+        "nq-no-fresh-acquisition",
+        "service-down",
+        "memory-pressure",
+        "io-pressure",
+        "nightshift-recurrence-missing",
+        "sqlite-health",
+        "service-not-doing-its-job",
+        "remediation-journal-critical",
+        "service-endpoint-unavailable",
+        "metric-alert-firing",
+        "evaluator-input-unavailable",
+        "docket-unsettled",
+        "ag-executor-unavailable"
+      ],
+      "response_classes": [
+        "attention",
+        "page"
+      ],
+      "handler": {
+        "kind": "local_file",
+        "max_message_bytes": 4096
+      }
+    }
+  ]
+}

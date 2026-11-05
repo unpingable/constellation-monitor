@@ -97,6 +97,7 @@ bump. New identifiers may be added within v1.
 | Capability | Behaviour | Introduced in |
 |---|---|---|
 | `runbook_url_withheld_for_http` | V2 intents omit non-HTTPS `runbook_url` while retaining the full inspection link. | `e314c94` |
+| `condition_bound_page_v2` | Explicit `routes.page_mode = "condition_v2"` uses the configured Page transport with native full-registry policy preflight. | This build |
 | `local_page_route_v1_copy` | A `local_file` page route receives a v1 page-tier copy through `deliver-local`. | `f7b74cc` |
 | `value_code_warming_informational` | Bounded value-code warming stays informational, never triggers or resolves conditions, and preserves existing faults across upgrade grace. | `f9fe6f2` |
 | `reconfiguration_grace` | Installer markers re-arm bounded metric acquisition/evaluation grace; initial empty Nightshift cycles warm during host startup. | This build |
@@ -427,7 +428,7 @@ summary, inspection and event id bounds keeps every message under it. A
 `local_file` route has no resubmit path: like Slack and Discord, a definite
 `failed` gets a new event after 900 s and an `unknown` is never resent.
 
-NQ accepts v2 only on PagerDuty routes and v1 only elsewhere. A v1 intent has
+Legacy routing emits v2 for PagerDuty and v1 local copies. A v1 intent has
 no condition fields, so its summary carries the action and condition id, for
 example `TRIGGER constellation:labelwatch:service:service-down:nqd.service
 [page]: ...`. Without a `page_route`, page rules reach the operator only
@@ -457,6 +458,40 @@ For qualification, a `page_route` whose transport is `local_file` in NQ's
 The report records `page_delivery: "local_file route; v1 copy"`. If page and
 notice use the same local route, attention delivers one copy per transition.
 Local copies need no network; a PagerDuty page route continues to receive v2.
+
+### Explicit condition-bound Page delivery
+
+Set `[routes].page_mode = "condition_v2"` with an explicit `page_route` to send
+strict `nq.notification_delivery_intent.v2` Pages through the actual configured
+NQ route: `local_file`, Slack, Discord or PagerDuty. The default `legacy` preserves
+local v1 copies and ordinary PagerDuty behavior. This mode changes no notice
+schema and adds no destination or fanout. The destination identity uses NQ's
+actual route label, including `local-inbox:<route>`, and local v2 Pages use
+`deliver-local` without network. Reports name `page_delivery: "condition-bound v2"`.
+
+The compatible consumer is NQ source
+`3611f084d9da824ab81a950a0199b516d0b87174` or a successor preserving its native
+policy and condition-delivery contract. Before `check-config` succeeds and before
+an opted-in evaluation advances or delivers, Attention runs NQ's bounded
+`notification policy --check-registry FILE --route ROUTE` against its complete
+compiled registry. The temporary registry is declaration input, not a grant.
+NQ's separately installed, byte-pinned policy must authorize every producer
+anchor/component/class and the selected Page route. A missing, incompatible or
+denied policy fails with `condition_v2_policy_preflight_refused`; startup or
+result failures are named separately. No v1 fallback or URL substitution occurs.
+Loopback HTTP runbooks stay in `inspection_reference`; only HTTPS gets the
+optional `runbook_url` field. The original condition, action and Page class are
+preserved. NQ applies each handler's rendered-message limits before custody;
+refusal does not truncate or downgrade the intent.
+
+Only PagerDuty uses NQ's safe `resubmit` and the accepted-provider-incident
+sidecar. Other handlers wait 900 seconds before a fresh event after a definite
+failed/refused delivery, and never retry an uncertain retained attempt. Missing
+custody retries the exact bytes idempotently. Changing the explicit mode retires
+the old route-role intent and creates a fresh event for an active condition,
+keeping the original transition and NQ's historical retained bytes. The existing
+local lifecycle pruning still removes superseded intent files. An unchanged PagerDuty
+identity retains its existing acceptance and cleanup obligations.
 
 ## Response policy (remediation window)
 
@@ -567,7 +602,7 @@ An idle notice-only pass does not require a readable NQ configuration.
 NQ's current route transport selects the entry point and destination label,
 including while an attention transport setting still names the previous
 transport: network routes use `submit` (or an eligible v2 `resubmit`), and
-`local_file` uses v1 through `deliver-local`. A transport change retires the
+`local_file` uses `deliver-local` (v1 in legacy mode, v2 for an explicitly opted-in Page). A transport change retires the
 old intent rather than sending its bytes through the new transport.
 
 Per-route `delivery.outcome` has four values: `accepted`, `refused`, `failed`,
