@@ -114,7 +114,10 @@ These are conditional required duties. Existing estate/Attention consumes
 `local_state` and `reason`, so intermediate absence is not encoded as a failed
 service. A valid first running capture within the original launch's progress
 budget has progress domain `UNKNOWN`, local `PRESENT` for the unbreached duty,
-and a reason explicitly saying that advancement is unknown. Missing/invalid
+and a reason explicitly saying that advancement is unknown. The same initial
+launch rule applies when persisted history contains the same accepted but not
+started worker, with no prior invocation or Cargo baseline. It does not grant a
+new grace period to a replaced worker or a rewritten stream. Missing/invalid
 progress source remains local `UNKNOWN`. Native success with independent
 verification still pending before the fixed deadline has domain
 `NATIVE_SUCCESS_OUTCOME_UNKNOWN`, local `PRESENT` for the not-yet-due duty,

@@ -51,6 +51,38 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(self.states(result)["work.worker"], "RUNNING")
         self.assertEqual(self.states(result)["work.outcome"], "INDEPENDENT_OUTCOME_MISSING")
 
+    def test_first_launch_after_blocked_history_has_unbreached_duty_without_advancement(self):
+        held = sample()
+        held.update(at=990, launch_present=False, identity_matches=False, progress=None,
+                    admission="BLOCKED", native={"LoadState": "not-found"})
+        held["identity"]["invocation_id"] = None
+        before = self.run_projection(held, now=990)
+        running = sample()
+        running.update(started_at=995, progress_budget=120)
+        result = self.run_projection(running, before)
+        progress = next(c["observation"] for c in result["concerns"] if c["id"] == "work.progress")
+        self.assertEqual(progress["domain_state"], "UNKNOWN")
+        self.assertEqual(progress["local_state"], "PRESENT")
+        self.assertIsNone(result["extensions"]["progress_clock"]["last_advance_at"])
+
+    def test_launch_grace_does_not_hide_missing_stream_or_expired_budget(self):
+        held = sample()
+        held.update(at=990, launch_present=False, identity_matches=False, progress=None,
+                    admission="BLOCKED", native={"LoadState": "not-found"})
+        held["identity"]["invocation_id"] = None
+        before = self.run_projection(held, now=990)
+        for mutation in ("missing_stream", "expired_budget"):
+            running = sample()
+            running.update(started_at=995, progress_budget=120)
+            if mutation == "missing_stream":
+                running["progress"] = None
+            else:
+                running.update(at=1116)
+            result = self.run_projection(running, before, running["at"])
+            progress = next(c["observation"] for c in result["concerns"] if c["id"] == "work.progress")
+            self.assertEqual(progress["local_state"], "UNKNOWN", mutation)
+            self.assertEqual(progress["domain_state"], "UNKNOWN", mutation)
+
     def test_real_append_between_bound_captures_supports_progress(self):
         before = self.run_projection()
         current = sample()
@@ -82,7 +114,10 @@ class ProjectionTests(unittest.TestCase):
                 current["progress"]["compiler_artifacts"] = 1
             else:
                 current["identity"]["invocation_id"] = "2" * 32
-            self.assertEqual(self.states(self.run_projection(current, before, 1010))["work.progress"], "UNKNOWN")
+            result = self.run_projection(current, before, 1010)
+            self.assertEqual(self.states(result)["work.progress"], "UNKNOWN")
+            self.assertEqual(next(c["observation"]["local_state"] for c in result["concerns"]
+                                  if c["id"] == "work.progress"), "UNKNOWN")
 
     def test_blocked_accepted_and_missing_worker_remain_distinct(self):
         current = sample()

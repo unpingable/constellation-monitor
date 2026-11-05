@@ -367,8 +367,18 @@ def project(sample, previous=None, now=None):
             pstate = "STALE_PROGRESS"
         else:
             pstate = "UNKNOWN"
+        # A pre-launch capture has no invocation or Cargo baseline to compare.
+        # Treat only the same accepted, not-started worker as an initial launch;
+        # a rewrite or replacement of an already bound worker remains unknown.
+        initial_launch = bool(old and old.get("progress") is None
+            and old.get("identity") == dict(sample.get("identity") or {}, invocation_id=None)
+            and old.get("at", float("inf")) <= sample.get("started_at", float("-inf"))
+            and any(c.get("id") == "work.worker" and
+                    c.get("observation", {}).get("domain_state") == "ACCEPTED_NOT_STARTED"
+                    for c in (previous or {}).get("concerns", [])))
         grace = (running and progress is not None and pstate == "UNKNOWN" and
-                 ((previous is None and 0 <= now - sample.get("started_at", owner.get("accepted_at_epoch", sample["at"])) <= budget)
+                 (((previous is None or initial_launch) and
+                   0 <= now - sample.get("started_at", owner.get("accepted_at_epoch", sample["at"])) <= budget)
                   or comparable))
         add("progress", pstate, "Progress %s; compiler artifacts=%s; last observed append=%s; budget=%ss. %s Only a bound append proves sampled progress." %
             (pstate, (progress or {}).get("compiler_artifacts"), clock.get("last_advance_at"), budget,

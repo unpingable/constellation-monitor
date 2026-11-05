@@ -154,6 +154,29 @@ class AcquisitionTests(unittest.TestCase):
         states = {c["id"]: c["observation"]["domain_state"] for c in json.loads(second.stdout)["concerns"]}
         self.assertEqual(states["work.progress"], "ADVANCING")
 
+    def test_native_launch_after_held_cli_history_preserves_unbreached_progress_duty(self):
+        history = self.root / "history"
+        history.mkdir(mode=0o700)
+        argv = ["/usr/bin/python3", "-B", str(HERE / "observe.py"), "--binding", str(self.path),
+                "--history", str(history / "previous.json")]
+        held = json.loads(subprocess.check_output(argv, text=True, timeout=10))
+        worker = next(c["observation"] for c in held["concerns"] if c["id"] == "work.worker")
+        self.assertEqual(worker["domain_state"], "ACCEPTED_NOT_STARTED")
+        self.launch()
+        (self.worker / "cargo.jsonl").write_text('{"reason":"compiler-artifact"}\n')
+        # Reuse the real estate consumer with the same persisted held history.
+        spec = importlib.util.spec_from_file_location("estate_launch", HERE.parent / "estate/constellation-estate-collect.py")
+        estate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(estate)
+        report = estate.evaluate({"name": "fixture-launch-observer", "runtime": {"systemd": self.unit},
+                                 "status": {"kind": "project-ops-status", "argv": argv}}, 12)
+        self.assertEqual(report["verdict"], "OK", report)
+        after = json.loads((history / "previous.json").read_text())
+        progress = next(c["observation"] for c in after["concerns"] if c["id"] == "work.progress")
+        self.assertEqual(progress["domain_state"], "UNKNOWN")
+        self.assertEqual(progress["local_state"], "PRESENT")
+        self.assertIsNone(after["extensions"]["progress_clock"]["last_advance_at"])
+
     def test_missing_binding_cli_returns_required_unknown_not_empty_concerns(self):
         result = subprocess.run(["/usr/bin/python3", "-B", str(HERE / "observe.py"),
                                  "--binding", str(self.trusted / "missing.json")],
