@@ -190,3 +190,11 @@ The example's 2,048 occurrences at a 60-second cadence are a bounded
 qualification profile (about 34 hours), not a sustained-production retention
 claim. A production retention envelope requires an explicit owner-approved
 capacity and rotation/disposition procedure before deployment.
+
+The live reactor borrows retained sparse events when capturing the journal and
+releases the journal object's duplicate decoded payload cache after rebuilding
+its duplicate/refusal indexes. Durable journal bytes, record-count/file bounds,
+activation and policy identity checks, contradiction custody and restart-UNKNOWN
+behavior are unchanged. Runtime historical state and identity indexes still grow
+within their declared bounds; this is not compaction or a fixed-memory retention
+promise. Do not delete or trim the journal to reduce the runner's memory use.

@@ -810,6 +810,41 @@ fn two_deadlines_are_serviced_earliest_first() {
 }
 
 #[test]
+fn prestart_activation_events_are_captured_without_a_command() {
+    let config = runtime_config("receiver-incarnation:prestart", "clock:prestart");
+    let runtime = registered_runtime("consumer:one", 500, config.clone());
+    let expected = runtime.export_history().sparse_events;
+    assert!(!expected.is_empty());
+    let path = temp_path("prestart");
+    let journal_config = journal_config("journal:prestart");
+    let journal = HistoricalJournal::create_new(&path, journal_config.clone()).expect("journal");
+    let reactor = LocalCrashReactor::start(
+        runtime,
+        journal,
+        epoch(&config, "epoch:prestart", 0),
+        ReactorConfigV1::qualification(),
+    )
+    .expect("reactor");
+    reactor
+        .wait_until(Duration::from_secs(2), |s| {
+            s.condition == ReactorConditionV1::Operational
+        })
+        .expect("initial capture");
+    let report = HistoricalJournal::scan(&path, &journal_config).expect("native scan");
+    let actual = report
+        .project_history()
+        .expect("projection")
+        .history
+        .sparse_events;
+    assert_eq!(
+        actual, expected,
+        "all pre-start activation events preserved in order"
+    );
+    reactor.shutdown().expect("shutdown");
+    fs::remove_file(path).expect("remove owned journal");
+}
+
+#[test]
 fn journal_recovery_starts_new_epoch_unknown_without_support_or_deadlines() {
     let (reactor, path, journal_config, _) = start_reactor(
         "restart",

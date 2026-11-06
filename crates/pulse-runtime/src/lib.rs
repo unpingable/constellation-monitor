@@ -1145,8 +1145,9 @@ impl ReceiverSchedulerRuntime {
         Ok(output)
     }
 
-    #[must_use]
-    pub fn export_history(&self) -> RuntimeHistoricalStateV1 {
+    // The reactor borrows sparse events/receipts and only materializes the
+    // current contradiction projection. Export callers still own a full copy.
+    fn export_contradiction_custody(&self) -> Vec<ContradictionCustodyV1> {
         let mut contradictions = self
             .historical_contradictions
             .iter()
@@ -1199,10 +1200,15 @@ impl ReceiverSchedulerRuntime {
                 );
             }
         }
+        contradictions.into_values().collect()
+    }
+
+    #[must_use]
+    pub fn export_history(&self) -> RuntimeHistoricalStateV1 {
         RuntimeHistoricalStateV1 {
             schema_version: SCHEMA_VERSION_V1,
             sparse_events: self.sparse_history.clone(),
-            contradictions: contradictions.into_values().collect(),
+            contradictions: self.export_contradiction_custody(),
             diagnostic_receipts: self.diagnostic_receipts.clone(),
             nonclaims: pulse_types::history_nonclaims(),
         }
