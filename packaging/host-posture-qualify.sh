@@ -18,7 +18,7 @@ run fmt cargo fmt --all -- --check
 run clippy cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 run focused cargo test --locked -p constellation-host-posture --release --all-targets -- --nocapture --test-threads=1
 run workspace cargo test --locked --release --workspace --all-targets --all-features --no-fail-fast -- --test-threads=1
-run release cargo build --locked --release -p constellation-host-posture -p constellation-status-projection --bins
+run release cargo build --locked --release -p constellation-host-posture -p constellation-status-projection -p pulse-nq-load-support --bins
 sha256sum "$BIN" > "$R/binary-after.sha256"
 diff "$R/binary-before.sha256" "$R/binary-after.sha256" >/dev/null && echo "binary unchanged" || { echo "BINARY CHANGED"; exit 1; }
 cp "$0" "$R/run-checks.sh"
