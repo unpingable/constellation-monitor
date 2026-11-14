@@ -298,8 +298,8 @@ count on the acquisition worker because an intent may already exist. Successful
 publication adds a new immutable object only once; publication metrics also
 reuse the existing capacity check's counts. A staging/commit failure reconciles
 object/temporary counts because it can strand entries. Metrics rendering never
-scans these stores. The original publication capacity checks remain unchanged
-and still scan independently of whether metrics are enabled.
+scans these stores. Publication capacity checks use an initial or invalidated
+census and fixed checks on the quiet path, whether metrics are enabled or not.
 
 `publications_used` includes stranded temporary entries for headroom. A
 store-count error retains the prior textfile and logs through the same failure
