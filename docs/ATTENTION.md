@@ -177,9 +177,12 @@ accepts 17 Cartography anchors (`host-disk` among them); `memory-pressure`,
 anchors at all. `remediation-journal-critical` is the evaluator's 18th
 page-capable anchor and needs an NQ that carries it (see the top of this
 document).
-`host-disk` is version 3: version 2 added NQ filesystem watchers, version 3
-made it attention-only. `evaluator-input-unavailable` is version 2: it gained
-the `rejected` class (per-definition admission, registry v6).
+For `host-disk`, version 2 added NQ filesystem watchers and version 3 made it
+attention-only. Current version 4 also excludes explicitly retired lineage and
+requires an admitted latest collection outcome before using its retained evaluation.
+For `evaluator-input-unavailable`, version 2 added the `rejected` class
+(per-definition admission, registry v6). Current version 3 also reports failed
+or unavailable collection admission without treating older results as recovery.
 
 ### Classification
 
