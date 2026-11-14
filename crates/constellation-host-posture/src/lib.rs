@@ -5,6 +5,9 @@
 //! Pulse reactor, owner consequence adapter, and status projector. It owns no
 //! diagnostic threshold or consequence rule.
 
+mod publication_budget;
+use publication_budget::PublicationBudget;
+
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write as _;
 use std::os::unix::fs::{
@@ -27,13 +30,14 @@ use constellation_status_projection::{
     AudienceClassV1, ComponentOutputFieldV1, ComponentPolicyV1, DisclosurePolicyV1,
     FactRequirementV1, LiveSupportSelectorV1, OutputComponentV1, PROJECTION_POLICY_SCHEMA_V1,
     ProjectedStateV1, ProjectionMomentV1, ProjectionPolicyV1, SourceFactClassV1,
-    project_with_details, read_current_artifact, stage_publication,
+    project_with_details, read_current_artifact,
 };
 use pulse_nq_load_correspondence::{
-    Coproducer, CorrespondenceError, CorrespondenceProfileV1, NQ_ARTIFACT_SCHEMA, NqEnrollmentV1,
-    NqProducerV1, OccurrenceOutcomeV1, PinnedNqExecutable, PulseEnrollmentV1, QuestionV1,
-    SemanticIdentityV1, SubjectIncarnationWitness, VerifiedCorrespondenceV1, read_regular_bounded,
-    sha256_hex_of_file, write_create_new,
+    Coproducer, CorrespondenceError, CorrespondenceProfileV1, DueExpiryAttemptV1,
+    NQ_ARTIFACT_SCHEMA, NqEnrollmentV1, NqProducerV1, OccurrenceOutcomeV1, OccurrenceResultV1,
+    PinnedNqExecutable, PulseEnrollmentV1, QuestionV1, SemanticIdentityV1,
+    SubjectIncarnationWitness, VerifiedCorrespondenceV1, maintenance_admits_seal,
+    read_regular_bounded, sha256_hex_of_file, write_create_new,
 };
 use pulse_runtime::{
     HistoricalJournal, JournalBoundsV1, JournalConfigV1, LocalCrashReactor,
@@ -965,9 +969,12 @@ fn count_regular_store_entries(path: &Path, bound: u64, name: &str) -> Result<u6
     let mut count = 0_u64;
     for entry in fs::read_dir(path).map_err(|error| map_error("store_bound", error))? {
         let entry = entry.map_err(|error| map_error("store_bound", error))?;
-        let metadata =
-            fs::symlink_metadata(entry.path()).map_err(|error| map_error("store_bound", error))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        // Use the directory's native type where available. The standard
+        // library falls back to no-follow metadata when the type is unknown.
+        let file_type = entry
+            .file_type()
+            .map_err(|error| map_error("store_bound", error))?;
+        if file_type.is_symlink() || !file_type.is_file() {
             return Err(HostPostureError::new(
                 "store_bound",
                 format!("{name} contains a non-regular entry"),
@@ -1255,6 +1262,7 @@ fn unix_now_ms() -> Result<u64> {
         .map_err(|_| HostPostureError::new("wall_clock", "Unix millisecond timestamp exceeds u64"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_projection(
     config: &HostPostureConfig,
     reactor: &LocalCrashReactor,
@@ -1262,25 +1270,12 @@ fn publish_projection(
     verified: Option<&VerifiedCorrespondenceV1>,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
+    budget: &mut PublicationBudget<'_>,
     metrics: &mut Metrics<'_>,
 ) -> Result<(String, ProjectedStateV1)> {
-    let objects = count_regular_store_entries(
-        &config.publication_root.join("objects"),
-        config.maximum_publications,
-        "publication object store",
-    )?;
-    let temporary = count_regular_store_entries(
-        &config.publication_root.join("tmp"),
-        config.maximum_publications,
-        "publication temporary store",
-    )?;
-    if objects.saturating_add(temporary) >= config.maximum_publications {
-        return Err(HostPostureError::new(
-            "publication_capacity",
-            "configured aggregate publication capacity is exhausted",
-        ));
-    }
-    metrics.publication_store_counts(objects, temporary);
+    let admission = budget.admit();
+    metrics.publication_counts(budget);
+    admission?;
     let mut facts = Vec::new();
     let mut support = Vec::new();
     let mut details = Vec::new();
@@ -1314,11 +1309,9 @@ fn publish_projection(
     let artifact = project_with_details(policy, &facts, &support, &[], &details, moment)
         .map_err(|error| map_error("projection", error))?;
     let aggregate_state = artifact.aggregate_state;
-    let existed = metrics.object_exists(&artifact.artifact_id);
-    let publication =
-        stage_publication(&config.publication_root, &artifact).and_then(|staged| staged.commit());
-    metrics.publication_finished(existed, publication.is_ok());
-    let artifact_id = publication.map_err(|error| map_error("publication", error))?;
+    let publication = budget.publish(&artifact);
+    metrics.publication_counts(budget);
+    let artifact_id = publication?;
     *last_published_unix_ms = generated_at;
     Ok((artifact_id, aggregate_state))
 }
@@ -1357,6 +1350,7 @@ struct ProjectionCycle {
 /// One periodic publication. The reactor condition is read before
 /// publishing, so when it reports a latched custody failure the artifact
 /// published in this same cycle is the unknown that records it.
+#[allow(clippy::too_many_arguments)]
 fn projection_cycle(
     config: &HostPostureConfig,
     reactor: &LocalCrashReactor,
@@ -1364,6 +1358,7 @@ fn projection_cycle(
     verified: Option<&VerifiedCorrespondenceV1>,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
+    budget: &mut PublicationBudget<'_>,
     metrics: &mut Metrics<'_>,
 ) -> Result<ProjectionCycle> {
     let snapshot = reactor.snapshot();
@@ -1375,6 +1370,7 @@ fn projection_cycle(
         verified,
         nonce_sequence,
         last_published_unix_ms,
+        budget,
         metrics,
     );
     metrics.observe(
@@ -1401,6 +1397,7 @@ fn final_projection(
     policy: &ProjectionPolicyV1,
     nonce_sequence: u64,
     last_published_unix_ms: &mut u64,
+    budget: &mut PublicationBudget<'_>,
     metrics: &mut Metrics<'_>,
 ) -> FinalProjection {
     let custody_lost_before_shutdown = reactor_custody_lost(&reactor.snapshot()).is_some();
@@ -1415,6 +1412,7 @@ fn final_projection(
         None,
         nonce_sequence,
         last_published_unix_ms,
+        budget,
         metrics,
     );
     if let Ok((artifact, state)) = &publication {
@@ -1460,6 +1458,11 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
     let mut metrics = Metrics::new(config, process_started);
     ensure_service_store_directories(config)?;
     let existing_occurrences = validate_store_bounds(config)?;
+    let mut publication_budget = PublicationBudget::new(
+        &config.publication_root,
+        config.maximum_publications,
+        &_lock,
+    )?;
     let profile = load_profile(config)?;
     let port = PinnedNqExecutable::from_enrollment(&profile.nq)
         .map_err(|error| map_error("nq_pin", error))?;
@@ -1491,6 +1494,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         None,
         nonce_sequence,
         &mut last_published,
+        &mut publication_budget,
         &mut metrics,
     );
     metrics.observe(
@@ -1523,6 +1527,10 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
             refusal: String,
         },
         Refused {
+            code: &'static str,
+            detail: String,
+        },
+        MaintenanceRefused {
             code: &'static str,
             detail: String,
         },
@@ -1565,13 +1573,34 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     let _ = sender.send(AcquisitionMessage::Exhausted);
                     break;
                 }
-                occurrences = occurrences.saturating_add(1);
-                let result = coproducer.run_occurrence(worker_reactor);
-                if let Some(count) = &intent_count {
-                    count.completed(config, result.is_ok());
+                let result = run_maintained_occurrence(
+                    || {
+                        let report = worker_port.maintain_due_expiry()?;
+                        if !matches!(report.attempt, DueExpiryAttemptV1::Deferred { .. }) {
+                            eprintln!(
+                                "due_expiry_maintenance attempt={:?} pending={} elapsed_ms={}",
+                                report.attempt, report.scheduled_expiry_pending, report.elapsed_ms
+                            );
+                        }
+                        maintenance_admits_seal(&report)
+                    },
+                    &mut coproducer,
+                    worker_reactor,
+                    intent_count.as_deref().map(|count| (count, config)),
+                );
+                // Maintenance refusal happens before a seal or intent exists.
+                // Only an actual occurrence spends this retained-work budget.
+                if matches!(&result, MaintainedOccurrence::Occurred(_)) {
+                    occurrences = occurrences.saturating_add(1);
                 }
                 let message = match result {
-                    Ok(result) => {
+                    MaintainedOccurrence::MaintenanceRefused(error) => {
+                        AcquisitionMessage::MaintenanceRefused {
+                            code: error.code,
+                            detail: error.detail,
+                        }
+                    }
+                    MaintainedOccurrence::Occurred(Ok(result)) => {
                         let sequence = result.sequence;
                         match result.outcome {
                             OccurrenceOutcomeV1::Verified(value) => AcquisitionMessage::Verified {
@@ -1588,7 +1617,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                             }
                         }
                     }
-                    Err(error) => AcquisitionMessage::Refused {
+                    MaintainedOccurrence::Occurred(Err(error)) => AcquisitionMessage::Refused {
                         code: error.code,
                         detail: error.detail,
                     },
@@ -1637,6 +1666,9 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                 Ok(AcquisitionMessage::Refused { code, detail }) => {
                     eprintln!("acquisition_refused code={code} detail={detail}");
                 }
+                Ok(AcquisitionMessage::MaintenanceRefused { code, detail }) => {
+                    eprintln!("maintenance_refused code={code} detail={detail}");
+                }
                 Ok(AcquisitionMessage::Exhausted) => {
                     terminal_error = Some(HostPostureError::new(
                         "occurrence_capacity",
@@ -1665,6 +1697,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
                     latest.as_ref(),
                     nonce_sequence,
                     &mut last_published,
+                    &mut publication_budget,
                     &mut metrics,
                 ) {
                     Ok(cycle) => {
@@ -1712,6 +1745,7 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
         &policy,
         nonce_sequence,
         &mut last_published,
+        &mut publication_budget,
         &mut metrics,
     );
     let shutdown_result = match reactor.shutdown() {
@@ -1738,6 +1772,31 @@ pub fn run(config: &HostPostureConfig) -> Result<()> {
     }
     shutdown_result?;
     Ok(())
+}
+
+/// One acquisition turn. NQ's due-expiry maintenance runs first, under its
+/// own bound and before anything is sealed. A maintenance failure or refusal
+/// ends the turn with no intent, sequence, acquisition or delivery; existing
+/// support then expires on its own schedule.
+pub(crate) enum MaintainedOccurrence {
+    MaintenanceRefused(CorrespondenceError),
+    Occurred(std::result::Result<OccurrenceResultV1, CorrespondenceError>),
+}
+
+pub(crate) fn run_maintained_occurrence(
+    maintain: impl FnOnce() -> std::result::Result<(), CorrespondenceError>,
+    coproducer: &mut Coproducer<'_>,
+    reactor: &LocalCrashReactor,
+    metrics: Option<(&metrics::IntentCount, &HostPostureConfig)>,
+) -> MaintainedOccurrence {
+    if let Err(error) = maintain() {
+        return MaintainedOccurrence::MaintenanceRefused(error);
+    }
+    let result = coproducer.run_occurrence(reactor);
+    if let Some((count, config)) = metrics {
+        count.completed(config, result.is_ok());
+    }
+    MaintainedOccurrence::Occurred(result)
 }
 
 #[cfg(test)]
@@ -1829,6 +1888,155 @@ mod tests {
         }
     }
 
+    #[test]
+    fn store_census_counts_entries_and_deletions_at_the_exact_bound() {
+        let root = ScratchDir::new("store-census-count");
+        fs::write(root.path().join("a"), b"retained").unwrap();
+        fs::write(root.path().join("b"), b"retained").unwrap();
+        assert_eq!(
+            count_regular_store_entries(root.path(), 2, "test").unwrap(),
+            2
+        );
+        assert_eq!(
+            count_regular_store_entries(root.path(), 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+        fs::remove_file(root.path().join("a")).unwrap();
+        assert_eq!(
+            count_regular_store_entries(root.path(), 1, "test").unwrap(),
+            1
+        );
+        fs::remove_file(root.path().join("b")).unwrap();
+        assert_eq!(
+            count_regular_store_entries(root.path(), 0, "test").unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn store_census_refuses_symlinks_directories_and_fifos() {
+        let root = ScratchDir::new("store-census-types");
+        let store = root.path().join("store");
+        fs::create_dir(&store).unwrap();
+        fs::write(root.path().join("target"), b"retained").unwrap();
+        let entry = store.join("unexpected");
+        for target in ["../target", "../missing"] {
+            std::os::unix::fs::symlink(target, &entry).unwrap();
+            assert_eq!(
+                count_regular_store_entries(&store, 1, "test")
+                    .unwrap_err()
+                    .code,
+                "store_bound"
+            );
+            fs::remove_file(&entry).unwrap();
+        }
+        fs::create_dir(&entry).unwrap();
+        assert_eq!(
+            count_regular_store_entries(&store, 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+        fs::remove_dir(&entry).unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&entry)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            count_regular_store_entries(&store, 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+        fs::remove_file(&entry).unwrap();
+        let link = root.path().join("linked-store");
+        std::os::unix::fs::symlink(&store, &link).unwrap();
+        assert_eq!(
+            count_regular_store_entries(&link, 1, "test")
+                .unwrap_err()
+                .code,
+            "store_bound"
+        );
+    }
+
+    /// Explicit Linux performance regression; run with strace on a filesystem
+    /// that supplies directory entry types. This observes the real census,
+    /// without a wall-clock threshold or instrumentation in production code.
+    #[test]
+    #[ignore = "requires Linux strace and native directory entry types"]
+    fn store_census_avoids_per_entry_metadata_syscalls() {
+        const TRACE_PATH: &str = "CONSTELLATION_HOST_POSTURE_CENSUS_TRACE_PATH";
+        if let Some(path) = std::env::var_os(TRACE_PATH) {
+            assert_eq!(
+                count_regular_store_entries(Path::new(&path), 256, "trace").unwrap(),
+                256
+            );
+            return;
+        }
+        let root = ScratchDir::new("store-census-trace");
+        let store = root.path().join("objects");
+        fs::create_dir(&store).unwrap();
+        for n in 0..256 {
+            fs::write(store.join(format!("entry-{n}")), b"retained").unwrap();
+        }
+        let trace = root.path().join("syscalls");
+        let output = std::process::Command::new("strace")
+            .args(["-f", "-qq", "-e", "trace=statx,newfstatat", "-o"])
+            .arg(&trace)
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "tests::store_census_avoids_per_entry_metadata_syscalls",
+                "--nocapture",
+            ])
+            .env(TRACE_PATH, &store)
+            .output()
+            .expect("run the actual census under strace");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let child_path = format!("{}/entry-", store.display());
+        let child_stats = fs::read_to_string(&trace)
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                line.contains(&child_path)
+                    && (line.contains("statx(") || line.contains("newfstatat("))
+            })
+            .count();
+        println!("per-child metadata syscalls: {child_stats}");
+        assert_eq!(
+            child_stats, 0,
+            "directory entry types must avoid one inode read per retained object"
+        );
+    }
+
+    #[test]
+    fn publication_budget_recounts_deleted_objects() {
+        let root = ScratchDir::new("publication-delete");
+        let status = root.path().join("status");
+        fs::create_dir_all(status.join("objects")).unwrap();
+        fs::create_dir(status.join("tmp")).unwrap();
+        fs::write(status.join("objects/a"), b"retained").unwrap();
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 1, &lock).unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "publication_capacity");
+        fs::remove_file(status.join("objects/a")).unwrap();
+        assert!(
+            budget.refresh().unwrap(),
+            "deletion invalidates the prior census"
+        );
+        budget.admit().unwrap();
+    }
+
     fn fixture_reactor(root: &Path, label: &str) -> (CorrespondenceProfileV1, LocalCrashReactor) {
         let profile = pulse_nq_load_correspondence::fixture::synthetic_profile_for(
             QuestionV1::HostFilesystemCapacityPressureV1,
@@ -1844,6 +2052,184 @@ mod tests {
         )
         .expect("operational fixture reactor");
         (profile, reactor)
+    }
+
+    #[test]
+    fn publication_budget_reuses_census_and_recounts_external_entries() {
+        let root = ScratchDir::new("publication-budget");
+        let status = root.path().join("status");
+        fs::create_dir_all(status.join("objects")).unwrap();
+        fs::create_dir(status.join("tmp")).unwrap();
+        for n in 0..128 {
+            fs::write(
+                status.join("objects").join(format!("{n}.json")),
+                b"retained",
+            )
+            .unwrap();
+        }
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 130, &lock).unwrap();
+        assert!(
+            !budget.refresh().unwrap(),
+            "unchanged history needs no census"
+        );
+        fs::write(status.join("tmp/abandoned"), b"retained scratch").unwrap();
+        assert!(
+            budget.refresh().unwrap(),
+            "foreign entries need a fresh census"
+        );
+        budget.admit().unwrap();
+        fs::write(status.join("objects/last.json"), b"retained").unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "publication_capacity");
+    }
+
+    #[test]
+    fn publication_budget_refuses_symlinks_after_initial_census() {
+        let root = ScratchDir::new("publication-symlink");
+        let status = root.path().join("status");
+        fs::create_dir_all(status.join("objects")).unwrap();
+        fs::create_dir(status.join("tmp")).unwrap();
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 10, &lock).unwrap();
+        std::os::unix::fs::symlink("missing", status.join("objects/unexpected")).unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "store_bound");
+        fs::remove_file(status.join("objects/unexpected")).unwrap();
+        fs::remove_dir(status.join("tmp")).unwrap();
+        std::os::unix::fs::symlink("objects", status.join("tmp")).unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "store_bound");
+    }
+
+    #[test]
+    fn publication_budget_latches_lost_event_continuity() {
+        let root = ScratchDir::new("publication-event-bound");
+        let status = root.path().join("status");
+        fs::create_dir(&status).unwrap();
+        let lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut budget = PublicationBudget::new(&status, 10000, &lock).unwrap();
+        // More than the finite 16 * 4096-byte drain allowance, regardless of
+        // the host's larger kernel queue setting. An event-loss disposition
+        // must remain refused after the overflowing batch has been consumed.
+        for n in 0..5000 {
+            fs::write(status.join("objects").join(format!("external-{n:05}")), b"").unwrap();
+        }
+        assert_eq!(budget.admit().unwrap_err().code, "publication_changed");
+        assert_eq!(budget.admit().unwrap_err().code, "publication_changed");
+        drop(budget);
+        let mut reconstructed = PublicationBudget::new(&status, 10000, &lock).unwrap();
+        reconstructed.admit().unwrap();
+    }
+
+    #[test]
+    fn publication_budget_counts_commits_and_reconstructs_after_restart() {
+        let root = ScratchDir::new("publication-commits");
+        let (profile, reactor) = fixture_reactor(root.path(), "publication-commits");
+        let mut config = toml::from_str::<HostPostureConfig>(&example_config()).unwrap();
+        config.state_root = root.path().to_owned();
+        config.publication_root = root.path().join("status");
+        config.maximum_publications = 2;
+        fs::create_dir_all(config.publication_root.join("objects")).unwrap();
+        fs::set_permissions(&config.publication_root, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(
+            config.publication_root.join("objects"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        fs::create_dir(config.publication_root.join("tmp")).unwrap();
+        fs::set_permissions(
+            config.publication_root.join("tmp"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let lock = StateLock::acquire(&config.lock_path()).unwrap();
+        assert!(
+            StateLock::acquire(&config.lock_path()).is_err(),
+            "one writer owns the count"
+        );
+        let mut budget = PublicationBudget::new(&config.publication_root, 2, &lock).unwrap();
+        let selector = live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap();
+        let policy = condition_policy(selector, "/");
+        let mut last_published = 0;
+        publish_projection(
+            &config,
+            &reactor,
+            &policy,
+            None,
+            1,
+            &mut last_published,
+            &mut budget,
+            &mut Metrics::new(&config, SystemTime::now()),
+        )
+        .unwrap();
+        assert!(
+            !budget.refresh().unwrap(),
+            "own commit reconciles namespace events without recensus"
+        );
+        // A repeated identical artifact reuses its object and consumes no slot.
+        budget
+            .publish(&read_current_artifact(&config.publication_root).unwrap())
+            .unwrap();
+        budget.admit().unwrap();
+        last_published += policy.timestamp_granularity_ms;
+        publish_projection(
+            &config,
+            &reactor,
+            &policy,
+            None,
+            2,
+            &mut last_published,
+            &mut budget,
+            &mut Metrics::new(&config, SystemTime::now()),
+        )
+        .unwrap();
+        assert_eq!(budget.admit().unwrap_err().code, "publication_capacity");
+        drop(budget);
+        drop(lock);
+        let restarted_lock = StateLock::acquire(&config.lock_path()).unwrap();
+        let mut restarted =
+            PublicationBudget::new(&config.publication_root, 2, &restarted_lock).unwrap();
+        assert_eq!(restarted.admit().unwrap_err().code, "publication_capacity");
+        reactor.shutdown().unwrap();
+    }
+
+    #[test]
+    fn publication_budget_recounts_object_retained_by_failed_commit() {
+        let root = ScratchDir::new("publication-failed-commit");
+        let (profile, reactor) = fixture_reactor(root.path(), "publication-failed-commit");
+        let mut config = toml::from_str::<HostPostureConfig>(&example_config()).unwrap();
+        config.state_root = root.path().to_owned();
+        config.publication_root = root.path().join("status");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&config.publication_root)
+            .unwrap();
+        let lock = StateLock::acquire(&config.lock_path()).unwrap();
+        let mut budget = PublicationBudget::new(&config.publication_root, 2, &lock).unwrap();
+        let selector = live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap();
+        let policy = condition_policy(selector, "/");
+        publish_projection(
+            &config,
+            &reactor,
+            &policy,
+            None,
+            1,
+            &mut 0,
+            &mut budget,
+            &mut Metrics::new(&config, SystemTime::now()),
+        )
+        .unwrap();
+        let mut wrong_projection = read_current_artifact(&config.publication_root).unwrap();
+        wrong_projection.projection_id = "different-projection".to_owned();
+        wrong_projection.artifact_id = wrong_projection.compute_id().unwrap();
+        assert_eq!(
+            budget.publish(&wrong_projection).unwrap_err().code,
+            "publication"
+        );
+        assert_eq!(
+            budget.admit().unwrap_err().code,
+            "publication_capacity",
+            "failed commit retained an immutable object; it still consumes a slot"
+        );
+        reactor.shutdown().unwrap();
     }
 
     #[test]
@@ -1881,6 +2267,111 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_precedes_the_seal_and_a_refusal_burns_no_sequence() {
+        let root = ScratchDir::new("preseal-maintenance");
+        let (profile, reactor) = fixture_reactor(root.path(), "preseal-maintenance");
+        let nq = pulse_nq_load_correspondence::fixture::FakeNq::new(
+            profile.clone(),
+            pulse_nq_load_correspondence::fixture::SyntheticOutcome::Present,
+        );
+        let witness = pulse_nq_load_correspondence::FixedSubjectIncarnation(IncarnationId::new(
+            pulse_nq_load_correspondence::fixture::SYNTHETIC_SUBJECT_INCARNATION,
+        ));
+        let intent_dir = root.path().join("intent");
+        let audit_dir = root.path().join("audit");
+        let mut coproducer = Coproducer::begin(&profile, &nq, &witness, &intent_dir, &audit_dir)
+            .expect("coproducer");
+        let config = metrics_config(&root);
+        let mut metrics = Metrics::new(&config, SystemTime::now());
+        let intent_count = metrics.intent_count().expect("enabled intent telemetry");
+        let metrics_path = config
+            .metrics_textfile_dir
+            .as_ref()
+            .unwrap()
+            .join("host-posture.prom");
+        let entries = |directory: &Path| fs::read_dir(directory).map_or(0, Iterator::count);
+        let occurred = |turn: MaintainedOccurrence| match turn {
+            MaintainedOccurrence::Occurred(Ok(result)) => result,
+            MaintainedOccurrence::Occurred(Err(error)) => panic!("occurrence failed: {error:?}"),
+            MaintainedOccurrence::MaintenanceRefused(error) => {
+                panic!("maintenance unexpectedly refused: {error:?}")
+            }
+        };
+
+        // Maintenance runs before anything is sealed or acquired.
+        let first = occurred(run_maintained_occurrence(
+            || {
+                assert_eq!(entries(&intent_dir), 0, "maintenance precedes the seal");
+                assert_eq!(nq.acquire_attempt_count(), 0);
+                Ok(())
+            },
+            &mut coproducer,
+            &reactor,
+            Some((intent_count.as_ref(), &config)),
+        ));
+        assert!(matches!(first.outcome, OccurrenceOutcomeV1::Verified(_)));
+        assert_eq!(entries(&intent_dir), 1);
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        assert!(
+            fs::read_to_string(&metrics_path)
+                .unwrap()
+                .contains("constellation_host_posture_occurrences_total 1\n")
+        );
+
+        // A failed maintenance step ends the turn: no intent, audit record,
+        // acquisition, or delivery.
+        let audits = entries(&audit_dir);
+        match run_maintained_occurrence(
+            || {
+                Err(CorrespondenceError::new(
+                    "nq_maintenance_timeout",
+                    "fixture: maintenance exceeded its bound",
+                ))
+            },
+            &mut coproducer,
+            &reactor,
+            Some((intent_count.as_ref(), &config)),
+        ) {
+            MaintainedOccurrence::MaintenanceRefused(error) => {
+                assert_eq!(error.code, "nq_maintenance_timeout");
+            }
+            MaintainedOccurrence::Occurred(_) => {
+                panic!("a maintenance failure must not reach the occurrence")
+            }
+        }
+        assert_eq!(entries(&intent_dir), 1);
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        assert!(
+            fs::read_to_string(&metrics_path)
+                .unwrap()
+                .contains("constellation_host_posture_occurrences_total 1\n")
+        );
+        assert_eq!(entries(&audit_dir), audits);
+        assert_eq!(nq.acquire_attempt_count(), 1);
+
+        // The next turn continues the lineage without a gap; a burned
+        // sequence would make the certificate DEGRADED (audit only).
+        let next = occurred(run_maintained_occurrence(
+            || Ok(()),
+            &mut coproducer,
+            &reactor,
+            Some((intent_count.as_ref(), &config)),
+        ));
+        assert_eq!(next.sequence, first.sequence + 1, "no sequence was burned");
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        assert!(
+            fs::read_to_string(&metrics_path)
+                .unwrap()
+                .contains("constellation_host_posture_occurrences_total 2\n")
+        );
+        assert!(
+            matches!(next.outcome, OccurrenceOutcomeV1::Verified(_)),
+            "continuous lineage keeps CURRENT support"
+        );
+        reactor.shutdown().expect("clean fixture shutdown");
+    }
+
+    #[test]
     fn latched_reactor_publishes_unknown_in_the_cycle_that_ends_the_runner() {
         let root = ScratchDir::new("custody-cycle");
         let (profile, reactor) = fixture_reactor(root.path(), "custody-cycle");
@@ -1908,7 +2399,10 @@ mod tests {
             .expect("packaged example decodes");
         config.state_root = root.path().to_path_buf();
         config.publication_root = root.path().join("status");
-        fs::create_dir(&config.publication_root).expect("publication root");
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&config.publication_root)
+            .expect("publication root");
         let textfile_dir = root.path().join("textfile");
         fs::create_dir(&textfile_dir).expect("textfile directory");
         config.metrics_textfile_dir = Some(textfile_dir.clone());
@@ -1920,6 +2414,13 @@ mod tests {
         policy.validate().expect("runner policy");
         let mut last_published = 0;
 
+        let publication_lock = StateLock::acquire(&root.path().join("writer.lock")).unwrap();
+        let mut publication_budget = PublicationBudget::new(
+            &config.publication_root,
+            config.maximum_publications,
+            &publication_lock,
+        )
+        .unwrap();
         let healthy = projection_cycle(
             &config,
             &reactor,
@@ -1927,6 +2428,7 @@ mod tests {
             Some(&verified),
             1,
             &mut last_published,
+            &mut publication_budget,
             &mut metrics,
         )
         .expect("operational cycle publishes");
@@ -1960,6 +2462,7 @@ mod tests {
             Some(&verified),
             2,
             &mut last_published,
+            &mut publication_budget,
             &mut metrics,
         )
         .expect("latched cycle still publishes");
@@ -2013,6 +2516,7 @@ mod tests {
             Some(&verified),
             3,
             &mut last_published,
+            &mut publication_budget,
             &mut metrics,
         )
         .expect("textfile failure cannot refuse publication");
@@ -2059,7 +2563,17 @@ mod tests {
             let (profile, reactor) = fixture_reactor(root.path(), "metrics-late-latch");
             let mut config = metrics_config(&root);
             config.maximum_publications = 1;
-            fs::create_dir(&config.publication_root).unwrap();
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&config.publication_root)
+                .unwrap();
+            let writer = StateLock::acquire(&config.lock_path()).unwrap();
+            let mut publication_budget = PublicationBudget::new(
+                &config.publication_root,
+                config.maximum_publications,
+                &writer,
+            )
+            .unwrap();
             let policy = condition_policy(
                 live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap(),
                 "/",
@@ -2073,6 +2587,7 @@ mod tests {
                 None,
                 1,
                 &mut last_published,
+                &mut publication_budget,
                 &mut metrics,
             )
             .expect("initial publication fills capacity");
@@ -2083,6 +2598,7 @@ mod tests {
                 None,
                 2,
                 &mut last_published,
+                &mut publication_budget,
                 &mut metrics,
             )
             .err()
@@ -2099,6 +2615,7 @@ mod tests {
                 &policy,
                 3,
                 &mut last_published,
+                &mut publication_budget,
                 &mut metrics,
             );
             assert!(final_result.blindness.is_ok());
@@ -2124,11 +2641,20 @@ mod tests {
         fs::write(config.intent_dir().join("retained"), b"intent").unwrap();
         fs::create_dir_all(config.publication_root.join("tmp")).unwrap();
         fs::write(config.publication_root.join("tmp/stranded"), b"partial").unwrap();
+        let writer = StateLock::acquire(&config.lock_path()).unwrap();
+        let mut budget = PublicationBudget::new(
+            &config.publication_root,
+            config.maximum_publications,
+            &writer,
+        )
+        .unwrap();
         let mut metrics = Metrics::new(&config, SystemTime::now());
         let intents = metrics.intent_count().unwrap();
         fs::write(config.intent_dir().join("successful"), b"intent").unwrap();
         intents.completed(&config, true);
-        metrics.publication_finished(false, true);
+        fs::write(config.publication_root.join("objects/retained"), b"object").unwrap();
+        budget.admit().unwrap();
+        metrics.publication_counts(&mut budget);
         // Rendering must not touch the stores after initialization. An added
         // non-regular entry would fail the old per-render scan.
         fs::create_dir(config.intent_dir().join("not-regular")).unwrap();
@@ -2152,6 +2678,122 @@ mod tests {
                 .unwrap()
                 .contains("constellation_host_posture_occurrences_total 3\n")
         );
+    }
+
+    #[test]
+    fn publication_metrics_follow_budget_custody_not_attempts() {
+        let root = ScratchDir::new("publication-metrics-budget");
+        let (profile, reactor) = fixture_reactor(root.path(), "publication-metrics-budget");
+        let mut config = metrics_config(&root);
+        config.maximum_publications = 3;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&config.publication_root)
+            .unwrap();
+        let writer = StateLock::acquire(&config.lock_path()).unwrap();
+        let mut budget = PublicationBudget::new(
+            &config.publication_root,
+            config.maximum_publications,
+            &writer,
+        )
+        .unwrap();
+        let mut metrics = Metrics::new(&config, SystemTime::now());
+        let metrics_path = config
+            .metrics_textfile_dir
+            .as_ref()
+            .unwrap()
+            .join("host-posture.prom");
+        let policy = condition_policy(
+            live_support_selector(&reactor.snapshot(), &profile.consumer()).unwrap(),
+            "/",
+        );
+        let mut last_published = 0;
+        publish_projection(
+            &config,
+            &reactor,
+            &policy,
+            None,
+            1,
+            &mut last_published,
+            &mut budget,
+            &mut metrics,
+        )
+        .unwrap();
+        let first = read_current_artifact(&config.publication_root).unwrap();
+        metrics.observe(
+            Some(ProjectedStateV1::Unknown),
+            ReactorConditionV1::Operational,
+            false,
+        );
+        let counts = |objects, used| {
+            let text = fs::read_to_string(&metrics_path).unwrap();
+            assert!(text.contains(&format!(
+                "constellation_host_posture_publications_total {objects}\n"
+            )));
+            assert!(text.contains(&format!(
+                "constellation_host_posture_publications_used {used}\n"
+            )));
+        };
+        counts(1, 1);
+
+        // Reusing an exact object is a successful pointer commit, not a new object.
+        budget.publish(&first).unwrap();
+        metrics.publication_counts(&mut budget);
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        counts(1, 1);
+        assert!(
+            !budget.refresh().unwrap(),
+            "quiet telemetry keeps the budget's census"
+        );
+
+        // An external temporary entry is admitted only after the budget recounts it.
+        fs::write(config.publication_root.join("tmp/retained"), b"temporary").unwrap();
+        budget.admit().unwrap();
+        metrics.publication_counts(&mut budget);
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        counts(1, 2);
+
+        // A failed pointer commit may retain an immutable object. The metric
+        // names retained objects, so account that custody without claiming CURRENT changed.
+        let mut other = first.clone();
+        other.projection_id = "different-projection".to_owned();
+        other.artifact_id = other.compute_id().unwrap();
+        assert_eq!(budget.publish(&other).unwrap_err().code, "publication");
+        metrics.publication_counts(&mut budget);
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        counts(2, 3);
+        assert_eq!(
+            read_current_artifact(&config.publication_root)
+                .unwrap()
+                .artifact_id,
+            first.artifact_id
+        );
+
+        // The now-full budget skips this projection before writing any object.
+        assert_eq!(
+            publish_projection(
+                &config,
+                &reactor,
+                &policy,
+                None,
+                2,
+                &mut last_published,
+                &mut budget,
+                &mut metrics,
+            )
+            .unwrap_err()
+            .code,
+            "publication_capacity"
+        );
+        metrics.observe(None, ReactorConditionV1::Operational, false);
+        counts(2, 3);
+        assert_eq!(
+            read_current_artifact(&config.publication_root)
+                .unwrap()
+                .artifact_id,
+            first.artifact_id
+        );
+        reactor.shutdown().unwrap();
     }
 
     #[test]

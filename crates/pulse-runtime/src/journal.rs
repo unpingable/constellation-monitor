@@ -543,6 +543,7 @@ pub struct HistoricalJournal {
     prior_frame_digest: DigestV1,
     file_bytes: u64,
     committed_records: Vec<HistoricalJournalRecordV1>,
+    retain_record_cache: bool,
     immutable_identities: BTreeSet<String>,
     failed: bool,
 }
@@ -584,6 +585,7 @@ impl HistoricalJournal {
             prior_frame_digest: genesis_digest(),
             file_bytes: 0,
             committed_records: Vec::new(),
+            retain_record_cache: true,
             immutable_identities: BTreeSet::new(),
             failed: false,
         })
@@ -630,6 +632,7 @@ impl HistoricalJournal {
             prior_frame_digest,
             file_bytes: report.observed_file_bytes,
             committed_records: report.records.clone(),
+            retain_record_cache: true,
             immutable_identities,
             failed: false,
         };
@@ -654,6 +657,14 @@ impl HistoricalJournal {
     #[must_use]
     pub fn committed_records(&self) -> &[HistoricalJournalRecordV1] {
         &self.committed_records
+    }
+
+    /// Sink-only ownership transition after it has rebuilt its safety indexes.
+    /// Ordinary journal users retain the existing decoded-record accessor.
+    /// No disk bytes, immutable identities, sequence, or capacity are retired.
+    pub(crate) fn release_record_cache(&mut self) {
+        self.committed_records = Vec::new();
+        self.retain_record_cache = false;
     }
 
     pub fn append(
@@ -697,7 +708,9 @@ impl HistoricalJournal {
                 .validate()
                 .map_err(|error| JournalError::invalid_record(error.to_string()))?;
         }
-        if self.committed_records.len() >= self.config.bounds.maximum_records {
+        if self.next_sequence.saturating_sub(1)
+            >= u64::try_from(self.config.bounds.maximum_records).unwrap_or(u64::MAX)
+        {
             return Err(JournalError::new(
                 JournalErrorClassV1::BoundExceeded,
                 "journal record-count bound is exhausted",
@@ -825,7 +838,9 @@ impl HistoricalJournal {
         if let Some(identity) = record.body.immutable_identity() {
             self.immutable_identities.insert(identity);
         }
-        self.committed_records.push(record);
+        if self.retain_record_cache {
+            self.committed_records.push(record);
+        }
         Ok(JournalAppendAckV1 {
             schema_version: SCHEMA_VERSION_V1,
             journal_id: self.config.journal_id.clone(),
@@ -1631,6 +1646,60 @@ mod tests {
         .handle(&request, 2)
         .receipt
         .expect("stub produces bounded receipt")
+    }
+
+    #[test]
+    fn releasing_sink_cache_preserves_duplicate_capacity_and_recovery_guards() {
+        let path = temp_path("cache-release");
+        let mut config = config("journal:cache-release");
+        config.bounds.maximum_records = 4;
+        let epoch = epoch("epoch:cache-release");
+        let mut journal = HistoricalJournal::create_new(&path, config.clone()).unwrap();
+        append_event(&mut journal, &epoch, "event:first", 1);
+        append_event(&mut journal, &epoch, "event:second", 2);
+        assert_eq!(journal.committed_records().len(), 2);
+        journal.release_record_cache();
+        assert!(journal.committed_records().is_empty());
+        append_event(&mut journal, &epoch, "event:third", 3);
+        assert!(
+            journal.committed_records().is_empty(),
+            "cache remains released"
+        );
+        assert!(
+            journal
+                .append(
+                    epoch.clone(),
+                    4,
+                    None,
+                    event("event:first", 4),
+                    JournalDurabilityModeV1::FileSynced
+                )
+                .is_err(),
+            "old immutable identity still refuses"
+        );
+        append_event(&mut journal, &epoch, "event:fourth", 4);
+        assert!(
+            journal
+                .append(
+                    epoch.clone(),
+                    5,
+                    None,
+                    event("event:fifth", 5),
+                    JournalDurabilityModeV1::FileSynced
+                )
+                .is_err(),
+            "capacity counts committed records, not cache"
+        );
+        drop(journal);
+        let (reopened, report) = HistoricalJournal::open_clean(&path, config).unwrap();
+        assert_eq!(report.records.len(), 4);
+        assert_eq!(
+            reopened.committed_records().len(),
+            4,
+            "ordinary open retains API behavior"
+        );
+        drop(reopened);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

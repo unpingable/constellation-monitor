@@ -42,7 +42,9 @@ pub use nq_artifact::{
     classify_outcome_for, verify_artifact,
 };
 pub use nq_cli::{
-    MAX_NQ_OUTPUT_BYTES, NQ_ACQUIRE_TIMEOUT, NQ_READ_TIMEOUT, NqPort, PinnedNqExecutable,
+    DueExpiryAttemptV1, DueExpiryReportV1, MAX_NQ_OUTPUT_BYTES, NQ_ACQUIRE_TIMEOUT,
+    NQ_DUE_EXPIRY_MAINTENANCE_TIMEOUT, NQ_READ_TIMEOUT, NqPort, PinnedNqExecutable,
+    maintenance_admits_seal,
 };
 pub use occurrence::{
     FixedSubjectIncarnation, ObserverLineage, SealedOccurrenceV1, SubjectIncarnationWitness,

@@ -315,7 +315,7 @@ struct JournalSink {
 
 impl JournalSink {
     fn new(
-        journal: HistoricalJournal,
+        mut journal: HistoricalJournal,
         epoch: MonotonicEpochV1,
         durability: JournalDurabilityModeV1,
     ) -> Result<Self, ReactorCommandError> {
@@ -340,6 +340,10 @@ impl JournalSink {
                 }
             }
         }
+        // These indexes own all historical information needed by the sink.
+        // Keep the durable journal and its append/refusal guards, not a second
+        // decoded copy of payloads already held by the runtime.
+        journal.release_record_cache();
         Ok(Self {
             journal,
             epoch,
@@ -358,13 +362,15 @@ impl JournalSink {
         metrics: &mut ReactorMetricsV1,
     ) -> Result<(), ReactorCommandError> {
         for event in &output.sparse_events {
-            self.append_sparse(event.clone(), now, metrics)?;
-        }
-        let history = runtime.export_history();
-        for event in history.sparse_events {
             self.append_sparse(event, now, metrics)?;
         }
-        for custody in history.contradictions {
+        // Also visit pre-start activation/recovery events: initial capture has
+        // no command output. Borrowing preserves ordering without cloning the
+        // entire retained sparse prefix on every capture.
+        for event in &runtime.sparse_history {
+            self.append_sparse(event, now, metrics)?;
+        }
+        for custody in runtime.export_contradiction_custody() {
             let key = (
                 custody.contradiction.subject_scope.subject.clone(),
                 custody.consumer.clone(),
@@ -389,7 +395,7 @@ impl JournalSink {
             metrics.observe_append(&ack);
             self.contradiction_versions.insert(key, digest);
         }
-        for receipt in history.diagnostic_receipts {
+        for receipt in &runtime.diagnostic_receipts {
             if self.seen_receipts.contains(&receipt.receipt_id) {
                 continue;
             }
@@ -406,21 +412,21 @@ impl JournalSink {
                 )
                 .map_err(ReactorCommandError::from_journal)?;
             metrics.observe_append(&ack);
-            self.seen_receipts.insert(receipt.receipt_id);
+            self.seen_receipts.insert(receipt.receipt_id.clone());
         }
         Ok(())
     }
 
     fn append_sparse(
         &mut self,
-        event: SparseDurableEventV1,
+        event: &SparseDurableEventV1,
         now: u64,
         metrics: &mut ReactorMetricsV1,
     ) -> Result<(), ReactorCommandError> {
         if self.seen_sparse_events.contains(&event.event_id) {
             return Ok(());
         }
-        let context = sparse_context_digest(&event);
+        let context = sparse_context_digest(event);
         let ack = self
             .journal
             .append(
@@ -434,7 +440,7 @@ impl JournalSink {
             )
             .map_err(ReactorCommandError::from_journal)?;
         metrics.observe_append(&ack);
-        self.seen_sparse_events.insert(event.event_id);
+        self.seen_sparse_events.insert(event.event_id.clone());
         Ok(())
     }
 }
@@ -1937,6 +1943,109 @@ fn lock_recovering_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    // Run alone on Linux: this exercises the real journal sink, not a model of
+    // its allocations. The prefix is finite and no installed state is read.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "native isolated memory comparison; run with --ignored --exact"]
+    fn capture_does_not_duplicate_historical_payloads() {
+        fn memory_kib(field: &str) -> u64 {
+            let status = std::fs::read_to_string("/proc/self/status").expect("process status");
+            status
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix(field)?
+                        .split_whitespace()
+                        .next()?
+                        .parse()
+                        .ok()
+                })
+                .expect("Linux memory field")
+        }
+        let mut bounds = crate::RuntimeBoundsV1::qualification();
+        bounds.maximum_sparse_events = 4096;
+        let config = crate::RuntimeConfigV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            receiver: pulse_types::ReceiverId::new("receiver:memory"),
+            receiver_incarnation: pulse_types::IncarnationId::new("incarnation:memory"),
+            clock_id: pulse_types::ClockId::new("clock:memory"),
+            transport_custody_policy: None,
+            bounds,
+        };
+        let mut runtime = ReceiverSchedulerRuntime::new(config.clone()).expect("runtime");
+        let payload_bytes = 4096_u64 * 8192;
+        for index in 0..4096 {
+            runtime.sparse_history.push(SparseDurableEventV1 {
+                schema_version: SCHEMA_VERSION_V1,
+                event_id: pulse_types::SparseEventId::new(format!("event:memory:{index}")),
+                at_monotonic_ms: index,
+                event: SparseDurableEventKindV1::MonitorCapabilityChanged {
+                    state: "fixture".to_owned(),
+                    detail: "x".repeat(8192),
+                },
+            });
+        }
+        let path = std::env::temp_dir().join(format!(
+            "pulse-capture-memory-{}.journal",
+            std::process::id()
+        ));
+        let journal = HistoricalJournal::create_new(
+            &path,
+            crate::journal::JournalConfigV1 {
+                schema_version: SCHEMA_VERSION_V1,
+                journal_id: "journal:memory".to_owned(),
+                bounds: crate::journal::JournalBoundsV1 {
+                    maximum_records: 4096,
+                    maximum_record_payload_bytes: 256 * 1024,
+                    maximum_file_bytes: 128 * 1024 * 1024,
+                },
+            },
+        )
+        .expect("new journal");
+        let epoch = MonotonicEpochV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            epoch_id: pulse_types::IncarnationId::new("epoch:memory"),
+            receiver: config.receiver,
+            receiver_incarnation: config.receiver_incarnation,
+            clock_id: config.clock_id,
+            origin_runtime_monotonic_ms: 0,
+            clock_source: "std::time::Instant/process-local".to_owned(),
+        };
+        let mut sink =
+            JournalSink::new(journal, epoch, JournalDurabilityModeV1::Written).expect("sink");
+        let before_peak = memory_kib("VmHWM:");
+        let before_rss = memory_kib("VmRSS:");
+        let started = Instant::now();
+        let mut metrics = ReactorMetricsV1::empty();
+        sink.capture(&runtime, &RuntimeCycleOutputV1::default(), 0, &mut metrics)
+            .expect("pre-start history captured");
+        let first_bytes = std::fs::metadata(&path).unwrap().len();
+        sink.capture(&runtime, &RuntimeCycleOutputV1::default(), 1, &mut metrics)
+            .expect("unchanged capture");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            first_bytes,
+            "dedup unchanged"
+        );
+        let after_peak = memory_kib("VmHWM:");
+        let after_rss = memory_kib("VmRSS:");
+        let peak_growth_bytes = after_peak.saturating_sub(before_peak) * 1024;
+        println!(
+            "{}",
+            serde_json::json!({"case":"capture_history_memory", "records":4096,
+            "historical_payload_bytes":payload_bytes, "before_peak_kib":before_peak,
+            "before_rss_kib":before_rss, "after_peak_kib":after_peak, "after_rss_kib":after_rss,
+            "peak_growth_bytes":peak_growth_bytes, "elapsed_ms":started.elapsed().as_millis(),
+            "journal_bytes":first_bytes})
+        );
+        drop(sink);
+        std::fs::remove_file(path).expect("remove owned journal");
+        assert!(
+            peak_growth_bytes < payload_bytes / 2,
+            "capture duplicated historical payload: peak growth {peak_growth_bytes} bytes for {payload_bytes} payload bytes"
+        );
+    }
 
     #[derive(Deserialize)]
     struct LiveSupportConformanceVectors {

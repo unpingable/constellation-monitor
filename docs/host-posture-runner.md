@@ -73,6 +73,63 @@ entry ceilings that survive restart and fail closed when exhausted. Retention
 or rotation is an explicit governed installation operation, not an automatic
 runner cleanup policy.
 
+Before each occurrence the acquisition worker runs `nq admin expire-due`
+through the same pinned NQ executable and configuration, under a 120 s bound
+that is separate from the unchanged 60 s acquisition deadline. NQ performs its
+scheduled ordinary-history expiry there, before the Pulse frame is sealed, so
+a due expiry batch no longer runs inside the sealed acquisition. When NQ's
+schedule is not due the step reports `deferred` from the persisted schedule
+alone. A completion lets the occurrence proceed. When it committed (the
+retention generation advanced), the following acquisition finds its schedule
+satisfied; a completion that committed nothing leaves the schedule due, and
+the acquisition repeats NQ's attempt as before. A refusal, an invalid report,
+an NQ failure or the 120 s bound ends the turn with
+`maintenance_refused code=… detail=…` on stderr: no intent is written, no
+sequence is used and nothing is delivered. Existing support then expires on
+its own schedule, and the projection becomes unknown if maintenance keeps
+failing. A non-deferred step writes
+`due_expiry_maintenance attempt=… pending=… elapsed_ms=…`. The bound permits
+about twice the observed cost of one due batch on a large store; it is not a
+latency guarantee. A store whose due batch persistently exceeds it stops
+producing support until its retained history is reduced. Because the step
+requires an NQ executable that provides `admin expire-due`, adopting it means
+re-enrolling the pinned executable. The report format is pinned by the shared
+vector `crates/pulse-nq-load-correspondence/tests/fixtures/expire_due_report_v1.json`,
+which NQ carries with identical bytes.
+
+The publication count is reconstructed from all retained objects and temporary
+files after taking the writer lock. During that process occurrence, successful
+new immutable objects increase the count; publishing identical bytes again
+uses the existing object. Each cycle checks directory identities and drains a
+bounded Linux inotify stream, rather than statting every retained object.
+Ordinary changes outside the publisher invalidate the count and require a new
+complete census; symlinks and non-regular entries still refuse. An unexpected
+change during a publication, directory replacement, lost watch, queue overflow
+or more than sixteen 4096-byte event batches refuses the operation. Lost event
+continuity stays latched until a new process constructs new watches and a new
+census. A failed stage or commit invalidates the count because it may have
+retained an immutable object; a subsequent terminal withdrawal must recount it.
+No artifacts are deleted and no capacity limit is increased.
+
+This accounting depends on the same exclusive writer custody as publication.
+It does not authorize another principal to mutate the namespace while ignoring
+the lock, nor make publication atomic against such a concurrent writer. The
+publisher's existing exact-object and pointer checks remain in force. The
+namespace watcher reconciles the existing projector's candidate/create/link/
+rename sequence; changes to that sequence must update its behavioral tests.
+Startup census and journal recovery still scale with retained history, so this
+change does not supply a retention policy or bound startup latency. Ordinary
+steady-state projection no longer repeats that history scan. Linux inotify
+availability is required; allocation or watch failures refuse startup.
+
+The census uses directory-entry file types instead of reading each child's
+inode metadata when the filesystem provides the type. The standard library
+falls back to no-follow metadata where necessary. Symlinks and non-regular
+entries still refuse, and the exact counts and capacity limits are unchanged.
+On Linux with native entry types, run the explicit syscall regression with
+`cargo test -p constellation-host-posture --lib store_census_avoids_per_entry_metadata_syscalls -- --ignored --nocapture`
+and `strace` installed. This measures child metadata calls, not startup latency.
+
 ## Reactor custody failure
 
 The Pulse reactor latches every custody failure for the life of its process.
@@ -141,8 +198,9 @@ I/O; existing installed configurations keep working. The packaged example is
 `crates/constellation-host-posture/examples/host-posture.toml`, also rendered
 by `example-config`; its optional key is commented out. Adding the key changes
 the loaded configuration digest (it hashes the exact file bytes). Before or
-with any rollback to the `c767273` binary, remove `metrics_textfile_dir` from
-the configuration: that binary's `HostPostureConfig` uses
+with any rollback to a build without this option (including `c767273` or
+`e74a2e73`), remove `metrics_textfile_dir` from the configuration: those builds'
+`HostPostureConfig` uses
 `deny_unknown_fields`, so leaving the key makes preflight refuse the config.
 
 Pre-create the directory with read/search permission for node_exporter. The
@@ -287,3 +345,29 @@ miss intervening restarts. A final textfile remains after exit: pair these rules
 existing unit/Attention checks. Scope absence queries to the intended scraped
 host using its existing scrape labels. Validate alert evaluation, routing and
 thresholds separately before deployment.
+
+The live reactor borrows retained sparse events when capturing the journal and
+releases the journal object's duplicate decoded payload cache after rebuilding
+its duplicate/refusal indexes. Durable journal bytes, record-count/file bounds,
+activation and policy identity checks, contradiction custody and restart-UNKNOWN
+behavior are unchanged. Runtime historical state and identity indexes still grow
+within their declared bounds; this is not compaction or a fixed-memory retention
+promise. Do not delete or trim the journal to reduce the runner's memory use.
+
+## Publication accounting and optional metrics
+
+The installed publication budget remains responsible for admission and exact
+namespace continuity. Optional metrics observe its separate retained-object and
+temporary-entry counts; they do not maintain a second publication counter or
+rescan retained history on each projection. A failed commit can retain an
+immutable object without changing CURRENT; that object still consumes capacity
+and appears in the retained-object metric. A capacity-refused projection creates
+no new object and does not increment that metric. Failure to establish counts
+uses the existing visible metrics-write failure path and never changes the
+publication result.
+
+NQ maintenance still runs before sealing a frame. Maintenance refusal creates
+no intent or sequence, spends no occurrence slot and does not update acquired
+or completed-occurrence telemetry. Only a verified occurrence updates the last
+acquisition timestamp. Publication errors, maintenance errors and latched reactor
+custody remain visible even when metrics are disabled or cannot be written.

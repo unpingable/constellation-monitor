@@ -13,6 +13,7 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{HostPostureConfig, ProjectedStateV1, ReactorConditionV1, count_regular_store_entries};
+use crate::publication_budget::PublicationBudget;
 
 const TEXTFILE: &str = "host-posture.prom";
 const COUNTER_FILE: &str = "metrics-custody-lost-total";
@@ -168,48 +169,20 @@ impl<'a> Metrics<'a> {
             .map(|stores| Arc::clone(&stores.intents))
     }
 
-    pub(super) fn publication_store_counts(&mut self, objects: u64, temporary: u64) {
-        // Reuse the publication path's existing capacity check, without adding
-        // scans to the projection cadence or using telemetry for admission.
-        if let Ok(stores) = &mut self.stores {
-            stores.publications = objects;
-            stores.temporary = temporary;
-        }
-    }
-
-    pub(super) fn object_exists(&self, artifact_id: &str) -> bool {
-        self.config.metrics_textfile_dir.is_some()
-            && self
-                .config
-                .publication_root
-                .join("objects")
-                .join(format!(
-                    "{}.json",
-                    artifact_id.trim_start_matches("sha256:")
-                ))
-                .exists()
-    }
-
-    pub(super) fn publication_finished(&mut self, existed: bool, success: bool) {
+    pub(super) fn publication_counts(&mut self, budget: &mut PublicationBudget<'_>) {
         if self.config.metrics_textfile_dir.is_none() {
             return;
         }
-        if success {
-            if let Ok(stores) = &mut self.stores {
-                stores.publications = stores.publications.saturating_add(u64::from(!existed));
+        // Observe the writer's exact accounting rather than count commits a
+        // second time. Quiet successful publications need no history scan;
+        // a failed commit reconciles any retained object/tmp entries once.
+        match (&mut self.stores, budget.reconciled_counts()) {
+            (Ok(stores), Ok((objects, temporary))) => {
+                stores.publications = objects;
+                stores.temporary = temporary;
             }
-        } else {
-            // Staging/commit failure can leave an object or temporary entry.
-            // Reconcile on failure only; keep the independently updated intents.
-            let counts = read_publication_counts(self.config);
-            match (&mut self.stores, counts) {
-                (Ok(stores), Ok((objects, temporary))) => {
-                    stores.publications = objects;
-                    stores.temporary = temporary;
-                }
-                (_, Err(error)) => self.stores = Err(error.to_string()),
-                _ => {}
-            }
+            (_, Err(error)) => self.stores = Err(error.to_string()),
+            _ => {}
         }
     }
 

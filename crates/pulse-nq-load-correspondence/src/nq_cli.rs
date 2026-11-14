@@ -1,9 +1,12 @@
 //! The one closed NQ port.
 //!
 //! Only three read-or-acquire operations exist, and they are reachable only
-//! through this module. The executable and configuration digests are checked
-//! immediately before every spawn; the environment is cleared; standard input
-//! is null; runtime and output are bounded.
+//! through this module. One maintenance operation, `admin expire-due`, is an
+//! inherent method of the production port only: it runs NQ's scheduled
+//! ordinary-history expiry before an occurrence is sealed, under its own
+//! bound, and carries no evidence. The executable and configuration digests
+//! are checked immediately before every spawn; the environment is cleared;
+//! standard input is null; runtime and output are bounded.
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -15,6 +18,14 @@ use crate::{CorrespondenceError, NqEnrollmentV1, read_regular_bounded, sha256_pr
 
 pub const NQ_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 pub const NQ_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// Bound for `admin expire-due`, separate from the unchanged acquisition
+/// deadline. It permits about twice the observed cost of one due expiry batch
+/// on a large store. A batch that exceeds it is stopped and rolls back, and
+/// the turn is refused without a seal; this is not a latency guarantee.
+pub const NQ_DUE_EXPIRY_MAINTENANCE_TIMEOUT: Duration = Duration::from_secs(120);
+const EXPIRE_DUE_SCHEMA: &str = "nq.admin.expire_due.v1";
+const EXPIRY_REFUSAL_CLASSES: [&str; 4] =
+    ["capacity", "contention", "history_changed", "disk_full"];
 pub const MAX_NQ_OUTPUT_BYTES: usize = 2 * 1_024 * 1_024;
 pub(crate) const NQ_STAGE_QUALIFY: &str = "qualify";
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1_024 * 1_024;
@@ -255,6 +266,203 @@ impl NqPort for PinnedNqExecutable {
 
 impl sealed::Sealed for PinnedNqExecutable {}
 
+/// What NQ reported for one `admin expire-due` run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DueExpiryAttemptV1 {
+    /// Not due: decided from NQ's persisted schedule alone; nothing was
+    /// validated or attempted.
+    Deferred { next_attempt_in_seconds: u64 },
+    /// Due: NQ ran its unchanged expiry. `generation_after` moves only when
+    /// an expiry committed.
+    Completed {
+        deleted_rows: u64,
+        candidates_remaining: bool,
+        generation_before: i64,
+        generation_after: i64,
+    },
+    /// Due, and NQ refused the expiry without effect.
+    Refused {
+        class: String,
+        detail: String,
+        generation_before: i64,
+        generation_after: i64,
+    },
+}
+
+/// One strictly parsed `nq.admin.expire_due.v1` report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DueExpiryReportV1 {
+    pub attempt: DueExpiryAttemptV1,
+    /// Whether NQ's next local successor acquisition would still find its
+    /// scheduled expiry due.
+    pub scheduled_expiry_pending: bool,
+    pub elapsed_ms: u64,
+}
+
+impl PinnedNqExecutable {
+    /// `--json admin expire-due` under [`NQ_DUE_EXPIRY_MAINTENANCE_TIMEOUT`].
+    pub fn maintain_due_expiry(&self) -> Result<DueExpiryReportV1, CorrespondenceError> {
+        self.maintain_due_expiry_within(NQ_DUE_EXPIRY_MAINTENANCE_TIMEOUT)
+    }
+
+    pub(crate) fn maintain_due_expiry_within(
+        &self,
+        timeout: Duration,
+    ) -> Result<DueExpiryReportV1, CorrespondenceError> {
+        let bytes = self
+            .run(&["--json", "admin", "expire-due"], timeout)
+            .map_err(|error| {
+                if error.code == "nq_timeout" {
+                    CorrespondenceError::new("nq_maintenance_timeout", error.detail)
+                } else {
+                    error
+                }
+            })?;
+        parse_due_expiry_report(&bytes)
+    }
+}
+
+/// Seal only after maintenance that was not refused. A deferred or completed
+/// report admits the seal, including a completion that committed nothing
+/// (unchanged retention generation) and so leaves NQ's schedule pending; the
+/// following acquisition then repeats NQ's attempt, as before this
+/// maintenance step existed.
+pub fn maintenance_admits_seal(report: &DueExpiryReportV1) -> Result<(), CorrespondenceError> {
+    match &report.attempt {
+        DueExpiryAttemptV1::Deferred { .. } | DueExpiryAttemptV1::Completed { .. } => Ok(()),
+        DueExpiryAttemptV1::Refused { class, detail, .. } => Err(CorrespondenceError::new(
+            "due_expiry_maintenance_refused",
+            format!("class={class}; detail={detail}"),
+        )),
+    }
+}
+
+fn parse_due_expiry_report(bytes: &[u8]) -> Result<DueExpiryReportV1, CorrespondenceError> {
+    fn invalid(detail: impl Into<String>) -> CorrespondenceError {
+        CorrespondenceError::new("invalid_maintenance_report", detail)
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| invalid(format!("not one JSON document: {error}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid("report is not a JSON object"))?;
+    if object.get("schema").and_then(serde_json::Value::as_str) != Some(EXPIRE_DUE_SCHEMA) {
+        return Err(invalid("unknown report schema"));
+    }
+    let kind = object
+        .get("attempt")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| invalid("missing attempt"))?;
+    let (fields, scope): (&[&str], &str) = match kind {
+        "deferred" => (&["next_attempt_in_seconds"], "schedule_hint_only"),
+        "completed" => (
+            &[
+                "deleted_rows",
+                "candidates_remaining",
+                "generation_before",
+                "generation_after",
+            ],
+            "engine_validated_expiry",
+        ),
+        "refused" => (
+            &["refusal", "generation_before", "generation_after"],
+            "engine_validated_expiry",
+        ),
+        other => return Err(invalid(format!("unknown attempt {other:?}"))),
+    };
+    let common = [
+        "schema",
+        "attempt",
+        "scope",
+        "scheduled_expiry_pending",
+        "elapsed_ms",
+    ];
+    if object.len() != common.len() + fields.len()
+        || common
+            .iter()
+            .chain(fields)
+            .any(|field| !object.contains_key(*field))
+    {
+        return Err(invalid(format!(
+            "{kind} report fields differ from its shape"
+        )));
+    }
+    if object["scope"].as_str() != Some(scope) {
+        return Err(invalid(format!("{kind} report must have scope {scope}")));
+    }
+    let unsigned = |name: &str| {
+        object[name]
+            .as_u64()
+            .ok_or_else(|| invalid(format!("{name} is not a non-negative integer")))
+    };
+    let signed = |name: &str| {
+        object[name]
+            .as_i64()
+            .ok_or_else(|| invalid(format!("{name} is not an integer")))
+    };
+    let boolean = |name: &str| {
+        object[name]
+            .as_bool()
+            .ok_or_else(|| invalid(format!("{name} is not a boolean")))
+    };
+    let scheduled_expiry_pending = boolean("scheduled_expiry_pending")?;
+    let elapsed_ms = unsigned("elapsed_ms")?;
+    let attempt = match kind {
+        "deferred" => {
+            if scheduled_expiry_pending {
+                return Err(invalid("a deferred schedule cannot be pending"));
+            }
+            DueExpiryAttemptV1::Deferred {
+                next_attempt_in_seconds: unsigned("next_attempt_in_seconds")?,
+            }
+        }
+        "completed" => {
+            let (generation_before, generation_after) =
+                (signed("generation_before")?, signed("generation_after")?);
+            if generation_after < generation_before {
+                return Err(invalid("retention generation moved backwards"));
+            }
+            DueExpiryAttemptV1::Completed {
+                deleted_rows: unsigned("deleted_rows")?,
+                candidates_remaining: boolean("candidates_remaining")?,
+                generation_before,
+                generation_after,
+            }
+        }
+        _ => {
+            let (generation_before, generation_after) =
+                (signed("generation_before")?, signed("generation_after")?);
+            if generation_after != generation_before {
+                return Err(invalid("a refused expiry commits nothing"));
+            }
+            let refusal = object["refusal"]
+                .as_object()
+                .filter(|refusal| refusal.len() == 2)
+                .ok_or_else(|| invalid("refusal must hold exactly class and detail"))?;
+            let class = refusal
+                .get("class")
+                .and_then(serde_json::Value::as_str)
+                .filter(|class| EXPIRY_REFUSAL_CLASSES.contains(class))
+                .ok_or_else(|| invalid("unknown refusal class"))?;
+            let detail = refusal
+                .get("detail")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| invalid("refusal detail is not text"))?;
+            DueExpiryAttemptV1::Refused {
+                class: class.to_owned(),
+                detail: detail.to_owned(),
+                generation_before,
+                generation_after,
+            }
+        }
+    };
+    Ok(DueExpiryReportV1 {
+        attempt,
+        scheduled_expiry_pending,
+        elapsed_ms,
+    })
+}
+
 /// Whether an acquire error was produced only after `Command::spawn`
 /// succeeded. Such an error may have lost the command result after NQ durably
 /// completed the caller-named acquisition, so one read-only replay is safe.
@@ -421,5 +629,121 @@ mod tests {
             .parse::<u128>()
             .expect("integer milliseconds");
         assert!(elapsed_ms >= timeout.as_millis());
+    }
+
+    const COMPLETED: &str = r#"{"schema":"nq.admin.expire_due.v1","attempt":"completed","scope":"engine_validated_expiry","deleted_rows":12,"candidates_remaining":false,"generation_before":3,"generation_after":4,"scheduled_expiry_pending":false,"elapsed_ms":51234}"#;
+    const DEFERRED: &str = r#"{"schema":"nq.admin.expire_due.v1","attempt":"deferred","scope":"schedule_hint_only","next_attempt_in_seconds":1800,"scheduled_expiry_pending":false,"elapsed_ms":3}"#;
+    const REFUSED: &str = r#"{"schema":"nq.admin.expire_due.v1","attempt":"refused","scope":"engine_validated_expiry","refusal":{"class":"contention","detail":"fixture"},"generation_before":3,"generation_after":3,"scheduled_expiry_pending":true,"elapsed_ms":40}"#;
+
+    /// The shared NQ/Monitor conformance vector (identical bytes in both
+    /// repositories): every listed report parses to its own attempt, and only
+    /// a refusal withholds the seal.
+    #[test]
+    fn shared_expire_due_vector_parses_to_its_attempts() {
+        let vector: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/expire_due_report_v1.json"))
+                .expect("shared vector");
+        let mut seen = std::collections::BTreeSet::new();
+        for report in vector["reports"].as_array().expect("reports") {
+            let bytes = serde_json::to_vec(report).expect("report bytes");
+            let parsed = parse_due_expiry_report(&bytes).expect("vector report parses");
+            let attempt = report["attempt"].as_str().expect("attempt");
+            seen.insert(attempt.to_owned());
+            match (attempt, &parsed.attempt) {
+                ("deferred", DueExpiryAttemptV1::Deferred { .. })
+                | ("completed", DueExpiryAttemptV1::Completed { .. }) => {
+                    maintenance_admits_seal(&parsed).expect("deferred or completed admits");
+                }
+                ("refused", DueExpiryAttemptV1::Refused { .. }) => assert_eq!(
+                    maintenance_admits_seal(&parsed).unwrap_err().code,
+                    "due_expiry_maintenance_refused"
+                ),
+                other => panic!("vector attempt parsed as another variant: {other:?}"),
+            }
+            assert_eq!(
+                Some(parsed.scheduled_expiry_pending),
+                report["scheduled_expiry_pending"].as_bool()
+            );
+        }
+        assert_eq!(
+            seen.into_iter().collect::<Vec<_>>(),
+            ["completed", "deferred", "refused"]
+        );
+    }
+
+    /// A command that accepts only the exact maintenance argument vector and
+    /// prints `report`.
+    fn maintenance_port(report: &str) -> (PinnedNqExecutable, tempfile::TempDir) {
+        port_with_script(
+            String::from("#!/bin/sh\n")
+                + "[ \"$3 $4 $5 $#\" = \"--json admin expire-due 5\" ] || { echo \"unexpected arguments: $*\" >&2; exit 64; }\n"
+                + "printf '%s' '"
+                + report
+                + "'\n",
+        )
+    }
+
+    #[test]
+    fn maintenance_admits_the_seal_only_after_deferred_or_completed() {
+        for report in [COMPLETED, DEFERRED] {
+            let (port, _root) = maintenance_port(report);
+            let parsed = port.maintain_due_expiry().expect("valid report");
+            maintenance_admits_seal(&parsed).expect("deferred or completed admits the seal");
+        }
+        let (port, _root) = maintenance_port(REFUSED);
+        let parsed = port
+            .maintain_due_expiry()
+            .expect("a refusal is a valid report");
+        assert!(matches!(parsed.attempt, DueExpiryAttemptV1::Refused { .. }));
+        assert_eq!(
+            maintenance_admits_seal(&parsed).unwrap_err().code,
+            "due_expiry_maintenance_refused"
+        );
+    }
+
+    #[test]
+    fn maintenance_parser_rejects_unknown_schema_outcome_and_shape() {
+        let cases = [
+            COMPLETED.replace("nq.admin.expire_due.v1", "nq.admin.expire_due.v2"),
+            COMPLETED.replace("\"completed\"", "\"skipped\""),
+            COMPLETED.replace(",\"generation_after\":4", ""),
+            COMPLETED.replace("\"elapsed_ms\":51234", "\"elapsed_ms\":51234,\"extra\":1"),
+            COMPLETED.replace("engine_validated_expiry", "schedule_hint_only"),
+            DEFERRED.replace("schedule_hint_only", "engine_validated_expiry"),
+            DEFERRED.replace(
+                "\"scheduled_expiry_pending\":false",
+                "\"scheduled_expiry_pending\":true",
+            ),
+            COMPLETED.replace("\"generation_after\":4", "\"generation_after\":2"),
+            COMPLETED.replace("\"deleted_rows\":12", "\"deleted_rows\":-1"),
+            REFUSED.replace("\"contention\"", "\"unknown\""),
+            format!("{COMPLETED}{COMPLETED}"),
+            "not json".to_owned(),
+        ];
+        for case in cases {
+            let (port, _root) = maintenance_port(&case);
+            let error = port
+                .maintain_due_expiry()
+                .expect_err("an invalid maintenance report must be refused");
+            assert_eq!(
+                error.code, "invalid_maintenance_report",
+                "{case}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn maintenance_failures_are_refusals_with_their_own_timeout_code() {
+        let (port, _root) = port_with_script("#!/bin/sh\nexec /bin/sleep 5\n".to_owned());
+        let error = port
+            .maintain_due_expiry_within(Duration::from_millis(20))
+            .expect_err("the sleeping command must cross the maintenance bound");
+        assert_eq!(error.code, "nq_maintenance_timeout");
+        assert!(NQ_DUE_EXPIRY_MAINTENANCE_TIMEOUT > NQ_ACQUIRE_TIMEOUT);
+        assert_eq!(NQ_ACQUIRE_TIMEOUT, Duration::from_secs(60));
+
+        let (port, _root) =
+            port_with_script("#!/bin/sh\necho 'integrity failure' >&2\nexit 1\n".to_owned());
+        assert_eq!(port.maintain_due_expiry().unwrap_err().code, "nq_refused");
     }
 }

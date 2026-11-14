@@ -9,6 +9,7 @@ rust-version = "1.89"
 license.workspace = true
 
 [dependencies]
+nix = { version = "0.31.3", features = ["inotify"] }
 constellation-status-nq-filesystem-capacity = { path = "../constellation-status-nq-filesystem-capacity" }
 constellation-status-projection = { path = "../constellation-status-projection" }
 ctrlc = { workspace = true, features = ["termination"] }
