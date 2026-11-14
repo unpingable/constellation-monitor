@@ -33,16 +33,18 @@ publication_root = "/var/lib/constellation-host-posture/status"
 
 [inputs.nq_status]
 label = "nqd"
-# Operated stores: read bounded evaluation-history pages. `status export`
-# walks the whole history (nq#20) and takes 60-90 s on the ops store.
+# Supported evaluation-history mode: bounded pages, evaluation-based liveness.
+# For the NQ 4f0c634 + Attention registry v9 cohort, prefer status_export below
+# for instance collection outcomes; see README for compatibility and cost limits.
 source = "evaluation_history"
 command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json"]
 window_records = 300               # newest evaluations read (50..=5000); must hold
                                    # more than stale_after_seconds of every watcher
-# Watchers removed from NQ; every other watcher ever seen stays stale once it
-# stops evaluating (remembered in state.json).
+# After removing a watcher from NQ, exclude its retained evaluations in either
+# mode. History mode also removes it from the remembered state.json roster.
+# Retiring an open condition's target separately requires retired_targets.
 # retired_instances = ["unit-old"]
-# Small stores only:
+# Alternative status-export mode: replace source and command above.
 # source = "status_export"
 # command = ["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json", "status", "export"]
 # or: path = "/var/lib/constellation-attention/inputs/nq-status.json"

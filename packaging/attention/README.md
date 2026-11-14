@@ -103,19 +103,31 @@ optional `-/var/lib/nq`. A host whose store lives elsewhere needs a drop-in
 (`systemctl edit constellation-attention.service`); otherwise every
 submission fails as `command_error`.
 
-NQ status: on an operated store use `source = "evaluation_history"` (the
-example configuration does). `nq status export` walks the whole evaluation
-history (nq#20): on labelwatch-host it took 60-90 s under contention, and
-every pass read the input as not current or timed out, so every NQ
-condition was unknown. Evaluation-history pages answer in about 0.2 s. NQ
-filesystem capacity watchers (for example `fs-zonestorage`) raise
-`host-disk:<instance id>`. In that mode every NQ watcher ever seen is
-remembered in the state and stays stale once it stops evaluating; when a
-watcher is removed from NQ on purpose, add its instance id to
-`retired_instances`. Keep `window_records` above `stale_after_seconds` worth
-of every watcher's evaluations (production uses 600) and re-check it when
-watchers are added. Do not give a host-posture input the label of an NQ
-filesystem watcher id.
+NQ status: for the NQ `4f0c634` cohort with this Attention registry v9
+build, prefer `source = "status_export"` and the full command argv
+`["/usr/bin/nq", "--config", "/etc/nq/nqd-ops.toml", "--json", "status", "export"]`.
+That NQ source reuses certified history, validates the uncovered suffix and
+reopens the latest evaluations; it falls back to full-history validation
+when certification is unavailable. The old 60–90 s observation is not a
+current performance bound. This cohort recommendation does not change the
+declared NQ 0.2.2 compatibility minimum or promise constant export cost.
+Status-export mode also exposes collection outcomes: a fresh refused
+collection cannot turn an older absent evaluation into recovery. A fresh
+export timestamp alone does not refresh watcher liveness or its evaluation.
+
+`evaluation_history` remains supported and is the mode selected in the
+example configuration. It uses bounded pages and evaluation-based liveness,
+without the instance collection outcomes available in status-export mode.
+Keep `window_records` above `stale_after_seconds` worth of every watcher's
+evaluations and re-check it when watchers are added. In this mode remembered
+watchers remain stale after their records leave the window until explicitly
+retired. After removing a watcher from NQ, list its id in `retired_instances`:
+both modes then exclude its retained evaluations before profile and lineage
+selection. This does not establish recovery of an open condition; use the
+separate `retired_targets` procedure in ATTENTION.md when retiring its target.
+NQ filesystem capacity watchers (for example `fs-zonestorage`) raise
+`host-disk:<instance id>`; do not give a host-posture input that watcher id
+as its label.
 
 Saved checks: each configured reference reads one raw `nq --json
 saved-check evaluate REF ...` document. On the Linode the check timer writes

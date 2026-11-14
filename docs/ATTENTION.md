@@ -262,16 +262,21 @@ outcome evidence differ as described below.
   when an older evaluation says absent. Repeated failed attempts cannot
   confirm recovery or resolve an active condition. Admitted partial/failed
   reports retain NQ's detector judgment; coarse health is not the detector.
-  `status export` walks the
-  whole evaluation history (nq#20): on the Linode ops store it takes 26 s
-  alone and 60–90 s under contention, so use it only for small stores.
+  For the NQ `4f0c634` cohort with this Attention registry v9 build,
+  prefer this mode on operated stores. That NQ source reuses certified
+  history, validates the uncovered suffix and reopens the latest evaluations;
+  without usable certification it retains full-history validation. Earlier
+  whole-history timings are historical observations, not current resource
+  bounds. This recommendation does not change the declared NQ 0.2.2
+  compatibility minimum. Neither a fresh export timestamp nor this
+  optimization establishes fresh detector support.
 - `evaluation_history`: `command` is the nq argv up to and including
   `--json` (for example `["/usr/bin/nq", "--config",
   "/etc/nq/nqd-ops.toml", "--json"]`); the evaluator appends `evaluations
   export`. It first asks for `--limit 1` to learn the store-wide
   `through_sequence`, then reads the newest `window_records` evaluations
   (default 300, 50..=5000) with `--after max(0, through - window) --through
-  through`, paged at NQ's 1000-row limit (about 0.2 s a page). Liveness is
+  through`, paged at NQ's 1000-row limit. Liveness is
   each instance's newest `evaluated_at` in the window. A page that is not
   `complete`, or whose `through_sequence` moved, makes the input
   `not_current` (`stale`). The identity is the page `schema`,
@@ -282,7 +287,7 @@ outcome evidence differ as described below.
   lineage, and if its condition is open the input reports `unreported`.
   This API has no instance collection outcome; it retains evaluation-based
   liveness and does not apply the status-export outcome check.
-  Use this mode for operated stores.
+  This mode remains supported; the packaged example selects it.
 
   **Watcher roster.** The window alone cannot show a watcher that stopped
   evaluating: once its records scroll out it would simply vanish. So every
