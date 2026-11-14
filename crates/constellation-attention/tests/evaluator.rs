@@ -4527,6 +4527,224 @@ fn filesystem_capacity_version_is_checked() {
 
 // Fifth review regressions (evaluation-history mode).
 
+/// Retained evaluations are historical data, not a declaration that their
+/// explicitly retired watcher still supplies an input.
+#[test]
+fn retired_nq_filesystem_rows_do_not_make_active_inputs_stale() {
+    let t = at("2026-10-02T21:32:17Z");
+    for history in [false, true] {
+        let (mut harness, status) = if history {
+            (history_harness(300), None)
+        } else {
+            let (harness, status) = nq_status_harness();
+            (harness, Some(status))
+        };
+        let retirement = "retired_instances = [\"fs-zonestorage\"]\n";
+        harness.raw(retirement);
+        if let Some(status) = &status {
+            let value = retimed("healthy.json", t, |value| {
+                for component in value["components"].as_array_mut().unwrap() {
+                    if component["kind"] == "instance" && component["id"] == "fs-root-capacity" {
+                        component["id"] = json!("fs-zonestorage");
+                        component["observed_at"] = json!(rfc3339(t - 1000));
+                    }
+                    if component["kind"] == "evaluation"
+                        && component["detail"]["result"]["context"]["instance_id"]
+                            == "fs-root-capacity"
+                    {
+                        let envelope = &mut component["detail"]["result"];
+                        envelope["context"]["instance_id"] = json!("fs-zonestorage");
+                        envelope["evaluated_at"] = json!(rfc3339(t - 1000));
+                    }
+                }
+            });
+            write_status(status, &value);
+        } else {
+            append_round(&harness, t, |envelope| {
+                set_state(envelope, "unit-cron", "explicitly_absent");
+                if envelope["context"]["instance_id"] == "fs-root-capacity" {
+                    envelope["context"]["instance_id"] = json!("fs-zonestorage");
+                    envelope["evaluated_at"] = json!(rfc3339(t - 1000));
+                }
+                true
+            });
+        }
+        let report = harness.evaluate(t + 3);
+        assert_eq!(
+            report["inputs"][0]["status"], "ok",
+            "history={history}: {report}"
+        );
+        assert!(report["inputs"][0]["causes"].as_array().unwrap().is_empty());
+        assert!(
+            report["conditions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|condition| {
+                    !condition["id"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with(":fs-zonestorage")
+                })
+        );
+        harness.extra_config = harness.extra_config.replace(retirement, "");
+        let report = harness.evaluate(t + 4);
+        assert_eq!(report["inputs"][0]["status"], "not_current", "{report}");
+        assert!(
+            report["inputs"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("fs-zonestorage")
+        );
+    }
+}
+
+/// Retirement needs an exact bounded instance identity; it does not exempt
+/// missing identities, malformed active evidence, or an undeclared watcher.
+#[test]
+fn retired_nq_instances_do_not_hide_active_or_unidentified_failures() {
+    let t = at("2026-10-02T21:32:17Z");
+    for history in [false, true] {
+        for (instance, malformed_profile) in [
+            (Some("fs-zonestorage"), true),
+            (Some("fs-other"), true),
+            (None, false),
+            (Some("bad\ninstance"), false),
+        ] {
+            let (mut harness, status) = if history {
+                (history_harness(300), None)
+            } else {
+                let (harness, status) = nq_status_harness();
+                (harness, Some(status))
+            };
+            harness.raw("retired_instances = [\"fs-zonestorage\", \"bad\\ninstance\"]\n");
+            let edit = |envelope: &mut Value| {
+                set_state(envelope, "unit-cron", "explicitly_absent");
+                if envelope["context"]["instance_id"] == "fs-root-capacity" {
+                    if let Some(instance) = instance {
+                        envelope["context"]["instance_id"] = json!(instance);
+                    } else {
+                        envelope["context"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove("instance_id");
+                    }
+                    if malformed_profile {
+                        envelope["profile"]["profile"]["version"] = json!(999);
+                    }
+                }
+            };
+            if let Some(status) = status {
+                let value = retimed("healthy.json", t, |value| {
+                    for component in value["components"].as_array_mut().unwrap() {
+                        if component["kind"] == "evaluation" {
+                            edit(&mut component["detail"]["result"]);
+                        }
+                    }
+                });
+                write_status(&status, &value);
+            } else {
+                append_round(&harness, t, |envelope| {
+                    edit(envelope);
+                    true
+                });
+            }
+            let report = harness.evaluate(t + 3);
+            assert_eq!(
+                report["inputs"][0]["status"],
+                if instance == Some("fs-zonestorage") {
+                    "ok"
+                } else {
+                    "not_current"
+                },
+                "history={history}, instance={instance:?}: {report}"
+            );
+            if instance != Some("fs-zonestorage") {
+                let cause = if malformed_profile {
+                    "unrecognised"
+                } else {
+                    "untargetable"
+                };
+                assert!(
+                    report["inputs"][0]["causes"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(cause))
+                );
+            }
+        }
+    }
+}
+
+/// Excluding an input lineage grants no recovery claim for its old condition.
+#[test]
+fn retired_nq_instance_requires_explicit_target_retirement_to_resolve() {
+    let (mut harness, status) = nq_status_harness();
+    let t = at("2026-10-02T21:32:17Z");
+    let disk = "constellation:labelwatch:host_posture:host-disk:fs-root-capacity";
+    let present = |time| {
+        retimed("healthy.json", time, |value| {
+            for component in value["components"].as_array_mut().unwrap() {
+                if component["kind"] == "evaluation"
+                    && component["detail"]["result"]["context"]["instance_id"] == "fs-root-capacity"
+                {
+                    component["detail"]["result"]["result"]["state"] = json!("present");
+                }
+            }
+        })
+    };
+    for offset in (0..=960).step_by(60) {
+        write_status(&status, &present(t + offset));
+        harness.evaluate(t + offset + 3);
+    }
+    assert!(
+        harness
+            .calls()
+            .iter()
+            .any(|call| call.contains("host-disk-fs-root-capacity-trigger"))
+    );
+    harness.raw("retired_instances = [\"fs-root-capacity\"]\n");
+    for offset in [1020, 1200] {
+        write_status(&status, &present(t + offset));
+        harness.evaluate(t + offset + 3);
+    }
+    assert_eq!(harness.state()["conditions"][disk]["active"], true);
+    assert!(
+        !harness
+            .calls()
+            .iter()
+            .any(|call| call.contains("host-disk-fs-root-capacity-resolve"))
+    );
+    harness.raw("retired_targets = [\"fs-root-capacity\"]\n");
+    write_status(&status, &present(t + 1260));
+    let report = harness.evaluate(t + 1263);
+    assert!(
+        harness.state()["conditions"]
+            .get(disk)
+            .is_none_or(|condition| condition["active"] == false)
+    );
+    let record = report["intents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|intent| {
+            intent["condition_id"] == disk
+                && intent["route_role"] == "notice"
+                && intent["action"] == "resolve"
+        })
+        .unwrap()["notification_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sent: Value = serde_json::from_slice(&harness.submitted_intent(&record)).unwrap();
+    assert!(
+        sent["summary"]
+            .as_str()
+            .unwrap()
+            .contains("no longer evaluated; recovery not observed")
+    );
+}
+
 /// Fifth review H1: a watcher that stops evaluating stays stale after its
 /// records leave the window; it never "recovers" by scrolling out. When it
 /// returns, its unit is observed again and a later outage pages.
