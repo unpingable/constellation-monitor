@@ -3,7 +3,7 @@
   "name": "constellation-attention",
   "version": "0.1.10",
   "source_commit": "unavailable",
-  "registry": "constellation.attention_registry.v7",
+  "registry": "constellation.attention_registry.v9",
   "minimum_nq": "0.2.2",
   "rustc": "rustc <toolchain>",
   "build_id": null,

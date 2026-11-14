@@ -23,10 +23,12 @@ fn actual_nq_failed_instance_does_not_make_old_io_absence_clear() {
         .expect("the retained IO evaluation is still reported");
     assert_eq!(io["observation"], "unknown", "{report}");
     assert_eq!(report["inputs"][0]["status"], "not_current");
-    assert!(report["inputs"][0]["error"]
-        .as_str()
-        .unwrap()
-        .contains("io-installed"));
+    assert!(
+        report["inputs"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("io-installed")
+    );
 }
 
 /// Retain the complete memory instance/evaluation shapes from the existing
@@ -136,14 +138,18 @@ fn fresh_failed_instance_cannot_refresh_an_old_absent_evaluation() {
             "a fresh failed instance cannot turn historical absence into Clear: {report}"
         );
         assert_eq!(report["inputs"][0]["status"], "not_current");
-        assert!(report["inputs"][0]["error"]
-            .as_str()
-            .unwrap()
-            .contains("host-memory"));
-        assert!(snapshot["components"]
-            .as_array()
-            .unwrap()
-            .contains(&old_evaluation));
+        assert!(
+            report["inputs"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("host-memory")
+        );
+        assert!(
+            snapshot["components"]
+                .as_array()
+                .unwrap()
+                .contains(&old_evaluation)
+        );
     }
 }
 
@@ -151,10 +157,22 @@ fn fresh_failed_instance_cannot_refresh_an_old_absent_evaluation() {
 fn failed_attempts_cannot_finish_resolving_an_active_memory_incident() {
     let (harness, path) = nq_status_harness();
     for offset in (0..=660).step_by(60) {
-        write_status(&path, &memory_snapshot(T0 + offset, T0 + offset - 1, "present"));
+        write_status(
+            &path,
+            &memory_snapshot(T0 + offset, T0 + offset - 1, "present"),
+        );
         harness.evaluate(T0 + offset);
     }
     assert_eq!(harness.state()["conditions"][MEMORY]["active"], true);
+    // Carry an incident written under registry v7 / memory-pressure v1
+    // across the new policy identity without resetting or re-keying it.
+    let mut old_state = harness.state();
+    old_state["conditions"][MEMORY]["rule_version"] = json!(1);
+    fs::write(
+        harness.path("state/state.json"),
+        serde_json::to_vec(&old_state).unwrap(),
+    )
+    .unwrap();
 
     // One successful absent observation starts confirmation. Later attempts
     // fail without a new evaluation; they must hold, not confirm recovery.
@@ -169,15 +187,24 @@ fn failed_attempts_cannot_finish_resolving_an_active_memory_incident() {
         refused_instance(&mut snapshot, T0 + offset);
         write_status(&path, &snapshot);
         let report = harness.evaluate(T0 + offset);
-        resolves.extend(intents(&report).into_iter().filter(|(id, _, action)| {
-            id == MEMORY && action == "resolve"
-        }));
+        resolves.extend(
+            intents(&report)
+                .into_iter()
+                .filter(|(id, _, action)| id == MEMORY && action == "resolve"),
+        );
     }
-    assert!(resolves.is_empty(), "failure must not manufacture recovery: {resolves:?}");
+    assert!(
+        resolves.is_empty(),
+        "failure must not manufacture recovery: {resolves:?}"
+    );
     let state = harness.state();
     assert_eq!(state["conditions"][MEMORY]["active"], true);
+    assert_eq!(state["conditions"][MEMORY]["rule_version"], 1);
     assert_eq!(state["conditions"][MEMORY]["clear_since"], clear_since);
-    assert_eq!(memory_condition(&harness.report())["observation"], "unknown");
+    assert_eq!(
+        memory_condition(&harness.report())["observation"],
+        "unknown"
+    );
 }
 
 #[test]
@@ -185,10 +212,17 @@ fn missing_instance_outcome_cannot_establish_success() {
     for missing in ["state", "code"] {
         let (harness, path) = nq_status_harness();
         let mut snapshot = memory_snapshot(T0, T0 - 1, "explicitly_absent");
-        instance(&mut snapshot).as_object_mut().unwrap().remove(missing);
+        instance(&mut snapshot)
+            .as_object_mut()
+            .unwrap()
+            .remove(missing);
         write_status(&path, &snapshot);
         let report = harness.evaluate(T0);
-        assert_eq!(memory_condition(&report)["observation"], "unknown", "missing {missing}");
+        assert_eq!(
+            memory_condition(&report)["observation"],
+            "unknown",
+            "missing {missing}"
+        );
         assert_eq!(report["inputs"][0]["status"], "not_current");
     }
 }
@@ -201,4 +235,70 @@ fn healthy_complete_instance_keeps_the_existing_absent_result() {
     assert_eq!(report["inputs"][0]["status"], "ok");
     assert_eq!(memory_condition(&report)["observation"], "clear");
     assert!(intents(&report).is_empty());
+}
+
+/// Admitted partial/failed reports still reach NQ's detector-state mapping.
+/// These current memory profiles cannot evaluate such reports; their NQ
+/// judgment, rather than coarse instance health, supplies the Unknown reason.
+#[test]
+fn admitted_partial_and_failed_reports_preserve_nq_detector_judgments() {
+    for (state, code, status) in [
+        ("degraded", "report_partial", "partial"),
+        ("failed", "report_failed", "failed"),
+    ] {
+        let (harness, path) = nq_status_harness();
+        let mut snapshot = memory_snapshot(T0, T0 - 1, "explicitly_absent");
+        let evaluation = snapshot["components"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|component| component["kind"] == "evaluation")
+            .unwrap();
+        evaluation["state"] = json!("degraded");
+        evaluation["code"] = json!("cannot_evaluate");
+        let envelope = &mut evaluation["detail"]["result"];
+        envelope["result"]["state"] = json!("cannot_evaluate");
+        envelope["result"]["summary"] = json!("controlled admitted incomplete report");
+        envelope["result"]["evidence"] = json!([]);
+        let envelope = envelope.clone();
+        let component = instance(&mut snapshot);
+        component["state"] = json!(state);
+        component["code"] = json!(code);
+        component["detail"]["result"]["result"]["report_status"] = json!(status);
+        component["detail"]["result"]["result"]["evaluations"] = json!([envelope]);
+        write_status(&path, &snapshot);
+        let report = harness.evaluate(T0);
+        assert_eq!(memory_condition(&report)["observation"], "unknown");
+        let error = report["inputs"][0]["error"].as_str().unwrap();
+        assert!(error.contains("host memory (cannot_evaluate)"), "{report}");
+        assert!(
+            !error.contains("without an admitted collection outcome"),
+            "{report}"
+        );
+    }
+}
+
+#[test]
+fn other_nonadmitted_and_mismatched_outcomes_cannot_reuse_absence() {
+    for (state, code) in [
+        ("failed", "collection_failed"),
+        ("degraded", "helper_refused"),
+        ("failed", "report_rejected"),
+        ("healthy", "report_failed"),
+        ("failed", "report_complete"),
+    ] {
+        let (harness, path) = nq_status_harness();
+        let mut snapshot = memory_snapshot(T0, T0 - 1, "explicitly_absent");
+        let component = instance(&mut snapshot);
+        component["state"] = json!(state);
+        component["code"] = json!(code);
+        write_status(&path, &snapshot);
+        let report = harness.evaluate(T0);
+        assert_eq!(
+            memory_condition(&report)["observation"],
+            "unknown",
+            "{report}"
+        );
+        assert_eq!(report["inputs"][0]["status"], "not_current");
+    }
 }

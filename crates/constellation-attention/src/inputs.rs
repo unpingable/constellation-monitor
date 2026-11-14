@@ -511,6 +511,9 @@ struct NqSnapshot {
     /// Newest collection (or evaluation) time per watcher instance: the
     /// liveness signal.
     collected: BTreeMap<String, i64>,
+    /// Status-export collection admission, independently of its liveness time.
+    /// Evaluation history has no instance outcome and leaves this empty.
+    admitted_collections: BTreeMap<String, bool>,
     /// Why the snapshot as a whole cannot be relied on (an incomplete page).
     incomplete: Option<String>,
 }
@@ -535,7 +538,8 @@ fn status_export(context: &Context<'_>, input: &NqStatusInput) -> Result<NqSnaps
         .get("components")
         .and_then(Value::as_array)
         .ok_or_else(|| "status export has no components".to_owned())?;
-    // Last collection commit per watcher instance: the only liveness signal.
+    // Last collection attempt per watcher instance: the liveness signal.
+    // A fresh attempt need not have admitted a report or produced an evaluation.
     let collected = components
         .iter()
         .filter(|component| component.get("kind").and_then(Value::as_str) == Some("instance"))
@@ -543,6 +547,25 @@ fn status_export(context: &Context<'_>, input: &NqStatusInput) -> Result<NqSnaps
             let id = component.get("id")?.as_str()?.to_owned();
             let at = rfc3339_seconds(component.get("observed_at")?.as_str()?).ok()?;
             Some((id, at))
+        })
+        .collect();
+    let admitted_collections = components
+        .iter()
+        .filter(|component| component.get("kind").and_then(Value::as_str) == Some("instance"))
+        .filter_map(|component| {
+            let id = component.get("id")?.as_str()?.to_owned();
+            // NQ owns these status projections. Partial and failed reports
+            // can be admitted too; their detector judgments remain NQ's.
+            let admitted = matches!(
+                (
+                    component.get("state").and_then(Value::as_str),
+                    component.get("code").and_then(Value::as_str),
+                ),
+                (Some("healthy"), Some("report_complete"))
+                    | (Some("degraded"), Some("report_partial"))
+                    | (Some("failed"), Some("report_failed"))
+            );
+            Some((id, admitted))
         })
         .collect();
     let evaluations = components
@@ -573,6 +596,7 @@ fn status_export(context: &Context<'_>, input: &NqStatusInput) -> Result<NqSnaps
         }),
         evaluations,
         collected,
+        admitted_collections,
         incomplete: None,
     })
 }
@@ -694,6 +718,7 @@ fn evaluation_history(context: &Context<'_>, input: &NqStatusInput) -> Result<Nq
         }),
         evaluations,
         collected,
+        admitted_collections: BTreeMap::new(),
         incomplete,
     })
 }
@@ -810,12 +835,18 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
                 .unwrap_or_default()
                 .to_owned()
         };
+        let instance_id = text("/context/instance_id");
+        // Retained history does not re-enrol an explicitly retired watcher.
+        // Only an exact bounded identity can exclude the whole lineage;
+        // missing or malformed identities still take the ordinary checks.
+        if bounded_instance_id(&instance_id) && input.retired_instances.contains(&instance_id) {
+            continue;
+        }
         let profile = text("/profile/profile/id");
         let version = envelope
             .pointer("/profile/profile/version")
             .and_then(Value::as_u64);
         let condition = text("/result/condition");
-        let instance_id = text("/context/instance_id");
         let consumed = [
             SYSTEMD_UNIT_PROFILE,
             HOST_MEMORY_PROFILE,
@@ -924,6 +955,19 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             .get(&lineage.instance_id)
             .is_none_or(|at| generated - at > input.stale_after_seconds)
     };
+    let unadmitted_instance = |lineage: &Lineage| {
+        !history && snapshot.admitted_collections.get(&lineage.instance_id) != Some(&true)
+    };
+    let unadmitted: Vec<&str> = units
+        .values()
+        .chain(filesystems.values())
+        .chain(memory.as_ref())
+        .chain(io.as_ref())
+        .filter(|lineage| unadmitted_instance(lineage))
+        .map(|lineage| lineage.instance_id.as_str())
+        .collect::<std::collections::BTreeSet<&str>>()
+        .into_iter()
+        .collect();
     let stale: Vec<&str> = units
         .values()
         .chain(filesystems.values())
@@ -993,6 +1037,16 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             ),
         );
     }
+    if !unadmitted.is_empty() {
+        report.fault(
+            "indeterminate",
+            InputStatus::NotCurrent,
+            &format!(
+                "watchers without an admitted collection outcome: {}",
+                truncate(&unadmitted.join(", "), ID_TEXT_MAX)
+            ),
+        );
+    }
     if !indeterminate.is_empty() {
         // Per-condition unknown on an otherwise current export: reported
         // so a lasting `cannot_evaluate` reaches the operator.
@@ -1011,6 +1065,12 @@ fn nq_status(context: &Context<'_>, input: &NqStatusInput, read: &mut InputsRead
             return (
                 Observation::Unknown,
                 "watcher collection is not current".to_owned(),
+            );
+        }
+        if unadmitted_instance(lineage) {
+            return (
+                Observation::Unknown,
+                "latest collection did not establish an admitted report".to_owned(),
             );
         }
         match lineage.state.as_str() {

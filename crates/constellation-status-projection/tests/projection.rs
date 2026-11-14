@@ -1,7 +1,5 @@
 mod common;
 
-use std::time::{Duration, Instant};
-
 use constellation_status_projection::{
     AvailabilityV1, DependencyEffectV1, ImpactV1, MAINTENANCE_ASSERTION_SCHEMA_V1,
     MaintenanceAssertionV1, ModeV1, ProjectedStateV1, ProjectionMomentV1, SourceFactClassV1,
@@ -107,77 +105,6 @@ fn missing_or_replayed_support_cannot_establish_health_or_extend_expiry() {
     )
     .expect("short support projects conservatively");
     assert_eq!(short.fresh_until_unix_ms, NOW + 1_000);
-}
-
-#[test]
-fn reusing_one_live_observation_never_moves_its_absolute_presentation_deadline() {
-    let facts = vec![
-        fact(
-            "fact.synthetic.dependency",
-            "synthetic.dependency",
-            "evidence:subordinate",
-            AvailabilityV1::Available,
-            ImpactV1::None,
-        ),
-        fact(
-            "fact.synthetic.service",
-            "synthetic.service",
-            "evidence:service",
-            AvailabilityV1::Available,
-            ImpactV1::None,
-        ),
-    ];
-    let support = vec![
-        live_support("evidence:service", 30_000, 0),
-        live_support("evidence:subordinate", 30_000, 0),
-    ];
-    let first = project(
-        &policy(true),
-        &facts,
-        &support,
-        &[],
-        ProjectionMomentV1::now(NOW),
-    )
-    .unwrap();
-    std::thread::sleep(Duration::from_millis(5));
-    let later = project(
-        &policy(true),
-        &facts,
-        &support,
-        &[],
-        ProjectionMomentV1::now(NOW + 5),
-    )
-    .unwrap();
-    assert_eq!(first.fresh_until_unix_ms, later.fresh_until_unix_ms);
-
-    let mut expiry_policy = policy(true);
-    expiry_policy.timestamp_granularity_ms = 1;
-    expiry_policy.admitted_clock_uncertainty_ms = 0;
-    // Reuse admitted support: constructing a five-millisecond exchange assumed
-    // admission always ran before a scheduler delay could consume its lifetime.
-    // Observe expiry through the public consumer instead of assuming a sleep
-    // crossed the deadline.
-    let wait_started = Instant::now();
-    while support
-        .iter()
-        .any(|live| live.usable_remaining_ms_at(Instant::now()).is_some())
-    {
-        assert!(
-            wait_started.elapsed() < Duration::from_secs(35),
-            "the original thirty-second support did not expire within the wait bound"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let expired = project(
-        &expiry_policy,
-        &facts,
-        &support,
-        &[],
-        ProjectionMomentV1::now(NOW + 30_000),
-    )
-    .unwrap();
-    assert_eq!(expired.aggregate_state, ProjectedStateV1::Unknown);
-    assert_eq!(expired.generated_at_unix_ms, expired.fresh_until_unix_ms);
 }
 
 #[test]

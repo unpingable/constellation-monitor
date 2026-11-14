@@ -123,7 +123,7 @@ notification intents. Nothing else.
 - It is **not execution authority.** A notification grants no permission and
   triggers no action. Nothing here restarts, silences or reconciles anything.
 - It is **not a policy language or rules engine.** The registry below is
-  compiled in and versioned (`constellation.attention_registry.v7`).
+  compiled in and versioned (`constellation.attention_registry.v9`).
   Configuration may enable or disable a rule, change its one threshold, and
   move a page rule down to `notice` (never another rule up to `page`). There are no
   user-defined rules, expressions or plugins.
@@ -135,6 +135,15 @@ notification intents. Nothing else.
 
 ## Registry
 
+This combined registry is `constellation.attention_registry.v9`, with all
+15 rules, including service-endpoint supervision. It adds the NQ collection
+outcome and retired-lineage checks below to the existing operational rules.
+The affected rule versions are `host-disk` v4, `service-down` v2,
+`memory-pressure` v2, `io-pressure` v2 and `evaluator-input-unavailable` v3.
+The earlier v8 registry has 14 rules; its effective-policy digest must not be
+reused for this set. Export the complete installed build's escalation registry
+and check the approved NQ policy before enabling submitting units, as above.
+
 Bounds are defaults; `threshold_seconds` overrides the one threshold. For
 *persistence* rules the threshold is how long the underlying state must
 persist; for *age* rules it is the age a source timestamp must exceed, after
@@ -145,16 +154,16 @@ anchors marked (M) are below in this document.
 | Rule | Class (default) | Response class | Bound | Component | Target class | Input | Runbook | Operator response |
 |---|---|---|---|---|---|---|---|---|
 | `host-posture-unknown` | page | page | persists 600 s | `host_posture` | publication-root label | host-posture `CURRENT` of projection `operator-filesystem-capacity`: `aggregate_state` unknown, or `fresh_until` passed | (C) `host-posture-unknown` | Follow the runner's refusal code; re-enroll on digest mismatch; after `reactor_custody_lost` check the unit restarted. |
-| `host-disk` (v3) | notice | attention | persists 900 s | `host_posture` | publication-root label, or the NQ filesystem watcher's instance id (e.g. `fs-zonestorage`) | host-posture `CURRENT`: current and `aggregate_state` degraded or worse; or NQ: newest `nq.host_filesystem_capacity` version 1 evaluation of a non-stale watcher reports `filesystem_capacity_pressure` present | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
+| `host-disk` (v4) | notice | attention | persists 900 s | `host_posture` | publication-root label, or the NQ filesystem watcher's instance id (e.g. `fs-zonestorage`) | host-posture `CURRENT`: current and `aggregate_state` degraded or worse; or NQ: newest `nq.host_filesystem_capacity` version 1 evaluation of a non-stale watcher reports `filesystem_capacity_pressure` present | (C) `host-disk` | Ordinary host operations; check NQ store, host-posture state root, Nightshift stores, Classic backups. |
 | `nq-no-fresh-acquisition` | page | page | age 600 s, then persists 300 s | `nq` | publication-root label | host-posture `CURRENT`: `generated_at_unix_ms` | (C) `nq-no-fresh-acquisition` | Read the runner journal for `acquisition_refused`; start a stopped runner and watch two occurrences. |
-| `service-down` | page | page | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
-| `memory-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
-| `io-pressure` | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_io` version 1 evaluation of a non-stale watcher reports `io_pressure_stall` present | (M) [`io-pressure`](#io-pressure) | Check PSI, SQLite write-ahead logs and processes in D state. |
+| `service-down` (v2) | page | page | persists 180 s | `service` | unit name, e.g. `nqd.service` | NQ status input: newest `nq.systemd_unit` version 2 evaluation of a non-stale watcher reports `systemd_unit_not_active` present | (C) `service-down` | `systemctl status <unit>`; restart if failed; read preflight errors. |
+| `memory-pressure` (v2) | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_memory` version 1 evaluation of a non-stale watcher reports `memory_pressure_stall` present | (M) [`memory-pressure`](#memory-pressure) | Check PSI and the largest resident processes. |
+| `io-pressure` (v2) | notice | attention | persists 600 s | `host_posture` | none | NQ status input: newest `nq.host_io` version 1 evaluation of a non-stale watcher reports `io_pressure_stall` present | (M) [`io-pressure`](#io-pressure) | Check PSI, SQLite write-ahead logs and processes in D state. |
 | `nightshift-recurrence-missing` | page | page | age 1800 s, then persists 300 s | `nightshift` | Nightshift input label | Nightshift store: newest `canonical_observation_cycles.updated_at` with `status = 'closed'` | (C) `nightshift-recurrence-missing` | Check `nightshift-*` timers; slow ticks see `nightshift-cycle-slow`. |
 | `sqlite-health` | notice | attention | persists 600 s | `nq` | saved-check reference | one `nq saved-check evaluate` document per reference: current `outcome` failed | (M) [`sqlite-health`](#sqlite-health) | Inspect the retained result and the named SQLite file. |
 | `metric-alert-firing` | notice | attention | persists 60 s | `host_posture` | alert name as a token, e.g. `host-swap-exhausted` | metric alerts input: a vmalert alerting rule labelled `attention: "true"` whose state is `firing` (code 1 for value-coded rules; codes 2–5 hold unknown) | (M) [`metric-alert-firing`](#metric-alert-firing) | Open the alert in vmalert; the notice carries the alert's own summary per instance. An observation, not qualified evidence: inspect the host before acting. |
 | `remediation-journal-critical` | page | page | persists 600 s | `service` | `remediation-consumer` | estate input: the `remediation-consumer` row's concern `remediation.journal.generations-critical` is `ABSENT` (15 or more sealed journal segments; the consumer refuses at 16); missing row, any other state or a stale document is unknown | (M) [`remediation-journal-critical`](#remediation-journal-critical) | Take sealed segments into custody, oldest first. |
-| `evaluator-input-unavailable` (v2) | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input, and its admission of each metric-alert definition | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
+| `evaluator-input-unavailable` (v3) | notice | attention | persists 300 s | the input's (`host_posture`, `nq`, `nightshift`) | `{input label}.{fault class}` | the evaluator's own read of each configured input, and its admission of each metric-alert definition | (M) [`evaluator-input-unavailable`](#evaluator-input-unavailable) | Read `report.json`; fix the path, permission or producing timer. |
 | `docket-unsettled` | page | page | age 3600 s, then 300 s | `docket` | — | disabled: input not deployed | (C) `docket-unsettled` | — |
 | `ag-executor-unavailable` | page | page | persists 300 s | `ag` | — | disabled: input not deployed | (C) `ag-executor-unavailable` | — |
 
@@ -182,9 +191,9 @@ same `response_class`, `operator_action` and `escalation_reason`).
 | `host-posture-unknown` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 600 s | Unknown or stale for more than 600 s: the projection has stopped saying anything about disk pressure, so a full disk would go unseen. | Read the runner's refusal code in its journal and fix the cause it names (re-enroll on digest mismatch). A latched reactor custody failure (`reactor_custody_lost`, exit 75) is the only exit systemd restarts, at most five starts an hour; a refusal (exit 1), any other failure or a failed unit needs an operator. |
 | `host-disk` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 900 s | never (not page-eligible) | persists 900 s; persistence never escalates it to a page | Ordinary host operations: check the NQ store, host-posture state root, Nightshift stores and Classic backups first. |
 | `nq-no-fresh-acquisition` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 600 s, then persists 300 s | No status object generated for more than 600 s, then 300 s more: the host-posture runner has stopped and nothing is being observed. | Read the runner journal for acquisition_refused; if the runner is down start it and watch two occurrences. |
-| `service-down` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 180 s | The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts. | systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors. |
-| `memory-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/memory) and the largest resident processes; this is stall pressure, not memory used. |
-| `io-pressure` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/io), the SQLite write-ahead logs under /var/lib and the processes in D state; this is full-stall share, not throughput. |
+| `service-down` (v2) | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 180 s | The unit is not active for more than 180 s: past a restart or reload window, the service is down until someone acts. | systemctl status <unit>; restart it if failed; if it refuses to start read its preflight and identity errors. |
+| `memory-pressure` (v2) | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/memory) and the largest resident processes; this is stall pressure, not memory used. |
+| `io-pressure` (v2) | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Check PSI (/proc/pressure/io), the SQLite write-ahead logs under /var/lib and the processes in D state; this is full-stall share, not throughput. |
 | `nightshift-recurrence-missing` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it is older than 1800 s, then persists 300 s | No closed observation cycle for more than 1800 s, then 300 s more: the recurring observation has stopped and evidence is going stale. | systemctl list-timers 'nightshift-*'; start an inactive timer; slow ticks see nightshift-cycle-slow. |
 | `sqlite-health` | condition row in `report.json` from first observation | trigger and resolve on `notice_route` (v1, `attention`) once it persists 600 s | never (not page-eligible) | persists 600 s; persistence never escalates it to a page | Inspect the saved check's retained result (nq saved-check result) and the named SQLite file; do not edit the store. |
 | `remediation-journal-critical` | condition row in `report.json` from first observation | notice copy of the page (`response_class: page`); a configuration-removal resolve (`attention`) | trigger and resolve on `page_route` (v2) once it persists 600 s | 15 or more sealed journal segments for more than 600 s: the consumer refuses at 16, and then bounded remediation stops until someone acts. | Take sealed journal segments of the remediation consumer into custody, oldest first, as its segment custody procedure says; one more seal and it refuses every pass. |
@@ -237,11 +246,20 @@ and current are still evaluated.
 ### NQ status sources
 
 `[inputs.nq_status] source` chooses how the evaluations are read. Both give
-the same lineages, checks and fault classes.
+the same lineages and fault classes; their available liveness and collection
+outcome evidence differ as described below.
 
 - `status_export` (default): `command` is the full argv of `nq --json status
   export` (or `path` names a file a timer writes). Liveness is each watcher
-  instance's last collection (`observed_at`). `status export` walks the
+  instance's last collection attempt (`observed_at`). A fresh attempt is not
+  proof of an admitted report: the instance must carry one of NQ's admitted
+  state/code pairs: `healthy`/`report_complete`, `degraded`/`report_partial`,
+  or `failed`/`report_failed`. Missing or other outcomes make that watcher's
+  condition `Unknown` and the input `not_current` (`indeterminate`), even
+  when an older evaluation says absent. Repeated failed attempts cannot
+  confirm recovery or resolve an active condition. Admitted partial/failed
+  reports retain NQ's detector judgment; coarse health is not the detector.
+  `status export` walks the
   whole evaluation history (nq#20): on the Linode ops store it takes 26 s
   alone and 60–90 s under contention, so use it only for small stores.
 - `evaluation_history`: `command` is the nq argv up to and including
@@ -259,6 +277,8 @@ the same lineages, checks and fault classes.
   recorded two to four evaluations per watcher a minute: with 4 watchers,
   300 records cover roughly 20 to 35 minutes); a watcher with no evaluation in the window has no
   lineage, and if its condition is open the input reports `unreported`.
+  This API has no instance collection outcome; it retains evaluation-based
+  liveness and does not apply the status-export outcome check.
   Use this mode for operated stores.
 
   **Watcher roster.** The window alone cannot show a watcher that stopped
@@ -268,9 +288,15 @@ the same lineages, checks and fault classes.
   the input). A remembered watcher missing from the window is `stale`
   measured from that remembered time, and stays stale until the operator
   lists it in `[inputs.nq_status] retired_instances = ["unit-old"]`, which
-  also drops it from the roster. Retire a watcher only after removing it
-  from NQ; a retired id that evaluates again is read normally but never
-  stale. Roster ids are at most 128 printable bytes (longer ids are reported
+  also drops it from the roster. In both history and status-export modes,
+  evaluations whose bounded `context.instance_id` exactly matches an entry
+  are excluded before profile and lineage selection, including retained old
+  evaluations. Retire a watcher only after removing it from NQ. To supervise
+  it again, remove its retirement entry. Missing or malformed identities and
+  undeclared watchers keep their ordinary validation and freshness checks.
+  Input retirement does not establish recovery of an old open condition:
+  explicitly retire its target with `retired_targets` as described below.
+  Roster ids are at most 128 printable bytes (longer ids are reported
   `unrecognised` and not remembered), times are capped at the page's
   `generated_at`, an evaluation stamped more than 60 s after the page (a
   past forward clock step) counts as no liveness, and `reset-clock` clamps
@@ -1308,8 +1334,9 @@ For a local inbox, if JSON escaping and configured locators would exceed the
 4 KiB receiver limit, the summary falls back to 512 bytes at a word boundary
 with `…`.
 
-This opt-in adapter adds no registry entry or policy-digest field; registry
-v7 and existing attention policy pins are unchanged.
+This opt-in adapter itself adds no registry entry or policy-digest field.
+The combined build uses the v9 registry above; use its effective-policy digest
+and complete compiled escalation export when reviewing an upgrade.
 
 ### Admission of metric-alert definitions
 
@@ -1515,11 +1542,11 @@ and does not notify:
 | Class | Meaning |
 |---|---|
 | `unreadable` | missing path, permission, command failure, malformed JSON, wrong schema, a host-posture `CURRENT` of another projection, a saved-check result naming another reference |
-| `stale` | NQ snapshot older than `max_age_seconds`, or an evaluation-history page that is not complete or whose upper bound moved; a watcher whose last collection (status export) or newest evaluation (evaluation history) is older than `stale_after_seconds` at the snapshot's `generated_at` (default 180 s; a stopped nqd still answers from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds`; an estate document older than its `max_age_seconds` or whose `generated_at` is in the future |
+| `stale` | NQ snapshot older than `max_age_seconds`, or an evaluation-history page that is not complete or whose upper bound moved; a watcher whose last collection attempt (status export) or newest evaluation (evaluation history) is older than `stale_after_seconds` at the snapshot's `generated_at` (default 180 s; a stopped nqd still answers from its store, so this is the only daemon-down signal); a saved-check result older than `max_age_seconds`; an estate document older than its `max_age_seconds` or whose `generated_at` is in the future |
 | `unrecognised` | an NQ evaluation with an unrecognised profile id or version, or that cannot be parsed; a saved-check result without a valid `read_attempted_at` |
 | `untargetable` | a systemd unit with no bounded target class |
 | `rejected` | metric alerts only: a definition admission refused, listed in `rejected_rules`; the input stays `ok` for its other definitions (see [Admission](#admission-of-metric-alert-definitions)) |
-| `indeterminate` | a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed`; an estate service whose verdict is `UNKNOWN` (or unrecognised) on a current document |
+| `indeterminate` | a status-export watcher without an admitted collection outcome; a detector on a current export that cannot evaluate (for example `cannot_evaluate`); a saved-check result that is `refused`, `missing` or `claimed`; an estate service whose verdict is `UNKNOWN` (or unrecognised) on a current document |
 | `unreported` | an open condition the input no longer reports |
 | `empty` | no closed Nightshift cycle yet; an estate document listing no services; a metric alerts document with no rule labelled `attention: "true"` |
 

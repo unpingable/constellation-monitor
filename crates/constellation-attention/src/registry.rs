@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 /// Identity of this registry revision. Bump it whenever a rule's meaning changes.
-pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v7";
+pub const REGISTRY_VERSION: &str = "constellation.attention_registry.v9";
 
 /// How long a cleared condition must stay clear before it is resolved.
 pub const RESOLVE_CONFIRM_SECONDS: i64 = 120;
@@ -239,7 +239,7 @@ pub const RULES: [Rule; 15] = [
     },
     Rule {
         id: "host-disk",
-        version: 3,
+        version: 4,
         default_class: Class::Notice,
         page_allowed: true,
         response_class: ResponseClass::Attention,
@@ -281,7 +281,7 @@ pub const RULES: [Rule; 15] = [
     },
     Rule {
         id: "service-down",
-        version: 1,
+        version: 2,
         default_class: Class::Page,
         page_allowed: true,
         response_class: ResponseClass::Page,
@@ -302,7 +302,7 @@ pub const RULES: [Rule; 15] = [
     },
     Rule {
         id: "memory-pressure",
-        version: 1,
+        version: 2,
         default_class: Class::Notice,
         page_allowed: false,
         response_class: ResponseClass::Attention,
@@ -323,7 +323,7 @@ pub const RULES: [Rule; 15] = [
     },
     Rule {
         id: "io-pressure",
-        version: 1,
+        version: 2,
         default_class: Class::Notice,
         page_allowed: false,
         response_class: ResponseClass::Attention,
@@ -476,7 +476,7 @@ pub const RULES: [Rule; 15] = [
     },
     Rule {
         id: "evaluator-input-unavailable",
-        version: 2,
+        version: 3,
         default_class: Class::Notice,
         page_allowed: false,
         response_class: ResponseClass::Attention,

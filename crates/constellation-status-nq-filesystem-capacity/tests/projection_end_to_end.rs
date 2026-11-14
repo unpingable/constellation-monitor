@@ -313,13 +313,15 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
     let verified = harness.verified(&mut coproducer);
     let consumer = harness.profile.consumer();
     let policy = condition_policy(harness.selector(), true);
-    let source_deadline = harness
+    let source_certificate = harness
         .reactor
         .snapshot()
         .certificates
         .into_iter()
         .find(|certificate| certificate.consumer == consumer)
-        .and_then(|certificate| certificate.earliest_support_expiry_monotonic_ms)
+        .expect("source certificate");
+    let source_deadline = source_certificate
+        .earliest_support_expiry_monotonic_ms
         .expect("source deadline");
     let first = admit_live(
         &verified,
@@ -339,32 +341,38 @@ fn repeated_live_queries_get_new_anchors_but_do_not_extend_the_source_deadline()
         ROW_FRAME_VALIDITY_MS,
     )
     .expect("a repeated query is a new measurement, not a refresh");
-    // Fresh queries may discard different amounts of caller elapsed time.
-    // A more precise second measurement can therefore have a later local bound
-    // without moving the source deadline. Each observation must consume its own
-    // remaining interval and remain bounded by its original trusted lifetime.
     let now = std::time::Instant::now();
-    for observation in [&first, &second] {
-        let remaining = observation.usable_remaining_ms_at(now).unwrap_or(0);
-        let later = observation
-            .usable_remaining_ms_at(now + Duration::from_millis(5))
-            .unwrap_or(0);
-        assert!(later <= remaining.saturating_sub(5));
-        assert!(
-            observation
-                .usable_remaining_ms_at(now + Duration::from_millis(ROW_FRAME_VALIDITY_MS))
-                .is_none()
+    // Independent queries deduct their own elapsed time. A quicker later
+    // query may be less pessimistic, so its local remainder need not be below
+    // the earlier query's. Each interval must still be positive and bounded;
+    // neither query may change the exact source certificate or its expiry.
+    let future = now + Duration::from_millis(ROW_FRAME_VALIDITY_MS + 1);
+    for live in [&first, &second] {
+        assert_eq!(
+            live.certificate_id(),
+            source_certificate.certificate_id.as_str()
         );
+        let remaining = live
+            .usable_remaining_ms_at(now)
+            .expect("positive live interval");
+        assert!(remaining > 0 && remaining <= ROW_FRAME_VALIDITY_MS);
+        assert_eq!(live.usable_remaining_ms_at(future), None);
     }
-    let deadline_after_queries = harness
+    let certificate_after_queries = harness
         .reactor
         .snapshot()
         .certificates
         .into_iter()
         .find(|certificate| certificate.consumer == consumer)
-        .and_then(|certificate| certificate.earliest_support_expiry_monotonic_ms)
-        .expect("source deadline after queries");
-    assert_eq!(deadline_after_queries, source_deadline);
+        .expect("source certificate after queries");
+    assert_eq!(
+        certificate_after_queries.certificate_id,
+        source_certificate.certificate_id
+    );
+    assert_eq!(
+        certificate_after_queries.earliest_support_expiry_monotonic_ms,
+        Some(source_deadline)
+    );
     // Each call performs a fresh live query and therefore gets a new
     // process-local anchor. The adapter exposes no API that accepts a retained
     // response, and neither query moves Pulse's source-owned deadline.

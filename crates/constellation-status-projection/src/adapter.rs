@@ -240,3 +240,355 @@ fn selector_from_request(request: &LivePresentSupportRequestV1) -> LiveSupportSe
         receiver_clock_id: request.receiver_clock_id.as_str().to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AvailabilityV1, ImpactV1, ProjectedStateV1, ProjectionMomentV1, ProjectionPolicyV1,
+        SOURCE_FACT_SCHEMA_V1, SourceFactClassV1, SourceFactV1, project,
+    };
+    use pulse_types::{
+        AuthorityGrantsV1, ClockId, ConsumerId, ConsumerProfileGenerationId, ContextActivationId,
+        CoverageSummaryV1, EscalationStateV1, EvaluatorSemanticGenerationId, EvidenceWindowId,
+        IncarnationId, JudgmentCategoryV1, LIVE_PRESENT_SUPPORT_REQUEST_SCHEMA_V1,
+        LivePresentSupportDispositionV1, LivePresentSupportNonce, LivePresentSupportRequestV1,
+        LivePresentSupportResponseV1, ObservationPolicyGenerationId, ObserverSetGenerationId,
+        PolicyGenerationId, QualifiedGenerationBindingV1, QualifiedGenerationSetV1, ReceiverId,
+        RelianceContextV1, RelianceSupportCertificateV1, SCHEMA_VERSION_V1, SubjectId,
+        SubjectScopeV1, SupportCertificateId, digest_parts,
+    };
+
+    const NOW: u64 = 1_900_000_000_000;
+
+    #[test]
+    fn reusing_one_live_observation_never_moves_its_absolute_presentation_deadline() {
+        let mut policy: ProjectionPolicyV1 = serde_json::from_str(include_str!(
+            "../fixtures/synthetic-public-reduction.policy.json"
+        ))
+        .unwrap();
+        policy.timestamp_granularity_ms = 1;
+        policy.admitted_clock_uncertainty_ms = 0;
+        let facts = vec![
+            fact(
+                "fact.synthetic.dependency",
+                "synthetic.dependency",
+                "evidence:subordinate",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+            fact(
+                "fact.synthetic.service",
+                "synthetic.service",
+                "evidence:service",
+                AvailabilityV1::Available,
+                ImpactV1::None,
+            ),
+        ];
+        // The Instant is only an origin: no subsequent real clock reads or
+        // sleeps participate in admission, projection or either assertion.
+        let admitted_at = Instant::now();
+        let moment = |offset_ms| ProjectionMomentV1 {
+            generated_at_unix_ms: NOW + offset_ms,
+            monotonic_now: admitted_at + Duration::from_millis(offset_ms),
+        };
+        let support = vec![
+            live_support_at("evidence:service", 30_000, admitted_at),
+            live_support_at("evidence:subordinate", 30_000, admitted_at),
+        ];
+        let first = project(&policy, &facts, &support, &[], moment(0)).unwrap();
+        let later = project(&policy, &facts, &support, &[], moment(5)).unwrap();
+        assert_eq!(first.aggregate_state, ProjectedStateV1::Healthy);
+        assert_eq!(later.aggregate_state, ProjectedStateV1::Healthy);
+        assert_eq!(first.fresh_until_unix_ms, NOW + 30_000);
+        assert_eq!(first.fresh_until_unix_ms, later.fresh_until_unix_ms);
+
+        let short_support = vec![
+            live_support_at("evidence:service", 5, admitted_at),
+            live_support_at("evidence:subordinate", 5, admitted_at),
+        ];
+        let initially_live = project(&policy, &facts, &short_support, &[], moment(0)).unwrap();
+        assert_eq!(initially_live.aggregate_state, ProjectedStateV1::Healthy);
+        assert_eq!(initially_live.fresh_until_unix_ms, NOW + 5);
+        for offset_ms in [5, 10] {
+            let expired = project(&policy, &facts, &short_support, &[], moment(offset_ms)).unwrap();
+            assert_eq!(expired.aggregate_state, ProjectedStateV1::Unknown);
+            assert_eq!(expired.generated_at_unix_ms, expired.fresh_until_unix_ms);
+        }
+    }
+
+    #[test]
+    fn faster_new_query_can_extend_local_bound_without_renewing_source_support() {
+        // Drop the invalid ordering constraint between independently anchored
+        // conservative intervals. Receiver expiry is fixed at relative D = 1000;
+        // the fixture's receiver clock starts at 10000. Source responses deduct
+        // their existing 1 ms rounding margin; each caller deducts its own RTT.
+        let (request, _, certificate) = live_exchange("evidence:service", 999);
+        let original_certificate = certificate.clone();
+        assert_eq!(
+            certificate.earliest_support_expiry_monotonic_ms,
+            Some(11_000)
+        );
+        let origin = Instant::now();
+        let response_at = |measured_at, remaining| {
+            LivePresentSupportResponseV1::new(
+                request.clone(),
+                request.receiver.clone(),
+                request.receiver_incarnation.clone(),
+                request.receiver_epoch_id.clone(),
+                request.receiver_clock_id.clone(),
+                "std::time::Instant/process-local".to_owned(),
+                measured_at,
+                LivePresentSupportDispositionV1::SupportedCurrent,
+                Some(remaining),
+            )
+        };
+        // First: send 0, source measurement 20, admission 25. Second: send 30,
+        // source measurement 31, admission 35. These are two fresh responses
+        // for the same certificate, not re-admission of a retained response.
+        let first_response = response_at(10_020, 979);
+        let second_response = response_at(10_031, 968);
+        let first = LiveSupportObservationV1::from_live_exchange_at(
+            &request,
+            &first_response,
+            &certificate,
+            "evidence:service",
+            25,
+            120_000,
+            origin + Duration::from_millis(25),
+        )
+        .unwrap();
+        let second = LiveSupportObservationV1::from_live_exchange_at(
+            &request,
+            &second_response,
+            &certificate,
+            "evidence:service",
+            5,
+            120_000,
+            origin + Duration::from_millis(35),
+        )
+        .unwrap();
+        let common_now = origin + Duration::from_millis(35);
+        assert_eq!(first.usable_remaining_ms_at(common_now), Some(944));
+        assert_eq!(second.usable_remaining_ms_at(common_now), Some(963));
+        assert_eq!(first.expires_at, origin + Duration::from_millis(979));
+        assert_eq!(second.expires_at, origin + Duration::from_millis(998));
+        assert_ne!(first.response_digest(), second.response_digest());
+        assert_eq!(first.certificate_id(), second.certificate_id());
+        assert_eq!(certificate, original_certificate);
+
+        let mut policy: ProjectionPolicyV1 = serde_json::from_str(include_str!(
+            "../fixtures/synthetic-public-reduction.policy.json"
+        ))
+        .unwrap();
+        policy.timestamp_granularity_ms = 1;
+        policy.admitted_clock_uncertainty_ms = 0;
+        policy.dependencies.clear();
+        policy
+            .components
+            .retain(|component| component.key == "synthetic.service");
+        let facts = [fact(
+            "fact.synthetic.service",
+            "synthetic.service",
+            "evidence:service",
+            AvailabilityV1::Available,
+            ImpactV1::None,
+        )];
+        let moment = |offset_ms| ProjectionMomentV1 {
+            generated_at_unix_ms: NOW + offset_ms,
+            monotonic_now: origin + Duration::from_millis(offset_ms),
+        };
+        for (live, deadline_ms) in [(&first, 979), (&second, 998)] {
+            assert!(live.expires_at <= origin + Duration::from_millis(1_000));
+            let fresh =
+                project(&policy, &facts, std::slice::from_ref(live), &[], moment(35)).unwrap();
+            assert_eq!(fresh.aggregate_state, ProjectedStateV1::Healthy);
+            assert_eq!(fresh.fresh_until_unix_ms, NOW + deadline_ms);
+            assert_eq!(
+                live.usable_remaining_ms_at(moment(1_000).monotonic_now),
+                None
+            );
+            let expired = project(
+                &policy,
+                &facts,
+                std::slice::from_ref(live),
+                &[],
+                moment(1_000),
+            )
+            .unwrap();
+            assert_eq!(expired.aggregate_state, ProjectedStateV1::Unknown);
+            assert_eq!(expired.generated_at_unix_ms, expired.fresh_until_unix_ms);
+        }
+    }
+
+    // Same typed synthetic exchange as the integration fixture, admitted
+    // through the existing private constructor with controlled timing.
+    fn live_support_at(
+        evidence: &str,
+        remaining_ms: u64,
+        admitted_at: Instant,
+    ) -> LiveSupportObservationV1 {
+        let (request, response, certificate) = live_exchange(evidence, remaining_ms);
+        LiveSupportObservationV1::from_live_exchange_at(
+            &request,
+            &response,
+            &certificate,
+            evidence,
+            0,
+            120_000,
+            admitted_at,
+        )
+        .expect("valid synthetic live-support exchange at fixed admission instant")
+    }
+
+    fn live_exchange(
+        evidence: &str,
+        remaining_ms: u64,
+    ) -> (
+        LivePresentSupportRequestV1,
+        LivePresentSupportResponseV1,
+        RelianceSupportCertificateV1,
+    ) {
+        let context = support_context();
+        let consumer = support_consumer();
+        let subject_scope = support_subject_scope();
+        let qualified_generation = support_binding(&context, &consumer, &subject_scope);
+        let measured_at = 10_000;
+        let mut certificate = RelianceSupportCertificateV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            certificate_id: SupportCertificateId::new("pending"),
+            consumer: consumer.clone(),
+            subject_scope: subject_scope.clone(),
+            context: context.clone(),
+            qualified_generation: Some(qualified_generation.clone()),
+            evaluated_at_monotonic_ms: measured_at,
+            receiver_clock_id: "clock:status-projection".to_owned(),
+            judgment: JudgmentCategoryV1::Current,
+            evidence_window_id: EvidenceWindowId::new("window:status-projection"),
+            supporting_evidence_ids: vec![evidence.to_owned()],
+            remote_observation_custody: Vec::new(),
+            missing_premises: Vec::new(),
+            applicable_contradictions: Vec::new(),
+            coverage: CoverageSummaryV1 {
+                required: vec!["service".to_owned()],
+                active: vec!["service".to_owned()],
+                missing: Vec::new(),
+                expired: Vec::new(),
+                active_observers: 1,
+                required_observers: 1,
+                per_tag: Vec::new(),
+            },
+            earliest_support_expiry_monotonic_ms: Some(measured_at + remaining_ms + 1),
+            next_scheduled_reevaluation_monotonic_ms: Some(measured_at + remaining_ms + 1),
+            escalation: EscalationStateV1::NotRequested,
+            mutation_authority: pulse_types::MutationAuthorityV1::None,
+        };
+        certificate.certificate_id = certificate.compute_id();
+        let request = LivePresentSupportRequestV1 {
+            schema: LIVE_PRESENT_SUPPORT_REQUEST_SCHEMA_V1.to_owned(),
+            request_nonce: LivePresentSupportNonce::new(format!("nonce:{evidence}")),
+            consumer,
+            subject_scope,
+            reliance_context_digest: context.identity_digest(),
+            reliance_context: context,
+            support_certificate_id: certificate.certificate_id.clone(),
+            evidence_window_id: certificate.evidence_window_id.clone(),
+            qualified_generation_digest: qualified_generation.identity_digest(),
+            receiver: ReceiverId::new("receiver:status-projection"),
+            receiver_incarnation: IncarnationId::new("receiver-incarnation:status-projection"),
+            receiver_epoch_id: IncarnationId::new("receiver-epoch:status-projection"),
+            receiver_clock_id: ClockId::new("clock:status-projection"),
+        };
+        let response = LivePresentSupportResponseV1::new(
+            request.clone(),
+            request.receiver.clone(),
+            request.receiver_incarnation.clone(),
+            request.receiver_epoch_id.clone(),
+            request.receiver_clock_id.clone(),
+            "std::time::Instant/process-local".to_owned(),
+            measured_at,
+            LivePresentSupportDispositionV1::SupportedCurrent,
+            Some(remaining_ms),
+        );
+        (request, response, certificate)
+    }
+
+    fn fact(
+        id: &str,
+        subject: &str,
+        evidence: &str,
+        availability: AvailabilityV1,
+        impact: ImpactV1,
+    ) -> SourceFactV1 {
+        SourceFactV1 {
+            schema: SOURCE_FACT_SCHEMA_V1.to_owned(),
+            fact_id: id.to_owned(),
+            subject_key: subject.to_owned(),
+            owner: "synthetic-fixture".to_owned(),
+            native_schema: "synthetic.status_fact.v1".to_owned(),
+            native_record_id: format!("native.{id}"),
+            class: SourceFactClassV1::DerivedAdmitted,
+            evidence_id: evidence.to_owned(),
+            availability,
+            impact,
+            reason_code: "qualified-state".to_owned(),
+            basis_digest: format!("sha256:{}", "a".repeat(64)),
+            observed_at_unix_ms: Some(1_900_000_000_000),
+        }
+    }
+
+    fn support_context() -> RelianceContextV1 {
+        RelianceContextV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            activation_id: ContextActivationId::new("activation:status-projection"),
+            reliance_policy_generation: PolicyGenerationId::new("policy:status-projection"),
+            reliance_policy_semantic_digest: digest_parts("policy", &[b"status-projection"]),
+            consumer_profile_generation: ConsumerProfileGenerationId::new(
+                "profile:status-projection",
+            ),
+            evaluator_semantic_generation: EvaluatorSemanticGenerationId::new(
+                "evaluator:status-projection",
+            ),
+            observer_set_generation: ObserverSetGenerationId::new("observers:status-projection"),
+            observation_policy_generation: ObservationPolicyGenerationId::new(
+                "observation-policy:status-projection",
+            ),
+        }
+    }
+
+    fn support_consumer() -> ConsumerId {
+        ConsumerId::new("consumer:status-projector")
+    }
+
+    fn support_subject_scope() -> SubjectScopeV1 {
+        SubjectScopeV1 {
+            subject: SubjectId::new("subject:synthetic-service"),
+            subject_incarnation: IncarnationId::new("subject-incarnation:synthetic-1"),
+            scope: "status-projection".to_owned(),
+        }
+    }
+
+    fn support_binding(
+        context: &RelianceContextV1,
+        consumer: &ConsumerId,
+        subject_scope: &SubjectScopeV1,
+    ) -> QualifiedGenerationBindingV1 {
+        QualifiedGenerationBindingV1 {
+            schema_version: SCHEMA_VERSION_V1,
+            manifest_digest: digest_parts("manifest", &[b"status-projection"]),
+            qualification_certificate_digest: digest_parts(
+                "qualification",
+                &[b"status-projection"],
+            ),
+            activation_receipt_digest: digest_parts("activation", &[b"status-projection"]),
+            activation_occurrence_id: IncarnationId::new("activation-occurrence:status-projection"),
+            process_epoch_id: IncarnationId::new("process-epoch:status-projection"),
+            generation_set: QualifiedGenerationSetV1::from_context(
+                subject_scope.subject.clone(),
+                consumer.clone(),
+                context,
+            ),
+            authority_grants: AuthorityGrantsV1::none(),
+        }
+    }
+}
