@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 
-BINARIES = ("constellation-status", "pulse-nq-load-support")
+BINARIES = ("constellation-status", "pulse-nq-load-support", "pulse-nq-filesystem-support")
 ALIASES = ("pulse-load-pressure-producer", "pulse-load-pressure-receiver", "pulse-support-resolver")
 
 

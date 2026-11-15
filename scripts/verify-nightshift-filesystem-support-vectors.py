@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Check exact shared source vectors; does not execute or qualify the Rust adapter.
+
+The wire fixtures deliberately contain ASCII strings and safe integers only.
+This small-domain encoder is not a general NQ/JCS implementation. NQ-owned
+canonical vectors are executed through nq_protocol by the deferred Rust tests.
+"""
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+
+def digest(data):
+    return 'sha256:' + hashlib.sha256(data).hexdigest()
+
+
+def canonical_fixture(value):
+    def check(x):
+        if isinstance(x, str):
+            if not x.isascii():
+                raise ValueError('wire fixture leaves its ASCII-only domain')
+        elif isinstance(x, bool) or x is None:
+            pass
+        elif isinstance(x, int):
+            if abs(x) > 9_007_199_254_740_991:
+                raise ValueError('wire fixture integer is not exact I-JSON')
+        elif isinstance(x, list):
+            for child in x:
+                check(child)
+        elif isinstance(x, dict):
+            for key, child in x.items():
+                check(key)
+                check(child)
+        else:
+            raise ValueError('wire fixture leaves its exact encoder domain')
+    check(value)
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+
+
+def identity(value, field):
+    return digest(canonical_fixture({k: v for k, v in value.items() if k != field}))
+
+
+def verify(root):
+    manifest = json.loads((root / 'conformance.json').read_bytes())
+    objects = {}
+    for name, expected in manifest['files'].items():
+        raw = (root / name).read_bytes()
+        if digest(raw) != expected:
+            raise ValueError(f'{name}: fixture digest differs')
+        value = json.loads(raw)
+        if canonical_fixture(value) != raw:
+            raise ValueError(f'{name}: fixture is not its exact canonical bytes')
+        objects[name] = value
+    config, query, support = (objects[n] for n in ['config.json', 'query.json', 'support-current.json'])
+    realization = config['realization']
+    if realization != objects['realization.json'] or identity(realization, 'realization_id') != realization['realization_id']:
+        raise ValueError('realization fixture preimage differs')
+    template = {k: v for k, v in config.items() if k not in ['realization', 'expected_diagnostic']}
+    if digest(canonical_fixture(template)) != realization['configuration_digest']:
+        raise ValueError('configuration is not the accepted static enrollment')
+    if identity(query, 'query_id') != query['query_id'] or identity(support, 'support_id') != support['support_id']:
+        raise ValueError('query/support fixture preimage differs')
+    for field in ['subject_id', 'scope_id']:
+        if config[field] != query[field]:
+            raise ValueError(f'{field}: query differs from config')
+    for field in ['diagnostic_inputs_id', 'artifact_ids']:
+        if config['expected_diagnostic'][field] != query[field]:
+            raise ValueError(f'{field}: query differs from diagnostic basis')
+    for field in query:
+        if field != 'schema' and query[field] != support[field]:
+            raise ValueError(f'{field}: support differs from query')
+    if support['authority_id'] != config['authority_id']:
+        raise ValueError('support authority differs from enrollment')
+    if digest(canonical_fixture(objects['nq-scope-preimage.json'])) != manifest['scope_id'] or config['scope_id'] != manifest['scope_id']:
+        raise ValueError('NQ fixed ASCII scope golden differs')
+    return len(objects), len(manifest['capacity_vectors']), len(manifest['nq_canonical_vectors'])
+
+
+if __name__ == '__main__':
+    root = Path(sys.argv[1]) if len(sys.argv) == 2 else Path(__file__).resolve().parents[1] / 'artifacts/nightshift-filesystem-support-v1'
+    files, laws, canonical = verify(root)
+    print(f'PASS source-vector integrity: {files} exact wire files, {laws} deferred native law cases, {canonical} deferred NQ canonicalization cases; no native qualification claim')

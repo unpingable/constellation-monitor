@@ -1,0 +1,28 @@
+[package]
+name = "pulse-nq-filesystem-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_jcs.workspace = true
+sha2.workspace = true
+pulse-nq-load-support = { path = "../pulse-nq-load-support" }
+pulse-nq-load-correspondence = { path = "../pulse-nq-load-correspondence" }
+toml.workspace = true
+nq-host-resource-helper = { git = "https://github.com/unpingable/constellation-nq.git", rev = "e7219396ab6c491d45bdd0f1ec17f48edb6aa20e" }
+nq-protocol = { git = "https://github.com/unpingable/constellation-nq.git", rev = "e7219396ab6c491d45bdd0f1ec17f48edb6aa20e" }
+nq-profiles = { git = "https://github.com/unpingable/constellation-nq.git", rev = "e7219396ab6c491d45bdd0f1ec17f48edb6aa20e" }
+
+[build-dependencies]
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true

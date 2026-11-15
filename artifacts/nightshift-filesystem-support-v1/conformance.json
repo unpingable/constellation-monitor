@@ -1,0 +1,161 @@
+{
+  "schema": "pulse.nq_filesystem_support_conformance.v1",
+  "status": "Synthetic source-based vectors; not a qualified executable or live support receipt",
+  "nq_source_commit": "e7219396ab6c491d45bdd0f1ec17f48edb6aa20e",
+  "owner_source_sha256": {
+    "crates/nq-profiles/src/host_filesystem.rs": "c0a40f87310828b593a08a5539d656124290b82efb119e755495e5168f8900db",
+    "crates/nq-protocol/src/canonical.rs": "0c45749e69050a57e98a245a91fc7d87cd89c940a5954d3c18d9b5c2b2528054",
+    "crates/nq-host-resource-helper/src/lib.rs": "db09bb7cc5f724e7ed3ddaea25ac6e0a62f9f3a6a1ab29f42a2734f1e16ce364"
+  },
+  "scope_id": "sha256:bbfeefc9980d70c067acad11de1733bb746f954212e7d1a0fa17dff1f03ac38e",
+  "files": {
+    "config.json": "sha256:30ea0c0806bc30634d3ac10311dbef1450827d260c5e71e2dc26033198d4db2f",
+    "nq-scope-preimage.json": "sha256:bbfeefc9980d70c067acad11de1733bb746f954212e7d1a0fa17dff1f03ac38e",
+    "query.json": "sha256:818b33ddf4bf6191b7eee5b37a0db772963bef3398269815553bf2298347e6ae",
+    "realization.json": "sha256:2e00e68b664ff24e1f92c042135a050eca360089a8d01fa4c32396fcf55b6fd5",
+    "support-current.json": "sha256:8ec6cfe166ce5706f668aef9c88b83b1db8149b8ee1038bd89af5a7c46ef78d3"
+  },
+  "capacity_vectors": [
+    {
+      "id": "owner_crow_data",
+      "total": 491968500,
+      "free": 56656020,
+      "available": 31646960,
+      "expected": "present"
+    },
+    {
+      "id": "owner_crow_root",
+      "total": 239945484,
+      "free": 58741421,
+      "available": 46537657,
+      "expected": "explicitly_absent"
+    },
+    {
+      "id": "owner_inclusive_threshold",
+      "total": 1000,
+      "free": 100,
+      "available": 100,
+      "expected": "present"
+    },
+    {
+      "id": "immediately_below",
+      "total": 1000,
+      "free": 101,
+      "available": 101,
+      "expected": "explicitly_absent"
+    },
+    {
+      "id": "immediately_above",
+      "total": 1000,
+      "free": 99,
+      "available": 99,
+      "expected": "present"
+    },
+    {
+      "id": "reserved_blocks_change_denominator",
+      "total": 1000,
+      "free": 300,
+      "available": 50,
+      "expected": "present"
+    },
+    {
+      "id": "owner_zero_usable",
+      "total": 0,
+      "free": 0,
+      "available": 0,
+      "expected": "refused"
+    },
+    {
+      "id": "all_reserved_zero_usable",
+      "total": 1000,
+      "free": 1000,
+      "available": 0,
+      "expected": "refused"
+    },
+    {
+      "id": "free_exceeds_total",
+      "total": 1000,
+      "free": 1001,
+      "available": 100,
+      "expected": "refused"
+    },
+    {
+      "id": "available_exceeds_free",
+      "total": 1000,
+      "free": 100,
+      "available": 101,
+      "expected": "refused"
+    },
+    {
+      "id": "unsafe_integer",
+      "total": 9007199254740992,
+      "free": 0,
+      "available": 0,
+      "expected": "refused"
+    },
+    {
+      "id": "wrong_uuid",
+      "total": 1000,
+      "free": 500,
+      "available": 500,
+      "expected": "refused",
+      "payload_uuid": "00000000-0000-0000-0000-000000000001"
+    },
+    {
+      "id": "wrong_fsid",
+      "total": 1000,
+      "free": 500,
+      "available": 500,
+      "expected": "refused",
+      "payload_fsid": "0000000000000001"
+    },
+    {
+      "id": "zero_fragment",
+      "total": 1000,
+      "free": 500,
+      "available": 500,
+      "expected": "refused",
+      "fragment_size": 0
+    }
+  ],
+  "nq_canonical_vectors": [
+    {
+      "id": "nested_key_order",
+      "value": {
+        "z": {
+          "b": 2,
+          "a": 1
+        },
+        "a": [
+          3,
+          2,
+          1
+        ]
+      },
+      "expected_utf8": "{\"a\":[3,2,1],\"z\":{\"a\":1,\"b\":2}}"
+    },
+    {
+      "id": "utf16_key_order",
+      "value": {
+        "": 1,
+        "😀": 2
+      },
+      "expected_utf8": "{\"😀\":2,\"\":1}"
+    },
+    {
+      "id": "unsafe_i_json_integer",
+      "value": {
+        "counter": 9007199254740992
+      },
+      "expected_utf8": null
+    }
+  ],
+  "query_refusals": [
+    "subject_id",
+    "scope_id",
+    "diagnostic_inputs_id",
+    "artifact_ids",
+    "query_id"
+  ],
+  "claim_boundary": "Source-owned arithmetic and canonicalization expectations for a new separately qualified adapter; no retired compiled library comparison, NQ governed replay, HP custody or recurrence claim."
+}
