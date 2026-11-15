@@ -169,6 +169,10 @@ def old_prepare_regression(binary, request, nq_config, instance, state, realizat
     build=json.loads(probe.stdout);record=json.loads(Path(realization).read_bytes())
     check(build['source_commit']=='0b7f7b3b44a5d5fcf7e41a1e6c7c722d4744c95b' and record['monitor_source_commit']==build['source_commit'],'old-source reproduction must identify its own complete frozen source')
     check(record['executable_sha256']=='sha256:'+hashlib.sha256(Path(binary).read_bytes()).hexdigest(),'old-source realization does not bind old ELF')
+    caller_probe_argv=['runuser','-u',caller,'--',binary,'--build-info']
+    caller_probe=subprocess.run(caller_probe_argv,capture_output=True,timeout=20)
+    check(caller_probe.returncode==0,'old caller cannot execute the exact old CLI; apparatus not ready')
+    check(json.loads(caller_probe.stdout)==build,'old caller entered a different CLI build; apparatus not ready')
     for path in [request,nq_config,realization]:
         readable=subprocess.run(['runuser','-u',caller,'--',sys.executable,'-B','-c','import pathlib,sys; pathlib.Path(sys.argv[1]).read_bytes()',path],capture_output=True,timeout=20)
         check(readable.returncode==0,'old caller cannot read a pre-key public input; apparatus not ready')
@@ -180,7 +184,7 @@ def old_prepare_regression(binary, request, nq_config, instance, state, realizat
     check(b'Permission denied' in result.stderr and b'usage:' not in result.stderr,'old failure did not reproduce real private-key permission failure')
     after=hashlib.sha256(config.read_bytes()).hexdigest() if config.exists() else None
     check(before==after,'old refused preparation changed configuration')
-    print(json.dumps({'disposition':'BEHAVIORAL_RED_OLD_PREPARATION_REQUIRES_SECRET','argv':argv,'uid':account.pw_uid,'exit':result.returncode,'stderr':result.stderr.decode(),'configuration_unchanged':True}),flush=True)
+    print(json.dumps({'disposition':'BEHAVIORAL_RED_OLD_PREPARATION_REQUIRES_SECRET','argv':argv,'uid':account.pw_uid,'caller_build_info_argv':caller_probe_argv,'caller_build_info_verified':True,'exit':result.returncode,'stderr':result.stderr.decode(),'configuration_unchanged':True}),flush=True)
     check(result.returncode==0,'old source cannot prepare a fresh basis as ordinary caller without producer secret/config-write authority')
 
 

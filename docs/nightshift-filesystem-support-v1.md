@@ -395,12 +395,25 @@ python3 -B packaging/test_fs_principal_handoff.py --old-prepare OLD_FS_ELF REQUE
 That reproduction must reach the old private-key read and fail with real
 permission denial, leaving configuration unchanged; usage, unknown command,
 missing file, invalid realization or compilation failure is not behavioral RED.
+The ordinary caller must first execute that exact old ELF's `--build-info`
+successfully and obtain the same identity as the operator's probe. A refusal
+to enter the CLI is an apparatus failure, never the private-key regression.
 The test reports its exact old argv/UID/error before the final expected failure.
 Then run the two-basis case above against the new final frozen ELF for GREEN.
 This is a bounded regression in the existing qualification test, not a new
 harness or acceptance schema. Both executions remain pending separate Root GO.
 The earlier 14-test engineering PASS is unchanged and provides no live
 preparation/custody proof.
+
+The apparatus entry control uses actual `runuser` on the admitted VM, with an
+existing non-root caller, and a tiny CLI substitution fixture. As the VM
+operator, run `NATIVE_PRINCIPAL_TEST_USER=nq python3 -B -m unittest discover -s
+packaging -p test_fs_principal_ancestry.py -v`. All five cases must execute;
+the two caller-entry cases skip without that explicit VM context. They prove
+that pre-execution refusal cannot earn the behavioral RED label and that an
+entered CLI's key-read denial remains distinguishable. They do not execute
+the old adapter or establish the product regression result. Permission
+fixtures set their required modes explicitly, independently of the VM umask.
 
 
 Negative diagnostic contexts
