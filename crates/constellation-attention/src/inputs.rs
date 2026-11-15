@@ -1173,7 +1173,13 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
     let (cycle_id, closed_at) = match newest {
         Ok(Some(cycle)) => cycle,
         missing => {
-            if context.now.saturating_sub(first_seen) < grace {
+            if input.require_cycle_support {
+                let message = match &missing {
+                    Err(error) => error.as_str(),
+                    _ => "no closed cycle with required support is available",
+                };
+                report.fault("unreadable", InputStatus::Unavailable, message);
+            } else if context.now.saturating_sub(first_seen) < grace {
                 report.status = InputStatus::Ok;
                 report.causes.push("warming");
                 report.identity =
@@ -1206,6 +1212,23 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
     let identity = json!({"cycle_id": cycle_id, "closed_at": format_seconds(closed_at)});
     report.status = InputStatus::Ok;
     report.identity = identity.clone();
+    if input.require_cycle_support {
+        match crate::nightshift_support::read_selected(
+            &input.store_path,
+            &cycle_id,
+            closed_at,
+            context.now,
+        ) {
+            Ok(selected) => {
+                report.identity = selected.identity;
+                if selected.loss {
+                    report.fault("indeterminate", InputStatus::NotCurrent,
+                        "selected closed cycle records unavailable support; retained Current is historical only");
+                }
+            }
+            Err(error) => report.fault("unreadable", InputStatus::Unavailable, &error),
+        }
+    }
     read.reports.push(report);
     if let Some(rule) = context.enabled("nightshift-recurrence-missing") {
         let age = context.now - closed_at;

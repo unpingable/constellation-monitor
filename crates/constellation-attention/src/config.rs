@@ -387,6 +387,10 @@ pub struct NightshiftInput {
     pub label: String,
     /// The Nightshift observation store, opened read-only.
     pub store_path: PathBuf,
+    /// Require the selected closed cycle's historical support/identity record.
+    /// This does not turn stored Current into present authority.
+    #[serde(default)]
+    pub require_cycle_support: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]

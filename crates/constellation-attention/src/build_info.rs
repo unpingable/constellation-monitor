@@ -44,6 +44,9 @@ pub const ROUTE_CHANGE_RECONCILE: &str = "route_change_reconcile";
 /// Retire missing estate service conditions by exact declared service name.
 pub const ESTATE_SERVICE_RETIREMENT: &str = "estate_service_retirement";
 
+/// Opt in to historical closed-cycle support/identity checks without renewing support.
+pub const NIGHTSHIFT_CYCLE_SUPPORT: &str = "nightshift_cycle_support";
+
 /// Supported behaviours. Published identifiers are never renamed or removed
 /// without a build-info schema bump.
 pub const CAPABILITIES: &[&str] = &[
@@ -59,6 +62,7 @@ pub const CAPABILITIES: &[&str] = &[
     DELIVERY_EXIT_CODE,
     ROUTE_CHANGE_RECONCILE,
     ESTATE_SERVICE_RETIREMENT,
+    NIGHTSHIFT_CYCLE_SUPPORT,
     "service_maintenance_v1",
     "service_endpoint_conditions_v1",
 ];
@@ -119,6 +123,7 @@ mod tests {
         let text = serde_json::to_string(&build_information()).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["minimum_nq"], "0.2.2");
+        assert!(CAPABILITIES.contains(&NIGHTSHIFT_CYCLE_SUPPORT));
         assert_eq!(value["name"], "constellation-attention");
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["registry"], REGISTRY_VERSION);

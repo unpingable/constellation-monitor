@@ -22,6 +22,9 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 #[path = "support/nq_failure_precedence.rs"]
 mod nq_failure_precedence;
 
+#[path = "support/nightshift_cycle_support.rs"]
+mod nightshift_cycle_support;
+
 fn rfc3339(seconds: i64) -> String {
     use time::format_description::well_known::Rfc3339;
     time::OffsetDateTime::from_unix_timestamp(seconds)

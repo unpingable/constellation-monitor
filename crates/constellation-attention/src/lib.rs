@@ -17,6 +17,7 @@ pub mod engine;
 pub mod inputs;
 pub mod intent;
 pub mod maintenance;
+mod nightshift_support;
 pub mod nq;
 pub mod registry;
 pub mod remediation;

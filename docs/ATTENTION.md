@@ -1809,3 +1809,39 @@ Rollback must restore the older aggregate rules/config without `retired_targets`
 The older evaluator reads the unchanged state schema, removes unknown endpoint
 conditions without claiming recovery, and ignores maintenance.json, so delivery
 resumes. It does not send endpoint-rule recovery intents it cannot render.
+
+
+### Opted-in Nightshift cycle support
+
+`[inputs.nightshift]` accepts `require_cycle_support = true` when the selected
+Attention build advertises `nightshift_cycle_support`. The default is false,
+which preserves the recurrence-only contract and predecessor configuration.
+The enrolled filesystem composition opts in through its owning site renderer.
+
+Opt-in reads exactly the newest selected closed cycle, checks the retained
+row/snapshot identities, intrinsic qualified-support shape, and the
+cycle/observation/support/posture/attention joins. Unsupported, Unknown,
+Expired, Contradictory or Blind support, or native `support_not_current` /
+`support_not_decidable`, makes the existing input `not_current` with the
+`indeterminate` fault class. It retains that cycle's identity and never looks
+back for an older Current record. A fresh closed cycle still clears the separate
+recurrence condition. A `condition_present` attention finding is not input
+unavailability. Missing stores/closed cycles in opted-in mode bypass legacy startup warming.
+Missing or inconsistent selected records are `unavailable` / `unreadable`; a selected closed timestamp after the evaluator's observation
+clock is refused. Existing input-unavailable incidents retain their ordinary
+lineage and persistence/recovery rules; no rule or authority is added.
+
+This is a historical support-loss observation. Stored Current is historical;
+this reader does not query a present authority, renew receiver custody, translate
+receiver ticks to wall time, or create a `fresh_until`. It checks the native
+currentness equation over retained support and completeness/coverage/recurrence
+axes, without reevaluating NQ diagnostics, posture policy or action authority.
+The selected JSON read is capped at 16 MiB. The existing latest-cycle query can
+scan and sort; this change makes no bounded-query-cost claim and adds no index.
+
+Shared source-shaped substitution vectors are in
+`artifacts/nightshift-cycle-support-v1/`. Their provenance and exact hashes are
+recorded in `SOURCE.json`. The matching Nightshift test
+`cycle_support_read_conformance` deserializes and validates them with the owning
+types. These fixtures are not native evidence. Native RED/GREEN, strict Clippy,
+format and full-workspace test results must be recorded separately; source-authored tests alone do not establish a pass.

@@ -1,0 +1,11 @@
+{
+  "nightshift_source": "d4b661abe73fdbd2d38dd8fd0479724651cfeec1",
+  "provenance": "Source-shaped substitution goldens, never captured native evidence. Complete policy/inputs/recurrence from Nightshift d4b operator example; empty assessment arrays deliberately test the historical reader structural seam, not posture reevaluation. Native owning deserialize/validate conformance remains unexecuted until SDK admission.",
+  "records": {
+    "condition-present.json": "bc8af995f0b82ab92fc74d1829a09619b493d93bfed305e9f6bf6898fe274cdd",
+    "current.json": "31a26312edcce78fe8c9950c2043986ee6c4baaa195d6e5a5b16fa64eb427c1c",
+    "unknown.json": "0d4489f827651c0d0c65511bd4b1f3654d5258e7226edfa2ece1b61101ff2a20",
+    "unsupported.json": "ff0d4a9111afbfde8c6e6117cf422a8c0cabfd403367639a125b481a831b5801"
+  },
+  "schema_version": 1
+}
