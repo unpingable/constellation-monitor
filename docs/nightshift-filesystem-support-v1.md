@@ -505,3 +505,36 @@ inventory, and all five actual CLI outcomes and their command-stream hashes.
 Only then may it construct the site realization with exact static config
 digest and accepted raw results SHA as qualification receipt digest. Ordinary
 build-info, old P3 packages and missing qualification are not substitutes.
+
+Offline CLI fixture repair after the c278 occurrence
+
+The c278 continuation preserved formatting, Clippy, 24 focused passes and
+860 workspace passes, then failed four of the five explicit filesystem CLI
+cases. No packages were assembled. Its original source, output, selected
+ELFs and FAIL remain immutable. The two qualification apparatus failures stop
+live qualification until offline actual-consumer regression and independent
+review pass.
+
+The signed substitution fixture previously inserted `native::CAPABILITIES`
+as its declaration-order array. The owning NQ `EvidenceBasis` wire type uses
+`BTreeSet<String>` for `capabilities_used`; its serialization sorts that set.
+A typed payload roundtrip therefore changes the fixture's bytes, which the
+unchanged runtime correctly refuses as noncanonical custody. The repaired
+fixture constructs `native::FilesystemSnapshotPayload` before computing the
+evidence identity or signature. A source check demonstrates the exact legacy
+array versus typed wire normalization and requires only that ordering to
+change. This is apparatus conformance, not a new NQ equivalence claim.
+
+The negative-context CLI assertion now deserializes the existing
+`QualifiedSupportV1` wire type. Its empty evidence/contradiction vectors and
+absent expiry are asserted through the owning type's defaults; the wire
+intentionally omits those empty optional fields. Runtime serialization and
+Unknown/currentness rules are unchanged.
+
+These source corrections are based on the separate 5703721 apparatus
+successor. They do not alter the f4 runtime, c278 occurrence, lock, profiles,
+clock checks or the selected four release files. Exact typed roundtrip and
+old/new harness execution against the same frozen FS ELF remain pending
+bounded offline SDK engineering. Old-prepare and removed-runtime-guard
+counterfactual builds remain separate admissions. There is no authorization
+here for another live qualifier or package occurrence.

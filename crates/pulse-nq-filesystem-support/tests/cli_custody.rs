@@ -2,6 +2,7 @@
 //! claim a native filesystem acquisition or operator qualification occurred.
 use ed25519_dalek::{Signer as _, SigningKey};
 use nq_profiles::host_filesystem as native;
+use pulse_nq_load_support::{QualifiedStandingV1, QualifiedSupportV1};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -40,6 +41,57 @@ fn instant() -> (String, u64) {
         seconds.parse::<u64>().unwrap() * 1000 + padded[..3].parse::<u64>().unwrap(),
     )
 }
+// Native serde owns collection normalization before evidence IDs/signatures.
+// In particular, capabilities_used is a BTreeSet, not CAPABILITIES array order.
+fn snapshot_payload(config: &Value) -> native::FilesystemSnapshotPayload {
+    let scope = config["scope"].clone();
+    serde_json::from_value(json!({"evidence_basis":{"scope":{"kind":native::SCOPE_KIND,"value":scope},"vantage":config["vantage"],"access_path":native::ACCESS_PATH,"basis":"kernel_snapshot","regime":"normal","capabilities_used":native::CAPABILITIES},
+            "machine_id":scope["machine_id"],"filesystem_uuid":scope["filesystem_uuid"],"filesystem_type":scope["filesystem_type"],"mountpoint":scope["mountpoint"],"mount_id":1,"device_major":8,"device_minor":1,
+            "fsid_hex":native::ext4_fsid_hex(scope["filesystem_uuid"].as_str().unwrap()).unwrap(),"fragment_size":4096,"blocks_total":1000,"blocks_free":500,"blocks_available":500,"inodes_total":1000,"inodes_free":500}))
+    .unwrap()
+}
+
+#[test]
+fn signed_snapshot_fixture_uses_native_typed_wire_order() {
+    let config: Value = serde_json::from_str(include_str!(
+        "../../../artifacts/nightshift-filesystem-support-v1/config.json"
+    ))
+    .unwrap();
+    let payload = snapshot_payload(&config);
+    let normalized = serde_json::to_value(&payload).unwrap();
+    let mut legacy = normalized.clone();
+    legacy["evidence_basis"]["capabilities_used"] = json!(native::CAPABILITIES);
+    let roundtrip: native::FilesystemSnapshotPayload =
+        serde_json::from_value(legacy.clone()).unwrap();
+    let typed = serde_json::to_value(&roundtrip).unwrap();
+    println!(
+        "legacy capabilities: {}",
+        legacy["evidence_basis"]["capabilities_used"]
+    );
+    println!(
+        "native typed capabilities: {}",
+        typed["evidence_basis"]["capabilities_used"]
+    );
+    assert_ne!(
+        canonical(&legacy),
+        canonical(&typed),
+        "the former signed fixture must demonstrate the actual typed normalization difference"
+    );
+    assert_eq!(
+        canonical(&normalized),
+        canonical(&typed),
+        "fixture must reach native typed wire form before hashing/signing"
+    );
+    assert_eq!(canonical(&normalized), serde_jcs::to_vec(&payload).unwrap());
+    let mut only_order_changed = legacy;
+    only_order_changed["evidence_basis"]["capabilities_used"] =
+        typed["evidence_basis"]["capabilities_used"].clone();
+    assert_eq!(
+        only_order_changed, typed,
+        "typed roundtrip changed more than the capability ordering"
+    );
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     binary: PathBuf,
@@ -178,11 +230,8 @@ impl Fixture {
         assert_eq!(value["standing"], expected);
     }
     fn envelope(&self, clock: &str, tick: u64) -> Value {
-        let scope = self.config["scope"].clone();
         let enrollment = self.config.clone();
-        let payload = json!({"evidence_basis":{"scope":{"kind":native::SCOPE_KIND,"value":scope},"vantage":self.config["vantage"],"access_path":native::ACCESS_PATH,"basis":"kernel_snapshot","regime":"normal","capabilities_used":native::CAPABILITIES},
-            "machine_id":scope["machine_id"],"filesystem_uuid":scope["filesystem_uuid"],"filesystem_type":scope["filesystem_type"],"mountpoint":scope["mountpoint"],"mount_id":1,"device_major":8,"device_minor":1,
-            "fsid_hex":native::ext4_fsid_hex(scope["filesystem_uuid"].as_str().unwrap()).unwrap(),"fragment_size":4096,"blocks_total":1000,"blocks_free":500,"blocks_available":500,"inodes_total":1000,"inodes_free":500});
+        let payload = snapshot_payload(&self.config);
         let mut e = json!({"schema":"pulse.nq_filesystem_capacity_support_evidence.v1","evidence_id":"","acquisition_id":"fixture:acquisition",
             "authority_id":self.config["authority_id"],"consumer_id":self.config["consumer_id"],"producer_id":self.config["producer_id"],"producer_key_id":self.config["producer_key_id"],"subject_id":self.config["subject_id"],"scope_id":self.config["scope_id"],"profile_semantic_id":self.config["profile_semantic_id"],
             "realization_id":self.config["realization"]["realization_id"],"enrollment_id":digest(&canonical(&enrollment)),"diagnostic_inputs_id":self.basis("diagnostic_inputs_id"),"artifact_ids":self.basis("artifact_ids"),
@@ -325,7 +374,12 @@ fn cli_bad_signature_and_equal_acquisition_are_refused() {
     f.send(&envelope);
     assert!(!f.command("ingest", None).status.success());
     f.send(&f.envelope(&clock, tick));
-    assert!(f.command("ingest", None).status.success());
+    let intake = f.command("ingest", None);
+    assert!(
+        intake.status.success(),
+        "{}",
+        String::from_utf8_lossy(&intake.stderr)
+    );
     let receipt = f.path("receipt_directory", "current-receipt.json");
     let original = fs::read(&receipt).unwrap();
     // Same time but distinct signed acquisition cannot supersede existing custody.
@@ -415,11 +469,11 @@ fn cli_exact_negative_context_is_unknown_without_receipt_or_acquisition() {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let support: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(support["standing"], "unknown");
-        assert_eq!(support["evidence_refs"], json!([]));
-        assert_eq!(support["contradiction_refs"], json!([]));
-        assert!(support["expiry"].is_null());
+        let support: QualifiedSupportV1 = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(support.standing, QualifiedStandingV1::Unknown);
+        assert!(support.evidence_refs.is_empty());
+        assert!(support.contradiction_refs.is_empty());
+        assert!(support.expiry.is_none());
         for role in ["produce", "ingest"] {
             let out = f.command(role, None);
             assert!(!out.status.success());
