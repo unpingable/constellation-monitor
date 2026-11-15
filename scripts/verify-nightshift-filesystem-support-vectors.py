@@ -57,7 +57,9 @@ def verify(root):
     realization = config['realization']
     if realization != objects['realization.json'] or identity(realization, 'realization_id') != realization['realization_id']:
         raise ValueError('realization fixture preimage differs')
-    template = {k: v for k, v in config.items() if k not in ['realization', 'expected_diagnostic']}
+    if 'expected_diagnostic' in config:
+        raise ValueError('static enrollment contains a dynamic basis')
+    template = {k: v for k, v in config.items() if k != 'realization'}
     if digest(canonical_fixture(template)) != realization['configuration_digest']:
         raise ValueError('configuration is not the accepted static enrollment')
     if identity(query, 'query_id') != query['query_id'] or identity(support, 'support_id') != support['support_id']:
@@ -65,9 +67,18 @@ def verify(root):
     for field in ['subject_id', 'scope_id']:
         if config[field] != query[field]:
             raise ValueError(f'{field}: query differs from config')
-    for field in ['diagnostic_inputs_id', 'artifact_ids']:
-        if config['expected_diagnostic'][field] != query[field]:
-            raise ValueError(f'{field}: query differs from diagnostic basis')
+    for suffix,query_name in [('a','query.json'),('b','query-b.json')]:
+        request=objects[f'request-{suffix}.json'];q=objects[query_name];inputs=request['inputs'];artifact=inputs['inputs'][0]['artifact']
+        if identity(request,'request_id') != request['request_id'] or identity(inputs,'inputs_id') != inputs['inputs_id'] or identity(artifact,'artifact_id') != artifact['artifact_id']:
+            raise ValueError('request/input/native artifact fixed ASCII preimage differs')
+        if q['diagnostic_inputs_id'] != inputs['inputs_id'] or q['artifact_ids'] != [artifact['artifact_id']] or q['observation_id'] != request['observation_id']:
+            raise ValueError('query differs from selected request diagnostic basis')
+        if artifact['subject']['id']!=config['subject_id'] or artifact['subject']['scope']['digest']!=config['scope_id'] or request['policy']['subject']!=artifact['subject']:
+            raise ValueError('request differs from static subject/scope enrollment')
+        if artifact['profile_semantic_id']!=config['profile_semantic_id'] or identity(q,'query_id')!=q['query_id']:
+            raise ValueError('request profile/query preimage differs')
+    if objects['request-a.json']['inputs']['inputs_id']==objects['request-b.json']['inputs']['inputs_id']:
+        raise ValueError('two distinct request bases required')
     for field in query:
         if field != 'schema' and query[field] != support[field]:
             raise ValueError(f'{field}: support differs from query')

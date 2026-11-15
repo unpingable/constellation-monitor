@@ -23,20 +23,18 @@ integrity, performance, quota, growth, host/service health or permission to act.
 The configuration schema is
 `pulse.nq_filesystem_capacity_support_config.v1`. Configuration contains one
 exact native scope, its diagnostic scope digest, pinned native profile semantic
-identity, a separately accepted adapter realization, declared vantage, one
-diagnostic artifact/input basis, the expected
-condition, and a separately enrolled Nightshift consumer/authority and signing
-key. A `nightshift:` consumer namespace distinguishes this deployment from
+identity, a separately accepted adapter realization, declared vantage, and a
+separately enrolled Nightshift consumer/authority and public signing key. It
+contains no per-slot diagnostic basis or expected condition. A `nightshift:` consumer namespace distinguishes this deployment from
 the status consumer; the namespace itself authenticates nobody. The operator
 owns the configuration, signing-key custody and resolver selection.
 
 The source-defined commands are:
 
 ```text
-pulse-nq-filesystem-support prepare --request ABSOLUTE_PATH --nq-config ABSOLUTE_PATH --instance TOKEN --state ABSOLUTE_PATH --realization ABSOLUTE_PATH
-pulse-nq-filesystem-support produce --config ABSOLUTE_PATH --acquisition-id TOKEN
-pulse-nq-filesystem-support ingest --config ABSOLUTE_PATH --acquisition-id TOKEN
-pulse-nq-filesystem-support resolve --config ABSOLUTE_PATH
+pulse-nq-filesystem-support produce --config ABSOLUTE_PATH --request ABSOLUTE_PATH --acquisition-id TOKEN
+pulse-nq-filesystem-support ingest --config ABSOLUTE_PATH --request ABSOLUTE_PATH --acquisition-id TOKEN
+pulse-nq-filesystem-support resolve --config ABSOLUTE_PATH --request ABSOLUTE_PATH
 pulse-nq-filesystem-support create-key --path ABSOLUTE_PATH
 ```
 
@@ -60,9 +58,11 @@ writer, with a setgid group containing only its intended next readers. The
 producer owns the outgoing directory with the receiver's envelope-reader
 group; the receiver owns the receipt directory with the resolver's
 receipt-reader group. Group access is read/traverse, never write. The
-operator-owned state/configuration directory uses a separate common reader
-group, so prepare can publish configuration without giving runtime principals
-write authority. Directory ancestry, accepted realization and selected
+operator-owned configuration directory uses a separate common reader group.
+The operator installs static configuration and realization once; no runtime
+role or ordinary scheduler rewrites them. A common writable state parent is
+not allowed: every ancestor controlling either role directory entry or
+accepted record remains outside all runtime writers. Directory ancestry, accepted realization and selected
 executable remain outside all runtime writers. Do not substitute one shared
 writable UID for this handoff.
 
@@ -89,8 +89,10 @@ receiver time is blind, and disagreement with the diagnostic is contradictory.
 Wrong scope, signature, profile or custody bytes are refused. A valid receipt
 for a prior diagnostic basis is unsupported for the new query; it is never
 retold as current support. The no-argument resolver form obtains its absolute
-configuration from `PULSE_FILESYSTEM_SUPPORT_CONFIG`, for the existing
-Nightshift resolver process contract. Key creation is explicit and refuses
+configuration from `PULSE_FILESYSTEM_SUPPORT_CONFIG` and this invocation's
+canonical request from `PULSE_FILESYSTEM_SUPPORT_REQUEST`, for the existing
+Nightshift resolver process contract. Both are required; no embedded-basis or
+mutable global latest-request fallback exists. Key creation is explicit and refuses
 an existing file; it prints only the public key.
 No status publication or historical correspondence record is read as evidence.
 
@@ -115,18 +117,44 @@ the named records and install the accepted record and configuration outside
 producer, receiver and resolver write authority. No key or filename supplies
 that authority by itself.
 
-`configuration_digest` hashes the configuration with `realization` and
-`expected_diagnostic` removed. This avoids a digest cycle while pinning the
+`configuration_digest` hashes static configuration with `realization` removed. This avoids a digest cycle while pinning the
 consumer, authority, subject, scope, vantage, declared profile, key and paths.
-The signed `enrollment_id` hashes configuration with only
-`expected_diagnostic` removed, so it also binds the selected realization and
-qualification. The diagnostic basis remains separately signed. Replacing the
+The signed `enrollment_id` hashes the entire static configuration, so it
+also binds the selected realization and qualification. The diagnostic basis remains separately signed. Replacing the
 per-cycle basis does not give an older receipt new relevance: it is Unsupported
 for the new query. Replacing static enrollment or realization is refused.
 
-Preparation reads the exact accepted realization through `--realization`;
-that file must be outside the support state directory. It checks the running
-process before publishing configuration. Produce, intake and resolve all hash
+Enrollment is an ordinary operator operation: explicitly create the producer key
+with `create-key` as the producer, retain its private `0600` file there, and use
+only the printed public key when authoring the static configuration. Install
+configuration and its matching separately accepted realization under operator
+custody. The unpublished per-slot `prepare` command was removed; old candidate
+configuration containing `expected_diagnostic` is refused, not migrated by a
+runtime role. There are no released consumers requiring that old shape.
+
+Every invocation supplies the exact immutable canonical Nightshift request.
+The producer, receiver and resolver independently decode its bounded canonical
+bytes, verify request/inputs identities and the NQ-owned artifact preimage,
+require one delivered native filesystem-capacity diagnostic matching the
+accepted profile semantic identity, subject and scope, and derive the expected
+condition through the existing diagnostic outcome classifier. Policy subject
+and diagnostic subject must match. This validates only the adapter's binding;
+Nightshift still owns full request, policy, recurrence and diagnostic admission.
+A self-consistent request is not enrollment or authority.
+
+The request must remain at its per-slot immutable absolute path through all
+three roles and the existing Nightshift invocation. The caller supplies that
+path in `--request` to producer/intake and in the per-invocation resolver
+environment, alongside `PULSE_FILESYSTEM_SUPPORT_CONFIG`. Query stdin and
+qualified-support stdout retain their existing schemas. Resolver checks the
+query's observation ID, diagnostic inputs, exact artifact, subject and scope
+against that request. Query alone lacks the expected condition. A different
+basis requires a different immutable request, never an accepted-config edit.
+Interleaved requests remain independent; request A/query B is refused, while a
+valid B query with an old A receipt is Unsupported. No extra daemon or
+privileged per-slot preparation is introduced.
+
+Produce, intake and resolve all hash
 Linux `/proc/self/exe`, compare the embedded source commit, and compare the
 Monitor lock digest embedded from the actual build input. Missing build source
 identity and substituted ELF/source/lock are refused before reliance. The
@@ -154,11 +182,13 @@ general compatibility guarantee. No new runtime supervisor is introduced here.
 Source vectors and native readiness
 
 `artifacts/nightshift-filesystem-support-v1/conformance.json` pins exact shared
-configuration, realization, NQ scope-preimage, Nightshift query and qualified
-support bytes. Monitor's Rust tests and Cartography's renderer/request tests
+configuration, realization, NQ scope-preimage, two distinct diagnostic request
+contexts and matching Nightshift queries, and qualified-support bytes. Monitor's Rust tests and Cartography's renderer/request tests
 must consume these same bytes/digests, including reidentified wrong-scope and
-wrong-basis refusals. They are synthetic parser fixtures, never enrolled
-configuration, qualification receipts or current testimony. The capacity cases
+wrong-basis refusals. They are synthetic binding fixtures, never enrolled configuration, complete
+accepted Nightshift cycle requests, qualification receipts or current testimony.
+The source decoder intentionally does not claim full Nightshift validation;
+qualification uses actual complete canonical requests from its owning caller. The capacity cases
 preserve e721's source-owned reserved-block denominator, inclusive threshold,
 zero-usable refusal and identity/counter bounds. NQ canonicalization cases run
 through `nq_protocol` in the adapter's native Rust tests. The light Python check
@@ -172,8 +202,13 @@ realization. A separately admitted law-only reference build, if required by the
 acceptance owner, is a new identified reference, never recovered original NQ
 execution. No such build is implied or launched by this source.
 
-The current source has not resolved the new git dependencies or changed
-Monitor Cargo.lock. This is a source freeze, not a build-ready lock freeze.
+Native engineering on the preceding source `b0ba833` resolved the actual
+Monitor lock `af7b991a944545781ceee44f24b16356d35827585ca9384379cf2f3024a11bc5`,
+passed the offline all-target check and 14 library tests. Root committed that
+lock as `0b7f7b3b44a5d5fcf7e41a1e6c7c722d4744c95b`. Those results do not execute
+this static-enrollment/request correction or establish live integration.
+The current source retains that exact lock. New Rust and principal cases are
+tests-ready, not executed PASS.
 The next native occurrence must follow this bounded recipe:
 
 1. Obtain Root's SDK and storage GO. Use a fresh source/output root and fresh
@@ -186,11 +221,10 @@ The next native occurrence must follow this bounded recipe:
    URL/revision declaration and actual resolved source must both be recorded.
    Stop if offline dependencies are unavailable; do not silently fetch, relax
    the pin, alter NQ manifests/lock or substitute another commit.
-3. On the admitted SDK, resolve a candidate Monitor lock against the prepared
-   offline cache in a distinct source/output root. Review and freeze its diff,
-   source hashes and `cargo metadata --offline --format-version=1` result before
-   production compilation. This is the first authorized lock-change point, not
-   something performed by the source preparation. Preserve package versions,
+3. On the admitted SDK, verify the committed actual Monitor lock unchanged and
+   retain `cargo metadata --locked --offline --format-version=1` for the new
+   frozen source in its distinct source/output root. Do not silently resolve a
+   different lock; return any unavailable dependency or lock mismatch to Root. Preserve package versions,
    registry checksums, git revisions, dependency edges, enabled features and
    proc-macro/build units. A lock diff alone does not prove feature equality.
 4. Root freezes a truthful complete Monitor source commit including that lock.
@@ -300,18 +334,25 @@ producer-owned `02750` outgoing custody with its next-reader GID, receiver-owned
 configuration outside both writer directories. The key remains producer-owned
 `0600`; the frozen executable has no write bits and is owned outside all three
 runtime roles. The operator's accepted realization/configuration pins must
-already describe these exact paths, source and selected ELF. Prepare and group
-setup are explicit operator operations, never resolver work.
+already describe these exact paths, source and selected ELF. Key creation/public enrollment, accepted record installation and group setup
+are explicit operator operations, never scheduler or resolver work. Keep
+configuration/realization and both immutable request/query pairs outside all
+runtime writers, with operator-controlled ancestry. The real principal case
+checks parent replacement authority as well as child file write permission.
 
 Run this ordinary qualification case on that VM, not Crow:
 
 ```text
-python3 -B packaging/test_fs_principal_handoff.py FROZEN_FS_ELF CONFIG QUERY FRESH_PROOF_ROOT PRODUCER RECEIVER RESOLVER
+python3 -B packaging/test_fs_principal_handoff.py FROZEN_FS_ELF CONFIG REALIZATION REQUEST_A QUERY_A REQUEST_B QUERY_B FRESH_PROOF_ROOT PRODUCER RECEIVER RESOLVER
 ```
 
 It checks real `runuser` UIDs and intended group membership before actual
-acquisition. Two producer→receiver→resolver turns must read both newly replaced
-`0640` inodes through the intended groups. Reader-only roles cannot read the
+acquisition. Two distinct real canonical request bases use the same immutable
+configuration and realization. An ordinary resolver/caller handles both
+without secret access or accepted-record writes. Request B/query B against
+receipt A must be Unsupported; cross-paired requests/queries refuse. Both
+producer→receiver→resolver turns then read newly replaced `0640` inodes through
+the intended groups; accepted record and request file hashes remain identical. Reader-only roles cannot read the
 key; producer cannot create receiver custody; receiver cannot write outgoing;
 resolver cannot write either directory, change configuration or acquire/sign.
 It also temporarily changes only proof-owned directory modes to exercise
@@ -323,3 +364,24 @@ Failure to provision these exact preconditions is apparatus-not-ready, not a
 native product pass. Native execution of this case remains unrun at source
 freeze, and it does not close Nightshift recurrence or installed consumer
 acceptance.
+
+
+Before GREEN, reproduce the old custody defect against a separately identified
+old-source ELF and its own matching realization. Freeze old source
+`0b7f7b3b44a5d5fcf7e41a1e6c7c722d4744c95b`, old config shape and actual watcher
+binding in a distinct proof root. The old producer key is private and the
+ordinary caller can read the actual request, watcher and old realization. Run:
+
+```text
+python3 -B packaging/test_fs_principal_handoff.py --old-prepare OLD_FS_ELF REQUEST_B NQ_CONFIG INSTANCE OLD_STATE OLD_REALIZATION ORDINARY_CALLER
+```
+
+That reproduction must reach the old private-key read and fail with real
+permission denial, leaving configuration unchanged; usage, unknown command,
+missing file, invalid realization or compilation failure is not behavioral RED.
+The test reports its exact old argv/UID/error before the final expected failure.
+Then run the two-basis case above against the new final frozen ELF for GREEN.
+This is a bounded regression in the existing qualification test, not a new
+harness or acceptance schema. Both executions remain pending separate Root GO.
+The earlier 14-test engineering PASS is unchanged and provides no live
+preparation/custody proof.

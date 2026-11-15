@@ -46,6 +46,8 @@ struct Fixture {
     config: Value,
     path: PathBuf,
     key: SigningKey,
+    request: Value,
+    request_path: PathBuf,
 }
 impl Fixture {
     fn new() -> Self {
@@ -81,25 +83,40 @@ impl Fixture {
         ));
         let mut template = config.clone();
         template.as_object_mut().unwrap().remove("realization");
-        template
-            .as_object_mut()
-            .unwrap()
-            .remove("expected_diagnostic");
         config["realization"]["configuration_digest"] = json!(digest(&canonical(&template)));
         identify(&mut config["realization"], "realization_id");
         let path = temp.path().join("config.json");
+        let temp_request_path = temp.path().join("request.json");
         let x = Self {
             _temp: temp,
             binary,
             config,
             path,
             key,
+            request: serde_json::from_str(include_str!(
+                "../../../artifacts/nightshift-filesystem-support-v1/request-a.json"
+            ))
+            .unwrap(),
+            request_path: temp_request_path,
         };
         x.save();
         x
     }
     fn save(&self) {
         fs::write(&self.path, canonical(&self.config)).unwrap();
+        self.save_request();
+    }
+    fn save_request(&self) {
+        fs::write(&self.request_path, canonical(&self.request)).unwrap();
+    }
+    fn basis(&self, field: &str) -> Value {
+        match field {
+            "artifact_ids" => {
+                json!([self.request["inputs"]["inputs"][0]["artifact"]["artifact_id"]])
+            }
+            "diagnostic_inputs_id" => self.request["inputs"]["inputs_id"].clone(),
+            _ => panic!("unknown basis field"),
+        }
     }
     fn path(&self, kind: &str, name: &str) -> PathBuf {
         PathBuf::from(self.config[kind].as_str().unwrap()).join(name)
@@ -113,15 +130,24 @@ impl Fixture {
             q[field] = self.config[field].clone();
         }
         for field in ["diagnostic_inputs_id", "artifact_ids"] {
-            q[field] = self.config["expected_diagnostic"][field].clone();
+            q[field] = self.basis(field);
         }
+        q["observation_id"] = self.request["observation_id"].clone();
         identify(&mut q, "query_id");
         q
     }
     fn command(&self, role: &str, query: Option<&Value>) -> Output {
         use std::io::Write as _;
         let mut cmd = Command::new(&self.binary);
-        cmd.args([role, "--config"]).arg(&self.path);
+        if role == "noargs" {
+            cmd.env("PULSE_FILESYSTEM_SUPPORT_CONFIG", &self.path)
+                .env("PULSE_FILESYSTEM_SUPPORT_REQUEST", &self.request_path);
+        } else {
+            cmd.args([role, "--config"])
+                .arg(&self.path)
+                .arg("--request")
+                .arg(&self.request_path);
+        }
         if role == "ingest" {
             cmd.args(["--acquisition-id", "fixture:acquisition"]);
         }
@@ -153,17 +179,13 @@ impl Fixture {
     }
     fn envelope(&self, clock: &str, tick: u64) -> Value {
         let scope = self.config["scope"].clone();
-        let mut enrollment = self.config.clone();
-        enrollment
-            .as_object_mut()
-            .unwrap()
-            .remove("expected_diagnostic");
+        let enrollment = self.config.clone();
         let payload = json!({"evidence_basis":{"scope":{"kind":native::SCOPE_KIND,"value":scope},"vantage":self.config["vantage"],"access_path":native::ACCESS_PATH,"basis":"kernel_snapshot","regime":"normal","capabilities_used":native::CAPABILITIES},
             "machine_id":scope["machine_id"],"filesystem_uuid":scope["filesystem_uuid"],"filesystem_type":scope["filesystem_type"],"mountpoint":scope["mountpoint"],"mount_id":1,"device_major":8,"device_minor":1,
             "fsid_hex":native::ext4_fsid_hex(scope["filesystem_uuid"].as_str().unwrap()).unwrap(),"fragment_size":4096,"blocks_total":1000,"blocks_free":500,"blocks_available":500,"inodes_total":1000,"inodes_free":500});
         let mut e = json!({"schema":"pulse.nq_filesystem_capacity_support_evidence.v1","evidence_id":"","acquisition_id":"fixture:acquisition",
             "authority_id":self.config["authority_id"],"consumer_id":self.config["consumer_id"],"producer_id":self.config["producer_id"],"producer_key_id":self.config["producer_key_id"],"subject_id":self.config["subject_id"],"scope_id":self.config["scope_id"],"profile_semantic_id":self.config["profile_semantic_id"],
-            "realization_id":self.config["realization"]["realization_id"],"enrollment_id":digest(&canonical(&enrollment)),"diagnostic_inputs_id":self.config["expected_diagnostic"]["diagnostic_inputs_id"],"artifact_ids":self.config["expected_diagnostic"]["artifact_ids"],
+            "realization_id":self.config["realization"]["realization_id"],"enrollment_id":digest(&canonical(&enrollment)),"diagnostic_inputs_id":self.basis("diagnostic_inputs_id"),"artifact_ids":self.basis("artifact_ids"),
             "observation_started":{"clock_id":clock,"tick_ms":tick},"observation_ended":{"clock_id":clock,"tick_ms":tick},"payload":payload,"state":"explicitly_absent"});
         identify(&mut e, "evidence_id");
         let mut message = b"pulse/nq-filesystem-capacity-support/evidence/v1\0".to_vec();
@@ -193,6 +215,22 @@ impl Fixture {
 fn cli_missing_current_replay_contradiction_and_new_basis_use_real_files() {
     let mut f = Fixture::new();
     f.support("unknown");
+    let env_resolved = f.command("noargs", Some(&f.query()));
+    assert!(env_resolved.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&env_resolved.stdout).unwrap()["standing"],
+        "unknown"
+    );
+    let missing_request = Command::new(&f.binary)
+        .env("PULSE_FILESYSTEM_SUPPORT_CONFIG", &f.path)
+        .env_remove("PULSE_FILESYSTEM_SUPPORT_REQUEST")
+        .output()
+        .unwrap();
+    assert!(!missing_request.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_request.stderr)
+            .contains("PULSE_FILESYSTEM_SUPPORT_REQUEST")
+    );
     let (clock, tick) = instant();
     f.send(&f.envelope(&clock, tick));
     let intake = f.command("ingest", None);
@@ -210,18 +248,56 @@ fn cli_missing_current_replay_contradiction_and_new_basis_use_real_files() {
         original,
         "replay renewed receiver custody"
     );
-    f.config["expected_diagnostic"]["expected_state"] = json!("present");
-    f.save();
+    let config_before = fs::read(&f.path).unwrap();
+    let stale_a = f.query();
+    let request_a_path = f.request_path.clone();
+    // Actual signed counters contradict A's expected absence; expected state
+    // must come from A's diagnostic, never a caller boolean in static config.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let (_, later) = instant();
+    let mut contrary = f.envelope(&clock, later);
+    contrary["evidence"]["payload"]["blocks_free"] = json!(100);
+    contrary["evidence"]["payload"]["blocks_available"] = json!(100);
+    contrary["evidence"]["state"] = json!("present");
+    identify(&mut contrary["evidence"], "evidence_id");
+    let mut message = b"pulse/nq-filesystem-capacity-support/evidence/v1\0".to_vec();
+    message.extend(canonical(&contrary["evidence"]));
+    contrary["signature_hex"] = json!(hex(&f.key.sign(&message).to_bytes()));
+    f.send(&contrary);
+    assert!(f.command("ingest", None).status.success());
     f.support("contradictory");
-    f.config["expected_diagnostic"]["diagnostic_inputs_id"] =
-        json!(format!("sha256:{}", "d".repeat(64)));
-    f.save();
+    let latest = fs::read(&receipt).unwrap();
+    f.request = serde_json::from_str(include_str!(
+        "../../../artifacts/nightshift-filesystem-support-v1/request-b.json"
+    ))
+    .unwrap();
+    f.request_path = f._temp.path().join("request-b.json");
+    f.save_request();
     f.support("unsupported");
+    assert!(
+        !f.command("resolve", Some(&stale_a)).status.success(),
+        "request B/query A was accepted"
+    );
+    assert_eq!(
+        fs::read(&f.path).unwrap(),
+        config_before,
+        "new basis rewrote static enrollment"
+    );
+    let request_b_path = f.request_path.clone();
+    f.request_path = request_a_path;
+    let interleaved = f.command("resolve", Some(&stale_a));
+    assert!(interleaved.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&interleaved.stdout).unwrap()["standing"],
+        "contradictory",
+        "request B retold request A context"
+    );
+    f.request_path = request_b_path;
     let mut stale = f.query();
     stale["diagnostic_inputs_id"] = json!(format!("sha256:{}", "a".repeat(64)));
     identify(&mut stale, "query_id");
     assert!(!f.command("resolve", Some(&stale)).status.success());
-    assert_eq!(fs::read(receipt).unwrap(), original);
+    assert_eq!(fs::read(receipt).unwrap(), latest);
 }
 
 #[test]
@@ -265,6 +341,8 @@ fn cli_bad_signature_and_equal_acquisition_are_refused() {
         .arg("ingest")
         .arg("--config")
         .arg(&f.path)
+        .arg("--request")
+        .arg(&f.request_path)
         .args(["--acquisition-id", "fixture:older"])
         .output()
         .unwrap();

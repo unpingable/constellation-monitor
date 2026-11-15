@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
-
-use pulse_nq_filesystem_support::{self as filesystem, FilesystemSupportConfigV1};
+use pulse_nq_filesystem_support::{
+    self as filesystem, FilesystemRequestContext, FilesystemSupportConfigV1,
+};
 use pulse_nq_load_support::PresentEvidenceQueryV1;
 use std::{
     io::{Read as _, Write as _},
@@ -20,69 +21,68 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() == 11
-        && args[0] == "prepare"
-        && args[1] == "--request"
-        && args[3] == "--nq-config"
-        && args[5] == "--instance"
-        && args[7] == "--state"
-        && args[9] == "--realization"
-    {
-        let request_id = filesystem::prepare(
-            Path::new(&args[2]),
-            Path::new(&args[4]),
-            &args[6],
-            Path::new(&args[8]),
-            Path::new(&args[10]),
-        )?;
-        println!("{request_id}");
-        return Ok(());
-    }
     if args.len() == 3 && args[0] == "create-key" && args[1] == "--path" {
-        let public = filesystem::create_producer_key(Path::new(&args[2]))?;
-        println!("{public}");
+        println!("{}", filesystem::create_producer_key(Path::new(&args[2]))?);
         return Ok(());
     }
-    if args.is_empty() || args.len() == 3 && args[0] == "resolve" && args[1] == "--config" {
-        let path = if args.is_empty() {
+    let (role, config_path, request_path, acquisition) = if args.is_empty() {
+        (
+            "resolve".to_owned(),
             std::env::var("PULSE_FILESYSTEM_SUPPORT_CONFIG")
-                .map_err(|_| "PULSE_FILESYSTEM_SUPPORT_CONFIG is required")?
+                .map_err(|_| "PULSE_FILESYSTEM_SUPPORT_CONFIG is required")?,
+            std::env::var("PULSE_FILESYSTEM_SUPPORT_REQUEST")
+                .map_err(|_| "PULSE_FILESYSTEM_SUPPORT_REQUEST is required for this invocation")?,
+            None,
+        )
+    } else if (args.len() == 5 || args.len() == 7)
+        && args[1] == "--config"
+        && args[3] == "--request"
+    {
+        let acquisition = if args.len() == 7 && args[5] == "--acquisition-id" {
+            Some(args[6].clone())
+        } else if args.len() == 5 {
+            None
         } else {
-            args[2].clone()
+            return Err(usage().into());
         };
-        let config = load(&path)?;
-        let mut b = Vec::new();
-        std::io::stdin()
-            .take(65_537)
-            .read_to_end(&mut b)
-            .map_err(|e| e.to_string())?;
-        if b.len() > 65_536 {
-            return Err("Nightshift filesystem query exceeds byte bound".into());
-        }
-        let query: PresentEvidenceQueryV1 =
-            serde_json::from_slice(&b).map_err(|e| e.to_string())?;
-        let support = filesystem::resolve(&config, &query)?;
-        std::io::stdout()
-            .write_all(&serde_jcs::to_vec(&support).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-    if args.len() == 5 && args[1] == "--config" && args[3] == "--acquisition-id" {
-        let config = load(&args[2])?;
-        let id = match args[0].as_str() {
-            "produce" => filesystem::produce(&config, &args[4])?,
-            "ingest" => filesystem::ingest(&config, &args[4])?,
-            _ => return Err("filesystem support role must be produce or ingest".into()),
-        };
-        println!("{id}");
-        return Ok(());
-    }
-    Err("usage: pulse-nq-filesystem-support prepare --request PATH --nq-config PATH --instance TOKEN --state PATH --realization PATH; produce|ingest --config ABSOLUTE_PATH --acquisition-id TOKEN; resolve --config ABSOLUTE_PATH; create-key --path ABSOLUTE_PATH".into())
-}
-fn load(text: &str) -> Result<FilesystemSupportConfigV1, String> {
-    let path = Path::new(text);
+        (
+            args[0].clone(),
+            args[2].clone(),
+            args[4].clone(),
+            acquisition,
+        )
+    } else {
+        return Err(usage().into());
+    };
+    let path = Path::new(&config_path);
     if !path.is_absolute() {
-        return Err("absolute filesystem support configuration required".into());
+        return Err("absolute static filesystem configuration required".into());
     }
-    FilesystemSupportConfigV1::from_path(path)
+    let config = FilesystemSupportConfigV1::from_path(path)?;
+    let context = FilesystemRequestContext::from_path(&config, Path::new(&request_path))?;
+    match (role.as_str(), acquisition) {
+        ("produce", Some(id)) => println!("{}", filesystem::produce(&config, &context, &id)?),
+        ("ingest", Some(id)) => println!("{}", filesystem::ingest(&config, &context, &id)?),
+        ("resolve", None) => {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(65_537)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 65_536 {
+                return Err("Nightshift filesystem query exceeds byte bound".into());
+            }
+            let query: PresentEvidenceQueryV1 =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            let support = filesystem::resolve(&config, &context, &query)?;
+            std::io::stdout()
+                .write_all(&serde_jcs::to_vec(&support).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        }
+        _ => return Err(usage().into()),
+    }
+    Ok(())
+}
+fn usage() -> &'static str {
+    "usage: pulse-nq-filesystem-support produce|ingest --config ABSOLUTE_PATH --request ABSOLUTE_PATH --acquisition-id TOKEN; resolve --config ABSOLUTE_PATH --request ABSOLUTE_PATH; create-key --path ABSOLUTE_PATH"
 }

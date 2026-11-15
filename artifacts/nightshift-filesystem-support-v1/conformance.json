@@ -9,11 +9,14 @@
   },
   "scope_id": "sha256:bbfeefc9980d70c067acad11de1733bb746f954212e7d1a0fa17dff1f03ac38e",
   "files": {
-    "config.json": "sha256:30ea0c0806bc30634d3ac10311dbef1450827d260c5e71e2dc26033198d4db2f",
+    "config.json": "sha256:00bb49f460413164ce6ef640842641d5894133697e6e7aa8b37d8839c8983909",
     "nq-scope-preimage.json": "sha256:bbfeefc9980d70c067acad11de1733bb746f954212e7d1a0fa17dff1f03ac38e",
-    "query.json": "sha256:818b33ddf4bf6191b7eee5b37a0db772963bef3398269815553bf2298347e6ae",
+    "query-b.json": "sha256:aa94316cc6fc36ee022cc2575361c5cb7e990fccb7d4d41468f40cd0ba712d8a",
+    "query.json": "sha256:6c399a43a14703fdae1b0321c5c227f0c62fe02050c9a46ca5b5db636b90c25c",
     "realization.json": "sha256:2e00e68b664ff24e1f92c042135a050eca360089a8d01fa4c32396fcf55b6fd5",
-    "support-current.json": "sha256:8ec6cfe166ce5706f668aef9c88b83b1db8149b8ee1038bd89af5a7c46ef78d3"
+    "request-a.json": "sha256:ab6adf3c9705466d9284c535a930eda492af9918115d21c0c037837dbf5d30e6",
+    "request-b.json": "sha256:4e1b3b7efdf4ef19055f400ed109812ecfdfa6cd88bac1f6d9ba46d666fce505",
+    "support-current.json": "sha256:5087e435169291069df5ace9a220d4e8ef3b22d21867e570cf4ac3641e5d0903"
   },
   "capacity_vectors": [
     {
@@ -137,10 +140,10 @@
     {
       "id": "utf16_key_order",
       "value": {
-        "": 1,
-        "😀": 2
+        "\ue000": 1,
+        "\ud83d\ude00": 2
       },
-      "expected_utf8": "{\"😀\":2,\"\":1}"
+      "expected_utf8": "{\"\ud83d\ude00\":2,\"\ue000\":1}"
     },
     {
       "id": "unsafe_i_json_integer",
@@ -157,5 +160,6 @@
     "artifact_ids",
     "query_id"
   ],
-  "claim_boundary": "Source-owned arithmetic and canonicalization expectations for a new separately qualified adapter; no retired compiled library comparison, NQ governed replay, HP custody or recurrence claim."
+  "claim_boundary": "Source-owned arithmetic and canonicalization expectations for a new separately qualified adapter; no retired compiled library comparison, NQ governed replay, HP custody or recurrence claim.",
+  "request_scope": "Synthetic exact binding contexts only, not complete accepted Nightshift cycles; full request/diagnostic admission remains Nightshift-owned"
 }

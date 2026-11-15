@@ -10,8 +10,8 @@
 #[path = "../../../build-support/host-posture-helper/build_info.rs"]
 pub mod build_info;
 mod custody;
-mod prepare;
 mod realization;
+mod request;
 use custody::*;
 use ed25519_dalek::{Signature, Signer as _, Verifier as _, VerifyingKey};
 use nq_host_resource_helper::{LinuxSource, observe};
@@ -19,12 +19,12 @@ use nq_profiles::{
     DetectorState, EvidenceBasis, ProfileModule, ScopeGrant, VantageGrant,
     host_filesystem as native,
 };
-pub use prepare::prepare;
 use pulse_nq_load_support::{
     LoadPressureStateV1, PresentEvidenceQueryV1, QUALIFIED_SUPPORT_SCHEMA, QualifiedStandingV1,
     QualifiedSupportV1, ReceiverInstantV1, SUPPORT_QUERY_SCHEMA, SupportExpiryV1, SupportInstantV1,
 };
 pub use realization::{AdapterRealizationV1, NQ_SOURCE_COMMIT, REALIZATION_SCHEMA};
+pub use request::FilesystemRequestContext;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -87,7 +87,6 @@ pub struct FilesystemSupportConfigV1 {
     pub realization: AdapterRealizationV1,
     pub outgoing_directory: PathBuf,
     pub receipt_directory: PathBuf,
-    pub expected_diagnostic: pulse_nq_load_support::ExpectedDiagnosticV1,
 }
 
 impl FilesystemSupportConfigV1 {
@@ -148,14 +147,6 @@ impl FilesystemSupportConfigV1 {
             return Err("native filesystem scope digest differs from diagnostic scope".into());
         }
         require_hex("producer_public_key_hex", &self.producer_public_key_hex, 32)?;
-        require_digest(
-            "diagnostic_inputs_id",
-            &self.expected_diagnostic.diagnostic_inputs_id,
-        )?;
-        strictly_ordered_digests("artifact_ids", &self.expected_diagnostic.artifact_ids)?;
-        if self.expected_diagnostic.artifact_ids.len() != 1 {
-            return Err("one filesystem diagnostic only".into());
-        }
         if self.outgoing_directory == self.receipt_directory
             || !self.outgoing_directory.is_absolute()
             || !self.receipt_directory.is_absolute()
@@ -174,19 +165,13 @@ impl FilesystemSupportConfigV1 {
             .as_object_mut()
             .ok_or("configuration must be an object")?;
         object.remove("realization");
-        object.remove("expected_diagnostic");
         object_id(&value, "configuration_digest")
     }
 
     /// Stable deployment enrollment, excluding the per-query diagnostic basis.
     /// Prior diagnostic testimony must remain Unsupported, not be rebound.
     pub fn enrollment_id(&self) -> Result<String, String> {
-        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
-        value
-            .as_object_mut()
-            .ok_or("configuration must be an object")?
-            .remove("expected_diagnostic");
-        object_id(&value, "enrollment_id")
+        object_id(self, "enrollment_id")
     }
 
     fn validate_running(&self) -> Result<(), String> {
@@ -298,8 +283,13 @@ fn acquire_native(
 }
 
 /// Acquire actual native filesystem testimony. This does not receive it.
-pub fn produce(config: &FilesystemSupportConfigV1, acquisition_id: &str) -> Result<String, String> {
+pub fn produce(
+    config: &FilesystemSupportConfigV1,
+    context: &FilesystemRequestContext,
+    acquisition_id: &str,
+) -> Result<String, String> {
     config.validate_running()?;
+    context.validate_for(config)?;
     require_token("acquisition_id", acquisition_id)?;
     let key = read_signing_key(&config.producer_private_key_path)?;
     if encode_hex(key.verifying_key().as_bytes()) != config.producer_public_key_hex {
@@ -328,8 +318,8 @@ pub fn produce(config: &FilesystemSupportConfigV1, acquisition_id: &str) -> Resu
         profile_semantic_id: config.profile_semantic_id.clone(),
         realization_id: config.realization.realization_id.clone(),
         enrollment_id: config.enrollment_id()?,
-        diagnostic_inputs_id: config.expected_diagnostic.diagnostic_inputs_id.clone(),
-        artifact_ids: config.expected_diagnostic.artifact_ids.clone(),
+        diagnostic_inputs_id: context.expected.diagnostic_inputs_id.clone(),
+        artifact_ids: context.expected.artifact_ids.clone(),
         observation_started: started,
         observation_ended: ended,
         payload,
@@ -354,7 +344,7 @@ pub fn produce(config: &FilesystemSupportConfigV1, acquisition_id: &str) -> Resu
 fn verify_envelope(
     config: &FilesystemSupportConfigV1,
     x: &FilesystemEnvelopeV1,
-    exact_basis: bool,
+    exact_basis: Option<&pulse_nq_load_support::ExpectedDiagnosticV1>,
 ) -> Result<(), String> {
     let e = &x.evidence;
     if x.schema != ENVELOPE_SCHEMA
@@ -379,10 +369,10 @@ fn verify_envelope(
             "filesystem envelope differs from exact consumer/native scope enrollment".into(),
         );
     }
-    if exact_basis
-        && (e.diagnostic_inputs_id != config.expected_diagnostic.diagnostic_inputs_id
-            || e.artifact_ids != config.expected_diagnostic.artifact_ids)
-    {
+    if exact_basis.is_some_and(|expected| {
+        e.diagnostic_inputs_id != expected.diagnostic_inputs_id
+            || e.artifact_ids != expected.artifact_ids
+    }) {
         return Err("filesystem envelope differs from exact diagnostic basis".into());
     }
     require_token("acquisition_id", &e.acquisition_id)?;
@@ -418,11 +408,16 @@ fn verify_envelope(
 }
 
 /// Separately receive the latest exact signed acquisition. Replay never renews it.
-pub fn ingest(config: &FilesystemSupportConfigV1, acquisition_id: &str) -> Result<String, String> {
+pub fn ingest(
+    config: &FilesystemSupportConfigV1,
+    context: &FilesystemRequestContext,
+    acquisition_id: &str,
+) -> Result<String, String> {
     config.validate_running()?;
+    context.validate_for(config)?;
     let x: FilesystemEnvelopeV1 =
         read_canonical(&config.outgoing_directory.join("current-envelope.json"))?;
-    verify_envelope(config, &x, true)?;
+    verify_envelope(config, &x, Some(&context.expected))?;
     if x.evidence.acquisition_id != acquisition_id {
         return Err("wrong filesystem acquisition occurrence".into());
     }
@@ -451,7 +446,7 @@ pub fn ingest(config: &FilesystemSupportConfigV1, acquisition_id: &str) -> Resul
         .map_err(|e| e.to_string())?
     {
         let previous: FilesystemReceiptV1 = read_canonical(&path)?;
-        verify_receipt(config, &previous, false)?;
+        verify_receipt(config, &previous)?;
         if previous.envelope == x {
             return Ok(previous.receipt_id);
         }
@@ -480,9 +475,8 @@ pub fn ingest(config: &FilesystemSupportConfigV1, acquisition_id: &str) -> Resul
 fn verify_receipt(
     config: &FilesystemSupportConfigV1,
     x: &FilesystemReceiptV1,
-    exact_basis: bool,
 ) -> Result<(), String> {
-    verify_envelope(config, &x.envelope, exact_basis)?;
+    verify_envelope(config, &x.envelope, None)?;
     let e = &x.envelope.evidence;
     if x.schema != RECEIPT_SCHEMA
         || object_id(x, "receipt_id")? != x.receipt_id
@@ -518,17 +512,21 @@ fn standing_at(
 
 fn validate_filesystem_query(
     config: &FilesystemSupportConfigV1,
+    context: &FilesystemRequestContext,
     q: &PresentEvidenceQueryV1,
 ) -> Result<(), String> {
+    context.validate_for(config)?;
     if q.schema != SUPPORT_QUERY_SCHEMA
         || object_id(q, "query_id")? != q.query_id
+        || q.observation_id != context.observation_id
         || q.subject_id != config.subject_id
         || q.scope_id != config.scope_id
-        || q.diagnostic_inputs_id != config.expected_diagnostic.diagnostic_inputs_id
-        || q.artifact_ids != config.expected_diagnostic.artifact_ids
+        || q.diagnostic_inputs_id != context.expected.diagnostic_inputs_id
+        || q.artifact_ids != context.expected.artifact_ids
     {
         return Err(
-            "Nightshift query differs from the one enrolled filesystem diagnostic basis".into(),
+            "Nightshift query differs from the selected per-invocation filesystem diagnostic basis"
+                .into(),
         );
     }
     for (k, v) in [
@@ -544,16 +542,17 @@ fn validate_filesystem_query(
 /// Read-only current support. Missing custody stays Unknown; no source is acquired here.
 pub fn resolve(
     config: &FilesystemSupportConfigV1,
+    context: &FilesystemRequestContext,
     q: &PresentEvidenceQueryV1,
 ) -> Result<QualifiedSupportV1, String> {
     config.validate_running()?;
-    validate_filesystem_query(config, q)?;
+    validate_filesystem_query(config, context, q)?;
     let now = LinuxBootClock.now()?;
     let path = config.receipt_directory.join("current-receipt.json");
     let receipt: Option<FilesystemReceiptV1> = match fs::symlink_metadata(&path) {
         Ok(_) => {
             let x = read_canonical(&path)?;
-            verify_receipt(config, &x, false)?;
+            verify_receipt(config, &x)?;
             Some(x)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -564,11 +563,7 @@ pub fn resolve(
             && r.envelope.evidence.artifact_ids == q.artifact_ids
     });
     let standing = if basis_matches {
-        standing_at(
-            receipt.as_ref(),
-            &now,
-            config.expected_diagnostic.expected_state,
-        )
+        standing_at(receipt.as_ref(), &now, context.expected.expected_state)
     } else {
         QualifiedStandingV1::Unsupported
     };

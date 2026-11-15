@@ -81,18 +81,21 @@ fn test_config() -> FilesystemSupportConfigV1 {
         realization: test_realization(),
         outgoing_directory: "/test/outgoing".into(),
         receipt_directory: "/test/receipts".into(),
-        expected_diagnostic: pulse_nq_load_support::ExpectedDiagnosticV1 {
-            diagnostic_inputs_id: format!("sha256:{}", "a".repeat(64)),
-            artifact_ids: vec![format!("sha256:{}", "b".repeat(64))],
-            expected_state: LoadPressureStateV1::ExplicitlyAbsent,
-        },
     };
     result.realization.configuration_digest = result.configuration_digest().unwrap();
     result.realization.realization_id = object_id(&result.realization, "realization_id").unwrap();
     result
 }
+fn test_context(c: &FilesystemSupportConfigV1) -> FilesystemRequestContext {
+    FilesystemRequestContext::from_bytes(
+        c,
+        include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/request-a.json"),
+    )
+    .unwrap()
+}
 fn test_receipt(observed: u64, expiry: u64, state: LoadPressureStateV1) -> FilesystemReceiptV1 {
     let c = test_config();
+    let context = test_context(&c);
     let enrollment_id = c.enrollment_id().unwrap();
     let instant = ReceiverInstantV1 {
         clock_id: "boot-a".into(),
@@ -119,8 +122,8 @@ fn test_receipt(observed: u64, expiry: u64, state: LoadPressureStateV1) -> Files
                 realization_id: c.realization.realization_id.clone(),
                 enrollment_id,
                 profile_semantic_id: c.profile_semantic_id,
-                diagnostic_inputs_id: c.expected_diagnostic.diagnostic_inputs_id,
-                artifact_ids: c.expected_diagnostic.artifact_ids,
+                diagnostic_inputs_id: context.expected.diagnostic_inputs_id,
+                artifact_ids: context.expected.artifact_ids,
                 observation_started: instant.clone(),
                 observation_ended: instant,
                 payload: test_payload(&c.scope),
@@ -130,16 +133,17 @@ fn test_receipt(observed: u64, expiry: u64, state: LoadPressureStateV1) -> Files
     }
 }
 fn test_query(c: &FilesystemSupportConfigV1) -> PresentEvidenceQueryV1 {
+    let context = test_context(c);
     let mut q = PresentEvidenceQueryV1 {
         schema: SUPPORT_QUERY_SCHEMA.into(),
         query_id: String::new(),
         observation_cycle_id: "cycle:test".into(),
         request_nonce: "nonce:test".into(),
-        observation_id: "observation:test".into(),
-        diagnostic_inputs_id: c.expected_diagnostic.diagnostic_inputs_id.clone(),
+        observation_id: context.observation_id.clone(),
+        diagnostic_inputs_id: context.expected.diagnostic_inputs_id.clone(),
         subject_id: c.subject_id.clone(),
         scope_id: c.scope_id.clone(),
-        artifact_ids: c.expected_diagnostic.artifact_ids.clone(),
+        artifact_ids: context.expected.artifact_ids.clone(),
     };
     q.query_id = object_id(&q, "query_id").unwrap();
     q
@@ -242,16 +246,16 @@ fn filesystem_configuration_refuses_status_consumer_and_wrong_native_profile() {
 fn query_binds_exact_diagnostic_subject_scope_and_artifacts() {
     let config = test_config();
     let query = test_query(&config);
-    validate_filesystem_query(&config, &query).unwrap();
+    validate_filesystem_query(&config, &test_context(&config), &query).unwrap();
     let mut changed = query.clone();
     changed.subject_id.push('x');
-    assert!(validate_filesystem_query(&config, &changed).is_err());
+    assert!(validate_filesystem_query(&config, &test_context(&config), &changed).is_err());
     changed = query.clone();
     changed.artifact_ids = vec![format!("sha256:{}", "c".repeat(64))];
-    assert!(validate_filesystem_query(&config, &changed).is_err());
+    assert!(validate_filesystem_query(&config, &test_context(&config), &changed).is_err());
     changed = query;
     changed.diagnostic_inputs_id = format!("sha256:{}", "d".repeat(64));
-    assert!(validate_filesystem_query(&config, &changed).is_err());
+    assert!(validate_filesystem_query(&config, &test_context(&config), &changed).is_err());
 }
 
 #[test]
@@ -263,17 +267,17 @@ fn signed_native_payload_cannot_be_substituted_or_rebound() {
     let mut message = SIGNATURE_DOMAIN.to_vec();
     message.extend(canonical_bytes(&x.evidence).unwrap());
     x.signature_hex = encode_hex(&key.sign(&message).to_bytes());
-    verify_envelope(&c, &x, true).unwrap();
+    verify_envelope(&c, &x, Some(&test_context(&c).expected)).unwrap();
     let mut changed = x.clone();
     changed.evidence.payload.blocks_available -= 1;
     changed.evidence.evidence_id = object_id(&changed.evidence, "evidence_id").unwrap();
-    assert!(verify_envelope(&c, &changed, true).is_err());
+    assert!(verify_envelope(&c, &changed, Some(&test_context(&c).expected)).is_err());
     changed = x.clone();
     changed.evidence.consumer_id = "constellation-status".into();
-    assert!(verify_envelope(&c, &changed, true).is_err());
+    assert!(verify_envelope(&c, &changed, Some(&test_context(&c).expected)).is_err());
     changed = x;
     changed.evidence.diagnostic_inputs_id = format!("sha256:{}", "d".repeat(64));
-    assert!(verify_envelope(&c, &changed, true).is_err());
+    assert!(verify_envelope(&c, &changed, Some(&test_context(&c).expected)).is_err());
 }
 
 #[test]
@@ -379,27 +383,25 @@ fn signed_realization_and_enrollment_cannot_be_rebound() {
     let mut message = SIGNATURE_DOMAIN.to_vec();
     message.extend(canonical_bytes(&x.evidence).unwrap());
     x.signature_hex = encode_hex(&key.sign(&message).to_bytes());
-    verify_envelope(&c, &x, true).unwrap();
+    verify_envelope(&c, &x, Some(&test_context(&c).expected)).unwrap();
     let mut changed = x.clone();
     changed.evidence.realization_id = format!("sha256:{}", "f".repeat(64));
-    assert!(verify_envelope(&c, &changed, true).is_err());
+    assert!(verify_envelope(&c, &changed, Some(&test_context(&c).expected)).is_err());
     changed = x;
     changed.evidence.enrollment_id = format!("sha256:{}", "e".repeat(64));
-    assert!(verify_envelope(&c, &changed, true).is_err());
+    assert!(verify_envelope(&c, &changed, Some(&test_context(&c).expected)).is_err());
     let mut substituted_config = c.clone();
     substituted_config.outgoing_directory = "/other/outgoing".into();
     assert!(substituted_config.validate().is_err());
-    let mut next_basis = c.clone();
-    next_basis.expected_diagnostic.diagnostic_inputs_id = format!("sha256:{}", "d".repeat(64));
-    assert_eq!(
-        c.enrollment_id().unwrap(),
-        next_basis.enrollment_id().unwrap()
-    );
-    next_basis.consumer_id.push_str("-other");
-    assert_ne!(
-        c.enrollment_id().unwrap(),
-        next_basis.enrollment_id().unwrap()
-    );
+    let next_basis = FilesystemRequestContext::from_bytes(
+        &c,
+        include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/request-b.json"),
+    )
+    .unwrap();
+    next_basis.validate_for(&c).unwrap();
+    let mut other = c.clone();
+    other.consumer_id.push_str("-other");
+    assert_ne!(c.enrollment_id().unwrap(), other.enrollment_id().unwrap());
 }
 
 #[test]
@@ -438,7 +440,7 @@ fn shared_configuration_query_and_support_bytes_are_exact() {
         config_bytes.as_slice()
     );
     let query: PresentEvidenceQueryV1 = serde_json::from_slice(query_bytes).unwrap();
-    validate_filesystem_query(&config, &query).unwrap();
+    validate_filesystem_query(&config, &test_context(&config), &query).unwrap();
     assert_eq!(
         canonical_bytes(&query).unwrap().as_slice(),
         query_bytes.as_slice()
@@ -454,12 +456,17 @@ fn shared_configuration_query_and_support_bytes_are_exact() {
     );
     assert_eq!(support.query_id, query.query_id);
     assert_eq!(support.authority_id, config.authority_id);
-    for field in ["subject_id", "scope_id", "diagnostic_inputs_id"] {
+    for field in [
+        "subject_id",
+        "scope_id",
+        "diagnostic_inputs_id",
+        "observation_id",
+    ] {
         let mut changed = serde_json::to_value(&query).unwrap();
         changed[field] = serde_json::json!("changed");
         let mut changed: PresentEvidenceQueryV1 = serde_json::from_value(changed).unwrap();
         changed.query_id = object_id(&changed, "query_id").unwrap();
-        assert!(validate_filesystem_query(&config, &changed).is_err());
+        assert!(validate_filesystem_query(&config, &test_context(&config), &changed).is_err());
     }
 }
 
@@ -515,4 +522,93 @@ fn publication_requires_exact_setgid_read_only_reader_directory() {
         );
         assert!(!d.path().join("current.json").exists());
     }
+}
+
+#[test]
+fn immutable_enrollment_accepts_two_request_bases_and_refuses_cross_pairing() {
+    let bytes = include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/config.json");
+    let config: FilesystemSupportConfigV1 = serde_json::from_slice(bytes).unwrap();
+    let a = FilesystemRequestContext::from_bytes(
+        &config,
+        include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/request-a.json"),
+    )
+    .unwrap();
+    let b = FilesystemRequestContext::from_bytes(
+        &config,
+        include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/request-b.json"),
+    )
+    .unwrap();
+    assert_ne!(
+        a.expected.diagnostic_inputs_id,
+        b.expected.diagnostic_inputs_id
+    );
+    assert_eq!(
+        a.expected.expected_state,
+        LoadPressureStateV1::ExplicitlyAbsent
+    );
+    assert_eq!(b.expected.expected_state, LoadPressureStateV1::Present);
+    let qa: PresentEvidenceQueryV1 = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/query.json"
+    ))
+    .unwrap();
+    let qb: PresentEvidenceQueryV1 = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/query-b.json"
+    ))
+    .unwrap();
+    validate_filesystem_query(&config, &a, &qa).unwrap();
+    validate_filesystem_query(&config, &b, &qb).unwrap();
+    assert!(validate_filesystem_query(&config, &a, &qb).is_err());
+    assert!(validate_filesystem_query(&config, &b, &qa).is_err());
+    assert_eq!(canonical_bytes(&config).unwrap(), bytes);
+}
+
+#[test]
+fn request_context_refuses_wrong_outcome_profile_subject_scope_and_preimages() {
+    let config: FilesystemSupportConfigV1 = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/config.json"
+    ))
+    .unwrap();
+    let original: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/request-a.json"
+    ))
+    .unwrap();
+    for pointer in [
+        "/inputs/inputs/0/artifact/outcome/condition",
+        "/inputs/inputs/0/artifact/profile/id",
+        "/inputs/inputs/0/artifact/subject/id",
+        "/inputs/inputs/0/artifact/subject/scope/digest",
+        "/inputs/inputs/0/artifact/profile_semantic_id",
+        "/policy/subject/id",
+    ] {
+        let mut changed = original.clone();
+        *changed.pointer_mut(pointer).unwrap() = serde_json::json!("wrong");
+        let a = &mut changed["inputs"]["inputs"][0]["artifact"];
+        a["artifact_id"] = serde_json::json!(request::native_artifact_id(a).unwrap());
+        changed["inputs"]["inputs_id"] =
+            serde_json::json!(object_id(&changed["inputs"], "inputs_id").unwrap());
+        changed["request_id"] = serde_json::json!(object_id(&changed, "request_id").unwrap());
+        assert!(
+            FilesystemRequestContext::from_bytes(&config, &canonical_bytes(&changed).unwrap())
+                .is_err(),
+            "{pointer}"
+        );
+    }
+    for pointer in [
+        "/request_id",
+        "/inputs/inputs_id",
+        "/inputs/inputs/0/artifact/artifact_id",
+    ] {
+        let mut changed = original.clone();
+        *changed.pointer_mut(pointer).unwrap() =
+            serde_json::json!(format!("sha256:{}", "f".repeat(64)));
+        assert!(
+            FilesystemRequestContext::from_bytes(&config, &canonical_bytes(&changed).unwrap())
+                .is_err(),
+            "{pointer}"
+        );
+    }
+    assert!(FilesystemRequestContext::from_bytes(&config, b"{}").is_err());
+    let mut raw = canonical_bytes(&original).unwrap();
+    raw.push(b'\n');
+    assert!(FilesystemRequestContext::from_bytes(&config, &raw).is_err());
 }
