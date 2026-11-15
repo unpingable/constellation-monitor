@@ -99,17 +99,60 @@ native/currentness limits are documented in
 `docs/nightshift-filesystem-support-v1.md`.
 
 
-The final selected FS entry also retains production_dependency_footprint in
-the existing frozen-cohort receipt. Collection follows only actual selected
-Cargo output/fingerprint edges, including build-script and proc-macro units;
-it never substitutes the workspace metadata feature union. Missing/ambiguous
-edges or records refuse. The same frozen-helper-cohort.py footprint subcommand
-serves a separately selected FS adapter. The native canonical/hashed output
-same-inode relationship is checked; unknown layouts refuse rather than guess.
+The final selected FS entry retains `production_dependency_inventory` in
+`frozen-cohort.json`. It preserves the complete ordered successful public
+Cargo JSON stream of the owning four-helper release build, including every
+compiler-artifact and build-script record, actual per-record features,
+package/version identifiers, targets and profiles. It also binds the actual
+argv/raw stream digests, compiler/source/lock inputs, and one unique selected
+record plus exact ELF hash for every frozen helper. This is a cohort superset
+inventory. It does not claim minimal FS dependency reachability, feature
+unification analysis or NQ realization equivalence. The private fingerprint
+parser and its older minimal-graph claim are withdrawn; the original ambiguity
+FAIL and partial frozen files remain unqualified evidence.
 
-footprint_preimage and verify_footprint own this private receipt digest seam.
-Shared exact conformance is artifacts/host-posture-production-footprint-v1;
-Cargo u64 values require exact integer handling rather than NQ/JCS. The
-package's existing qualification-input records embed the frozen receipt and
-actual five-case FS command evidence. Internal digest consistency does not
-establish qualification.
+The existing tool exposes:
+
+```text
+python3 packaging/frozen-helper-cohort.py inventory CARGO_JSON ARGV_JSON PRODUCTION_TARGET OUTPUT
+```
+
+`inventory_preimage` and `verify_inventory` own the shared digest seam.
+Exclude only top-level `sha256`; encode sorted compact ASCII JSON with
+`ensure_ascii=True`, `allow_nan=False`, exact integers and no trailing newline.
+This is not NQ canonicalization. Shared exact vectors are under
+`artifacts/host-posture-production-inventory-v1`; the runtime realization value
+remains `sha256:` followed by the inventory's 64-hex `sha256`. Internal digest
+consistency supplies no qualification authority.
+
+Before the production compiler, `record-build-identity.py check-declarations
+ARCH TARGET release` checks the existing HP declaration contract. The companion
+`derive-declarations` command emits the canonical values from explicit Monitor
+source/build, tree/lock, toolchain and native target inputs. The five HP
+repository/commit/target/profile/features declarations cannot be omitted. This
+guard does not repair the original HP executable with unavailable fields; that
+artifact remains unusable and retained separately.
+
+An explicitly admitted continuation can use an already successful production
+receipt instead of rebuilding its selected bytes:
+
+```text
+QUAL_REUSE_FROZEN_COHORT=/absolute/prior/frozen-cohort.json packaging/host-posture-qualify.sh WORK BIN OUT SOURCE_COMMIT
+```
+
+This verifies the original four frozen files, raw production argv/stdout/stderr/
+exit hashes and source inputs before any Cargo check. It runs no production
+build/freeze, writes `selection_inherited_from`, and packages the same receipt's
+`frozen_bin_dir`. Existing output still refuses. The continuation's `run` and
+`results.json` contain only commands it actually executes; original compiler
+evidence is data under `production-input/production.{argv.json,stdout,stderr,exit}`.
+Each `production_inputs` entry retains its original absolute path/hash/size and
+its relative `packaged_path`. The packager verifies that bundle before embedding
+it beside the existing qualification records. No historical command is copied
+into a new run or claimed to have executed again.
+
+The f4ee8d5 runtime/product source and seven original ELFs retain their own
+identity. This repair has a separate apparatus/docs source identity; it cannot
+claim that the earlier product commit contained the new collector or guard.
+The 19 native library tests were engineering evidence. Five qualified FS CLI
+cases, distinct-principal qualification and package acceptance remain pending.

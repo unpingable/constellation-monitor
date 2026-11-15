@@ -1,0 +1,98 @@
+{
+  "constellation-host-posture": {
+    "compiler_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#constellation-host-posture@0.1.0",
+      "target": {
+        "name": "constellation-host-posture",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/constellation-host-posture"
+      ],
+      "executable": "/synthetic/release/constellation-host-posture",
+      "fresh": false
+    },
+    "sha256": "cec3007ccfb1aa23801fd9da6c64cd908af960a4caf21fa4dfb33bca691531cd"
+  },
+  "constellation-status": {
+    "compiler_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#constellation-status@0.1.0",
+      "target": {
+        "name": "constellation-status",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/constellation-status"
+      ],
+      "executable": "/synthetic/release/constellation-status",
+      "fresh": false
+    },
+    "sha256": "0197a2fbc15348b8119a489987f5344b8157b0608ba98c86d3dfd1ce61c2dc3c"
+  },
+  "pulse-nq-load-support": {
+    "compiler_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#pulse-nq-load-support@0.1.0",
+      "target": {
+        "name": "pulse-nq-load-support",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/pulse-nq-load-support"
+      ],
+      "executable": "/synthetic/release/pulse-nq-load-support",
+      "fresh": false
+    },
+    "sha256": "104f2dff5b1b984b8de8a39e764dee772e89faf1cb840d154cbaf0c312c5ffe4"
+  },
+  "pulse-nq-filesystem-support": {
+    "compiler_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#pulse-nq-filesystem-support@0.1.0",
+      "target": {
+        "name": "pulse-nq-filesystem-support",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/pulse-nq-filesystem-support"
+      ],
+      "executable": "/synthetic/release/pulse-nq-filesystem-support",
+      "fresh": false
+    },
+    "sha256": "0b862e81fdf21b7d9aa790ffcea86b86ed55da4b1117ad3205c15b0bdcd1a6db"
+  }
+}

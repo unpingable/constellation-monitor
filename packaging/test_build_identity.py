@@ -27,7 +27,13 @@ class PackageIdentityTests(unittest.TestCase):
         env = patch.dict(os.environ, {"MONITOR_SOURCE_COMMIT": COMMIT,
                                      "MONITOR_BUILD_IDENTITY": "jammy-001",
                                      "CONSTELLATION_HOST_POSTURE_SOURCE_TREE_DIGEST": "sha256:"+"a"*64,
-                                     "CONSTELLATION_HOST_POSTURE_CARGO_LOCK_DIGEST": "sha256:"+"b"*64})
+                                     "CONSTELLATION_HOST_POSTURE_CARGO_LOCK_DIGEST": "sha256:"+"b"*64,
+                                     "CONSTELLATION_HOST_POSTURE_SOURCE_REPOSITORY":"constellation-monitor",
+                                     "CONSTELLATION_HOST_POSTURE_SOURCE_COMMIT":COMMIT,
+                                     "CONSTELLATION_HOST_POSTURE_TARGET_TRIPLE":"x86_64-unknown-linux-gnu",
+                                     "CONSTELLATION_HOST_POSTURE_BUILD_PROFILE":"release",
+                                     "CONSTELLATION_HOST_POSTURE_ENABLED_FEATURES_JSON":"[]",
+                                     "CONSTELLATION_HOST_POSTURE_TOOLCHAIN_IDENTITY":"rustc 1.95.0 (fixture)"})
         env.start()
         self.addCleanup(env.stop)
         self.info = {}

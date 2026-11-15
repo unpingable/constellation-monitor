@@ -111,13 +111,6 @@ class FrozenCohortPipelineTests(unittest.TestCase):
         for name in self.names:
             shutil.copyfile(self.root/name, self.release/name)
             (self.release/name).chmod(0o755)
-        # Commodity Cargo output fixture, separate from actual retained replay.
-        fingerprint=self.release/'.fingerprint'/'pulse-nq-filesystem-support-1111111111111111'
-        fingerprint.mkdir(parents=True)
-        (fingerprint/'bin-pulse-nq-filesystem-support.json').write_text(json.dumps({'features':'[]','deps':[],'profile':1}))
-        (fingerprint/'bin-pulse-nq-filesystem-support').write_text('0100000000000000')
-        deps=self.release/'deps';deps.mkdir()
-        os.link(self.release/'pulse-nq-filesystem-support',deps/'pulse_nq_filesystem_support-1111111111111111')
         self.tools = self.root/'stand-in-tools'
         self.tools.mkdir()
         cargo = self.tools/'cargo'
@@ -147,7 +140,7 @@ elif args[0]=='test':
 ''')
         cargo.chmod(0o755)
         rustc = self.tools/'rustc'
-        rustc.write_text('#!/bin/sh\nprintf "%s\\n" "rustc 1.95.0 (fixture)"\n')
+        rustc.write_text('#!/bin/sh\nif [ "$1" = "-vV" ]; then printf "%s\\n" "rustc 1.95.0 (fixture)" "host: x86_64-unknown-linux-gnu"; else printf "%s\\n" "rustc 1.95.0 (fixture)"; fi\n')
         rustc.chmod(0o755)
         self.env = dict(os.environ, FIXTURE_ROOT=str(self.root), CARGO_TARGET_DIR=str(self.prod), PATH=str(self.tools)+os.pathsep+os.environ['PATH'])
         self.out = self.root/'qualification'
@@ -167,12 +160,50 @@ elif args[0]=='test':
         result=self.run_pipeline()
         self.assertEqual(result.returncode,0,result.stderr)
         frozen=json.loads((self.out/'frozen-cohort.json').read_text())
-        self.assertIn('production_dependency_footprint',frozen['executables']['pulse-nq-filesystem-support'],'selected FS freeze lacks its own actual production dependency footprint')
+        self.assertIn('production_dependency_inventory',frozen['executables']['pulse-nq-filesystem-support'],'selected FS freeze lacks its own actual production Cargo inventory')
         self.assertEqual(hashlib.sha256((self.release/'constellation-host-posture').read_bytes()).hexdigest(),hp_before)
         calls=self.calls();build=[i for i,x in enumerate(calls) if x['argv'][0]=='build'];tests=[i for i,x in enumerate(calls) if x['argv'][0]=='test']
         self.assertEqual(len(build),1)
         self.assertLess(build[0],min(tests),'old qualifier accepts an FS-only late production replacement while HP stays unchanged')
         self.assertEqual(hashlib.sha256((self.release/'pulse-nq-filesystem-support').read_bytes()).hexdigest(),fs_before)
+
+    def test_five_missing_hp_declarations_refuse_before_any_cargo(self):
+        variables=['CONSTELLATION_HOST_POSTURE_SOURCE_REPOSITORY','CONSTELLATION_HOST_POSTURE_SOURCE_COMMIT','CONSTELLATION_HOST_POSTURE_TARGET_TRIPLE','CONSTELLATION_HOST_POSTURE_BUILD_PROFILE','CONSTELLATION_HOST_POSTURE_ENABLED_FEATURES_JSON']
+        for number,variable in enumerate(variables):
+            with self.subTest(variable=variable):
+                self.out=self.root/('omitted-'+str(number))
+                result=self.run_pipeline(**{variable:''})
+                self.assertNotEqual(result.returncode,0,'missing HP declaration reached compiler/qualification')
+                self.assertFalse((self.root/'calls.jsonl').exists(),'readiness guard ran after Cargo')
+
+    def test_verified_production_reuse_runs_no_cargo_build_and_preserves_origins(self):
+        result=self.run_pipeline()
+        self.assertEqual(result.returncode,0,result.stderr)
+        original=self.out/'frozen-cohort.json'
+        self.out=self.root/'continuation'
+        result=self.run_pipeline(QUAL_REUSE_FROZEN_COHORT=str(original))
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse(any(row['argv'][0]=='build' for row in self.calls()),'continuation rebuilt selected production bytes')
+        receipt=json.loads((self.out/'frozen-cohort.json').read_text())
+        self.assertEqual(receipt['selection_inherited_from']['path'],str(original))
+        results=json.loads((self.out/'results.json').read_text())
+        self.assertFalse(any(row['argv'][:2]==['cargo','build'] for row in results['command_results']))
+        self.assertTrue((self.out/'production-input/production.stdout').is_file())
+        for name,row in receipt['production_inputs'].items():
+            import hashlib
+            self.assertEqual(hashlib.sha256((self.out/row['packaged_path']).read_bytes()).hexdigest(),row['sha256'])
+
+    def test_changed_inherited_production_stream_refuses_before_any_cargo(self):
+        result=self.run_pipeline()
+        self.assertEqual(result.returncode,0,result.stderr)
+        original=self.out/'frozen-cohort.json'
+        receipt=json.loads(original.read_text())
+        raw=Path(receipt['production_inputs']['stdout']['path'])
+        raw.write_bytes(raw.read_bytes()+b'{}\n')
+        self.out=self.root/'changed-continuation'
+        result=self.run_pipeline(QUAL_REUSE_FROZEN_COHORT=str(original))
+        self.assertNotEqual(result.returncode,0)
+        self.assertFalse((self.root/'calls.jsonl').exists(),'changed inherited production evidence reached Cargo')
 
     def test_existing_qualification_output_refuses_before_new_production_writer(self):
         import hashlib
@@ -202,6 +233,17 @@ elif args[0]=='test':
                     if member==name:self.assertNotEqual(actual,expected['sha256'])
                     else:self.assertEqual(actual,expected['sha256'])
                 self.out=previous
+
+    def test_substituted_packaged_production_data_refuses(self):
+        result=self.run_pipeline()
+        self.assertEqual(result.returncode,0,result.stderr)
+        raw=self.out/'production-input/production.stdout'
+        raw.write_bytes(raw.read_bytes()+b'{}\n')
+        package_out=self.root/'substituted-evidence-package'
+        package=subprocess.run(['bash',str(HELPER.with_name('build-deb.sh')),'0.1.0+test.1','amd64',str(self.out/'frozen-bin'),str(package_out)],env=dict(self.env,QUAL_INPUT_DIR=str(self.out)),capture_output=True,text=True)
+        self.assertNotEqual(package.returncode,0)
+        self.assertIn('staged actual production input changed',package.stderr)
+        self.assertFalse(list(package_out.glob('*.deb')))
 
     def test_mutable_test_outputs_do_not_change_frozen_selected_package_bytes(self):
         import hashlib,os

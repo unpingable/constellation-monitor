@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "Synthetic shared encoding/selection fixture; no production build or qualification inferred",
+  "encoding": "ASCII JSON sorted keys, compact separators, ensure_ascii=True, allow_nan=False, exact integers; exclude only top-level sha256; no newline. This is not NQ canonicalization.",
+  "digest_field": "executables.pulse-nq-filesystem-support.production_dependency_inventory.sha256",
+  "realization_value": "sha256:bc5e56ce2cc3c00f9c2126719ca9254e7cf08be6f5edae4de73ea6949b7f7f58",
+  "scope": "Complete actual owning four-helper production Cargo inventory; cohort superset, not minimal FS reachability or NQ realization equivalence",
+  "files": {
+    "cargo.argv.json": {
+      "sha256": "2e36d17c99890c24a5d7294bc53758818078c466cfdd7a0fa416a7ddbbd1fe46",
+      "bytes": 223
+    },
+    "cargo.stdout": {
+      "sha256": "42f4a1b9e6b7bc9354b7b680e1b72e3dfa417e045af344c52ba8021f638ce6c6",
+      "bytes": 2579
+    },
+    "expected-cohort.json": {
+      "sha256": "c3a28294e50fbb64ac32588f41b2a343a4308989115e8d04cf6c8f8d73775acf",
+      "bytes": 2737
+    },
+    "inventory.json": {
+      "sha256": "93b8583aa6e265eb43ba5cc06baff9c99f41dd3dc6efd791b5e49e05bd4ab99f",
+      "bytes": 8051
+    },
+    "preimage.json": {
+      "sha256": "bc5e56ce2cc3c00f9c2126719ca9254e7cf08be6f5edae4de73ea6949b7f7f58",
+      "bytes": 5657
+    }
+  }
+}

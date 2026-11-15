@@ -13,6 +13,60 @@ BINARIES = ("constellation-status", "pulse-nq-load-support", "pulse-nq-filesyste
 ALIASES = ("pulse-load-pressure-producer", "pulse-load-pressure-receiver", "pulse-support-resolver")
 
 
+def derive_declarations(architecture, target, profile):
+    """Derive the existing HP compile declarations from explicit build inputs."""
+    source=os.environ.get("MONITOR_SOURCE_COMMIT","")
+    build_id=os.environ.get("MONITOR_BUILD_IDENTITY","")
+    if not re.fullmatch(r"[0-9a-f]{40}",source):
+        raise ValueError("MONITOR_SOURCE_COMMIT must name the full expected lowercase commit")
+    if not re.fullmatch(r"[!-~]{1,256}",build_id):
+        raise ValueError("MONITOR_BUILD_IDENTITY must name the expected build")
+    prefix={"amd64":"x86_64-","arm64":"aarch64-"}[architecture]
+    if not target.startswith(prefix) or any(c.isspace() for c in target):
+        raise ValueError("target does not match package architecture")
+    if profile not in ("release","debug"):
+        raise ValueError("explicit release/debug build profile required")
+    values={
+        "CONSTELLATION_HOST_POSTURE_SOURCE_REPOSITORY":"constellation-monitor",
+        "CONSTELLATION_HOST_POSTURE_SOURCE_COMMIT":source,
+        "CONSTELLATION_HOST_POSTURE_TARGET_TRIPLE":target,
+        "CONSTELLATION_HOST_POSTURE_BUILD_PROFILE":profile,
+        "CONSTELLATION_HOST_POSTURE_ENABLED_FEATURES_JSON":"[]",
+    }
+    for field in ("SOURCE_TREE_DIGEST","CARGO_LOCK_DIGEST"):
+        key="CONSTELLATION_HOST_POSTURE_"+field
+        value=os.environ.get(key,"")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}",value):
+            raise ValueError("host-posture: missing or mismatched "+field.lower())
+        values[key]=value
+    toolchain=os.environ.get("CONSTELLATION_HOST_POSTURE_TOOLCHAIN_IDENTITY","")
+    if not toolchain.startswith("rustc ") or "\n" in toolchain:
+        raise ValueError("host-posture: explicit actual toolchain identity required")
+    values["CONSTELLATION_HOST_POSTURE_TOOLCHAIN_IDENTITY"]=toolchain
+    return values
+
+
+def check_declarations(architecture,target,profile):
+    expected=derive_declarations(architecture,target,profile)
+    for key,value in expected.items():
+        if os.environ.get(key)!=value:
+            raise ValueError("host-posture compile declaration missing or mismatched: "+key)
+    return expected
+
+
+def validate_host_info(info,version,target,rustc,debug,architecture):
+    values=check_declarations(architecture,target,"debug" if debug else "release")
+    expected={"schema":"constellation.host_posture.build_info.v1","component":"constellation-host-posture","version":version}
+    for field in ("source_repository","source_commit","source_tree_digest","toolchain_identity","target_triple","build_profile","enabled_features_json","cargo_lock_digest"):
+        expected[field]=values["CONSTELLATION_HOST_POSTURE_"+field.upper()]
+    if rustc!=expected["toolchain_identity"]:
+        raise ValueError("host-posture: declared toolchain differs from actual helpers")
+    for field,value in expected.items():
+        if info.get(field)!=value:
+            raise ValueError("host-posture: mismatched "+field)
+    return expected
+
+
 def record(binary_dir, package_version, architecture):
     source = os.environ.get("MONITOR_SOURCE_COMMIT", "")
     build_id = os.environ.get("MONITOR_BUILD_IDENTITY", "")
@@ -62,23 +116,7 @@ def record(binary_dir, package_version, architecture):
     if output.stderr:
         raise ValueError("host-posture: build probe wrote to stderr")
     info = json.loads(output.stdout)
-    expected = {
-        "schema": "constellation.host_posture.build_info.v1",
-        "component": "constellation-host-posture", "version": cohort[0],
-        "source_repository": "constellation-monitor", "source_commit": source,
-        "target_triple": cohort[1], "toolchain_identity": cohort[2],
-        "build_profile": "debug" if cohort[3] else "release",
-    }
-    for field, value in expected.items():
-        if info.get(field) != value:
-            raise ValueError(f"host-posture: mismatched {field}")
-    for field in ["source_tree_digest", "cargo_lock_digest"]:
-        variable = "CONSTELLATION_HOST_POSTURE_" + field.upper()
-        value = os.environ.get(variable, "")
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", value) or info.get(field) != value:
-            raise ValueError(f"host-posture: missing or mismatched {field}")
-    if info.get("enabled_features_json") != "[]":
-        raise ValueError("host-posture: expected the production feature set []")
+    validate_host_info(info,cohort[0],cohort[1],cohort[2],cohort[3],architecture)
     after = hashlib.sha256(path.read_bytes()).hexdigest()
     if before != after:
         raise ValueError("host-posture: staged bytes changed during the build probe")
@@ -109,6 +147,10 @@ def record(binary_dir, package_version, architecture):
 
 
 def main():
+    if len(sys.argv)==5 and sys.argv[1] in ("derive-declarations","check-declarations"):
+        function=derive_declarations if sys.argv[1]=="derive-declarations" else check_declarations
+        print(json.dumps(function(*sys.argv[2:]),sort_keys=True))
+        return
     if len(sys.argv) != 5:
         raise ValueError("usage: record-build-identity.py STAGED_BIN_DIR VERSION ARCH OUTPUT")
     binary_dir, version, architecture, output = sys.argv[1:]

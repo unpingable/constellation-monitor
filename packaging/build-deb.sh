@@ -27,8 +27,12 @@ install -m 0644 "$root/crates/constellation-host-posture/examples/host-posture.t
 install -m 0644 "$root/docs/host-posture-runner.md" "$d/usr/share/doc/constellation-host-posture/"
 if [[ -n "${QUAL_INPUT_DIR:-}" ]]; then
   for f in hostile-corpus.json results.json frozen-cohort.json; do [[ -f "$QUAL_INPUT_DIR/$f" ]] || { echo "QUAL_INPUT_DIR lacks $f" >&2; exit 2; }; done
+  python3 "$root/packaging/frozen-helper-cohort.py" input-data "$QUAL_INPUT_DIR/frozen-cohort.json" "$QUAL_INPUT_DIR"
   install -d -m 0755 "$d/usr/lib/constellation-host-posture/qualification-input"
   install -m 0644 "$QUAL_INPUT_DIR/hostile-corpus.json" "$QUAL_INPUT_DIR/results.json" "$QUAL_INPUT_DIR/frozen-cohort.json" "$d/usr/lib/constellation-host-posture/qualification-input/"
+  [[ -d "$QUAL_INPUT_DIR/production-input" ]] || { echo "QUAL_INPUT_DIR lacks actual production-input bundle" >&2; exit 2; }
+  cp -r "$QUAL_INPUT_DIR/production-input" "$d/usr/lib/constellation-host-posture/qualification-input/production-input"
+  chmod -R u=rwX,go=rX "$d/usr/lib/constellation-host-posture/qualification-input/production-input"
   [[ -d "$QUAL_INPUT_DIR/run" ]] && cp -r "$QUAL_INPUT_DIR/run" "$d/usr/lib/constellation-host-posture/qualification-input/run" && chmod -R u=rwX,go=rX "$d/usr/lib/constellation-host-posture/qualification-input/run"
 fi
 sed -e "s/@VERSION@/$version/g" -e "s/@ARCH@/$arch/g" "$root/packaging/debian/control.in" > "$d/DEBIAN/control"

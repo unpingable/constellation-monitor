@@ -29,133 +29,166 @@ def digest(path):
     return h.hexdigest()
 
 
-def fingerprint_units(profile_directory):
-    """Read Cargo 1.94's observed JSON/16-hex format; never metadata features."""
-    root=Path(profile_directory)/'.fingerprint'
-    units={}
-    by_hash={}
-    for path in sorted(root.glob('*/*.json')):
-        if path.is_symlink() or path.parent.is_symlink():
-            raise ValueError('fingerprint input must be ordinary owned build output')
-        raw=path.read_bytes();row=json.loads(raw)
-        token=path.with_suffix('').read_bytes()
-        if len(token)!=16 or any(b not in b'0123456789abcdef' for b in token):
-            raise ValueError('unsupported Cargo self fingerprint format')
-        deps=row.get('deps')
-        if not isinstance(deps,list) or any(not isinstance(d,list) or len(d)!=4 or not isinstance(d[0],int) or not isinstance(d[1],str) or not isinstance(d[2],bool) or not isinstance(d[3],int) for d in deps):
-            raise ValueError('unsupported Cargo dependency fingerprint format')
-        features=json.loads(row['features']) if row['features'] else None
-        if features is not None and (not isinstance(features,list) or any(not isinstance(f,str) for f in features)):
-            raise ValueError('unsupported Cargo unit features')
-        key=str(path.relative_to(root));self_hash=int.from_bytes(bytes.fromhex(token.decode()),'little')
-        units[key]={'fingerprint_json':row,'fingerprint_json_sha256':hashlib.sha256(raw).hexdigest(),'self_fingerprint':token.decode(),'self_hash_u64':self_hash,'features':features}
-        by_hash.setdefault(self_hash,[]).append(key)
-    if not units:
-        raise ValueError('production Cargo fingerprints missing')
-    return units,by_hash
+def inventory_preimage(inventory):
+    return json.dumps({k:v for k,v in inventory.items() if k!='sha256'},sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode('ascii')
 
 
-def trace_fingerprint_units(profile_directory, selected_unit):
-    """Follow only exact selected-unit edges, including build/proc-macro units."""
-    available,index=fingerprint_units(profile_directory)
-    if selected_unit not in available:
-        raise ValueError('selected executable fingerprint missing')
-    seen={};edges=[];active=set()
-    def visit(key):
-        if key in active:
-            raise ValueError('cyclic Cargo fingerprint input')
-        if key in seen:
-            return
-        active.add(key);unit=available[key];seen[key]=unit
-        for package_hash,name,public,dependency_hash in unit['fingerprint_json']['deps']:
-            matches=index.get(dependency_hash,[])
-            if len(matches)!=1:
-                raise ValueError(f'missing or ambiguous selected dependency fingerprint: {key} -> {name}')
-            dependency=matches[0]
-            edges.append({'from':key,'to':dependency,'dependency_name':name,'package_hash':package_hash,'public':public,'dependency_fingerprint_u64':dependency_hash})
-            visit(dependency)
-        active.remove(key)
-    visit(selected_unit)
-    return {'selected_unit':selected_unit,'units':dict(sorted(seen.items())),'edges':sorted(edges,key=lambda e:(e['from'],e['to'],e['dependency_name']))}
+def load_release(cargo_json, argv_json):
+    raw=Path(cargo_json).read_bytes()
+    try:
+        records=[json.loads(line) for line in raw.splitlines() if line.strip()]
+        argv=json.loads(Path(argv_json).read_bytes())
+    except (ValueError,UnicodeError) as error:
+        raise ValueError('malformed or truncated production Cargo JSON') from error
+    return validate_release(records,argv)
 
 
-def compiler_record_for_unit(key, unit, records):
-    """Join actual compiler/build-script records by Cargo's selected unit hash."""
-    directory,filename=key.split('/')
-    unit_hash=directory.rsplit('-',1)[-1]
-    if filename.startswith('run-build-script-'):
-        matches=[r for r in records if r.get('reason')=='build-script-executed' and Path(r.get('out_dir','')).parent.name==directory]
-    else:
-        if filename.startswith(('test-','example-')):
-            raise ValueError('test/example unit reached from selected production executable')
-        matches=[]
-        for record in records:
-            if record.get('reason')!='compiler-artifact' or record.get('profile',{}).get('test') is not False or sorted(record.get('features',[]))!=sorted(unit['features'] or []):
-                continue
-            name=record.get('target',{}).get('name','')
-            target_matches=(filename=='lib-'+name+'.json' or filename=='bin-'+name+'.json' or filename=='build-script-'+name+'.json')
-            if not target_matches:
-                continue
-            if any(Path(p).stem.endswith('-'+unit_hash) or directory in Path(p).parts for p in record.get('filenames',[])):
-                matches.append(record)
-    if len(matches)!=1:
-        raise ValueError(f'missing or ambiguous actual production compiler record: {key}')
-    return matches[0]
+def validate_release(records,argv):
+    if not isinstance(argv,list) or not argv or any(not isinstance(a,str) for a in argv) or argv[:2]!=['cargo','build'] or any(a not in argv for a in ['--locked','--release','--message-format=json']):
+        raise ValueError('actual owning production Cargo argv required')
+    packages=[argv[i+1] for i,arg in enumerate(argv[:-1]) if arg=='-p']
+    if packages!=['constellation-host-posture','constellation-status-projection','pulse-nq-load-support','pulse-nq-filesystem-support'] or '--bins' not in argv:
+        raise ValueError('exact owning four-helper production selection required')
+    if not records or any(not isinstance(row,dict) or not isinstance(row.get('reason'),str) for row in records):
+        raise ValueError('complete production Cargo stream required')
+    finished=[row for row in records if row['reason']=='build-finished']
+    if len(finished)!=1 or records[-1] is not finished[0] or finished[0].get('success') is not True:
+        raise ValueError('production Cargo stream is unsuccessful or truncated')
+    selected={}
+    for index,row in enumerate(records):
+        if row['reason']=='compiler-artifact':
+            if not isinstance(row.get('package_id'),str) or not isinstance(row.get('target'),dict) or not isinstance(row.get('profile'),dict) or not isinstance(row.get('features'),list):
+                raise ValueError('malformed actual compiler artifact')
+            if row.get('executable') and row['target'].get('name') in NAMES:
+                name=row['target']['name']
+                if name in selected or row['target'].get('kind')!=['bin'] or row['profile'].get('test') is not False or row['profile'].get('opt_level')!='3' or row['profile'].get('debug_assertions') is not False:
+                    raise ValueError('missing/duplicate or nonproduction selected compiler artifact')
+                selected[name]={'record_index':index,'compiler_artifact':row}
+        elif row['reason']=='build-script-executed':
+            if not isinstance(row.get('package_id'),str) or not isinstance(row.get('out_dir'),str):
+                raise ValueError('malformed actual build-script record')
+    if set(selected)!=set(NAMES):
+        raise ValueError('actual production stream lacks the whole four-helper cohort')
+    return records,argv,selected
 
 
-def footprint_preimage(footprint):
-    """Private receipt encoding, not NQ/JCS: preserve Cargo's exact u64 ints."""
-    return json.dumps({k:v for k,v in footprint.items() if k!='sha256'},sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode('ascii')
+def production_source_inputs():
+    values={key:os.environ.get(key,'') for key in ['MONITOR_SOURCE_COMMIT','MONITOR_BUILD_IDENTITY','CONSTELLATION_HOST_POSTURE_SOURCE_TREE_DIGEST','CONSTELLATION_HOST_POSTURE_CARGO_LOCK_DIGEST','CONSTELLATION_HOST_POSTURE_TOOLCHAIN_IDENTITY']}
+    if not identity.re.fullmatch(r'[0-9a-f]{40}',values['MONITOR_SOURCE_COMMIT']) or not values['MONITOR_BUILD_IDENTITY']:
+        raise ValueError('actual product source/build inputs required')
+    for key in ['CONSTELLATION_HOST_POSTURE_SOURCE_TREE_DIGEST','CONSTELLATION_HOST_POSTURE_CARGO_LOCK_DIGEST']:
+        if not identity.re.fullmatch(r'sha256:[0-9a-f]{64}',values[key]):
+            raise ValueError('actual product tree/lock input required')
+    if not values['CONSTELLATION_HOST_POSTURE_TOOLCHAIN_IDENTITY'].startswith('rustc '):
+        raise ValueError('actual compiler identity required')
+    return values
 
 
-def production_dependency_footprint(records, production_target, selected):
-    """One selected FS ELF, not the all-features workspace or metadata graph."""
-    target=Path(production_target).resolve();profile=target/'release';executable=Path(selected['executable'])
-    if selected.get('target',{}).get('name')!='pulse-nq-filesystem-support' or selected['target'].get('kind')!=['bin'] or selected.get('profile',{}).get('test') is not False or selected['profile'].get('opt_level')!='3' or selected['profile'].get('debug_assertions') is not False:
-        raise ValueError('selected FS artifact is not an actual final production binary record')
-    if executable.is_symlink() or not executable.resolve().is_relative_to(profile) or not executable.is_file():
-        raise ValueError('selected production FS executable is outside release output')
-    roots=[]
-    name=selected['target']['name']
-    for path in sorted((profile/'.fingerprint').glob('*/bin-'+name+'.json')):
-        suffix=path.parent.name.rsplit('-',1)[-1]
-        hashed=profile/'deps'/(name.replace('-','_')+'-'+suffix)
-        if hashed.is_file() and not hashed.is_symlink() and os.path.samefile(hashed,executable):
-            roots.append(str(path.relative_to(profile/'.fingerprint')))
-    if len(roots)!=1:
-        raise ValueError('selected FS ELF has missing or ambiguous Cargo output/fingerprint binding')
-    graph=trace_fingerprint_units(profile,roots[0])
-    for key,unit in graph['units'].items():
-        record=selected if key==roots[0] else compiler_record_for_unit(key,unit,records)
-        if key==roots[0] and sorted(record['features'])!=sorted(unit['features'] or []):
-            raise ValueError('selected FS features differ from actual compiler fingerprint')
-        unit['compiler_record']=record
-    footprint={'scope':'Exact selected native release FS compiler units; no metadata-only/dev/test feature union or NQ realization-equivalence claim','collector_source_sha256':digest(__file__),'production_target':str(target),'selected_executable_sha256':digest(executable),'selected_compiler_artifact':selected,**graph}
-    footprint['sha256']=hashlib.sha256(footprint_preimage(footprint)).hexdigest()
-    return footprint
+def inventory_from_observed(cargo_json,argv_json,observed_hashes):
+    """Complete ordered public Cargo stream, deliberately a cohort superset."""
+    records,argv,selected=load_release(cargo_json,argv_json)
+    if set(observed_hashes)!=set(NAMES) or any(not identity.re.fullmatch(r'[0-9a-f]{64}',value) for value in observed_hashes.values()):
+        raise ValueError('exact observed whole-cohort ELF hashes required')
+    cohort={name:{**row,'sha256':observed_hashes[name]} for name,row in selected.items()}
+    inventory={'schema_version':1,'scope':'Complete actual owning four-helper production Cargo inventory; cohort superset, not minimal FS reachability or NQ realization equivalence','collector_source_sha256':digest(__file__),'production_argv':argv,'production_argv_sha256':digest(argv_json),'production_stdout_sha256':digest(cargo_json),'source_inputs':production_source_inputs(),'records':records,'selected_cohort':cohort}
+    inventory['sha256']=hashlib.sha256(inventory_preimage(inventory)).hexdigest()
+    return inventory
 
 
-def verify_footprint(footprint, expected):
-    if hashlib.sha256(footprint_preimage(footprint)).hexdigest()!=footprint['sha256'] or footprint['selected_executable_sha256']!=expected['sha256'] or footprint['selected_compiler_artifact']!=expected['compiler_artifact'] or footprint['selected_unit'] not in footprint['units']:
-        raise ValueError('selected FS production dependency footprint changed')
+def production_inventory(cargo_json,argv_json,production_target):
+    records,argv,selected=load_release(cargo_json,argv_json)
+    target=Path(production_target).resolve()
+    observed={}
+    for name,row in selected.items():
+        path=Path(row['compiler_artifact']['executable'])
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(target):
+            raise ValueError('selected output must be an ordinary production target file')
+        observed[name]=digest(path)
+    return inventory_from_observed(cargo_json,argv_json,observed)
+
+
+def verify_inventory(inventory,executables):
+    if hashlib.sha256(inventory_preimage(inventory)).hexdigest()!=inventory['sha256'] or set(inventory['selected_cohort'])!=set(NAMES):
+        raise ValueError('actual production inventory digest/cohort changed')
+    if inventory.get('schema_version')!=1:
+        raise ValueError('unsupported production inventory schema')
+    records,argv,selection=validate_release(inventory['records'],inventory['production_argv'])
+    for name in NAMES:
+        selected=inventory['selected_cohort'][name];expected=executables[name]
+        matches=[i for i,row in enumerate(records) if row.get('reason')=='compiler-artifact' and row.get('executable') and row.get('target',{}).get('name')==name]
+        if matches!=[selected['record_index']] or records[selected['record_index']]!=expected['compiler_artifact'] or selected['compiler_artifact']!=expected['compiler_artifact'] or selected['sha256']!=expected['sha256']:
+            raise ValueError('selected FS/whole-cohort record or ELF binding differs')
+
+
+def verify_production_inputs(receipt):
+    origin=receipt['production_inputs']
+    if set(origin)!={'argv','stdout','stderr','exit'}:
+        raise ValueError('complete inherited production inputs required')
+    for name,row in origin.items():
+        path=Path(row['path'])
+        if path.is_symlink() or not path.is_file() or path.stat().st_size!=row['bytes'] or digest(path)!=row['sha256']:
+            raise ValueError('inherited actual production input changed: '+name)
+    if Path(origin['exit']['path']).read_text().strip()!='0':
+        raise ValueError('inherited production command did not pass')
+    records,argv,selected=load_release(origin['stdout']['path'],origin['argv']['path'])
+    inventory=receipt['executables']['pulse-nq-filesystem-support']['production_dependency_inventory']
+    if records!=inventory['records'] or digest(origin['stdout']['path'])!=inventory['production_stdout_sha256'] or digest(origin['argv']['path'])!=inventory['production_argv_sha256'] or production_source_inputs()!=inventory['source_inputs']:
+        raise ValueError('inherited production/source inputs differ from frozen inventory')
+    return receipt
+
+
+def stage_production_inputs(inputs,out_dir):
+    bundle=Path(out_dir)/'production-input';bundle.mkdir(mode=0o700)
+    staged={}
+    for name in ('argv','stdout','stderr','exit'):
+        row=inputs[name];suffix='.argv.json' if name=='argv' else '.'+name
+        relative='production-input/production'+suffix
+        destination=Path(out_dir)/relative
+        shutil.copyfile(row['path'],destination)
+        if digest(destination)!=row['sha256'] or destination.stat().st_size!=row['bytes']:
+            raise ValueError('production input changed during evidence staging: '+name)
+        staged[name]={**row,'packaged_path':relative}
+    return staged
+
+
+def verify_staged_inputs(receipt_path,out_dir):
+    receipt=json.loads(Path(receipt_path).read_bytes())
+    inputs=receipt['production_inputs']
+    if set(inputs)!={'argv','stdout','stderr','exit'}:
+        raise ValueError('complete actual production input bundle required')
+    for name,row in inputs.items():
+        suffix='.argv.json' if name=='argv' else '.'+name
+        relative='production-input/production'+suffix
+        path=Path(out_dir)/relative
+        if row.get('packaged_path')!=relative or path.is_symlink() or not path.is_file() or path.stat().st_size!=row['bytes'] or digest(path)!=row['sha256']:
+            raise ValueError('staged actual production input changed: '+name)
+    if (Path(out_dir)/inputs['exit']['packaged_path']).read_text().strip()!='0':
+        raise ValueError('staged actual production command did not pass')
+    inventory=receipt['executables']['pulse-nq-filesystem-support']['production_dependency_inventory']
+    records,argv,selected=load_release(Path(out_dir)/inputs['stdout']['packaged_path'],Path(out_dir)/inputs['argv']['packaged_path'])
+    verify_inventory(inventory,receipt['executables'])
+    if records!=inventory['records'] or argv!=inventory['production_argv'] or inputs['stdout']['sha256']!=inventory['production_stdout_sha256'] or inputs['argv']['sha256']!=inventory['production_argv_sha256']:
+        raise ValueError('staged actual production stream differs from frozen inventory')
+    return receipt
+
+
+def reuse(receipt_path,bin_dir,out_dir):
+    """Verify inherited data; never pretend the producer's Cargo ran again."""
+    receipt=verify(receipt_path,bin_dir);verify_production_inputs(receipt)
+    copied=dict(receipt)
+    copied['production_inputs']=stage_production_inputs(receipt['production_inputs'],out_dir)
+    copied['selection_inherited_from']={'path':str(Path(receipt_path).resolve()),'sha256':digest(receipt_path),'scope':'Prior actual production/freeze data; not commands executed by this continuation'}
+    with (Path(out_dir)/'frozen-cohort.json').open('x') as out:json.dump(copied,out,indent=2);out.write('\n')
+    print(json.dumps({'frozen_bin_dir':str(Path(bin_dir).resolve()),'selection_inherited_from':copied['selection_inherited_from']}))
 
 
 def freeze(cargo_json, expected_hp, production_target, bin_dir, receipt_path, argv_json):
     production_target, bin_dir = Path(production_target).resolve(), Path(bin_dir).resolve()
     if bin_dir.is_relative_to(production_target) or production_target.is_relative_to(bin_dir):
         raise ValueError('frozen cohort must be outside mutable production Cargo target')
-    records = [json.loads(line) for line in Path(cargo_json).read_text().splitlines() if line.strip()]
-    if not records or records[-1].get('reason') != 'build-finished' or records[-1].get('success') is not True:
-        raise ValueError('final owning production build did not finish successfully')
-    selected = {}
-    for record in records:
-        if record.get('reason') == 'compiler-artifact' and record.get('executable') and record.get('target', {}).get('name') in NAMES:
-            name = record['target']['name']
-            if name in selected or 'bin' not in record['target']['kind']:
-                raise ValueError('selected executable origin is not unique')
-            selected[name] = record
-    if set(selected) != set(NAMES):
-        raise ValueError('actual final build did not identify the whole selected helper cohort')
+    records,argv,selected_rows=load_release(cargo_json,argv_json)
+    selected={name:row['compiler_artifact'] for name,row in selected_rows.items()}
+    inventory=production_inventory(cargo_json,argv_json,production_target)
     if Path(expected_hp).resolve() != Path(selected['constellation-host-posture']['executable']).resolve():
         raise ValueError('BIN does not name the owning final build HP executable')
     bin_dir.mkdir(mode=0o700)  # Existing output requires reconciliation, never replacement.
@@ -172,7 +205,7 @@ def freeze(cargo_json, expected_hp, production_target, bin_dir, receipt_path, ar
         if before != digest(destination) or before != digest(source) or destination.stat().st_nlink != 1 or (source.stat().st_dev, source.stat().st_ino) == (destination.stat().st_dev, destination.stat().st_ino):
             raise ValueError('frozen file is not an independent exact ordinary copy')
         origins[name] = {'sha256': before, 'source': str(source.resolve()), 'compiler_artifact': record, 'uid': destination.stat().st_uid, 'mode': '0o555'}
-    origins['pulse-nq-filesystem-support']['production_dependency_footprint']=production_dependency_footprint(records,production_target,selected['pulse-nq-filesystem-support'])
+    origins['pulse-nq-filesystem-support']['production_dependency_inventory']=inventory
     for alias in identity.ALIASES:
         (bin_dir / alias).symlink_to('pulse-nq-load-support')
     probe = subprocess.run([str(bin_dir / 'pulse-nq-filesystem-support'), '--build-info'], check=True, capture_output=True)
@@ -183,9 +216,15 @@ def freeze(cargo_json, expected_hp, production_target, bin_dir, receipt_path, ar
         raise ValueError('unsupported selected helper architecture')
     existing_identity = identity.record(bin_dir, info['version'], architecture)
     bin_dir.chmod(0o555)
+    prefix=Path(cargo_json).with_suffix('')
+    inputs={'stdout':Path(cargo_json),'argv':Path(argv_json),'stderr':prefix.with_suffix('.stderr'),'exit':prefix.with_suffix('.exit')}
+    if any(not path.is_file() for path in inputs.values()) or inputs['exit'].read_text().strip()!='0':
+        raise ValueError('actual successful production argv/stdout/stderr/exit required')
+    production_inputs={name:{'path':str(path.resolve()),'sha256':digest(path),'bytes':path.stat().st_size} for name,path in inputs.items()}
+    production_inputs=stage_production_inputs(production_inputs,Path(receipt_path).parent)
     receipt = {'schema_version': 1, 'frozen_bin_dir': str(bin_dir), 'production_target': str(production_target),
                'production_argv': json.loads(Path(argv_json).read_text()), 'production_argv_sha256': digest(argv_json),
-               'production_stdout_sha256': digest(cargo_json), 'executables': origins,
+               'production_stdout_sha256': digest(cargo_json), 'production_inputs':production_inputs, 'executables': origins,
                'existing_build_identity': existing_identity}
     with Path(receipt_path).open('x') as out:
         json.dump(receipt, out, indent=2)
@@ -209,7 +248,7 @@ def verify(receipt_path, bin_dir):
         if not stat.S_ISREG(m.st_mode) or m.st_nlink != 1 or m.st_uid != expected['uid'] or stat.S_IMODE(m.st_mode) != 0o555 or digest(path) != expected['sha256']:
             raise ValueError(f'selected frozen executable changed: {name}')
     fs_origin=receipt['executables']['pulse-nq-filesystem-support']
-    verify_footprint(fs_origin['production_dependency_footprint'],fs_origin)
+    verify_inventory(fs_origin['production_dependency_inventory'],receipt['executables'])
     for name in identity.ALIASES:
         if not (directory / name).is_symlink() or os.readlink(directory / name) != 'pulse-nq-load-support':
             raise ValueError('selected frozen role alias changed')
@@ -251,15 +290,14 @@ if __name__ == '__main__':
     command, *arguments = sys.argv[1:]
     if command == 'freeze' and len(arguments) == 6:
         freeze(*arguments)
-    elif command == 'footprint' and len(arguments) == 4:
-        cargo_json,target,selected_binary,output=arguments
-        records=[json.loads(line) for line in Path(cargo_json).read_text().splitlines() if line.strip()]
-        if not records or records[-1].get('reason')!='build-finished' or records[-1].get('success') is not True:
-            raise ValueError('owning production build did not finish successfully')
-        selected=[r for r in records if r.get('reason')=='compiler-artifact' and r.get('executable') and Path(r['executable']).resolve()==Path(selected_binary).resolve()]
-        if len(selected)!=1:raise ValueError('selected production compiler artifact is missing or ambiguous')
-        footprint=production_dependency_footprint(records,target,selected[0])
-        with Path(output).open('x') as out:json.dump(footprint,out,indent=2);out.write('\n')
+    elif command == 'inventory' and len(arguments)==4:
+        cargo_json,argv_json,target,output=arguments
+        inventory=production_inventory(cargo_json,argv_json,target)
+        with Path(output).open('x') as out:json.dump(inventory,out,indent=2);out.write('\n')
+    elif command=='reuse' and len(arguments)==3:
+        reuse(*arguments)
+    elif command=='input-data' and len(arguments)==2:
+        verify_staged_inputs(*arguments)
     elif command == 'check' and len(arguments) == 2:
         verify(*arguments)
     elif command == 'payload' and len(arguments) == 2:
@@ -267,4 +305,4 @@ if __name__ == '__main__':
     elif command == 'package' and len(arguments) == 2:
         print(json.dumps(verify_package(*arguments), sort_keys=True))
     else:
-        sys.exit('usage: frozen-helper-cohort.py freeze CARGO_JSON EXPECTED_HP PRODUCTION_TARGET BIN_DIR RECEIPT ARGV_JSON | footprint CARGO_JSON PRODUCTION_TARGET SELECTED_FS OUTPUT | check RECEIPT BIN_DIR | payload RECEIPT STAGED_BIN | package RECEIPT DEB')
+        sys.exit('usage: frozen-helper-cohort.py freeze CARGO_JSON EXPECTED_HP PRODUCTION_TARGET BIN_DIR RECEIPT ARGV_JSON | inventory CARGO_JSON ARGV_JSON PRODUCTION_TARGET OUTPUT | reuse RECEIPT BIN_DIR OUT_DIR | input-data RECEIPT OUT_DIR | check RECEIPT BIN_DIR | payload RECEIPT STAGED_BIN | package RECEIPT DEB')

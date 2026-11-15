@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "scope": "Complete actual owning four-helper production Cargo inventory; cohort superset, not minimal FS reachability or NQ realization equivalence",
+  "collector_source_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "production_argv": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "-p",
+    "constellation-host-posture",
+    "-p",
+    "constellation-status-projection",
+    "-p",
+    "pulse-nq-load-support",
+    "-p",
+    "pulse-nq-filesystem-support",
+    "--bins",
+    "--message-format=json"
+  ],
+  "production_argv_sha256": "2e36d17c99890c24a5d7294bc53758818078c466cfdd7a0fa416a7ddbbd1fe46",
+  "production_stdout_sha256": "42f4a1b9e6b7bc9354b7b680e1b72e3dfa417e045af344c52ba8021f638ce6c6",
+  "source_inputs": {
+    "MONITOR_SOURCE_COMMIT": "1111111111111111111111111111111111111111",
+    "MONITOR_BUILD_IDENTITY": "synthetic-inventory-conformance",
+    "CONSTELLATION_HOST_POSTURE_SOURCE_TREE_DIGEST": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "CONSTELLATION_HOST_POSTURE_CARGO_LOCK_DIGEST": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "CONSTELLATION_HOST_POSTURE_TOOLCHAIN_IDENTITY": "rustc 1.94.0 (synthetic fixture)"
+  },
+  "records": [
+    {
+      "reason": "compiler-artifact",
+      "package_id": "registry+https://example.invalid/index#law@1.0.0",
+      "target": {
+        "name": "law",
+        "kind": [
+          "lib"
+        ],
+        "src_path": "/synthetic/\u03bb/lib.rs"
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [
+        "ordinary"
+      ],
+      "filenames": [
+        "/synthetic/release/deps/liblaw-ordinary.rlib"
+      ],
+      "executable": null,
+      "fresh": false
+    },
+    {
+      "reason": "compiler-artifact",
+      "package_id": "registry+https://example.invalid/index#law@1.0.0",
+      "target": {
+        "name": "law",
+        "kind": [
+          "lib"
+        ],
+        "src_path": "/synthetic/\u03bb/lib.rs"
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [
+        "extra"
+      ],
+      "filenames": [
+        "/synthetic/release/deps/liblaw-extra.rlib"
+      ],
+      "executable": null,
+      "fresh": false
+    },
+    {
+      "reason": "build-script-executed",
+      "package_id": "registry+https://example.invalid/index#law@1.0.0",
+      "linked_libs": [],
+      "linked_paths": [],
+      "cfgs": [],
+      "env": [],
+      "out_dir": "/synthetic/release/build/law/out"
+    },
+    {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#constellation-host-posture@0.1.0",
+      "target": {
+        "name": "constellation-host-posture",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/constellation-host-posture"
+      ],
+      "executable": "/synthetic/release/constellation-host-posture",
+      "fresh": false
+    },
+    {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#constellation-status@0.1.0",
+      "target": {
+        "name": "constellation-status",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/constellation-status"
+      ],
+      "executable": "/synthetic/release/constellation-status",
+      "fresh": false
+    },
+    {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#pulse-nq-load-support@0.1.0",
+      "target": {
+        "name": "pulse-nq-load-support",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/pulse-nq-load-support"
+      ],
+      "executable": "/synthetic/release/pulse-nq-load-support",
+      "fresh": false
+    },
+    {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///synthetic#pulse-nq-filesystem-support@0.1.0",
+      "target": {
+        "name": "pulse-nq-filesystem-support",
+        "kind": [
+          "bin"
+        ]
+      },
+      "profile": {
+        "opt_level": "3",
+        "debug_assertions": false,
+        "test": false
+      },
+      "features": [],
+      "filenames": [
+        "/synthetic/release/pulse-nq-filesystem-support"
+      ],
+      "executable": "/synthetic/release/pulse-nq-filesystem-support",
+      "fresh": false
+    },
+    {
+      "reason": "build-finished",
+      "success": true
+    }
+  ],
+  "selected_cohort": {
+    "constellation-host-posture": {
+      "record_index": 3,
+      "compiler_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///synthetic#constellation-host-posture@0.1.0",
+        "target": {
+          "name": "constellation-host-posture",
+          "kind": [
+            "bin"
+          ]
+        },
+        "profile": {
+          "opt_level": "3",
+          "debug_assertions": false,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/synthetic/release/constellation-host-posture"
+        ],
+        "executable": "/synthetic/release/constellation-host-posture",
+        "fresh": false
+      },
+      "sha256": "cec3007ccfb1aa23801fd9da6c64cd908af960a4caf21fa4dfb33bca691531cd"
+    },
+    "constellation-status": {
+      "record_index": 4,
+      "compiler_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///synthetic#constellation-status@0.1.0",
+        "target": {
+          "name": "constellation-status",
+          "kind": [
+            "bin"
+          ]
+        },
+        "profile": {
+          "opt_level": "3",
+          "debug_assertions": false,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/synthetic/release/constellation-status"
+        ],
+        "executable": "/synthetic/release/constellation-status",
+        "fresh": false
+      },
+      "sha256": "0197a2fbc15348b8119a489987f5344b8157b0608ba98c86d3dfd1ce61c2dc3c"
+    },
+    "pulse-nq-load-support": {
+      "record_index": 5,
+      "compiler_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///synthetic#pulse-nq-load-support@0.1.0",
+        "target": {
+          "name": "pulse-nq-load-support",
+          "kind": [
+            "bin"
+          ]
+        },
+        "profile": {
+          "opt_level": "3",
+          "debug_assertions": false,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/synthetic/release/pulse-nq-load-support"
+        ],
+        "executable": "/synthetic/release/pulse-nq-load-support",
+        "fresh": false
+      },
+      "sha256": "104f2dff5b1b984b8de8a39e764dee772e89faf1cb840d154cbaf0c312c5ffe4"
+    },
+    "pulse-nq-filesystem-support": {
+      "record_index": 6,
+      "compiler_artifact": {
+        "reason": "compiler-artifact",
+        "package_id": "path+file:///synthetic#pulse-nq-filesystem-support@0.1.0",
+        "target": {
+          "name": "pulse-nq-filesystem-support",
+          "kind": [
+            "bin"
+          ]
+        },
+        "profile": {
+          "opt_level": "3",
+          "debug_assertions": false,
+          "test": false
+        },
+        "features": [],
+        "filenames": [
+          "/synthetic/release/pulse-nq-filesystem-support"
+        ],
+        "executable": "/synthetic/release/pulse-nq-filesystem-support",
+        "fresh": false
+      },
+      "sha256": "0b862e81fdf21b7d9aa790ffcea86b86ed55da4b1117ad3205c15b0bdcd1a6db"
+    }
+  },
+  "sha256": "bc5e56ce2cc3c00f9c2126719ca9254e7cf08be6f5edae4de73ea6949b7f7f58"
+}

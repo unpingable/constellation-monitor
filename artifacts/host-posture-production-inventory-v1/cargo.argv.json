@@ -1,0 +1,1 @@
+["cargo", "build", "--locked", "--release", "-p", "constellation-host-posture", "-p", "constellation-status-projection", "-p", "pulse-nq-load-support", "-p", "pulse-nq-filesystem-support", "--bins", "--message-format=json"]

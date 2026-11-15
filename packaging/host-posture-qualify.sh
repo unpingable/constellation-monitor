@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Final owning production build -> independent frozen cohort -> isolated checks.
+# Optional QUAL_REUSE_FROZEN_COHORT verifies inherited actual production data
+# and skips production build/freeze. Its origin records are data, never new commands.
 # Existing interface: host-posture-qualify.sh WORK BIN OUT SOURCE_COMMIT
 # BIN names the HP executable emitted by that final build. Package only
-# OUT/frozen-bin with QUAL_INPUT_DIR=OUT. No production writer follows freeze.
+# the receipt-selected frozen BIN_DIR with QUAL_INPUT_DIR=OUT. No production writer follows freeze.
 set -uo pipefail
 [[ $# -eq 4 ]] || { echo "usage: $0 WORK BIN OUT SOURCE_COMMIT" >&2; exit 2; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -13,9 +15,13 @@ COMMIT=$4
 [[ "${MONITOR_SOURCE_COMMIT:-}" == "$COMMIT" ]] || { echo "source declaration differs from qualification input" >&2; exit 2; }
 PRODUCTION_TARGET=$(python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[2]); print((p if p.is_absolute() else pathlib.Path(sys.argv[1])/p).resolve())' "$WORK" "${CARGO_TARGET_DIR:-target}")
 FROZEN=$OUT/frozen-bin
+if [[ -n "${QUAL_REUSE_FROZEN_COHORT:-}" ]]; then
+    [[ "$QUAL_REUSE_FROZEN_COHORT" = /* ]] || { echo "QUAL_REUSE_FROZEN_COHORT must be absolute" >&2; exit 2; }
+    FROZEN=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["frozen_bin_dir"])' "$QUAL_REUSE_FROZEN_COHORT") || exit 2
+fi
 TEST_TARGET=$OUT/test-target
 python3 -c 'import pathlib,sys; p,f,t=map(pathlib.Path,sys.argv[1:]); assert not any(a.is_relative_to(b) or b.is_relative_to(a) for a,b in [(p,f),(p,t),(f,t)]), "production/frozen/test paths must be separate"' "$PRODUCTION_TARGET" "$FROZEN" "$TEST_TARGET" || exit 2
-for existing in run frozen-bin frozen-cohort.json hostile-corpus.json results.json; do
+for existing in run frozen-bin frozen-cohort.json hostile-corpus.json results.json production-input; do
     [[ ! -e "$OUT/$existing" ]] || { echo "existing qualification output requires original-producer reconciliation: $existing" >&2; exit 2; }
 done
 mkdir -p "$OUT"
@@ -36,11 +42,21 @@ ARGV
     echo "$LAST_EXIT" > "$R/$i-$name.exit"
     echo "[$i $name] exit $LAST_EXIT"
 }
-export CARGO_TARGET_DIR=$PRODUCTION_TARGET
-run release cargo build --locked --release -p constellation-host-posture -p constellation-status-projection -p pulse-nq-load-support -p pulse-nq-filesystem-support --bins --message-format=json
+TARGET=$(rustc -vV | python3 -c 'import sys; rows=[line.split(":",1)[1].strip() for line in sys.stdin if line.startswith("host:")]; assert len(rows)==1; print(rows[0])') || exit 2
+case "$TARGET" in x86_64-*) ARCH=amd64;; aarch64-*) ARCH=arm64;; *) echo "unsupported native target" >&2; exit 2;; esac
+run declarations python3 "$HERE/record-build-identity.py" check-declarations "$ARCH" "$TARGET" release
 [[ $LAST_EXIT -eq 0 ]] || exit "$LAST_EXIT"
-run freeze python3 "$HERE/frozen-helper-cohort.py" freeze "$R/1-release.stdout" "$BIN" "$PRODUCTION_TARGET" "$FROZEN" "$OUT/frozen-cohort.json" "$R/1-release.argv.json"
-[[ $LAST_EXIT -eq 0 ]] || exit "$LAST_EXIT"
+if [[ -n "${QUAL_REUSE_FROZEN_COHORT:-}" ]]; then
+    run reused-selection python3 "$HERE/frozen-helper-cohort.py" reuse "$QUAL_REUSE_FROZEN_COHORT" "$FROZEN" "$OUT"
+    [[ $LAST_EXIT -eq 0 ]] || exit "$LAST_EXIT"
+else
+    export CARGO_TARGET_DIR=$PRODUCTION_TARGET
+    run release cargo build --locked --release -p constellation-host-posture -p constellation-status-projection -p pulse-nq-load-support -p pulse-nq-filesystem-support --bins --message-format=json
+    [[ $LAST_EXIT -eq 0 ]] || exit "$LAST_EXIT"
+    RELEASE_PREFIX="$R/$i-release"
+    run freeze python3 "$HERE/frozen-helper-cohort.py" freeze "$RELEASE_PREFIX.stdout" "$BIN" "$PRODUCTION_TARGET" "$FROZEN" "$OUT/frozen-cohort.json" "$RELEASE_PREFIX.argv.json"
+    [[ $LAST_EXIT -eq 0 ]] || exit "$LAST_EXIT"
+fi
 sha256sum "$FROZEN/constellation-host-posture" > "$R/binary-before.sha256"
 export CARGO_TARGET_DIR=$TEST_TARGET
 run_guarded() {

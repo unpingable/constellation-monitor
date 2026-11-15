@@ -1,7 +1,9 @@
 # Native filesystem-capacity support for Nightshift
 
-Status: source candidate. Native tests, adapter qualification, installation
-and current observation-to-cycle acceptance are pending. The existing
+Status: source candidate. Native engineering passed 19 library tests. Full
+qualification stopped before its tests: the original dependency collector was
+ambiguous and Host Posture build declarations were incomplete. Installation
+and current observation-to-cycle acceptance remain pending. The existing
 installed load-support adapter remains unknown; this source does not change it.
 
 `pulse-nq-filesystem-support` is a closed support adapter for one enrolled
@@ -110,7 +112,7 @@ The realization record
 
 `pulse.nq_filesystem_capacity_adapter_realization.v1` identifies this adapter's
 own ELF SHA-256, complete Monitor source commit and source-tree digest, actual
-Monitor Cargo.lock digest, actual resolved dependency/unit/feature inventory
+Monitor Cargo.lock digest, actual production compiler/build-script inventory
 digest, fixed upstream NQ commit, qualification receipt digest, and static
 configuration digest. `realization_id` hashes that record with only its own ID
 field removed. These fields identify records; naming a qualification digest
@@ -212,10 +214,13 @@ lock as `0b7f7b3b44a5d5fcf7e41a1e6c7c722d4744c95b`. Those results do not execute
 this static-enrollment/request correction or establish live integration.
 The current source retains that exact lock. Engineering on the later
 static-request source 362ce7f separately passed locked offline metadata/check
-and 16 library cases. The present negative-context, ancestry and production
-footprint correction is newer source; its Rust, five CLI and principal cases
-are tests-ready, not executed PASS.
-The next native occurrence must follow this bounded recipe:
+and 16 library cases. The negative-context and ancestry successor separately
+passed locked metadata/check and 19 library cases; its exact tree was committed
+as `f4ee8d514ad8f1e355014054d995f93bf37183ea`. Five native CLI cases and the
+principal handoffs have not run. The later production occurrence stopped at
+the collector before qualification tests or packages; its original FAIL is
+retained. Offline apparatus repair and build-input correction precede another
+admitted qualification. The bounded recipe is:
 
 1. Obtain Root's SDK and storage GO. Use a fresh source/output root and fresh
    target directories, the admitted 12 GiB aggregate forecast and 60 GiB floor;
@@ -231,13 +236,17 @@ The next native occurrence must follow this bounded recipe:
    retain `cargo metadata --locked --offline --format-version=1` for the new
    frozen source in its distinct source/output root. Do not silently resolve a
    different lock; return any unavailable dependency or lock mismatch to Root. Preserve package versions,
-   registry checksums, git revisions, dependency edges, enabled features and
-   proc-macro/build units. A lock diff alone does not prove feature equality.
+   registry checksums, git revisions and the resolved metadata as orientation.
+   Record actual production compiler features separately; metadata can include
+   units not built by the selected production command.
 4. Root freezes a truthful complete Monitor source commit including that lock.
    Use Rust 1.94 and the exact target; record `rustc -vV`, OS/kernel/architecture,
    loader/libc identities and build environment without credentials. A WIP
    source capsule may be tested under its own hashes with build source unset;
    never label it as the earlier committed HEAD or as a qualified producer.
+   Validate the actual helper and Host Posture declaration contracts before
+   invoking Cargo. A probe reporting unavailable fields is a refused artifact;
+   declarations cannot be supplied afterward to relabel its compiled bytes.
 5. Use separate test and production targets. Run `cargo test --locked --offline
    -p pulse-nq-filesystem-support --lib` for these source cases and relevant
    existing load-support/correspondence suites. Run the existing format/lint
@@ -246,16 +255,16 @@ The next native occurrence must follow this bounded recipe:
    from the selected production artifact.
 6. Set `MONITOR_SOURCE_COMMIT` to the complete frozen source and
    `MONITOR_BUILD_IDENTITY` to the occurrence identity. Build only the selected
-   adapter with `cargo build --locked --offline --release
-   -p pulse-nq-filesystem-support --bin pulse-nq-filesystem-support
-   --message-format=json` in its fresh production target. Retain actual compiler
-   artifact records and the exact CLI fingerprint-selected NQ helper/profile/
-   protocol dependency edges and unit features. Before artifact-specific tests,
-   freeze the selected adapter as an ordinary independent copy outside Cargo
-   outputs; the adapter-only selected set is this one ELF, not a relabeled
-   Host Posture cohort. All tests and later selection use that exact frozen
-   path. Test builds use their separate target; no selected production rebuild
-   follows. Record the ELF SHA and embedded
+   helper cohort through the owning production command: `cargo build --locked
+   --release -p constellation-host-posture -p constellation-status-projection
+   -p pulse-nq-load-support -p pulse-nq-filesystem-support --bins
+   --message-format=json`, with offline Cargo source access when required by
+   admission. Retain the complete actual Cargo stream, argv and source/build
+   inputs. Its compiler/build-script inventory is a cohort-wide superset;
+   it does not identify a minimal per-adapter dependency graph. Freeze all four
+   selected executables as independent copies outside Cargo outputs before
+   tests. Test builds use a separate target; no selected production rebuild
+   follows solely to repair apparatus. Record each ELF SHA and embedded
    build identity, source/lock/configuration/qualification digests. This is its
    own native realization, not whole-NQ closure equivalence. Do not overwrite
    any previously qualified Host Posture ELF with an all-feature rebuild.
@@ -270,8 +279,9 @@ The next native occurrence must follow this bounded recipe:
 8. Record acceptance independently with exact evidence identities and runtime
    scope before installing/selecting this realization for present reliance.
    Candidate test configuration is not acceptance. Actual Nightshift recurrence
-   `record_missing` remains a separate unresolved input even if FS support is
-   Current. The FS receipt cannot complete a cycle or authorize an effect.
+   invocation/recurrence and qualified source-clock inputs remain separate even
+   if FS support is Current. The FS receipt cannot complete a cycle, qualify
+   an NQ/Nightshift clock relation or authorize an effect.
 
 
 The ordinary crate integration target `cli_custody` runs real CLI processes
@@ -285,9 +295,9 @@ Native qualification must execute all five with
 `cargo test --locked --offline -p pulse-nq-filesystem-support --test cli_custody
 -- --ignored --test-threads=1`; zero executed cases is not a pass. The existing
 `packaging/host-posture-qualify.sh` includes that required command against the
-staged production adapter when qualifying a new full helper package. Do not
-invoke the full helper qualifier merely to qualify this separately selected
-adapter.
+staged production adapter when qualifying the full helper package. The current
+inventory and deployment consumer support that four-helper composition; a
+separate adapter-only qualification route is not established.
 The SDK preflight must record boot age above 300010 ms for deterministic expired
 receipt fixtures; a missing precondition is a failure, never a silent skip.
 Cases preserve missing/Current, replay byte identity, contradiction, expiry,
@@ -435,48 +445,50 @@ mode0640 inputs under writable parents were accepted (two failing assertions).
 The corrected check refuses both request and query parent cases. This light
 result does not substitute for real three-UID qualification.
 
-Selected production dependency footprint
+Actual production compiler inventory
 
-The existing packaging/frozen-helper-cohort.py collects the selected FS
-binary's actual compiler-artifact and reachable Cargo fingerprint units at the
-final owning production build, before broader tests. The selected canonical
-binary must share an inode with its unique hashed Cargo output in the native
-release target. That checked output selects the root fingerprint; exact
-dependency fingerprints select libraries, build scripts and proc macros with
-their actual compiler features. Unused dev/test feature variants are not
-unioned from metadata. Missing or ambiguous output, dependency or compiler
-records refuse. This reader covers the observed Cargo1.94 inputs, with no
-general future-format or cross-platform promise.
+The existing `packaging/frozen-helper-cohort.py` records the complete ordered
+public Cargo-JSON stream for the owning four-helper production command,
+including every compiler-artifact and build-script record and the final
+successful build result. It retains actual package IDs, targets, profiles and
+features without a metadata feature union or deduplication. The inventory also
+binds the exact argv, raw stream, source/tree/lock/toolchain inputs, unique
+selected compiler records and each selected ELF SHA. Missing, duplicate,
+unsuccessful, truncated or substituted selected inputs refuse.
 
-A full helper freeze retains the graph in the FS entry's
-production_dependency_footprint inside existing frozen-cohort.json. For a
-separately selected adapter, use the same tool's footprint subcommand directly
-after its final build:
+This is a cohort-wide superset inventory. It does not claim a minimal FS
+dependency graph, general future-Cargo compatibility or equivalence to an NQ
+executable. The former private fingerprint collector could not distinguish two
+real generic-array build-script units with identical private JSON and hashes.
+That occurrence remains FAIL. Earlier engineering and tiny-fixture passes did
+not establish its production applicability; the stronger reachability claim
+and private parser are superseded.
 
-    python3 -B packaging/frozen-helper-cohort.py footprint CARGO_JSON PRODUCTION_TARGET SELECTED_FS OUTPUT
+A full helper freeze retains the inventory at
+`executables.pulse-nq-filesystem-support.production_dependency_inventory` in
+the existing `frozen-cohort.json`. Its explicit inspection command is:
 
-No selected production rebuild follows collection or qualification. The
-private digest seam is footprint_preimage: remove only top-level sha256,
-encode sorted compact ASCII JSON with exact integers, ensure_ascii=True,
-allow_nan=False and no newline. This is not NQ/JCS/I-JSON; Cargo u64 values
-exceed I-JSON's safe integer range. Shared exact preimage/digest/expected-entry
-conformance, including maxu64 and escaped Unicode, is in
-artifacts/host-posture-production-footprint-v1. Realization inventory digest
-is sha256: followed by this footprint's 64-hex sha256. Verification also binds
-selected ELF SHA, exact selected compiler record and root-unit membership.
+    python3 -B packaging/frozen-helper-cohort.py inventory CARGO_JSON ARGV_JSON PRODUCTION_TARGET OUTPUT
 
-Offline tool replay checked 114 units/211 edges from retained engineering
-fingerprints and 273 non-root joins from retained NQ production compiler JSON.
-The former is explicitly nonproduction. No complete old production graph
-is in custody, and no retired rlib was recovered. Actual final FS production
-collection remains pending its admitted build.
+The digest preimage removes only the top-level `sha256` field and uses sorted
+compact ASCII JSON with exact integers, `ensure_ascii=True`, `allow_nan=False`
+and no newline. This is not NQ/JCS/I-JSON; Cargo integers can exceed I-JSON's
+safe range. Shared preimage/digest/cohort conformance lives in
+`artifacts/host-posture-production-inventory-v1`. The realization inventory
+digest is `sha256:` followed by the inventory's 64-hex `sha256` value.
+
+Apparatus source identity is recorded separately from the source that produced
+the executable. Apparatus repair does not relabel or rebuild a valid product.
+A separately refused build-input artifact needs its own corrected production
+provenance. Before qualification continues, the repaired reader must pass
+offline replay and refusal controls against the retained real Cargo records.
 
 There is no qualified new FS metadata or release package yet. After Root
 acceptance, deployment reuses the existing package build-identity and
 qualification-input frozen-cohort/results/hostile-corpus/raw-run records.
 Installer verification must bind those exact accepted records, selected FS
 ELF/build-info, the same final-build source/tree/lock, actual production
-footprint, and all five actual CLI outcomes and their command-stream hashes.
+inventory, and all five actual CLI outcomes and their command-stream hashes.
 Only then may it construct the site realization with exact static config
 digest and accepted raw results SHA as qualification receipt digest. Ordinary
 build-info, old P3 packages and missing qualification are not substitutes.
