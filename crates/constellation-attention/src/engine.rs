@@ -907,26 +907,27 @@ fn reconfiguration(path: &Path, now: i64, bound: i64) -> Result<Option<i64>, Str
     Ok(Some(at.min(now)))
 }
 
-/// An incomplete pass leaves the previous liveness report untouched. Only a
-/// completed report published by THIS pass can have its exit fields corrected.
+/// Errors before full report preparation leave the previous liveness untouched.
+/// A fully prepared same-pass snapshot permits best-effort fatal correction
+/// even when publication renamed the file before reporting a later I/O error.
 pub fn evaluate(config: &Config, options: &PassOptions) -> Result<PassResult, String> {
     let _lock = lock(config, options.dry_run)?;
-    let mut completed = None;
-    let result = evaluate_locked(config, options, &mut completed);
+    let mut prepared = None;
+    let result = evaluate_locked(config, options, &mut prepared);
     let output = if options.dry_run {
         config.state_dir().join("dry-run")
     } else {
         config.state_dir()
     };
-    finish_pass(result, completed, &output.join("report.json"))
+    finish_pass(result, prepared, &output.join("report.json"))
 }
 
 fn finish_pass(
     result: Result<PassResult, String>,
-    completed: Option<Value>,
+    prepared: Option<Value>,
     path: &Path,
 ) -> Result<PassResult, String> {
-    if let (Err(error), Some(mut report)) = (&result, completed) {
+    if let (Err(error), Some(mut report)) = (&result, prepared) {
         report["exit_code"] = json!(1);
         report["exit_class"] = json!("evaluator_error");
         report["first_error"] = json!(error.lines().next().unwrap_or_default());
@@ -946,7 +947,7 @@ fn finish_pass(
 fn evaluate_locked(
     config: &Config,
     options: &PassOptions,
-    completed: &mut Option<Value>,
+    prepared: &mut Option<Value>,
 ) -> Result<PassResult, String> {
     nq::check_page_mode(config)?;
     let mut inspections = nq::Inspections::default();
@@ -2490,8 +2491,10 @@ fn evaluate_locked(
     let mut bytes = serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
     ensure_dir(&output_dir)?;
+    // The writer may rename successfully before parent open/fsync fails.
+    // Save only this fully assembled evaluation, before attempting publication.
+    *prepared = Some(report.clone());
     write_atomic(&output_dir.join("report.json"), &bytes)?;
-    *completed = Some(report.clone());
     Ok(PassResult { report, exit_code })
 }
 

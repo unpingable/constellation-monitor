@@ -763,18 +763,21 @@ is more fundamental. Otherwise, log failure takes precedence over the delivery
 exit class. `delivery` and `delivery_class` always record the independent route
 outcomes, and `intent_log_error` records the log failure.
 
-For every report published by a pass, `exit_code` and the non-null
-`exit_class` describe the final evaluator process result: 0/`clean`,
-3/`input_error`, or 4 with the class above. Fallible work, including digest
-persistence and intent-log append, finishes before the completed report is
-written. A pass that fails before publishing its completed report writes no
-report: an existing report and its `evaluated_at` remain unchanged. Only if
-this same pass already published a completed report and a later step changes
-the exit does attention correct that report's `exit_code`, `exit_class`
-(1/`evaluator_error`) and `first_error`; its evaluation payload is preserved.
-It never synthesizes a fresh fatal report. A report write failure is fatal and
-is reported on stderr; an unwritable report path cannot provide a durable
-correction. Configuration and lock refusals also leave reports untouched.
+Completed evaluations record `exit_code` and the non-null `exit_class`:
+0/`clean`, 3/`input_error`, or 4 with the class above. Digest persistence and
+intent-log append finish before report publication begins. Attention retains
+only this pass's fully assembled evaluation snapshot before attempting the
+atomic write. The writer can rename the file and then fail while opening or
+syncing its parent directory. If evaluation returns an error during or after
+publication, attention attempts a best-effort correction of that same snapshot's
+`exit_code`, `exit_class` (1/`evaluator_error`) and `first_error`; its evaluation
+payload and `evaluated_at` are preserved. A visible correction does not prove
+directory-sync durability. If publication and correction both fail, neither
+final-exit fields nor preservation of the prior bytes can be guaranteed.
+Errors before full report preparation leave an existing report and its
+`evaluated_at` unchanged; attention does not invent an evaluation for an
+unperformed pass. Configuration and lock refusals also leave reports untouched.
+Publication and correction failures are fatal and reported on stderr.
 Consumers must use `evaluated_at` to detect repeated incomplete passes;
 systemd unit observations are collected separately.
 
@@ -864,11 +867,12 @@ future timestamps in all three files under the same lock.
 
 ## Report
 
-Completed passes retain schema `constellation.attention_report.v1` and record:
+Reports retain schema `constellation.attention_report.v1` and record:
 
-- `exit_code`: 0, 3 or 4.
+- `exit_code`: 0, 3 or 4; a best-effort fatal correction of the same prepared
+  evaluation can mark 1.
 - `exit_class`: `clean`, `input_error`, `delivery_partial`, `delivery_failed`
-  or `intent_log_unwritable`.
+  or `intent_log_unwritable`; a fatal correction uses `evaluator_error`.
 - `delivery`: an object keyed by exact route reference. Each route has an
   `outcome` and `last_attempt_at`, for example:
   `{"operations": {"outcome": "accepted", "last_attempt_at": "2026-10-24T00:40:00Z"}}`.

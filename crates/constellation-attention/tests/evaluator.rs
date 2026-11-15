@@ -10069,6 +10069,56 @@ fn digest_acceptance_cannot_move_to_a_new_notice_identity() {
 }
 
 #[test]
+fn post_rename_report_sync_failure_marks_same_pass_fatal_when_visible() {
+    struct RestoreDirectoryMode(PathBuf);
+    impl Drop for RestoreDirectoryMode {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    let mut harness = Harness::new();
+    harness.page_route = false;
+    harness.host_posture("root");
+    set(&harness, "root", ProjectedStateV1::Healthy, T0);
+    // Non-dry evaluation saves state through the same writer first. Restrict
+    // only its separate dry-run report directory, so the failure is publication.
+    let report_dir = harness.path("state/dry-run");
+    fs::create_dir(&report_dir).unwrap();
+    let restore = RestoreDirectoryMode(report_dir.clone());
+    fs::set_permissions(&report_dir, fs::Permissions::from_mode(0o300)).unwrap();
+    // This native control requires an ordinary non-root account: write+execute
+    // permits temp creation/rename, while opening the directory for fsync fails.
+    assert_eq!(
+        fs::File::open(&report_dir).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    let output = harness.evaluate_at(T0, &["--dry-run"]);
+    drop(restore);
+    assert_eq!(
+        fs::metadata(&report_dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot write"));
+    let report: Value =
+        serde_json::from_slice(&fs::read(report_dir.join("report.json")).unwrap()).unwrap();
+    assert_eq!(report["evaluated_at"], rfc3339(T0));
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["inputs"][0]["status"], "ok");
+    assert_eq!(report["exit_code"], 1);
+    assert_eq!(report["exit_class"], "evaluator_error");
+    assert!(
+        report["first_error"]
+            .as_str()
+            .unwrap()
+            .contains("cannot write")
+    );
+    assert!(!harness.path("state/state.json").exists());
+    assert!(harness.calls().is_empty());
+}
+
+#[test]
 fn repeated_fatal_passes_preserve_the_last_completed_report() {
     let mut harness = Harness::new();
     harness.raw("[digest]\nat_utc = \"13:00\"\n");
