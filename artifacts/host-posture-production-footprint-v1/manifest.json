@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "Synthetic private receipt encoding fixture; no build or qualification inferred",
+  "owner": "Monitor frozen-helper-cohort.py footprint_preimage / verify_footprint; consuming Cartography validates independently",
+  "encoding": "ASCII Python JSON sorted keys, compact separators, ensure_ascii=True, allow_nan=False, exact integers, exclude only top-level sha256, no newline; not NQ/JCS/I-JSON",
+  "footprint_digest": "b6116f94075106342ffe65e645b395f46e38b1fbf85c998f3cd213c534f1a688",
+  "files": {
+    "expected-fs-entry.json": {
+      "sha256": "69fecd846f1b3c8929543659b95fef817c0a98bfcc027d180146011ad6f04af3",
+      "bytes": 437
+    },
+    "footprint.json": {
+      "sha256": "4b90272be9af4214dc89878f8c3f738af90af197c7a1e77c67d87c6661fb575c",
+      "bytes": 1618
+    },
+    "preimage.json": {
+      "sha256": "b6116f94075106342ffe65e645b395f46e38b1fbf85c998f3cd213c534f1a688",
+      "bytes": 1542
+    }
+  }
+}

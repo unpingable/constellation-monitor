@@ -58,6 +58,7 @@ fn test_config() -> FilesystemSupportConfigV1 {
         consumer_id: "nightshift:filesystem-test".into(),
         producer_id: "filesystem-producer-test".into(),
         producer_key_id: "filesystem-key-test".into(),
+        diagnostic_vantage_id: "nq.vantage.local.synthetic.fs-data-capacity".into(),
         producer_public_key_hex: encode_hex(
             ed25519_dalek::SigningKey::from_bytes(&[7; 32])
                 .verifying_key()
@@ -544,9 +545,12 @@ fn immutable_enrollment_accepts_two_request_bases_and_refuses_cross_pairing() {
     );
     assert_eq!(
         a.expected.expected_state,
-        LoadPressureStateV1::ExplicitlyAbsent
+        Some(LoadPressureStateV1::ExplicitlyAbsent)
     );
-    assert_eq!(b.expected.expected_state, LoadPressureStateV1::Present);
+    assert_eq!(
+        b.expected.expected_state,
+        Some(LoadPressureStateV1::Present)
+    );
     let qa: PresentEvidenceQueryV1 = serde_json::from_slice(include_bytes!(
         "../../../artifacts/nightshift-filesystem-support-v1/query.json"
     ))
@@ -611,4 +615,91 @@ fn request_context_refuses_wrong_outcome_profile_subject_scope_and_preimages() {
     let mut raw = canonical_bytes(&original).unwrap();
     raw.push(b'\n');
     assert!(FilesystemRequestContext::from_bytes(&config, &raw).is_err());
+}
+
+#[test]
+fn exact_artifactless_context_has_no_expected_state_or_acquisition_authority() {
+    let config = test_config();
+    let base: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/request-a.json"
+    ))
+    .unwrap();
+    for status in ["no_response", "acquisition_failed"] {
+        let mut request = base.clone();
+        let input = &mut request["inputs"]["inputs"][0];
+        input.as_object_mut().unwrap().remove("artifact");
+        input["status"] = serde_json::json!(status);
+        if status == "acquisition_failed" {
+            input["reason"] = serde_json::json!("caller_completion_unknown");
+        }
+        request["inputs"]["inputs_id"] =
+            serde_json::json!(object_id(&request["inputs"], "inputs_id").unwrap());
+        request["request_id"] = serde_json::json!(object_id(&request, "request_id").unwrap());
+        let context =
+            FilesystemRequestContext::from_bytes(&config, &canonical_bytes(&request).unwrap())
+                .unwrap();
+        assert!(context.expected.expected_state.is_none());
+        assert!(context.expected.artifact_ids.is_empty());
+        assert!(context.require_delivered().is_err());
+        let mut query = test_query(&config);
+        query.diagnostic_inputs_id = context.expected.diagnostic_inputs_id.clone();
+        query.artifact_ids.clear();
+        query.query_id = object_id(&query, "query_id").unwrap();
+        validate_filesystem_query(&config, &context, &query).unwrap();
+        request["inputs"]["inputs"][0]["key"]["vantage_id"] = serde_json::json!("foreign-vantage");
+        request["inputs"]["inputs_id"] =
+            serde_json::json!(object_id(&request["inputs"], "inputs_id").unwrap());
+        request["request_id"] = serde_json::json!(object_id(&request, "request_id").unwrap());
+        assert!(
+            FilesystemRequestContext::from_bytes(&config, &canonical_bytes(&request).unwrap())
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn delivered_native_cannot_evaluate_has_an_artifact_but_no_expected_condition() {
+    let config = test_config();
+    let mut request: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/request-a.json"
+    ))
+    .unwrap();
+    let source:serde_json::Value=serde_json::from_slice(include_bytes!("../../../artifacts/nq-host-filesystem-capacity-correspondence-v1/valid/cannot_evaluate.json")).unwrap();
+    let mut artifact = source["nq"]["artifact"].clone();
+    artifact["subject"] = request["policy"]["subject"].clone();
+    artifact["profile_semantic_id"] = serde_json::json!(config.profile_semantic_id);
+    artifact["artifact_id"] = serde_json::json!(request::native_artifact_id(&artifact).unwrap());
+    request["inputs"]["inputs"][0]["artifact"] = artifact;
+    request["inputs"]["inputs_id"] =
+        serde_json::json!(object_id(&request["inputs"], "inputs_id").unwrap());
+    request["request_id"] = serde_json::json!(object_id(&request, "request_id").unwrap());
+    let context =
+        FilesystemRequestContext::from_bytes(&config, &canonical_bytes(&request).unwrap()).unwrap();
+    assert!(context.expected.expected_state.is_none());
+    assert_eq!(context.expected.artifact_ids.len(), 1);
+    assert!(context.require_delivered().is_err());
+    let mut q = test_query(&config);
+    q.diagnostic_inputs_id = context.expected.diagnostic_inputs_id.clone();
+    q.artifact_ids = context.expected.artifact_ids.clone();
+    q.query_id = object_id(&q, "query_id").unwrap();
+    validate_filesystem_query(&config, &context, &q).unwrap();
+}
+
+#[test]
+fn complete_owning_negative_vectors_bind_queries_without_positive_support() {
+    let config: FilesystemSupportConfigV1 = serde_json::from_slice(include_bytes!(
+        "../../../artifacts/nightshift-filesystem-support-v1/config.json"
+    ))
+    .unwrap();
+    for (request,query,count) in [
+        (include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/no-response-request.json").as_slice(),include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/no-response-query.json").as_slice(),0),
+        (include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/acquisition-failed-request.json").as_slice(),include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/acquisition-failed-query.json").as_slice(),0),
+        (include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/indeterminate-request.json").as_slice(),include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/indeterminate-query.json").as_slice(),1),
+    ] {
+        let context=FilesystemRequestContext::from_bytes(&config,request).unwrap();let q:PresentEvidenceQueryV1=serde_json::from_slice(query).unwrap();
+        assert!(context.expected.expected_state.is_none());assert_eq!(context.expected.artifact_ids.len(),count);assert!(context.require_delivered().is_err());validate_filesystem_query(&config,&context,&q).unwrap();
+    }
+    // Original correspondence scope is intentionally unrelated to the native
+    // scope preimage. Complete request shape cannot enroll a foreign scope.
+    assert!(FilesystemRequestContext::from_bytes(&config,include_bytes!("../../../artifacts/nightshift-filesystem-support-v1/nightshift-correspondence-negative-family/no-response-request.json")).is_err());
 }

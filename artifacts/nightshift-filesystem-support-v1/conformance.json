@@ -9,14 +9,34 @@
   },
   "scope_id": "sha256:bbfeefc9980d70c067acad11de1733bb746f954212e7d1a0fa17dff1f03ac38e",
   "files": {
-    "config.json": "sha256:00bb49f460413164ce6ef640842641d5894133697e6e7aa8b37d8839c8983909",
+    "acquisition-failed-query.json": "sha256:9aad74ef179d87d0f3010c0230bccd2aa5bfa743f21fbfe8a5127f571015c455",
+    "acquisition-failed-request.json": "sha256:1dfa3ce545f82e5475fb2efeae56d0678cba4fbf202e043a4c550bda17562a23",
+    "acquisition-failed-support.json": "sha256:c5ead264aaef90227bb4eb0c374edf37806b490470e1ee4fd1842b00a13f42e5",
+    "config.json": "sha256:58538a437b49791447a3825bbbeb1d3d267a808c3db1cc976d1023949c20256a",
+    "indeterminate-query.json": "sha256:46fb6f90d3436a618bdfe264c918b8dacdba534572c90aa8dc1e09f1da79729f",
+    "indeterminate-request.json": "sha256:02bedfebbff791adecaee055e0eccc342dc5e4241acf8ab346029a50db9e318a",
+    "indeterminate-support.json": "sha256:8c4f4b863fef537bc6774a6f9760eeeee1ff73a742b9fa5809137d2540e7d655",
+    "nightshift-correspondence-negative-family/SOURCE.json": "sha256:e3c41ff694e1ec1e729c5de214ec912bf2b56923b0668791c7600c583db1d442",
+    "nightshift-correspondence-negative-family/acquisition-failed-query.json": "sha256:e902eae69e92b5f2f98a7b18b113a2e3c758462b5c7815dce6b48d357425cba5",
+    "nightshift-correspondence-negative-family/acquisition-failed-request.json": "sha256:92f95f79a2f1430e9824a183da282bc8a692d33bf49f91f9e1ba07335346acb4",
+    "nightshift-correspondence-negative-family/fixed-key.json": "sha256:9c552d8e787ad86054ab3e0a45e6c0f4cf940a2aea0b8b46ced66ff88601f7d6",
+    "nightshift-correspondence-negative-family/fixed-policy.json": "sha256:f9c3ba8486c166d463ac63c99fd6a15e47fe46ef4d7f139826adfef772e79734",
+    "nightshift-correspondence-negative-family/fixed-vantage.json": "sha256:4d30d5e43d2086e9fd84589953ef862dbf1b9bf3654efd908348e5e6df370dee",
+    "nightshift-correspondence-negative-family/indeterminate-query.json": "sha256:46b66ece179dec13508fe842c7d71ab5398bd6ea394f607d417529d7ead6c27b",
+    "nightshift-correspondence-negative-family/indeterminate-request.json": "sha256:898639f8d8062efacfdb78a564bfee4dacb1a81e9e5bf10818ca96bcc528fdcb",
+    "nightshift-correspondence-negative-family/no-response-query.json": "sha256:4919ed2e3cd9c3f44a113ae109f12a01f4bd5949f5352d77f3f4940d43c72472",
+    "nightshift-correspondence-negative-family/no-response-request.json": "sha256:ec5b0c4f826743aaba29500daaa4d354b63e49d9d3879cbcd0798660d21ab0a2",
+    "no-response-query.json": "sha256:93f2a807158e5b1b98ef739a889213c49175fb5bbf1c48aeae1422176ed46643",
+    "no-response-request.json": "sha256:b2cbf29cefe9cd0d5d40234cba0d82a6c1fbdcfaa0a30294f81a33af0a917a3a",
+    "no-response-support.json": "sha256:858086a6eac4abebe5b8c5a2b641c79821b6a5dc35f5f542a106e2895b6d762a",
     "nq-scope-preimage.json": "sha256:bbfeefc9980d70c067acad11de1733bb746f954212e7d1a0fa17dff1f03ac38e",
-    "query-b.json": "sha256:aa94316cc6fc36ee022cc2575361c5cb7e990fccb7d4d41468f40cd0ba712d8a",
-    "query.json": "sha256:6c399a43a14703fdae1b0321c5c227f0c62fe02050c9a46ca5b5db636b90c25c",
-    "realization.json": "sha256:2e00e68b664ff24e1f92c042135a050eca360089a8d01fa4c32396fcf55b6fd5",
-    "request-a.json": "sha256:ab6adf3c9705466d9284c535a930eda492af9918115d21c0c037837dbf5d30e6",
-    "request-b.json": "sha256:4e1b3b7efdf4ef19055f400ed109812ecfdfa6cd88bac1f6d9ba46d666fce505",
-    "support-current.json": "sha256:5087e435169291069df5ace9a220d4e8ef3b22d21867e570cf4ac3641e5d0903"
+    "query-b.json": "sha256:a4d7d52b06424ca47b05b66bf343f547da17cc8b6da4f0454f1cdaa51a457f4a",
+    "query.json": "sha256:90fac4b5752b7ae367a94c817dd0125beaa5489a95eddcde0ea78a5f1c355c80",
+    "realization.json": "sha256:fcb9b2b3957febf032907b33ba2dfbdd18831df27a971869343d8687f7ddfee1",
+    "request-a.json": "sha256:218087f4219216675a9c880e1b9a6960b881b3b4370fc0691634d91380ec7c24",
+    "request-b.json": "sha256:f02504fdbe9ca7cb3eb1ba739eb580219f8b6b08d8f6aa5e8b56ee9a737c62f6",
+    "request-provenance.json": "sha256:1501c67eb10abfd24077d75304cc8ab55bebaea8fa2a5075a3a29afdf261f85f",
+    "support-current.json": "sha256:b14c96176632d9fa46a875e7f5b1d3736f312fca09fe1b50d16848f15f7af1ec"
   },
   "capacity_vectors": [
     {
@@ -161,5 +181,19 @@
     "query_id"
   ],
   "claim_boundary": "Source-owned arithmetic and canonicalization expectations for a new separately qualified adapter; no retired compiled library comparison, NQ governed replay, HP custody or recurrence claim.",
-  "request_scope": "Synthetic exact binding contexts only, not complete accepted Nightshift cycles; full request/diagnostic admission remains Nightshift-owned"
+  "request_scope": "Synthetic complete owning-builder Nightshift request shapes; typed acceptance UNEXECUTED; config-backed native scope family and unchanged original correspondence family kept distinct",
+  "negative_contexts": {
+    "no-response": {
+      "artifact_count": 0,
+      "standing": "unknown"
+    },
+    "acquisition-failed": {
+      "artifact_count": 0,
+      "standing": "unknown"
+    },
+    "indeterminate": {
+      "artifact_count": 1,
+      "standing": "unknown"
+    }
+  }
 }

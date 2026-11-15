@@ -25,7 +25,9 @@ The configuration schema is
 exact native scope, its diagnostic scope digest, pinned native profile semantic
 identity, a separately accepted adapter realization, declared vantage, and a
 separately enrolled Nightshift consumer/authority and public signing key. It
-contains no per-slot diagnostic basis or expected condition. A `nightshift:` consumer namespace distinguishes this deployment from
+contains no per-slot diagnostic basis or expected condition. Static diagnostic_vantage_id,
+the subject and compiled native question/profile IDs fix the complete diagnostic
+key independently of each request. A `nightshift:` consumer namespace distinguishes this deployment from
 the status consumer; the namespace itself authenticates nobody. The operator
 owns the configuration, signing-key custody and resolver selection.
 
@@ -135,9 +137,10 @@ runtime role. There are no released consumers requiring that old shape.
 Every invocation supplies the exact immutable canonical Nightshift request.
 The producer, receiver and resolver independently decode its bounded canonical
 bytes, verify request/inputs identities and the NQ-owned artifact preimage,
-require one delivered native filesystem-capacity diagnostic matching the
-accepted profile semantic identity, subject and scope, and derive the expected
-condition through the existing diagnostic outcome classifier. Policy subject
+require one exact enrolled input key and matching native policy-inventory
+binding. Delivered diagnostics match the accepted profile semantic identity,
+subject, scope and declared diagnostic vantage; their expected condition comes
+from the existing outcome classifier. Policy subject
 and diagnostic subject must match. This validates only the adapter's binding;
 Nightshift still owns full request, policy, recurrence and diagnostic admission.
 A self-consistent request is not enrollment or authority.
@@ -207,8 +210,11 @@ Monitor lock `af7b991a944545781ceee44f24b16356d35827585ca9384379cf2f3024a11bc5`,
 passed the offline all-target check and 14 library tests. Root committed that
 lock as `0b7f7b3b44a5d5fcf7e41a1e6c7c722d4744c95b`. Those results do not execute
 this static-enrollment/request correction or establish live integration.
-The current source retains that exact lock. New Rust and principal cases are
-tests-ready, not executed PASS.
+The current source retains that exact lock. Engineering on the later
+static-request source 362ce7f separately passed locked offline metadata/check
+and 16 library cases. The present negative-context, ancestry and production
+footprint correction is newer source; its Rust, five CLI and principal cases
+are tests-ready, not executed PASS.
 The next native occurrence must follow this bounded recipe:
 
 1. Obtain Root's SDK and storage GO. Use a fresh source/output root and fresh
@@ -275,7 +281,7 @@ acquisition or qualification. Run it with a truthful committed build identity;
 `PULSE_FS_TEST_BINARY` may select the frozen production ELF for the same tests.
 These operator-context cases are explicitly ignored by ordinary unidentified
 development builds, following the existing native-projection test pattern.
-Native qualification must execute all four with
+Native qualification must execute all five with
 `cargo test --locked --offline -p pulse-nq-filesystem-support --test cli_custody
 -- --ignored --test-threads=1`; zero executed cases is not a pass. The existing
 `packaging/host-posture-qualify.sh` includes that required command against the
@@ -385,3 +391,92 @@ This is a bounded regression in the existing qualification test, not a new
 harness or acceptance schema. Both executions remain pending separate Root GO.
 The earlier 14-test engineering PASS is unchanged and provides no live
 preparation/custody proof.
+
+
+Negative diagnostic contexts
+
+Exact NoResponse or AcquisitionFailed inputs have no artifact IDs or expected
+condition. A validated delivered cannot-evaluate/indeterminate diagnostic keeps
+its actual artifact ID and has no expected condition. These three contexts
+resolve to Unknown with no evidence, contradiction or expiry, without reading
+an old receipt. Producer and intake explicitly refuse them before private-key,
+source, envelope or receipt access. This is a closed status/binding path;
+malformed fields, unknown statuses/schemas and mismatched key/profile/subject/
+scope still refuse. A completed indeterminate diagnostic is distinct from an
+invocation whose completion is unknown. Neither says healthy.
+
+The config-backed shared family now uses the actual owning Cartography
+build_request.py to produce complete Nightshift request shapes, including
+slot, policy inventory and recurrence. request-provenance.json records the
+builder hash, transformations and new IDs. Negative request/query/Unknown-
+support bytes cover all three states; native typed-parser execution is unrun
+for this source. The separately retained nightshift-correspondence-negative-family
+is the original owner's complete vector family byte for byte. Its synthetic
+fixed-digest scope has no HostFilesystemScope preimage. Refuse it under this
+native configuration; never invent a mountpoint or relabel original IDs.
+
+For meaningful negative-context behavioral RED, preserve the final APIs,
+static key, shared requests and five CLI tests in a separately identified
+temporary source. Reintroduce only the prior determinate-only restriction
+after request status classification: when expected_state.is_none(), return
+an explicit error before constructing context. Build that counterfactual
+under its own source identity and explicitly run
+cli_exact_negative_context_is_unknown_without_receipt_or_acquisition against
+its own selected CLI. It must execute and fail because a valid negative
+request errors instead of yielding Unknown. Missing APIs, schema drift,
+compilation failure or wrong realization is not behavioral RED. The same
+test on the final frozen candidate must pass. These native executions remain
+pending Root GO.
+
+The principal case applies the same operator-owned ancestry check to both
+request/query pairs as configuration, realization and custody directories.
+Its offline real-filesystem regression preserved the former behavior:
+mode0640 inputs under writable parents were accepted (two failing assertions).
+The corrected check refuses both request and query parent cases. This light
+result does not substitute for real three-UID qualification.
+
+Selected production dependency footprint
+
+The existing packaging/frozen-helper-cohort.py collects the selected FS
+binary's actual compiler-artifact and reachable Cargo fingerprint units at the
+final owning production build, before broader tests. The selected canonical
+binary must share an inode with its unique hashed Cargo output in the native
+release target. That checked output selects the root fingerprint; exact
+dependency fingerprints select libraries, build scripts and proc macros with
+their actual compiler features. Unused dev/test feature variants are not
+unioned from metadata. Missing or ambiguous output, dependency or compiler
+records refuse. This reader covers the observed Cargo1.94 inputs, with no
+general future-format or cross-platform promise.
+
+A full helper freeze retains the graph in the FS entry's
+production_dependency_footprint inside existing frozen-cohort.json. For a
+separately selected adapter, use the same tool's footprint subcommand directly
+after its final build:
+
+    python3 -B packaging/frozen-helper-cohort.py footprint CARGO_JSON PRODUCTION_TARGET SELECTED_FS OUTPUT
+
+No selected production rebuild follows collection or qualification. The
+private digest seam is footprint_preimage: remove only top-level sha256,
+encode sorted compact ASCII JSON with exact integers, ensure_ascii=True,
+allow_nan=False and no newline. This is not NQ/JCS/I-JSON; Cargo u64 values
+exceed I-JSON's safe integer range. Shared exact preimage/digest/expected-entry
+conformance, including maxu64 and escaped Unicode, is in
+artifacts/host-posture-production-footprint-v1. Realization inventory digest
+is sha256: followed by this footprint's 64-hex sha256. Verification also binds
+selected ELF SHA, exact selected compiler record and root-unit membership.
+
+Offline tool replay checked 114 units/211 edges from retained engineering
+fingerprints and 273 non-root joins from retained NQ production compiler JSON.
+The former is explicitly nonproduction. No complete old production graph
+is in custody, and no retired rlib was recovered. Actual final FS production
+collection remains pending its admitted build.
+
+There is no qualified new FS metadata or release package yet. After Root
+acceptance, deployment reuses the existing package build-identity and
+qualification-input frozen-cohort/results/hostile-corpus/raw-run records.
+Installer verification must bind those exact accepted records, selected FS
+ELF/build-info, the same final-build source/tree/lock, actual production
+footprint, and all five actual CLI outcomes and their command-stream hashes.
+Only then may it construct the site realization with exact static config
+digest and accepted raw results SHA as qualification receipt digest. Ordinary
+build-info, old P3 packages and missing qualification are not substitutes.

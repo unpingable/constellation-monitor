@@ -94,7 +94,7 @@ for case, outcome in re.findall(r"^test (\S+) \.\.\. (.*)$", open(focused + ".st
 for case, outcomes in observed.items():
     if outcomes != ["ok"]:
         sys.exit("qualification corpus refused: %s requires one explicit pass, observed %r" % (case, outcomes))
-# The existing FS operator-context command must actually execute all four
+# The existing FS operator-context command must actually execute all five
 # already-required cases; ignored/missing/duplicate cases are not qualification.
 fs_matches = [p[:-len(".argv.json")] for p in glob.glob(os.path.join(run, "*.argv.json"))
               if os.path.basename(p).split("-", 1)[1] == "filesystem-cli.argv.json"]
@@ -105,14 +105,15 @@ fs_required = [
     "cli_source_expiry_and_previous_boot_do_not_become_current",
     "cli_bad_signature_and_equal_acquisition_are_refused",
     "same_declared_semantics_wrong_runtime_realization_cannot_establish_current",
+    "cli_exact_negative_context_is_unknown_without_receipt_or_acquisition",
 ]
 fs_seen = {case: [] for case in fs_required}
 fs_output = open(fs_matches[0] + ".stdout").read()
 for case, outcome in re.findall(r"^test (\S+) \.\.\. (.*)$", fs_output, re.M):
     if case in fs_seen:
         fs_seen[case].append(outcome)
-if any(outcomes != ["ok"] for outcomes in fs_seen.values()) or sum(int(n) for n in re.findall(r"^test result: \w+\. (\d+) passed", fs_output, re.M)) != 4:
-    sys.exit("qualification refused: four exact filesystem CLI passes required")
+if any(outcomes != ["ok"] for outcomes in fs_seen.values()) or sum(int(n) for n in re.findall(r"^test result: \w+\. (\d+) passed", fs_output, re.M)) != 5:
+    sys.exit("qualification refused: five exact filesystem CLI passes required")
 corpus = {"schema_version": 1, "corpus_id": "constellation-host-posture-jammy-%s-v1" % commit[:7],
           "hostile_scenarios": list(observed),
           "property_families": list(required.values())}

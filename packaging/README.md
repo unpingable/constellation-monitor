@@ -97,3 +97,19 @@ identity helper and packager. It is apparatus evidence, never a Rust/native
 qualification result. The distinct-real-UID filesystem handoff case and its
 native/currentness limits are documented in
 `docs/nightshift-filesystem-support-v1.md`.
+
+
+The final selected FS entry also retains production_dependency_footprint in
+the existing frozen-cohort receipt. Collection follows only actual selected
+Cargo output/fingerprint edges, including build-script and proc-macro units;
+it never substitutes the workspace metadata feature union. Missing/ambiguous
+edges or records refuse. The same frozen-helper-cohort.py footprint subcommand
+serves a separately selected FS adapter. The native canonical/hashed output
+same-inode relationship is checked; unknown layouts refuse rather than guess.
+
+footprint_preimage and verify_footprint own this private receipt digest seam.
+Shared exact conformance is artifacts/host-posture-production-footprint-v1;
+Cargo u64 values require exact integer handling rather than NQ/JCS. The
+package's existing qualification-input records embed the frozen receipt and
+actual five-case FS command evidence. Internal digest consistency does not
+establish qualification.

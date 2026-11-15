@@ -77,6 +77,7 @@ pub struct FilesystemSupportConfigV1 {
     pub consumer_id: String,
     pub producer_id: String,
     pub producer_key_id: String,
+    pub diagnostic_vantage_id: String,
     pub producer_public_key_hex: String,
     pub producer_private_key_path: PathBuf,
     pub subject_id: String,
@@ -106,6 +107,7 @@ impl FilesystemSupportConfigV1 {
             ("authority_id", &self.authority_id),
             ("producer_id", &self.producer_id),
             ("producer_key_id", &self.producer_key_id),
+            ("diagnostic_vantage_id", &self.diagnostic_vantage_id),
         ] {
             require_token(name, x)?;
         }
@@ -290,6 +292,7 @@ pub fn produce(
 ) -> Result<String, String> {
     config.validate_running()?;
     context.validate_for(config)?;
+    context.require_delivered()?;
     require_token("acquisition_id", acquisition_id)?;
     let key = read_signing_key(&config.producer_private_key_path)?;
     if encode_hex(key.verifying_key().as_bytes()) != config.producer_public_key_hex {
@@ -344,7 +347,7 @@ pub fn produce(
 fn verify_envelope(
     config: &FilesystemSupportConfigV1,
     x: &FilesystemEnvelopeV1,
-    exact_basis: Option<&pulse_nq_load_support::ExpectedDiagnosticV1>,
+    exact_basis: Option<&request::FilesystemDiagnosticBasis>,
 ) -> Result<(), String> {
     let e = &x.evidence;
     if x.schema != ENVELOPE_SCHEMA
@@ -415,6 +418,7 @@ pub fn ingest(
 ) -> Result<String, String> {
     config.validate_running()?;
     context.validate_for(config)?;
+    context.require_delivered()?;
     let x: FilesystemEnvelopeV1 =
         read_canonical(&config.outgoing_directory.join("current-envelope.json"))?;
     verify_envelope(config, &x, Some(&context.expected))?;
@@ -549,23 +553,27 @@ pub fn resolve(
     validate_filesystem_query(config, context, q)?;
     let now = LinuxBootClock.now()?;
     let path = config.receipt_directory.join("current-receipt.json");
-    let receipt: Option<FilesystemReceiptV1> = match fs::symlink_metadata(&path) {
-        Ok(_) => {
-            let x = read_canonical(&path)?;
-            verify_receipt(config, &x)?;
-            Some(x)
+    let receipt: Option<FilesystemReceiptV1> = if context.expected.expected_state.is_none() {
+        None
+    } else {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let x = read_canonical(&path)?;
+                verify_receipt(config, &x)?;
+                Some(x)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.to_string()),
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e.to_string()),
     };
     let basis_matches = receipt.as_ref().is_none_or(|r| {
         r.envelope.evidence.diagnostic_inputs_id == q.diagnostic_inputs_id
             && r.envelope.evidence.artifact_ids == q.artifact_ids
     });
-    let standing = if basis_matches {
-        standing_at(receipt.as_ref(), &now, context.expected.expected_state)
-    } else {
-        QualifiedStandingV1::Unsupported
+    let standing = match context.expected.expected_state {
+        None => QualifiedStandingV1::Unknown,
+        Some(expected) if basis_matches => standing_at(receipt.as_ref(), &now, expected),
+        Some(_) => QualifiedStandingV1::Unsupported,
     };
     let mut out = QualifiedSupportV1 {
         schema: QUALIFIED_SUPPORT_SCHEMA.into(),

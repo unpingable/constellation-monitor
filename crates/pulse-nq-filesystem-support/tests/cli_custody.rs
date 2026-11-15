@@ -111,9 +111,9 @@ impl Fixture {
     }
     fn basis(&self, field: &str) -> Value {
         match field {
-            "artifact_ids" => {
-                json!([self.request["inputs"]["inputs"][0]["artifact"]["artifact_id"]])
-            }
+            "artifact_ids" => self.request["inputs"]["inputs"][0]
+                .get("artifact")
+                .map_or_else(|| json!([]), |a| json!([a["artifact_id"]])),
             "diagnostic_inputs_id" => self.request["inputs"]["inputs_id"].clone(),
             _ => panic!("unknown basis field"),
         }
@@ -148,7 +148,7 @@ impl Fixture {
                 .arg("--request")
                 .arg(&self.request_path);
         }
-        if role == "ingest" {
+        if role == "ingest" || role == "produce" {
             cmd.args(["--acquisition-id", "fixture:acquisition"]);
         }
         cmd.stdin(std::process::Stdio::piped())
@@ -381,6 +381,59 @@ fn same_declared_semantics_wrong_runtime_realization_cannot_establish_current() 
         assert!(
             !intake.status.success(),
             "wrong {field} created receiver custody"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a truthful committed adapter build; qualification must run explicitly with --ignored"]
+fn cli_exact_negative_context_is_unknown_without_receipt_or_acquisition() {
+    for status in ["no_response", "acquisition_failed", "cannot_evaluate"] {
+        let mut f = Fixture::new();
+        let bytes: &[u8] = match status {
+            "no_response" => include_bytes!(
+                "../../../artifacts/nightshift-filesystem-support-v1/no-response-request.json"
+            ),
+            "acquisition_failed" => include_bytes!(
+                "../../../artifacts/nightshift-filesystem-support-v1/acquisition-failed-request.json"
+            ),
+            _ => include_bytes!(
+                "../../../artifacts/nightshift-filesystem-support-v1/indeterminate-request.json"
+            ),
+        };
+        f.request = serde_json::from_slice(bytes).unwrap();
+        identify(&mut f.request["inputs"], "inputs_id");
+        identify(&mut f.request, "request_id");
+        f.save_request();
+        let accepted = fs::read(&f.path).unwrap();
+        // A negative context must not inspect or borrow any old receipt.
+        let receipt = f.path("receipt_directory", "current-receipt.json");
+        fs::write(&receipt, b"not-json-old-receipt").unwrap();
+        let out = f.command("resolve", Some(&f.query()));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let support: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(support["standing"], "unknown");
+        assert_eq!(support["evidence_refs"], json!([]));
+        assert_eq!(support["contradiction_refs"], json!([]));
+        assert!(support["expiry"].is_null());
+        for role in ["produce", "ingest"] {
+            let out = f.command(role, None);
+            assert!(!out.status.success());
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("no eligible delivered diagnostic"),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert_eq!(fs::read(&receipt).unwrap(), b"not-json-old-receipt");
+        assert_eq!(fs::read(&f.path).unwrap(), accepted);
+        assert!(
+            !f.path("outgoing_directory", "current-envelope.json")
+                .exists()
         );
     }
 }

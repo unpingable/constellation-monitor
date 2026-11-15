@@ -79,6 +79,24 @@ def verify(root):
             raise ValueError('request profile/query preimage differs')
     if objects['request-a.json']['inputs']['inputs_id']==objects['request-b.json']['inputs']['inputs_id']:
         raise ValueError('two distinct request bases required')
+    for name,expected in manifest['negative_contexts'].items():
+        request=objects[name+'-request.json'];q=objects[name+'-query.json'];support_negative=objects[name+'-support.json']
+        inputs=request['inputs'];row=inputs['inputs'][0]
+        if identity(request,'request_id')!=request['request_id'] or identity(inputs,'inputs_id')!=inputs['inputs_id'] or identity(q,'query_id')!=q['query_id']:
+            raise ValueError('negative request/input/query preimage differs')
+        artifacts=[row['artifact']['artifact_id']] if row['status']=='delivered' else []
+        if artifacts!=q['artifact_ids'] or len(artifacts)!=expected['artifact_count'] or q['diagnostic_inputs_id']!=inputs['inputs_id'] or q['observation_id']!=request['observation_id']:
+            raise ValueError('negative query differs from exact diagnostic context')
+        if row['key']['subject_id']!=config['subject_id'] or row['key']['vantage_id']!=config['diagnostic_vantage_id'] or q['scope_id']!=config['scope_id']:
+            raise ValueError('negative context differs from enrolled key/scope')
+        if support_negative['standing']!='unknown' or support_negative['evidence_refs'] or support_negative['contradiction_refs'] or support_negative['expiry'] is not None or identity(support_negative,'support_id')!=support_negative['support_id']:
+            raise ValueError('negative context fabricated positive support')
+        if any(support_negative[field]!=q[field] for field in q if field!='schema'):
+            raise ValueError('negative support differs from query')
+    original=objects['nightshift-correspondence-negative-family/SOURCE.json']
+    for name,row in original['files'].items():
+        if digest((root/'nightshift-correspondence-negative-family'/name).read_bytes())!='sha256:'+row['sha256']:
+            raise ValueError('original owning negative family changed')
     for field in query:
         if field != 'schema' and query[field] != support[field]:
             raise ValueError(f'{field}: support differs from query')

@@ -23,8 +23,8 @@ class QualificationMetadataTests(unittest.TestCase):
             run = out / "run"
             run.mkdir()
             names = order or ["release", "freeze", "fmt", "clippy", "focused", "workspace", "filesystem-cli"]
-            fs_cases = ["cli_missing_current_replay_contradiction_and_new_basis_use_real_files", "cli_source_expiry_and_previous_boot_do_not_become_current", "cli_bad_signature_and_equal_acquisition_are_refused", "same_declared_semantics_wrong_runtime_realization_cannot_establish_current"]
-            fs_output = "".join(f"test {case} ... ok\n" for case in fs_cases) + "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+            fs_cases = ["cli_missing_current_replay_contradiction_and_new_basis_use_real_files", "cli_source_expiry_and_previous_boot_do_not_become_current", "cli_bad_signature_and_equal_acquisition_are_refused", "same_declared_semantics_wrong_runtime_realization_cannot_establish_current", "cli_exact_negative_context_is_unknown_without_receipt_or_acquisition"]
+            fs_output = "".join(f"test {case} ... ok\n" for case in fs_cases) + "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
             if filesystem_output is not None: fs_output = filesystem_output
             for number, name in enumerate(names, 1):
                 stem = run / f"{number}-{name}"
@@ -46,9 +46,9 @@ class QualificationMetadataTests(unittest.TestCase):
         self.assertEqual(corpus["hostile_scenarios"], CASES)
 
     def test_filesystem_missing_ignored_duplicate_or_zero_count_refuses(self):
-        cases = ["cli_missing_current_replay_contradiction_and_new_basis_use_real_files", "cli_source_expiry_and_previous_boot_do_not_become_current", "cli_bad_signature_and_equal_acquisition_are_refused", "same_declared_semantics_wrong_runtime_realization_cannot_establish_current"]
-        output = "".join(f"test {case} ... ok\n" for case in cases) + "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
-        bad = [output.replace(f"test {cases[0]} ... ok\n", ""), output.replace(f"{cases[0]} ... ok", f"{cases[0]} ... ignored"), output + f"test {cases[0]} ... ok\n", output.replace("4 passed", "0 passed")]
+        cases = ["cli_missing_current_replay_contradiction_and_new_basis_use_real_files", "cli_source_expiry_and_previous_boot_do_not_become_current", "cli_bad_signature_and_equal_acquisition_are_refused", "same_declared_semantics_wrong_runtime_realization_cannot_establish_current", "cli_exact_negative_context_is_unknown_without_receipt_or_acquisition"]
+        output = "".join(f"test {case} ... ok\n" for case in cases) + "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        bad = [output.replace(f"test {cases[0]} ... ok\n", ""), output.replace(f"{cases[0]} ... ok", f"{cases[0]} ... ignored"), output + f"test {cases[0]} ... ok\n", output.replace("5 passed", "0 passed")]
         for stream in bad:
             result, corpus = self.produce(self.passing_output(), filesystem_output=stream)
             self.assertNotEqual(result.returncode,0)
@@ -111,6 +111,13 @@ class FrozenCohortPipelineTests(unittest.TestCase):
         for name in self.names:
             shutil.copyfile(self.root/name, self.release/name)
             (self.release/name).chmod(0o755)
+        # Commodity Cargo output fixture, separate from actual retained replay.
+        fingerprint=self.release/'.fingerprint'/'pulse-nq-filesystem-support-1111111111111111'
+        fingerprint.mkdir(parents=True)
+        (fingerprint/'bin-pulse-nq-filesystem-support.json').write_text(json.dumps({'features':'[]','deps':[],'profile':1}))
+        (fingerprint/'bin-pulse-nq-filesystem-support').write_text('0100000000000000')
+        deps=self.release/'deps';deps.mkdir()
+        os.link(self.release/'pulse-nq-filesystem-support',deps/'pulse_nq_filesystem_support-1111111111111111')
         self.tools = self.root/'stand-in-tools'
         self.tools.mkdir()
         cargo = self.tools/'cargo'
@@ -122,12 +129,12 @@ names=['constellation-host-posture','constellation-status','pulse-nq-load-suppor
 if args[0]=='build':
  if (r/'fs-tested').exists():
   p=release/'pulse-nq-filesystem-support';p.write_bytes(p.read_bytes()+b'# late shared production writer\\n')
- for name in names:print(json.dumps({'reason':'compiler-artifact','package_id':'path+file:///fixture#'+name+'@0.1.0','target':{'name':name,'kind':['bin']},'profile':{'opt_level':'3','debug_assertions':False},'features':[],'executable':str(release/name)}))
+ for name in names:print(json.dumps({'reason':'compiler-artifact','package_id':'path+file:///fixture#'+name+'@0.1.0','target':{'name':name,'kind':['bin']},'profile':{'opt_level':'3','debug_assertions':False,'test':False},'features':[],'filenames':[str(release/name)],'executable':str(release/name)}))
  print(json.dumps({'reason':'build-finished','success':True}))
 elif args[0]=='test':
  if 'cli_custody' in args:
   (r/'fs-tested').touch()
-  cases=['cli_missing_current_replay_contradiction_and_new_basis_use_real_files','cli_source_expiry_and_previous_boot_do_not_become_current','cli_bad_signature_and_equal_acquisition_are_refused','same_declared_semantics_wrong_runtime_realization_cannot_establish_current']
+  cases=['cli_missing_current_replay_contradiction_and_new_basis_use_real_files','cli_source_expiry_and_previous_boot_do_not_become_current','cli_bad_signature_and_equal_acquisition_are_refused','same_declared_semantics_wrong_runtime_realization_cannot_establish_current', 'cli_exact_negative_context_is_unknown_without_receipt_or_acquisition']
   mutation=os.environ.get('MUTATE_FROZEN')
   if mutation:
    p=pathlib.Path(os.environ['PULSE_FS_TEST_BINARY']).parent/mutation;p.chmod(0o755);p.write_bytes(p.read_bytes()+b'# selected member substitution\\n')
@@ -159,6 +166,8 @@ elif args[0]=='test':
         fs_before=hashlib.sha256((self.release/'pulse-nq-filesystem-support').read_bytes()).hexdigest()
         result=self.run_pipeline()
         self.assertEqual(result.returncode,0,result.stderr)
+        frozen=json.loads((self.out/'frozen-cohort.json').read_text())
+        self.assertIn('production_dependency_footprint',frozen['executables']['pulse-nq-filesystem-support'],'selected FS freeze lacks its own actual production dependency footprint')
         self.assertEqual(hashlib.sha256((self.release/'constellation-host-posture').read_bytes()).hexdigest(),hp_before)
         calls=self.calls();build=[i for i,x in enumerate(calls) if x['argv'][0]=='build'];tests=[i for i,x in enumerate(calls) if x['argv'][0]=='test']
         self.assertEqual(len(build),1)

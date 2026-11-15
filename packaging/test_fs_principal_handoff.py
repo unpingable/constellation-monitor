@@ -21,6 +21,22 @@ def check(condition, message):
         raise ValueError(message)
 
 
+def validate_operator_ancestry(paths, root, operator_uid=0):
+    for path in paths:
+        check(path.resolve().is_relative_to(root), 'all custody/enrollment must be below explicit proof ancestry')
+        for parent in path.parents:
+            check(not parent.is_symlink() and parent.stat().st_uid == operator_uid and parent.stat().st_mode & 0o022 == 0, 'accepted and custody directory entries need operator-controlled ancestry')
+            if parent == root:
+                break
+
+
+def validate_request_inputs(slots, root, operator_uid=0):
+    paths=[p for pair in slots for p in pair]
+    for path in paths:
+        check(path.is_absolute() and not path.is_symlink() and path.stat().st_uid==operator_uid and stat.S_IMODE(path.stat().st_mode)==0o640, 'per-slot inputs must remain immutable operator-owned 0640 proof files')
+    validate_operator_ancestry(paths,root,operator_uid)
+
+
 def main(binary, config_path, realization_path, request_a, query_a, request_b, query_b, root_path, producer, receiver, resolver):
     check(os.geteuid() == 0, 'native principal proof requires the admitted VM operator, not a same-UID substitute')
     root, binary = Path(root_path).resolve(), Path(binary).resolve()
@@ -49,13 +65,8 @@ def main(binary, config_path, realization_path, request_a, query_a, request_b, q
         meta = path.stat()
         check(stat.S_IMODE(meta.st_mode) == 0o2750 and meta.st_uid == roles[writer].pw_uid, 'publication directory requires exact writer ownership and 02750 mode')
         check(meta.st_gid in os.getgrouplist(roles[reader].pw_name, roles[reader].pw_gid), 'next reader lacks the enrolled read group')
-    for path in [outgoing,receipt,config_file,realization_file]:
-        check(path.resolve().is_relative_to(root), 'all custody/enrollment must be below explicit proof ancestry')
-        for parent in path.parents:
-            check(not parent.is_symlink() and parent.stat().st_uid == 0 and parent.stat().st_mode & 0o022 == 0, 'accepted and custody directory entries need operator-controlled ancestry')
-            if parent == root: break
-    for path in [p for pair in slots for p in pair]:
-        check(path.is_absolute() and not path.is_symlink() and path.stat().st_uid==0 and stat.S_IMODE(path.stat().st_mode)==0o640, 'per-slot inputs must remain immutable operator-owned 0640 proof files')
+    validate_operator_ancestry([outgoing,receipt,config_file,realization_file],root)
+    validate_request_inputs(slots,root)
     check(key.stat().st_uid == roles['producer'].pw_uid and stat.S_IMODE(key.stat().st_mode) == 0o600, 'signing key must remain producer-only 0600')
     for path in [config_file, realization_file, *[p for pair in slots for p in pair]]:
         check(not path.resolve().is_relative_to(outgoing) and not path.resolve().is_relative_to(receipt), 'configuration/query cannot live in runtime writer custody')
