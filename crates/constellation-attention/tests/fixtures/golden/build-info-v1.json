@@ -23,6 +23,7 @@
     "route_change_reconcile",
     "estate_service_retirement",
     "nightshift_cycle_support",
+    "nightshift_local_filesystem_boot",
     "service_maintenance_v1",
     "service_endpoint_conditions_v1"
   ]

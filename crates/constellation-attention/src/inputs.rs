@@ -1225,6 +1225,13 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
                     report.fault("indeterminate", InputStatus::NotCurrent,
                         "selected closed cycle records unavailable support; retained Current is historical only");
                 }
+                if input.require_local_filesystem_boot {
+                    apply_local_filesystem_boot(
+                        &mut report,
+                        &selected.clock_id,
+                        crate::nightshift_support::local_filesystem_clock_id(),
+                    );
+                }
             }
             Err(error) => report.fault("unreadable", InputStatus::Unavailable, &error),
         }
@@ -1247,6 +1254,30 @@ fn nightshift(context: &Context<'_>, input: &NightshiftInput, read: &mut InputsR
             &identity,
             format!("last closed cycle {age} s ago"),
         );
+    }
+}
+
+/// Only the explicitly enrolled local filesystem composition requests this
+/// additional confidence check. Matching boots never upgrades a support result.
+fn apply_local_filesystem_boot(
+    report: &mut InputReport,
+    support_clock_id: &str,
+    local_clock_id: Result<String, String>,
+) {
+    report.identity["support_clock_id"] = json!(support_clock_id);
+    match local_clock_id {
+        Ok(local) => {
+            let matches = local == support_clock_id;
+            report.identity["local_filesystem_boot_matches"] = json!(matches);
+            if !matches {
+                report.fault(
+                    "indeterminate",
+                    InputStatus::NotCurrent,
+                    "selected local filesystem support is not from this Linux boot; postboot support is not yet observed",
+                );
+            }
+        }
+        Err(error) => report.fault("unreadable", InputStatus::Unavailable, &error),
     }
 }
 
@@ -2714,6 +2745,54 @@ fn describe_metric_instance(instance: &Value) -> String {
         None => site.to_owned(),
     };
     format!("{location}: {}", metric_detail(summary.trim()))
+}
+
+#[cfg(test)]
+mod local_boot_tests {
+    use super::*;
+
+    fn report() -> InputReport {
+        InputReport {
+            label: "local-filesystem".into(),
+            kind: "nightshift",
+            component: "nightshift",
+            source: "/fixture/nightshift.sqlite".into(),
+            status: InputStatus::Ok,
+            error: None,
+            identity: json!({"cycle_id": "retained-cycle"}),
+            causes: Vec::new(),
+            rejected_rules: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn local_boot_read_failure_is_unavailable_and_keeps_selected_cycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = crate::nightshift_support::local_filesystem_clock_id_from(
+            &dir.path().join("absent-boot-id"),
+        );
+        assert!(missing.is_err());
+        let mut report = report();
+        apply_local_filesystem_boot(&mut report, "old-support-clock", missing);
+        assert_eq!(report.status, InputStatus::Unavailable);
+        assert_eq!(report.causes, ["unreadable"]);
+        assert_eq!(report.identity["cycle_id"], "retained-cycle");
+        assert!(report.identity["local_filesystem_boot_matches"].is_null());
+    }
+
+    #[test]
+    fn local_boot_match_does_not_clear_an_existing_input_fault() {
+        let mut report = report();
+        report.fault(
+            "indeterminate",
+            InputStatus::NotCurrent,
+            "historical support is unknown",
+        );
+        apply_local_filesystem_boot(&mut report, "same-clock", Ok("same-clock".into()));
+        assert_eq!(report.status, InputStatus::NotCurrent);
+        assert_eq!(report.causes, ["indeterminate"]);
+        assert_eq!(report.identity["local_filesystem_boot_matches"], true);
+    }
 }
 
 #[cfg(test)]

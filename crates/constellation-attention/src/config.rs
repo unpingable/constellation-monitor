@@ -391,6 +391,10 @@ pub struct NightshiftInput {
     /// This does not turn stored Current into present authority.
     #[serde(default)]
     pub require_cycle_support: bool,
+    /// For explicitly enrolled local Pulse filesystem support only: require its
+    /// retained support clock to identify this Linux boot. Not Current-now.
+    #[serde(default)]
+    pub require_local_filesystem_boot: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -588,6 +592,12 @@ impl Config {
         if let Some(input) = &self.inputs.nightshift {
             label(&input.label)?;
             absolute("nightshift.store_path", &input.store_path)?;
+            if input.require_local_filesystem_boot && !input.require_cycle_support {
+                return Err(
+                    "nightshift.require_local_filesystem_boot requires require_cycle_support"
+                        .into(),
+                );
+            }
         }
         if let Some(input) = &self.inputs.estate {
             absolute("inputs.estate.path", &input.path)?;

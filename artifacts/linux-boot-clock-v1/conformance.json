@@ -1,0 +1,29 @@
+{
+  "schema": "pulse.linux_boot_clock_conformance.v1",
+  "scope": "Source-shaped substitution vectors for the existing Pulse Linux boot clock encoding; not acquired boot evidence or currentness.",
+  "encoding": "UTF-8 text, Rust str::trim, nonempty with no interior Unicode whitespace, SHA256 of trimmed UTF-8 bytes, lowercase hex after pulse-linux-boottime:sha256:. No tick or wall-clock conversion.",
+  "accepted": [
+    {
+      "raw_boot_id": "00000000-0000-4000-8000-000000000001",
+      "clock_id": "pulse-linux-boottime:sha256:11e594f481958c10e3015d0bf0447a22f068a8a647f475df15ce2c7ab4b8f3f1"
+    },
+    {
+      "raw_boot_id": "00000000-0000-4000-8000-000000000001\n",
+      "clock_id": "pulse-linux-boottime:sha256:11e594f481958c10e3015d0bf0447a22f068a8a647f475df15ce2c7ab4b8f3f1"
+    },
+    {
+      "raw_boot_id": " \tboot-epoch-alpha\n",
+      "clock_id": "pulse-linux-boottime:sha256:0d584aa26e272791dd1367a4ec038c82d3b08982e1f61e86164fc4e69a8142d0"
+    },
+    {
+      "raw_boot_id": "boot-epoch-beta",
+      "clock_id": "pulse-linux-boottime:sha256:782a47f0897a3d5b5a7eae72e0f5ed06110bc718e675e1d955b5bddb54374a5d"
+    }
+  ],
+  "rejected": [
+    "",
+    " \t\n",
+    "boot epoch",
+    "boot\nepoch"
+  ]
+}

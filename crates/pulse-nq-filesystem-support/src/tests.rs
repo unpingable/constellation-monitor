@@ -1,6 +1,33 @@
 use super::*;
 use sha2::{Digest as _, Sha256};
 
+#[test]
+fn linux_boot_clock_matches_shared_encoding_and_actual_fixed_source() {
+    use crate::custody::{AuthorityClock, LinuxBootClock};
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../artifacts/linux-boot-clock-v1/conformance.json"
+    ))
+    .unwrap();
+    for case in vector["accepted"].as_array().unwrap() {
+        let boot = case["raw_boot_id"].as_str().unwrap().trim();
+        assert_eq!(
+            format!("pulse-linux-boottime:sha256:{:x}", Sha256::digest(boot)),
+            case["clock_id"].as_str().unwrap()
+        );
+    }
+    // Exercise the unchanged production clock against its actual fixed source.
+    // No fixture boot identity is substituted for native observation.
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    let actual = LinuxBootClock.now().unwrap();
+    assert_eq!(
+        actual.clock_id,
+        format!(
+            "pulse-linux-boottime:sha256:{:x}",
+            Sha256::digest(boot.trim())
+        )
+    );
+}
+
 fn test_scope() -> native::HostFilesystemScope {
     native::HostFilesystemScope {
         schema: native::SCOPE_SCHEMA.into(),

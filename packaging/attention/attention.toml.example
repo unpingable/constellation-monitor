@@ -54,6 +54,10 @@ stale_after_seconds = 180          # a watcher with no collection or evaluation 
 [inputs.nightshift]
 label = "observation"
 store_path = "/var/lib/constellation-nightshift-observation/nightshift.sqlite"
+# Explicit local Pulse filesystem enrollment only; requires both capabilities.
+# Omit these fields for older destination evaluators that do not advertise them.
+# require_cycle_support = true
+# require_local_filesystem_boot = true
 
 # One file per reference: the check's own timer runs
 # `nq --json saved-check evaluate REF --evaluation-id sc-<unix> ...` and writes

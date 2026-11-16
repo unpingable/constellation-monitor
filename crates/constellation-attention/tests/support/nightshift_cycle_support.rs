@@ -296,3 +296,144 @@ fn required_support_missing_store_or_closed_cycle_does_not_warm_as_ok() {
         assert_eq!(report["exit_code"], 3);
     }
 }
+
+fn configure_local_boot(harness: &mut Harness, enabled: bool) {
+    configure(harness, Some(true));
+    harness.raw(&format!("require_local_filesystem_boot = {enabled}\n"));
+}
+
+fn local_boot_clock() -> String {
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    format!(
+        "pulse-linux-boottime:sha256:{:x}",
+        Sha256::digest(boot.trim())
+    )
+}
+
+fn with_clock(mut value: Value, clock: &str) -> Value {
+    value["observation"]["support"]["evaluated_at"]["clock_id"] = json!(clock);
+    if value["observation"]["support"].get("expiry").is_some() {
+        value["observation"]["support"]["expiry"]["clock_id"] = json!(clock);
+    }
+    seal_support(&mut value);
+    value
+}
+
+fn nightshift_input(report: &Value) -> &Value {
+    report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|input| input["kind"] == "nightshift")
+        .unwrap()
+}
+
+#[test]
+fn local_boot_old_current_is_not_current_while_recurrence_stays_clear() {
+    let mut harness = Harness::new();
+    configure_local_boot(&mut harness, true);
+    let old_clock = format!("pulse-linux-boottime:sha256:{}", "0".repeat(64));
+    assert_ne!(old_clock, local_boot_clock());
+    let value = with_clock(cycle("current"), &old_clock);
+    insert(&harness, &value);
+    let report = harness.evaluate(AT);
+    let input = nightshift_input(&report);
+    assert_eq!(
+        input["status"], "not_current",
+        "behavioral regression: old-boot stored Current was accepted as local input confidence"
+    );
+    assert_eq!(causes(input), ["indeterminate"]);
+    assert_eq!(input["identity"]["cycle_id"], value["cycle_id"]);
+    assert_eq!(input["identity"]["local_filesystem_boot_matches"], false);
+    let recurrence = report["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["rule"] == "nightshift-recurrence-missing")
+        .unwrap();
+    assert_eq!(recurrence["observation"], "clear");
+    assert_eq!(report["exit_code"], 3);
+}
+
+#[test]
+fn local_boot_match_keeps_historical_current_without_renewal() {
+    let mut harness = Harness::new();
+    configure_local_boot(&mut harness, true);
+    insert(&harness, &with_clock(cycle("current"), &local_boot_clock()));
+    let report = harness.evaluate(AT + 100);
+    let input = nightshift_input(&report);
+    assert_eq!(input["status"], "ok");
+    assert_eq!(input["identity"]["local_filesystem_boot_matches"], true);
+    assert_eq!(input["identity"]["historical_support_only"], true);
+    assert!(input["identity"].get("fresh_until").is_none());
+}
+
+#[test]
+fn local_boot_match_does_not_promote_unknown_support() {
+    let mut harness = Harness::new();
+    configure_local_boot(&mut harness, true);
+    insert(&harness, &with_clock(cycle("unknown"), &local_boot_clock()));
+    let report = harness.evaluate(AT + 30);
+    assert_eq!(nightshift_input(&report)["status"], "not_current");
+}
+
+#[test]
+fn local_boot_default_and_false_preserve_generic_remote_historical_support() {
+    for enabled in [None, Some(false)] {
+        let mut harness = Harness::new();
+        configure(&mut harness, Some(true));
+        if let Some(enabled) = enabled {
+            harness.raw(&format!("require_local_filesystem_boot = {enabled}\n"));
+        }
+        insert(&harness, &cycle("current")); // Owning shared fixture uses a nonlocal clock.
+        let report = harness.evaluate(AT + 100);
+        let input = nightshift_input(&report);
+        assert_eq!(input["status"], "ok");
+        assert!(
+            input["identity"]
+                .get("local_filesystem_boot_matches")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn local_boot_loss_does_not_clear_an_unrelated_active_service() {
+    let (mut harness, status) = super::nq_status_harness();
+    let at = super::trigger_cron(&harness, &status) + 3;
+    configure_local_boot(&mut harness, true);
+    let mut value = cycle("current");
+    value["updated_at"] = json!(rfc3339(at));
+    seal(&mut value, "state_digest");
+    insert(&harness, &value);
+    let report = harness.evaluate(at);
+    assert_eq!(nightshift_input(&report)["status"], "not_current");
+    assert_eq!(harness.state()["conditions"][super::CRON]["active"], true);
+    assert!(
+        report["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == super::CRON && row["active"] == true)
+    );
+}
+
+#[test]
+fn local_boot_configuration_requires_historical_support_and_advertises_capability() {
+    for (support, local, accepted) in [
+        (false, false, true),
+        (true, false, true),
+        (false, true, false),
+        (true, true, true),
+    ] {
+        let mut harness = Harness::new();
+        configure(&mut harness, Some(support));
+        harness.raw(&format!("require_local_filesystem_boot = {local}\n"));
+        let result = constellation_attention::config::Config::load(&harness.config_path());
+        assert_eq!(result.is_ok(), accepted, "{support}/{local}: {result:?}");
+    }
+    assert!(
+        constellation_attention::build_info::CAPABILITIES
+            .contains(&"nightshift_local_filesystem_boot")
+    );
+}

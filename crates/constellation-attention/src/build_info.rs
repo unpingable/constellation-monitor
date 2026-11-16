@@ -47,6 +47,9 @@ pub const ESTATE_SERVICE_RETIREMENT: &str = "estate_service_retirement";
 /// Opt in to historical closed-cycle support/identity checks without renewing support.
 pub const NIGHTSHIFT_CYCLE_SUPPORT: &str = "nightshift_cycle_support";
 
+/// Opt in to local Pulse filesystem support boot identity, without renewing support.
+pub const NIGHTSHIFT_LOCAL_FILESYSTEM_BOOT: &str = "nightshift_local_filesystem_boot";
+
 /// Supported behaviours. Published identifiers are never renamed or removed
 /// without a build-info schema bump.
 pub const CAPABILITIES: &[&str] = &[
@@ -63,6 +66,7 @@ pub const CAPABILITIES: &[&str] = &[
     ROUTE_CHANGE_RECONCILE,
     ESTATE_SERVICE_RETIREMENT,
     NIGHTSHIFT_CYCLE_SUPPORT,
+    NIGHTSHIFT_LOCAL_FILESYSTEM_BOOT,
     "service_maintenance_v1",
     "service_endpoint_conditions_v1",
 ];

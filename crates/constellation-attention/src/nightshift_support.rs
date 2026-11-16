@@ -10,7 +10,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::util::rfc3339_seconds;
+use crate::util::{read_bounded, rfc3339_seconds};
+
+/// The existing Pulse Linux boot-clock identity, not a present-support query.
+pub(crate) fn local_filesystem_clock_id() -> Result<String, String> {
+    local_filesystem_clock_id_from(Path::new("/proc/sys/kernel/random/boot_id"))
+}
+
+pub(crate) fn local_filesystem_clock_id_from(path: &Path) -> Result<String, String> {
+    boot_clock_id(&read_bounded(path, 4096)?)
+}
+
+fn boot_clock_id(bytes: &[u8]) -> Result<String, String> {
+    let boot = std::str::from_utf8(bytes)
+        .map_err(|_| "local Linux boot ID is not UTF-8".to_owned())?
+        .trim();
+    if boot.is_empty() || boot.chars().any(char::is_whitespace) {
+        return Err("local Linux boot ID is empty or malformed".into());
+    }
+    Ok(format!(
+        "pulse-linux-boottime:sha256:{:x}",
+        Sha256::digest(boot)
+    ))
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -188,6 +210,7 @@ impl Support {
 pub(crate) struct HistoricalSupport {
     pub identity: Value,
     pub loss: bool,
+    pub clock_id: String,
 }
 
 /// Validate exactly the selected row. Never search older rows for Current.
@@ -320,9 +343,54 @@ pub(crate) fn read_selected(
     Ok(HistoricalSupport {
         loss: support.standing != Standing::Current
             || matches!(reason, "support_not_current" | "support_not_decidable"),
+        clock_id: support.evaluated_at.clock_id,
         identity: json!({"cycle_id": cycle_id, "closed_at": updated_at,
             "state_digest": state_digest, "support_id": support.support_id,
             "support_standing": support.standing, "posture_current": current,
             "historical_support_only": true}),
     })
+}
+
+#[cfg(test)]
+mod local_boot_tests {
+    use super::*;
+
+    #[test]
+    fn local_boot_encoding_matches_shared_pulse_vectors() {
+        let vector: Value = serde_json::from_str(include_str!(
+            "../../../artifacts/linux-boot-clock-v1/conformance.json"
+        ))
+        .unwrap();
+        for case in vector["accepted"].as_array().unwrap() {
+            assert_eq!(
+                boot_clock_id(case["raw_boot_id"].as_str().unwrap().as_bytes()).unwrap(),
+                case["clock_id"].as_str().unwrap()
+            );
+        }
+        for case in vector["rejected"].as_array().unwrap() {
+            assert!(boot_clock_id(case.as_str().unwrap().as_bytes()).is_err());
+        }
+        assert!(boot_clock_id(&[0xff]).is_err());
+    }
+
+    #[test]
+    fn local_boot_missing_malformed_and_oversized_files_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("boot-id");
+        assert!(local_filesystem_clock_id_from(&path).is_err());
+        for bytes in [
+            b"\n".to_vec(),
+            b"boot epoch".to_vec(),
+            vec![0xff],
+            vec![b'a'; 4097],
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(local_filesystem_clock_id_from(&path).is_err());
+        }
+        std::fs::write(&path, b"boot-epoch-alpha\n").unwrap();
+        assert_eq!(
+            local_filesystem_clock_id_from(&path).unwrap(),
+            boot_clock_id(b"boot-epoch-alpha").unwrap()
+        );
+    }
 }

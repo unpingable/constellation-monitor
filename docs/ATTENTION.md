@@ -107,6 +107,7 @@ bump. New identifiers may be added within v1.
 | `loopback_http_runbooks` | HTTP runbook bases accept literal loopback addresses with an explicit port and path. | `3ecf0bb` |
 | `metric_alert_admission_per_rule` | Invalid definitions or site targets, including shared targets, are rejected independently while admitted rules still evaluate. | `69eac29` |
 | `value_codes_v1` | Opted-in v1 value codes preserve code-1 presence amid unknown codes 2–5; unknown codes cannot establish recovery. | `a22f15e` |
+| `nightshift_local_filesystem_boot` | Explicit local filesystem composition checks the retained support clock against this Linux boot; requires historical cycle-support checking. | This build |
 
 ## Boundary
 
@@ -1838,6 +1839,32 @@ currentness equation over retained support and completeness/coverage/recurrence
 axes, without reevaluating NQ diagnostics, posture policy or action authority.
 The selected JSON read is capped at 16 MiB. The existing latest-cycle query can
 scan and sort; this change makes no bounded-query-cost claim and adds no index.
+
+For an explicitly enrolled **local Pulse filesystem** composition,
+`require_local_filesystem_boot = true` additionally requires
+`require_cycle_support = true` and the `nightshift_local_filesystem_boot`
+capability. Both options default to false. An installer must omit the new field
+when rendering for a predecessor that does not advertise it. Do not enable this
+option for remote subjects or other support-clock implementations.
+
+The evaluator reads at most 4096 bytes from the fixed local
+`/proc/sys/kernel/random/boot_id` and compares its existing Pulse clock encoding
+with the selected support's `evaluated_at.clock_id`. A different boot makes the
+input `not_current` / `indeterminate`, retaining the cycle identity: no support
+from this boot has yet been observed. Missing, malformed or unreadable local boot
+evidence makes it `unavailable` / `unreadable`. A fresh preboot cycle can still
+clear the separate recurrence condition; it cannot clear this confidence gap.
+Unrelated active findings and their ordinary delivery obligations remain intact.
+
+A matching boot never promotes Unknown/Unsupported support and does not make
+stored Current current now. No receiver ticks are translated, no expiry is
+renewed, and no acquisition, custody, policy or action authority is created.
+The input identity records `support_clock_id` and, when local evidence is
+readable, `local_filesystem_boot_matches`. The public substitution vector in
+`artifacts/linux-boot-clock-v1/conformance.json` binds the existing Pulse encoding
+to this consumer; it is not native evidence. The FS runtime implementation is
+unchanged. This confidence check does not repair the status page's auxiliary
+SQLite reader or replace its separate availability reporting.
 
 Shared source-shaped substitution vectors are in
 `artifacts/nightshift-cycle-support-v1/`. Their provenance and exact hashes are
