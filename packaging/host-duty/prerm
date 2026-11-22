@@ -1,0 +1,10 @@
+#!/bin/sh
+# On removal, disarm the timer before stopping its collector.
+set -eu
+if [ "${1:-}" = remove ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop constellation-host-duty.timer
+        systemctl stop constellation-host-duty.service
+    fi
+    systemctl --root=/ disable constellation-host-duty.timer
+fi

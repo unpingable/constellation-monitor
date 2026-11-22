@@ -1,0 +1,23 @@
+schema = "project.concerns/v1"
+project = "duty-scoped-host-availability"
+
+[[concerns]]
+id = "duty.availability"
+question = "duty.availability/v1"
+profile = "duty.host/v1"
+required = true
+description = "The current incarnation is externally reachable when an outstanding duty requires availability after grace."
+
+[[concerns]]
+id = "duty.observation"
+question = "duty.observation/v1"
+profile = "duty.host/v1"
+required = true
+description = "An outstanding duty has a fresh, known external reachability observation after grace."
+
+[[concerns]]
+id = "duty.deadline"
+question = "duty.deadline/v1"
+profile = "duty.host/v1"
+required = true
+description = "Every outstanding duty remains within its operator-assigned deadline."

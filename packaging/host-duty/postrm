@@ -1,0 +1,4 @@
+#!/bin/sh
+# Retain the account, configuration and duty ledger on removal and purge.
+set -eu
+if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi

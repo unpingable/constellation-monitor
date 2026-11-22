@@ -1,0 +1,20 @@
+[Unit]
+Description=Acquire external host observations for assigned Constellation duty
+
+[Service]
+Type=oneshot
+User=constellation-duty
+Group=constellation-duty
+ExecStart=/usr/bin/constellation-host-duty collect --config /etc/constellation-host-duty/probes.json
+TimeoutStartSec=45s
+CPUQuota=25%
+MemoryMax=128M
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/constellation-host-duty
