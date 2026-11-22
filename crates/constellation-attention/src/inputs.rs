@@ -1425,9 +1425,91 @@ pub const REMEDIATION_SERVICE: &str = "remediation-consumer";
 /// segments (the consumer refuses at 16).
 pub const JOURNAL_CRITICAL_CONCERN: &str = "remediation.journal.generations-critical";
 
-/// `constellation.estate/v1`: one verdict per service. DOWN and DEGRADED are
-/// present; OK and a declared PAUSED are clear; UNKNOWN changes nothing. A
-/// stale document makes every service unknown.
+fn estate_concern_time_fault(concern: &Value, now_ms: i64) -> Option<&'static str> {
+    let validity = match concern.get("valid_for_seconds") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_f64() {
+            Some(seconds) if seconds.is_finite() && seconds > 0.0 => Some(seconds),
+            _ => return Some("invalid valid_for_seconds"),
+        },
+    };
+    let age = match concern.get("observed_at") {
+        None | Some(Value::Null) => return validity.map(|_| "missing observed_at for validity"),
+        Some(Value::String(value)) => {
+            let Ok(at) = parse_rfc3339(value) else {
+                return Some("invalid observed_at");
+            };
+            let now_ns = i128::from(now_ms) * 1_000_000;
+            (now_ns - at.unix_timestamp_nanos()) as f64 / 1_000_000_000.0
+        }
+        Some(value) => match value.as_f64() {
+            Some(at) if at.is_finite() && at >= 0.0 => now_ms as f64 / 1_000.0 - at,
+            _ => return Some("invalid observed_at"),
+        },
+    };
+    if age < 0.0 {
+        Some("future observed_at")
+    } else if validity.is_some_and(|seconds| age > seconds) {
+        Some("observation expired")
+    } else {
+        None
+    }
+}
+
+/// Recheck timestamps before using the aggregate verdict as current evidence.
+/// Legacy DEGRADED rows (including rows without a concern list) continue to
+/// assert failure unless a concern's time metadata loses current support.
+fn estate_service_observation(
+    service: &Value,
+    verdict: &str,
+    now_ms: i64,
+) -> (Observation, Vec<String>) {
+    let mut unacquired = Vec::new();
+    match verdict {
+        "DOWN" => return (Observation::Present, unacquired),
+        "PAUSED" => return (Observation::Clear, unacquired),
+        "OK" | "DEGRADED" => {}
+        _ => return (Observation::Unknown, unacquired),
+    }
+
+    let mut time_fault = false;
+    let mut current_failure = false;
+    for concern in service
+        .get("concerns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|c| c.get("required").and_then(Value::as_bool) != Some(false))
+    {
+        let id = concern.get("id").and_then(Value::as_str).unwrap_or("?");
+        let state = concern
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("UNKNOWN");
+        if let Some(fault) = estate_concern_time_fault(concern, now_ms) {
+            time_fault = true;
+            unacquired.push(format!("{} {fault}", truncate(id, 80)));
+        } else if matches!(state, "MISSING_REQUIRED_OBSERVATION" | "UNKNOWN")
+            || (state == "STALE" && !id.starts_with("timer."))
+        {
+            if verdict == "DEGRADED" {
+                unacquired.push(format!("{} {}", truncate(id, 80), truncate(state, 32)));
+            }
+        } else if !matches!(state, "PRESENT" | "NOT_APPLICABLE") {
+            // Timer STALE is an acquired overdue result.
+            current_failure = true;
+        }
+    }
+    let observation = match verdict {
+        "OK" if !time_fault => Observation::Clear,
+        "DEGRADED" if !time_fault || current_failure => Observation::Present,
+        _ => Observation::Unknown,
+    };
+    (observation, unacquired)
+}
+
+/// `constellation.estate/v1`: a fresh document and current required concerns
+/// support per-service observations. A stale document makes every service unknown.
 fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
     let mut report = InputReport {
         causes: Vec::new(),
@@ -1513,73 +1595,7 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
             "estate document lists no services",
         );
     }
-    // An UNKNOWN verdict holds that service's condition; on an otherwise
-    // current document it is still an input fault, never a quiet `ok`.
-    if stale.is_none() {
-        let mut indeterminate = Vec::new();
-        for service in &services {
-            let Some(name) = service.get("name").and_then(Value::as_str) else {
-                continue;
-            };
-            let verdict = service
-                .get("verdict")
-                .and_then(Value::as_str)
-                .unwrap_or("UNKNOWN");
-            // A DEGRADED row stays present, but required concerns whose evidence was not
-            // acquired are reported separately. Timer STALE is an acquired overdue result;
-            // PAUSED is explicitly unobserved and keeps its existing semantics.
-            if verdict == "DEGRADED" {
-                let unacquired: Vec<String> = service
-                    .get("concerns")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter(|c| c.get("required").and_then(Value::as_bool) != Some(false))
-                    .filter_map(|c| {
-                        let id = c.get("id").and_then(Value::as_str).unwrap_or("?");
-                        let state = c.get("state").and_then(Value::as_str).unwrap_or("UNKNOWN");
-                        let unknown = match state {
-                            "MISSING_REQUIRED_OBSERVATION" | "UNKNOWN" => true,
-                            "STALE" => !id.starts_with("timer."),
-                            _ => false,
-                        };
-                        unknown.then(|| format!("{} {}", truncate(id, 80), truncate(state, 32)))
-                    })
-                    .collect();
-                if !unacquired.is_empty() {
-                    indeterminate.push(format!(
-                        "{name} DEGRADED with required evidence not acquired: {}",
-                        unacquired.join(", ")
-                    ));
-                }
-                continue;
-            }
-            if matches!(verdict, "DOWN" | "OK" | "PAUSED") {
-                continue;
-            }
-            let reason = service
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            indeterminate.push(format!(
-                "{name} {}: {}",
-                truncate(verdict, 32),
-                truncate(reason, 120)
-            ));
-        }
-        if !indeterminate.is_empty() {
-            let message = format!(
-                "estate verdict not determinable; condition held: {}",
-                indeterminate.join("; ")
-            );
-            report.fault(
-                "indeterminate",
-                InputStatus::NotCurrent,
-                &truncate(&message, 600),
-            );
-        }
-    }
-    read.reports.push(report);
+    let mut indeterminate = Vec::new();
     for service in &services {
         let Some(name) = service.get("name").and_then(Value::as_str) else {
             continue;
@@ -1592,11 +1608,31 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
             .get("reason")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let observation = match (stale.is_some(), verdict) {
-            (true, _) => Observation::Unknown,
-            (false, "DOWN" | "DEGRADED") => Observation::Present,
-            (false, "OK" | "PAUSED") => Observation::Clear,
-            _ => Observation::Unknown,
+        let mut note = format!("{verdict}: {}", truncate(reason, 200));
+        let observation = if stale.is_some() {
+            Observation::Unknown
+        } else {
+            let (observation, unacquired) =
+                estate_service_observation(service, verdict, context.now_ms);
+            if !unacquired.is_empty() {
+                let detail = unacquired.join(", ");
+                indeterminate.push(format!(
+                    "{name} {verdict} with required evidence not acquired: {detail}"
+                ));
+                if observation == Observation::Unknown {
+                    note = format!(
+                        "{verdict}: required evidence not current: {}",
+                        truncate(&detail, 200)
+                    );
+                }
+            } else if observation == Observation::Unknown {
+                indeterminate.push(format!(
+                    "{name} {}: {}",
+                    truncate(verdict, 32),
+                    truncate(reason, 120)
+                ));
+            }
+            observation
         };
         let reference = json!({
             "service": name,
@@ -1614,9 +1650,21 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
             ESTATE_LABEL,
             observation,
             &reference,
-            format!("{verdict}: {}", truncate(reason, 200)),
+            note,
         );
     }
+    if !indeterminate.is_empty() {
+        let message = format!(
+            "estate verdict not determinable; condition held: {}",
+            indeterminate.join("; ")
+        );
+        report.fault(
+            "indeterminate",
+            InputStatus::NotCurrent,
+            &truncate(&message, 600),
+        );
+    }
+    read.reports.push(report);
     remediation_journal(
         context,
         read,
@@ -1629,8 +1677,8 @@ fn estate(context: &Context<'_>, input: &EstateInput, read: &mut InputsRead) {
 /// `remediation-journal-critical`: the remediation consumer's own
 /// `generations-critical` concern, as the estate row carries it. `ABSENT` is
 /// present, `PRESENT` is clear; a missing row or concern, any other state
-/// (`STALE`, `UNKNOWN`, a missing required observation) and a stale document
-/// are unknown, which holds an open page and never resolves it.
+/// (`STALE`, `UNKNOWN`, a missing required observation), a stale document or a
+/// concern time fault is unknown and holds an open page.
 fn remediation_journal(
     context: &Context<'_>,
     read: &mut InputsRead,
@@ -1657,7 +1705,8 @@ fn remediation_journal(
     let verdict = row
         .and_then(|row| row.get("verdict"))
         .and_then(Value::as_str);
-    let (observation, note) = match (stale, row, state) {
+    let concern_time_fault = concern.and_then(|c| estate_concern_time_fault(c, context.now_ms));
+    let (observation, note) = match (stale.or(concern_time_fault), row, state) {
         (Some(stale), _, _) => (Observation::Unknown, format!("unknown: {stale}")),
         (None, None, _) => (
             Observation::Unknown,

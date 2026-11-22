@@ -951,11 +951,12 @@ optional `max_age_seconds`, default 600) reads the estate collector's
 `constellation.estate/v1` document. See `estate/README.md`. Each service is
 one condition, `service:service-not-doing-its-job:<name>`:
 
-- `DOWN` or `DEGRADED` is present. After 600 s a notice is sent, and its text
-  ends with the service's own reason (for example `Now: stream_coverage
-  ABSENT; cursor_continuity DEGRADED`).
-- `OK`, and a declared `PAUSED`, are clear. A pause never alerts. The daily
-  digest lists it under "Declared paused" with its start date.
+- `DOWN` or a currently supported `DEGRADED` is present. After 600 s a notice
+  is sent, and its text ends with the service's own reason (for example
+  `Now: stream_coverage ABSENT; cursor_continuity DEGRADED`).
+- An `OK` supported by current required concerns, and a declared `PAUSED`, are
+  clear. A pause never alerts. The daily digest lists it under "Declared
+  paused" with its start date.
 - `UNKNOWN` (or any unrecognised verdict) changes nothing for that service:
   an open condition is held, never resolved. On an otherwise current
   document it makes the input `not_current` with fault class
@@ -973,10 +974,21 @@ one condition, `service:service-not-doing-its-job:<name>`:
   `valid_for_seconds` is supplied; these optional fields remain optional.
   An acquired `ABSENT` or `DEGRADED`, drift, a failed or overdue timer, or a
   timer `STALE` still make it `DEGRADED`.
-- A `DEGRADED` row whose required concerns also include
-  `MISSING_REQUIRED_OBSERVATION`, `UNKNOWN` or non-timer `STALE` stays present.
-  It additionally makes the input `not_current` (`indeterminate`), naming those
-  concerns. `PAUSED` rows are not scanned.
+- Attention rechecks required concern age at evaluation time. An explicit
+  `valid_for_seconds` must be a finite positive number and have an `observed_at`
+  in RFC 3339 or nonnegative Unix seconds. A future or invalid supplied
+  timestamp, an invalid supplied bound, or an elapsed bound makes the concern
+  indeterminate. Absent or null time metadata keeps the legacy behavior when no
+  validity bound is supplied. A duration is current through its stated age
+  limit. The estate document timestamp cannot extend that duration.
+- With an indeterminate time bound, an `OK` row holds any open condition.
+  A `DEGRADED` row also holds it unless a separate required concern still
+  supports the failure. An independent acquired failure, including a timer
+  `STALE`, continues to be observed. Required `MISSING_REQUIRED_OBSERVATION`,
+  `UNKNOWN` and non-timer `STALE` on a degraded row and concern time faults
+  make the input `not_current` (`indeterminate`), naming the affected concerns.
+  Sibling services continue to be evaluated. Runtime `DOWN` and declared
+  `PAUSED` keep their existing meanings.
 
 The rule is notice-only. Slack is the operator's channel, and the rule is not
 in NQ's page anchor set.
@@ -1025,8 +1037,9 @@ row's `generations-critical` concern itself:
 - Unknown, holding an open page and never resolving it: no
   `remediation-consumer` row, a row without that concern (the consumer is
   down, so its status was not read), any other state (`STALE`, `UNKNOWN`,
-  `MISSING_REQUIRED_OBSERVATION`), or a stale document. A declared pause is
-  not a clear here: suspend the rule if the page is unwanted.
+  `MISSING_REQUIRED_OBSERVATION`), noncurrent concern time metadata, or a stale
+  document. A declared pause is not a clear here: suspend the rule if the page
+  is unwanted.
 
 ### service-not-doing-its-job
 

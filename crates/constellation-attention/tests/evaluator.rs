@@ -5839,6 +5839,182 @@ fn estate_condition_row<'a>(report: &'a Value, service: &str) -> &'a Value {
         .unwrap()
 }
 
+fn write_estate_concerns(harness: &Harness, at: i64, rows: &[(&str, &str, Value)]) {
+    let services: Vec<_> = rows
+        .iter()
+        .map(|(name, verdict, concerns)| {
+            json!({"name":name, "verdict":verdict, "reason":"fixture",
+                   "since":rfc3339(T0), "concerns":concerns,
+                   "declared": (*verdict == "PAUSED").then(|| json!({
+                       "state":"paused", "since":rfc3339(T0), "reason":"operator pause"}))})
+        })
+        .collect();
+    let doc = json!({"schema":"constellation.estate/v1", "site":"labelwatch",
+                     "generated_at":rfc3339(at), "services":services});
+    fs::write(
+        harness.path("estate.json"),
+        serde_json::to_vec(&doc).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn estate_expired_support_holds_an_open_condition_until_fresh_recovery() {
+    let harness = estate_harness();
+    let active = "constellation:labelwatch:service:service-not-doing-its-job:worker";
+    for at in [T0, T0 + 660] {
+        write_estate(
+            &harness,
+            at,
+            &[("worker", "DEGRADED", "availability ABSENT")],
+        );
+        harness.evaluate(at);
+    }
+    assert_eq!(harness.state()["conditions"][active]["active"], true);
+
+    let concerns = |observed_at: i64| {
+        json!([{"id":"duty.availability", "required":true, "state":"PRESENT",
+                "observed_at":rfc3339(observed_at), "valid_for_seconds":60}])
+    };
+    for at in [T0 + 720, T0 + 900] {
+        write_estate_concerns(&harness, at, &[("worker", "OK", concerns(T0 + 600))]);
+        let report = harness.evaluate(at);
+        assert_eq!(report["exit_code"], 3, "{report}");
+        assert_eq!(
+            estate_input_report(&report)["status"],
+            "not_current",
+            "{report}"
+        );
+        assert_eq!(
+            estate_input_report(&report)["causes"],
+            json!(["indeterminate"])
+        );
+        let row = estate_condition_row(&report, "worker");
+        assert_eq!(row["observation"], "unknown", "{report}");
+        assert_eq!(row["active"], true, "{report}");
+        assert!(
+            intents(&report).iter().all(|(id, _, _)| id != active),
+            "{report}"
+        );
+    }
+
+    for at in [T0 + 960, T0 + 1140] {
+        write_estate_concerns(&harness, at, &[("worker", "OK", concerns(at - 10))]);
+        let report = harness.evaluate(at);
+        assert_eq!(report["exit_code"], 0, "{report}");
+        assert_eq!(
+            estate_condition_row(&report, "worker")["observation"],
+            "clear"
+        );
+    }
+    assert!(
+        intents(&harness.report())
+            .iter()
+            .any(|(id, _, action)| id == active && action == "resolve")
+    );
+}
+
+#[test]
+fn estate_concern_expiry_preserves_current_failures_and_independent_rows() {
+    let harness = estate_harness();
+    let expired = |state| {
+        json!({"id":"duty.availability", "required":true, "state":state,
+               "observed_at":rfc3339(T0 - 120), "valid_for_seconds":60})
+    };
+    let rows = [
+        ("expired-failure", "DEGRADED", json!([expired("ABSENT")])),
+        (
+            "mixed",
+            "DEGRADED",
+            json!([expired("PRESENT"),
+            {"id":"duty.deadline", "required":true, "state":"ABSENT", "observed_at":T0 - 5, "valid_for_seconds":60}]),
+        ),
+        (
+            "timer-overdue",
+            "DEGRADED",
+            json!([expired("PRESENT"),
+            {"id":"timer.worker.timer", "required":true, "state":"STALE"}]),
+        ),
+        (
+            "fresh-at-limit",
+            "OK",
+            json!([{"id":"duty.availability", "state":"PRESENT",
+            "observed_at":(T0 - 31) as f64 + 0.5, "valid_for_seconds":30.5}]),
+        ),
+        (
+            "future",
+            "OK",
+            json!([{"id":"duty.availability", "state":"PRESENT",
+            "observed_at":rfc3339(T0).replace('Z', ".125Z")}]),
+        ),
+        (
+            "bad-time",
+            "OK",
+            json!([{"id":"duty.availability", "state":"PRESENT",
+            "observed_at":"2026-11-22T22:00:00", "valid_for_seconds":60}]),
+        ),
+        (
+            "missing-time",
+            "OK",
+            json!([{"id":"duty.availability", "state":"PRESENT",
+            "observed_at":null, "valid_for_seconds":60}]),
+        ),
+        (
+            "bad-bound",
+            "OK",
+            json!([{"id":"duty.availability", "state":"PRESENT",
+            "observed_at":rfc3339(T0 - 5), "valid_for_seconds":"60"}]),
+        ),
+        (
+            "legacy",
+            "OK",
+            json!([{"id":"duty.availability", "state":"PRESENT",
+            "observed_at":null, "valid_for_seconds":null},
+            {"id":"optional", "required":false, "state":"PRESENT", "observed_at":0, "valid_for_seconds":1}]),
+        ),
+        ("down", "DOWN", json!([expired("PRESENT")])),
+        ("paused", "PAUSED", json!([expired("ABSENT")])),
+        (
+            "remediation-consumer",
+            "OK",
+            json!([{"id":"remediation.journal.generations-critical",
+            "state":"PRESENT", "observed_at":rfc3339(T0 - 61), "valid_for_seconds":60}]),
+        ),
+    ];
+    write_estate_concerns(&harness, T0, &rows);
+    let report = harness.evaluate(T0);
+    assert_eq!(report["exit_code"], 3, "{report}");
+    for (name, expected) in [
+        ("expired-failure", "unknown"),
+        ("mixed", "present"),
+        ("timer-overdue", "present"),
+        ("fresh-at-limit", "clear"),
+        ("future", "unknown"),
+        ("bad-time", "unknown"),
+        ("missing-time", "unknown"),
+        ("bad-bound", "unknown"),
+        ("legacy", "clear"),
+        ("down", "present"),
+        ("paused", "clear"),
+        ("remediation-consumer", "unknown"),
+    ] {
+        assert_eq!(
+            estate_condition_row(&report, name)["observation"],
+            expected,
+            "{name}: {report}"
+        );
+    }
+    assert_eq!(
+        condition(&report, JOURNAL_PAGE).unwrap()["observation"],
+        "unknown"
+    );
+    let input = estate_input_report(&report);
+    assert_eq!(input["status"], "not_current");
+    let error = input["error"].as_str().unwrap();
+    assert!(error.contains("expired-failure DEGRADED"), "{error}");
+    assert!(error.contains("mixed DEGRADED"), "{error}");
+}
+
 /// An UNKNOWN verdict on a current document holds the service's open
 /// condition and is an `indeterminate` input fault; its siblings are still
 /// observed, and recovery resolves both.
