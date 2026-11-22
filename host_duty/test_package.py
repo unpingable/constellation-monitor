@@ -63,6 +63,9 @@ def test_extracted_operator_command_preserves_explicit_duty_across_processes(ins
     report = run("status", "fatbot")["extensions"]["report"]
     assert report["availability_required"] is False
     assert report["presence"] == "unknown"
+    export = tmp_path / "latest.sqlite"
+    assert run("export-observation", "fatbot", "--output", str(export))["snapshot_path"] == str(export)
+    assert stat.S_IMODE(export.stat().st_mode) == 0o444
 
 
 def test_extracted_sampler_produces_nonce_bound_linux_sample(installed, tmp_path):
@@ -84,7 +87,8 @@ def test_package_records_exact_payload_and_git_context(installed):
     assert build_info["git_worktree_state"] == ("dirty" if dirty else "clean")
     payload = installed / "usr/lib/constellation-host-duty/host_duty"
     assert {source.name for source in payload.iterdir()} == {
-        "__init__.py", "core.py", "cli.py", "probe.py", "sample.py"}
+        "__init__.py", "core.py", "cli.py", "probe.py", "sample.py", "snapshot.py"}
+    assert (share / "fixtures/host-duty-row-custody-v1.json").read_bytes() == (ROOT / "host_duty/fixtures/host-duty-row-custody-v1.json").read_bytes()
     subprocess.run(["sha256sum", "--check", str(share / "SHA256SUMS")],
                    cwd=installed, check=True, capture_output=True, timeout=5)
     for source in [*payload.glob("*.py"), *(installed / "usr/bin").iterdir()]:

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import time
 
@@ -110,3 +111,16 @@ def test_collect_uses_explicit_config_and_never_initializes(tmp_path):
     assert result.returncode != 0
     assert "collect refused" in result.stderr
     assert not database.exists()
+
+
+def test_export_command_produces_readonly_missing_snapshot_without_changing_duty(tmp_path):
+    database, output = tmp_path / "ledger.sqlite", tmp_path / "latest.sqlite"
+    checked(database, "init")
+    checked(database, "register", "fatbot", "machine-a")
+    checked(database, "assign", "duty-a", "work-a", "fatbot", "--deadline", str(time.time()+3600))
+    result = checked(database, "export-observation", "fatbot", "--output", str(output))
+    assert result["snapshot_path"] == str(output)
+    with sqlite3.connect(output.as_uri()+"?mode=ro", uri=True) as connection:
+        assert connection.execute("SELECT source_state,source_observed_at FROM host_duty_observations").fetchone() == ("missing", None)
+    assert output.stat().st_mode & 0o777 == 0o444
+    assert checked(database, "list")["duties"][0]["disposition"] is None

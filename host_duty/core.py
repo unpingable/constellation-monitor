@@ -296,6 +296,17 @@ class Ledger:
             self._host(host_id, instance_id)
             self._event(now, "shutdown_claim", host_id, instance_id=instance_id, reason=reason)
 
+    def observation_head(self, host_id):
+        """Read original observer testimony without refreshing/projecting it."""
+        with self._transaction():
+            host = self._host(host_id)
+            return {"host_id":host["host_id"], "instance_id":host["instance_id"],
+                "boot_id":host["boot_id"], "source_observed_at":host["observed_at"],
+                "source_state":host["presence"] if host["observed_at"] is not None else "missing",
+                "source_sha256":host["source_sha256"],
+                "source_detail":host["detail"] if host["observed_at"] is not None else "no observation acquired",
+                "telemetry":json.loads(host["telemetry"]) if host["telemetry"] is not None else None}
+
     def report(self, host_id, freshness_seconds=60, grace_seconds=30):
         freshness = _seconds(freshness_seconds, "freshness", positive=True)
         grace = _seconds(grace_seconds, "grace")

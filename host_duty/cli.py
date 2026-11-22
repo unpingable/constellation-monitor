@@ -13,6 +13,7 @@ import sys
 
 from .core import Ledger, status_document, unknown_document
 from .probe import collect_config
+from .snapshot import publish_snapshot
 
 
 def _seconds(value):
@@ -63,6 +64,9 @@ def _parser():
     claim.add_argument("--reason", required=True)
     collect = commands.add_parser("collect", help="acquire bounded samples from an explicit owner-only config")
     collect.add_argument("--config", required=True)
+    export = commands.add_parser("export-observation", help="publish one read-only SQLite observer head separately from the duty ledger")
+    export.add_argument("host_id")
+    export.add_argument("--output", required=True, help="absolute snapshot path in an owned protected directory")
     status = commands.add_parser("status", help="emit conditional duty concerns without a host-health assertion")
     status.add_argument("host_id")
     status.add_argument("--freshness-seconds", type=_seconds, default=argparse.SUPPRESS)
@@ -93,7 +97,11 @@ def main(argv=None):
         if args.database:
             parser.error("collect uses only the database explicitly named in --config")
         try:
-            _emit({"observations":collect_config(args.config)})
+            observations = collect_config(args.config)
+            _emit({"observations":observations})
+            if any(row.get("snapshot_error") for row in observations):
+                print("host-duty collect failed: one or more snapshot publications failed", file=sys.stderr)
+                return 2
             return 0
         except (OSError, ValueError, sqlite3.Error) as exc:
             print("host-duty collect refused: " + str(exc), file=sys.stderr)
@@ -114,7 +122,7 @@ def main(argv=None):
                 pass
             _emit({"database":args.database, "created":True})
             return 0
-        readonly = args.command in {"list", "events"}
+        readonly = args.command in {"list", "events", "export-observation"}
         with Ledger(args.database, readonly=readonly) as ledger:
             if args.command == "register":
                 ledger.register(args.host_id, args.instance_id)
@@ -134,6 +142,9 @@ def main(argv=None):
                 ledger.replace(args.host_id, args.instance_id, args.reason)
             elif args.command == "observe-claim":
                 ledger.shutdown_claim(args.host_id, args.instance_id, args.reason)
+            elif args.command == "export-observation":
+                _emit(publish_snapshot(ledger, args.host_id, args.output))
+                return 0
             elif args.command == "list":
                 hosts = ledger.hosts()
                 if args.filter_host:

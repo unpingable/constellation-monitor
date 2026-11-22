@@ -35,6 +35,24 @@ def assign(ledger, **kw):
                          kw.get("host", "fatbot"), kw.get("deadline", 2000))
 
 
+def test_observation_head_preserves_raw_source_age_without_projecting_currentness(setup):
+    ledger, clock, path = setup
+    ledger.observe("fatbot", "machine-a", "reachable", boot_id="boot-a",
+                   detail="sampled", telemetry={"load1":0.5}, source_sha256="a"*64)
+    clock[0] = 1100
+    assert ledger.report("fatbot")["presence"] == "stale"
+    with Ledger(path, clock=lambda:clock[0], readonly=True) as reader:
+        head = reader.observation_head("fatbot")
+    assert head == {"host_id":"fatbot", "instance_id":"machine-a", "boot_id":"boot-a",
+        "source_observed_at":1000.0, "source_state":"reachable", "source_sha256":"a"*64,
+        "source_detail":"sampled", "telemetry":{"load1":0.5}}
+    ledger.replace("fatbot", "machine-b", "new incarnation")
+    head = ledger.observation_head("fatbot")
+    assert head["source_observed_at"] is None
+    assert head["source_state"] == "missing"
+    assert head["boot_id"] is None
+
+
 def test_registered_offline_and_online_idle_have_no_uptime_obligation(tmp_path):
     clock = [1000]
     try:

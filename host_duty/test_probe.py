@@ -341,22 +341,27 @@ def test_shared_pass_deadline_stops_later_target_and_preserves_source_age(tmp_pa
     first_dir.mkdir()
     second_dir.mkdir()
     marker = tmp_path / "later-target-ran"
+    output = tmp_path / "skipped.sqlite"
     with endpoint() as port:
         first = target(first_dir, port, "import time\ntime.sleep(10)\n")
         first["timeout_seconds"] = 1
         second = target(second_dir, port, "from pathlib import Path\nPath(%r).touch()\n" % str(marker))
-        second.update(host_id="gojira", instance_id="machine-b", timeout_seconds=1)
+        second.update(host_id="gojira", instance_id="machine-b", timeout_seconds=1, snapshot_path=str(output))
         started = time.monotonic()
         result = probe.collect_config(write_config(tmp_path, database, [first, second]), budget_seconds=0.1)
     assert time.monotonic() - started < 2
     assert result[0]["state"] == "unknown"
     assert result[1]["state"] == "unknown"
     assert result[1]["recorded"] is False
+    assert result[1]["snapshot"]["source_observed_at"] == previous
     assert "deadline" in result[1]["detail"]
     assert not marker.exists()
     with Ledger(database) as ledger:
         assert ledger.report("gojira")["observed_at"] == previous
         assert ledger.report("gojira")["boot_id"] == "previous-boot"
+    import sqlite3
+    with sqlite3.connect(output.as_uri()+"?mode=ro", uri=True) as connection:
+        assert connection.execute("SELECT source_observed_at,source_state FROM host_duty_observations").fetchone() == (previous, "reachable")
 
 
 @pytest.mark.parametrize("code", [errno.EPERM, errno.EACCES, errno.EMFILE, errno.ENFILE, errno.ENOBUFS])
@@ -427,3 +432,136 @@ print(json.dumps({'errno':observed_error,'state':result['state'],'recorded_state
     doc = json.loads(result.stdout)
     assert doc["errno"] == errno.EMFILE
     assert doc["state"] == doc["recorded_state"] == "unknown"
+
+
+def test_opt_in_snapshot_publishes_unknown_acquisition_as_unknown(tmp_path):
+    probe = implementation()
+    from host_duty.core import Ledger
+    import sqlite3
+
+    database, output = tmp_path / "ledger.sqlite", tmp_path / "latest.sqlite"
+    with Ledger.create(database) as ledger:
+        ledger.register("fatbot", "machine-a")
+    with endpoint() as port:
+        spec = target(tmp_path, port, "raise SystemExit(255)\n")
+        spec["snapshot_path"] = str(output)
+        result = probe.collect_config(write_config(tmp_path, database, [spec]))
+    assert result[0]["state"] == "unknown"
+    assert result[0]["snapshot"]["snapshot_path"] == str(output)
+    with sqlite3.connect(output.as_uri()+"?mode=ro", uri=True) as connection:
+        row = connection.execute("SELECT source_state,source_observed_at,exported_at FROM host_duty_observations").fetchone()
+    assert row[0] == "unknown"
+    assert row[1] <= row[2]
+
+
+def test_refused_incarnation_export_reads_current_head_without_old_binding_write(tmp_path):
+    probe = implementation()
+    from host_duty.core import Ledger
+    import sqlite3
+
+    database, output = tmp_path / "ledger.sqlite", tmp_path / "latest.sqlite"
+    with Ledger.create(database) as ledger:
+        ledger.register("fatbot", "machine-new")
+    with endpoint() as port:
+        spec = target(tmp_path, port)
+        spec["snapshot_path"] = str(output)
+        row = probe.collect_config(write_config(tmp_path, database, [spec]))[0]
+    assert row["state"] == "unknown" and row["recorded"] is False
+    with sqlite3.connect(output.as_uri()+"?mode=ro", uri=True) as connection:
+        assert connection.execute("SELECT instance_id,boot_id,source_observed_at,source_state FROM host_duty_observations").fetchone() == ("machine-new", None, None, "missing")
+
+
+def test_snapshot_publication_failure_is_reported_and_cli_exits_nonzero(tmp_path):
+    from host_duty.core import Ledger
+    database = tmp_path / "ledger.sqlite"
+    with Ledger.create(database) as ledger:
+        ledger.register("fatbot", "machine-a")
+    with endpoint() as port:
+        spec = target(tmp_path, port)
+        spec["snapshot_path"] = str(tmp_path / "absent-parent/latest.sqlite")
+        config = write_config(tmp_path, database, [spec])
+        result = subprocess.run([sys.executable, "-m", "host_duty.cli", "collect", "--config", str(config)],
+                                capture_output=True, text=True, timeout=5)
+    assert result.returncode != 0
+    row = json.loads(result.stdout)["observations"][0]
+    assert row["state"] == "reachable"
+    assert row["snapshot_error"]
+    assert "snapshot" in result.stderr
+
+
+def test_snapshot_failure_does_not_prevent_later_target_acquisition(tmp_path):
+    probe = implementation()
+    from host_duty.core import Ledger
+    database = tmp_path / "ledger.sqlite"
+    with Ledger.create(database) as ledger:
+        ledger.register("fatbot", "machine-a")
+        ledger.register("gojira", "machine-b")
+    with endpoint() as port:
+        first = target(tmp_path, port)
+        first["snapshot_path"] = str(tmp_path / "absent-parent/latest.sqlite")
+        second = dict(first, host_id="gojira", instance_id="machine-b", snapshot_path=str(tmp_path/"gojira.sqlite"))
+        rows = probe.collect_config(write_config(tmp_path, database, [first, second]))
+    assert rows[0]["snapshot_error"]
+    assert rows[1]["state"] == "reachable"
+    assert "snapshot_error" not in rows[1]
+    assert rows[1]["snapshot"]["instance_id"] == "machine-b"
+
+
+def test_active_probe_config_cannot_be_its_own_snapshot_even_through_alias(tmp_path):
+    probe = implementation()
+    from host_duty.core import Ledger
+    database = tmp_path / "ledger.sqlite"
+    with Ledger.create(database) as ledger:
+        ledger.register("fatbot", "machine-a")
+    config = tmp_path / "pass-config.json"
+    with endpoint(with_socket=True) as (port, listener):
+        spec = target(tmp_path, port)
+        spec["snapshot_path"] = str(tmp_path) + "/./pass-config.json"
+        write_config(tmp_path, database, [spec])
+        before = config.read_bytes()
+        with pytest.raises(ValueError):
+            probe.load_config(config)
+        result = subprocess.run([sys.executable, "-m", "host_duty.cli", "collect", "--config", str(config)],
+            capture_output=True, text=True, timeout=5)
+        assert result.returncode != 0
+        assert "refused" in result.stderr
+        assert config.read_bytes() == before
+        assert config.stat().st_mode & 0o777 == 0o600
+        listener.settimeout(0.05)
+        with pytest.raises(TimeoutError):
+            listener.accept()
+
+
+@pytest.mark.parametrize("alias", ["dot", "hardlink", "ledger-sidecar"])
+def test_snapshot_destination_identity_conflicts_refuse_before_any_socket(tmp_path, alias):
+    probe = implementation()
+    from host_duty.core import Ledger
+    database = tmp_path / "ledger.sqlite"
+    with Ledger.create(database) as ledger:
+        ledger.register("fatbot", "machine-a")
+        ledger.register("gojira", "machine-b")
+    first_output = tmp_path / "head.sqlite"
+    if alias == "hardlink":
+        first_output.write_bytes(b"preserve preexisting bytes")
+        os.link(first_output, tmp_path / "other.sqlite")
+        second_output = str(tmp_path / "other.sqlite")
+    elif alias == "ledger-sidecar":
+        second_output = str(database) + "-wal"
+    else:
+        second_output = str(tmp_path) + "/./head.sqlite"
+    with endpoint(with_socket=True) as (port, listener):
+        first = target(tmp_path, port)
+        first["snapshot_path"] = str(first_output)
+        second = dict(first, host_id="gojira", instance_id="machine-b", snapshot_path=second_output)
+        config = write_config(tmp_path, database, [first, second])
+        with pytest.raises(ValueError):
+            probe.load_config(config)
+        with pytest.raises(ValueError):
+            probe.collect_config(config)
+        listener.settimeout(0.05)
+        with pytest.raises(TimeoutError):
+            listener.accept()
+    if alias == "hardlink":
+        assert first_output.read_bytes() == b"preserve preexisting bytes"
+    else:
+        assert not first_output.exists()

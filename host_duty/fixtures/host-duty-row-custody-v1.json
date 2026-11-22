@@ -1,0 +1,286 @@
+{
+  "schema": "constellation.host_duty_row_custody_vectors.v1",
+  "table": "host_duty_observations",
+  "columns": [
+    "schema",
+    "host_id",
+    "instance_id",
+    "boot_id",
+    "source_observed_at",
+    "source_state",
+    "source_sha256",
+    "source_detail",
+    "telemetry_json",
+    "exported_at"
+  ],
+  "select_sql": "SELECT schema,host_id,instance_id,boot_id,source_observed_at,source_state,source_sha256,source_detail,telemetry_json,exported_at FROM host_duty_observations",
+  "cases": [
+    {
+      "name": "reachable",
+      "values": [
+        "constellation.host_duty_observation.v1",
+        "fatbot",
+        "machine-a",
+        "boot-a",
+        1000.25,
+        "reachable",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample acquired",
+        "{\"load1\":0.25,\"memory_available_bytes\":1024}",
+        1005.5
+      ],
+      "sqlite_types": [
+        "text",
+        "text",
+        "text",
+        "text",
+        "real",
+        "text",
+        "text",
+        "text",
+        "text",
+        "real"
+      ],
+      "selected_row": [
+        {
+          "type": "text",
+          "value": "constellation.host_duty_observation.v1"
+        },
+        {
+          "type": "text",
+          "value": "fatbot"
+        },
+        {
+          "type": "text",
+          "value": "machine-a"
+        },
+        {
+          "type": "text",
+          "value": "boot-a"
+        },
+        {
+          "type": "real",
+          "value": "408f420000000000"
+        },
+        {
+          "type": "text",
+          "value": "reachable"
+        },
+        {
+          "type": "text",
+          "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        {
+          "type": "text",
+          "value": "sample acquired"
+        },
+        {
+          "type": "text",
+          "value": "{\"load1\":0.25,\"memory_available_bytes\":1024}"
+        },
+        {
+          "type": "real",
+          "value": "408f6c0000000000"
+        }
+      ]
+    },
+    {
+      "name": "unreachable",
+      "values": [
+        "constellation.host_duty_observation.v1",
+        "fatbot",
+        "machine-a",
+        null,
+        1000.25,
+        "unreachable",
+        null,
+        "connection refused",
+        null,
+        1005.5
+      ],
+      "sqlite_types": [
+        "text",
+        "text",
+        "text",
+        "null",
+        "real",
+        "text",
+        "null",
+        "text",
+        "null",
+        "real"
+      ],
+      "selected_row": [
+        {
+          "type": "text",
+          "value": "constellation.host_duty_observation.v1"
+        },
+        {
+          "type": "text",
+          "value": "fatbot"
+        },
+        {
+          "type": "text",
+          "value": "machine-a"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "real",
+          "value": "408f420000000000"
+        },
+        {
+          "type": "text",
+          "value": "unreachable"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "text",
+          "value": "connection refused"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "real",
+          "value": "408f6c0000000000"
+        }
+      ]
+    },
+    {
+      "name": "unknown",
+      "values": [
+        "constellation.host_duty_observation.v1",
+        "fatbot",
+        "machine-a",
+        null,
+        1000.25,
+        "unknown",
+        null,
+        "observer socket unavailable",
+        null,
+        1005.5
+      ],
+      "sqlite_types": [
+        "text",
+        "text",
+        "text",
+        "null",
+        "real",
+        "text",
+        "null",
+        "text",
+        "null",
+        "real"
+      ],
+      "selected_row": [
+        {
+          "type": "text",
+          "value": "constellation.host_duty_observation.v1"
+        },
+        {
+          "type": "text",
+          "value": "fatbot"
+        },
+        {
+          "type": "text",
+          "value": "machine-a"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "real",
+          "value": "408f420000000000"
+        },
+        {
+          "type": "text",
+          "value": "unknown"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "text",
+          "value": "observer socket unavailable"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "real",
+          "value": "408f6c0000000000"
+        }
+      ]
+    },
+    {
+      "name": "missing",
+      "values": [
+        "constellation.host_duty_observation.v1",
+        "fatbot",
+        "machine-a",
+        null,
+        null,
+        "missing",
+        null,
+        "no observation acquired",
+        null,
+        1005.5
+      ],
+      "sqlite_types": [
+        "text",
+        "text",
+        "text",
+        "null",
+        "null",
+        "text",
+        "null",
+        "text",
+        "null",
+        "real"
+      ],
+      "selected_row": [
+        {
+          "type": "text",
+          "value": "constellation.host_duty_observation.v1"
+        },
+        {
+          "type": "text",
+          "value": "fatbot"
+        },
+        {
+          "type": "text",
+          "value": "machine-a"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "text",
+          "value": "missing"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "text",
+          "value": "no observation acquired"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "real",
+          "value": "408f6c0000000000"
+        }
+      ]
+    }
+  ],
+  "scope": "Ordinary off-host observer testimony, not native target provenance or authority. Source observation epoch is distinct from later publication and NQ read time."
+}

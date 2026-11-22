@@ -185,3 +185,125 @@ After installing, verify the package and probe config, check the existing
 ledger, then explicitly start the timer again. On removal the package disarms
 its timer and retains the ledger, configuration and account. Retire the scoped
 SSH identity through its existing lifecycle when sampling ends.
+
+## Optional NQ custody of observer testimony
+
+`export-observation` publishes one bounded SQLite snapshot separately from the
+mode-0600 duty ledger. It contains the latest Monitor observer head, including
+the host and incarnation, last known boot identity, original source timestamp,
+reachable/unreachable/unknown state, original sample digest, bounded detail and
+telemetry. A registered incarnation with no observation is explicitly `missing`
+with a null source timestamp. A stale head keeps its original state and source
+time. `exported_at` records publication time separately. The exported tuple is
+Monitor testimony; it is not the original sampler bytes, independent target
+provenance, native NQ admission, FIELD-CLOCK evidence, present support or action
+authority.
+
+The operator opts in on the observer. Installation creates no export directory,
+enables no export and adds no NQ dependency. Create a dedicated directory owned
+by the collector account, outside its private ledger directory:
+
+```sh
+sudo install -d -o constellation-duty -g constellation-duty -m 0755 \
+    /var/lib/constellation-host-duty-export
+sudo -u constellation-duty /usr/bin/constellation-host-duty \
+    --database /var/lib/constellation-host-duty/ledger.sqlite \
+    export-observation fatbot \
+    --output /var/lib/constellation-host-duty-export/fatbot.sqlite
+```
+
+Publication requires a protected directory ancestry and an existing parent owned
+by that account. It refuses symlink paths, hard-linked or foreign-owned existing
+files, and the ledger and SQLite sidecar destinations. Existing output is replaced
+only when it is an owned mode-0444 managed snapshot whose complete SQLite schema
+catalog contains exactly the exporter's stored single-table declaration, with
+the expected schema cell, singleton row and logical host. Additional catalog
+objects or a changed declaration refuse replacement, even when selected columns
+look the same. Unrelated files remain untouched even when owned by the exporter.
+A managed snapshot for the same host can advance to a new
+incarnation after the operator's explicit ledger replacement. Cooperative exporters serialize through a
+nonblocking directory lock. A bounded temporary database is committed, changed
+to mode 0444, synced and atomically renamed; an existing reader keeps one coherent
+older snapshot. Row JSON is at most 60 KiB and the physical snapshot at most 64 KiB;
+oversized testimony refuses publication. The exporter overwrites this one head
+and does not accumulate an observation corpus. NQ receives read access to the
+snapshot and no access to mutate the duty ledger.
+
+An abrupt process stop can leave an exporter-owned
+`.host-duty-snapshot-*.sqlite` staging file. Once the originating exporter has
+ended, inspect its exact file and open handles before retiring that disposable
+staging file. Preserve the published head and any active writer. Monitor adds no
+background staging-file cleanup service.
+
+For publication after collector decisions, add an optional absolute
+`snapshot_path` to that host's target object in the owner-only probe config:
+
+```json
+"snapshot_path": "/var/lib/constellation-host-duty-export/fatbot.sqlite"
+```
+
+The complete configuration is checked before acquisition or publication. Output
+paths are normalized and deduplicated by effective path and existing inode;
+aliases of the ledger, its sidecars or the active probe config are refused.
+Every target needs a distinct output path. Add a scoped systemd drop-in before
+enabling this option, then reload the units:
+
+```sh
+sudo install -d -m 0755 /etc/systemd/system/constellation-host-duty.service.d
+printf '[Service]\nReadWritePaths=/var/lib/constellation-host-duty-export\n' | \
+    sudo tee /etc/systemd/system/constellation-host-duty.service.d/export.conf
+sudo systemctl daemon-reload
+```
+
+The collector publishes known and unknown acquisitions. A skipped or refused
+acquisition exports the ledger's current head with its old source time, or a
+missing head with no source time. It cannot write the old configured incarnation
+into a replacement's head. Publication failure adds `snapshot_error` to that
+target's JSON result and makes the command exit nonzero, while other targets
+continue. Inspect the unit result and the returned rows; prior snapshot bytes
+do not become a new source observation after a failed publication.
+
+The snapshot table is `host_duty_observations`. Read these fields in the fixed
+order shared with NQ's selected-row evidence vector:
+
+```sql
+SELECT schema,host_id,instance_id,boot_id,source_observed_at,source_state,
+       source_sha256,source_detail,telemetry_json,exported_at
+FROM host_duty_observations;
+```
+
+The schema cell is `constellation.host_duty_observation.v1`. The two timestamps
+use SQLite REAL epoch seconds; optional cells are SQL NULL. `telemetry_json` is
+bounded JSON text with sorted keys. The literal cross-repository vector is
+[`fixtures/host-duty-row-custody-v1.json`](fixtures/host-duty-row-custody-v1.json).
+NQ's opt-in saved-check definition `row_evidence: "selected_rows_v1"` retains
+ordered column names, SQLite scalar types, exact selected values and a measured
+evidence digest bound to its evaluation. This needs the matching NQ candidate;
+older NQ versions may refuse the new definition field. Existing definitions
+without the option keep their prior semantics and identities.
+
+Use the consistent NQ proposition **snapshot custody**. Its definition name must
+say snapshot-custody, and `source_identity` names the logical snapshot, host and
+schema; it is not an asserted content hash. The saved-check caller's
+`source-observed-at` assertion is the snapshot's actual `exported_at` for every
+state, including a missing or stale source head. This asserts publication time,
+not target acquisition time. Original `source_observed_at` remains a separate
+nullable captured column; Monitor availability still uses that original source
+age and unknown state. A predicate pass means this custody/predicate check only,
+and cannot establish host health, target freshness or completed work.
+
+Publication is atomic, but a snapshot may be replaced between reading its
+`exported_at` for the caller argument and NQ's read. Inspect the actual retained
+row and its binding/read-attempt time, and record a differing publication as a
+mismatch or indeterminate result. NQ measures the retained selected-row bytes;
+it does not verify an asserted hash of a caller's earlier snapshot. Never
+silently describe the publication assertion as acquisition time or use a new
+current time to refresh the original target testimony.
+
+Choose the NQ evaluation cadence through the existing operator-owned scheduling
+path, for example once per 60 seconds and at duty transitions. Monitor keeps one
+snapshot; NQ retains evidence for individual evaluation occurrences under its
+existing store custody, backup and retirement procedures. Select only this
+bounded tuple and set a deliberate cadence. Raw telemetry frequency does not
+require an equally frequent NQ custody record, and Monitor adds no retention
+daemon or NQ scheduler.

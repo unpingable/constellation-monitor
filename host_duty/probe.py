@@ -24,11 +24,13 @@ import secrets
 import selectors
 import signal
 import socket
+import sqlite3
 import stat
 import subprocess
 import time
 
 from .core import Ledger, Refused
+from .snapshot import canonical_snapshot_path, publish_snapshot
 
 CONFIG_SCHEMA = "constellation.host_duty_probe_config.v1"
 SAMPLE_SCHEMA = "constellation.host_duty_sample.v1"
@@ -69,7 +71,7 @@ def validate_target(target):
     if not isinstance(target, dict):
         raise ValueError("target must be an object")
     required = {"host_id", "instance_id", "address", "argv", "machine_identity_sha256"}
-    if not required <= target.keys() or target.keys() - required - {"port", "timeout_seconds"}:
+    if not required <= target.keys() or target.keys() - required - {"port", "timeout_seconds", "snapshot_path"}:
         raise ValueError("unexpected or missing probe target fields")
     _text(target["host_id"], "host_id")
     _text(target["instance_id"], "instance_id")
@@ -92,7 +94,12 @@ def validate_target(target):
         raise ValueError("sampler executable must be absolute")
     if not isinstance(target["machine_identity_sha256"], str) or not HEX64.fullmatch(target["machine_identity_sha256"]):
         raise ValueError("machine_identity_sha256 must be lowercase SHA-256")
-    return dict(target, port=port, timeout_seconds=timeout)
+    normalized = dict(target, port=port, timeout_seconds=timeout)
+    if "snapshot_path" in target:
+        if not os.path.isabs(_text(target["snapshot_path"], "snapshot_path", 4096)):
+            raise ValueError("snapshot_path must be absolute")
+        normalized["snapshot_path"] = str(canonical_snapshot_path(target["snapshot_path"]))
+    return normalized
 
 
 def load_config(path):
@@ -126,6 +133,29 @@ def load_config(path):
     identities = [target["host_id"] for target in targets]
     if len(identities) != len(set(identities)):
         raise ValueError("duplicate host targets")
+    outputs = [target["snapshot_path"] for target in targets if "snapshot_path" in target]
+    protected = {str(path.resolve())}
+    for base in {os.path.normpath(database), os.path.realpath(database)}:
+        protected.update(base + suffix for suffix in ("", "-wal", "-shm", "-journal"))
+    protected_ids = {(info.st_dev, info.st_ino)}
+    for source in protected:
+        try:
+            existing = os.stat(source)
+            protected_ids.add((existing.st_dev, existing.st_ino))
+        except FileNotFoundError:
+            pass
+    if len(outputs) != len(set(outputs)) or set(outputs) & protected:
+        raise ValueError("snapshot paths must be distinct and separate from the ledger, sidecars and probe configuration")
+    output_ids = set()
+    for output in outputs:
+        try:
+            existing = os.stat(output, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        identity = (existing.st_dev, existing.st_ino)
+        if existing.st_nlink != 1 or identity in protected_ids or identity in output_ids:
+            raise ValueError("snapshot destination identities must be distinct and separate from protected inputs")
+        output_ids.add(identity)
     return dict(config, targets=targets)
 
 
@@ -287,11 +317,16 @@ def collect_config(path, *, budget_seconds=PASS_BUDGET_SECONDS):
     with Ledger(config["database"]) as ledger:
         for target in config["targets"]:
             if time.monotonic() >= deadline:
-                observations.append(_unrecorded(target,
-                    "pass deadline exhausted; target acquisition was not started"))
-                continue
-            try:
-                observations.append(collect_target(ledger, target, pass_deadline=deadline))
-            except Refused as exc:
-                observations.append(_unrecorded(target, "target observation refused: " + str(exc)))
+                row = _unrecorded(target, "pass deadline exhausted; target acquisition was not started")
+            else:
+                try:
+                    row = collect_target(ledger, target, pass_deadline=deadline)
+                except Refused as exc:
+                    row = _unrecorded(target, "target observation refused: " + str(exc))
+            if "snapshot_path" in target:
+                try:
+                    row["snapshot"] = publish_snapshot(ledger, target["host_id"], target["snapshot_path"])
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    row["snapshot_error"] = (type(exc).__name__ + ": " + str(exc))[:300]
+            observations.append(row)
     return observations
