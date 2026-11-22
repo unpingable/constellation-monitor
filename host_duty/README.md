@@ -144,8 +144,9 @@ returned results, which can include unknown or refused observations.
 Adapt `/usr/share/constellation-host-duty/estate.example.toml` in the existing
 deployment inventory. Its status argv runs the installed CLI as
 `constellation-duty` against the observer's absolute database path. Set
-`contract.sha256` to the output digest of
-`sha256sum /usr/share/constellation-host-duty/concerns.toml`. Replace
+`contract.sha256` to `sha256:` followed by the hexadecimal digest from
+`sha256sum /usr/share/constellation-host-duty/concerns.toml`. For example,
+use `sha256:0123...` with the complete 64-character digest. Replace
 `first_result_due_at` with the actual activation's first-result deadline in UTC.
 Keep the timer result check and `max_success_age_seconds = 90`. Render and pin
 the declaration with the estate collector's `--render-registry` flow and use

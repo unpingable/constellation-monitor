@@ -3,5 +3,5 @@ role = "observer"
 runtime = {systemd = "constellation-host-duty.timer"}
 status_user = "constellation-duty"
 status_command = ["/usr/bin/constellation-host-duty", "--database", "/var/lib/constellation-host-duty/ledger.sqlite", "status", "fatbot", "--freshness-seconds", "60", "--grace-seconds", "30"]
-contract = {concerns = "/usr/share/constellation-host-duty/concerns.toml", sha256 = "REPLACE-WITH-PACKAGED-CONCERNS-SHA256"}
+contract = {concerns = "/usr/share/constellation-host-duty/concerns.toml", sha256 = "sha256:REPLACE-WITH-PACKAGED-CONCERNS-HEX-DIGEST"}
 timers = [{unit = "constellation-host-duty.timer", check_result = true, first_result_due_at = "2030-01-02T03:04:05Z", max_success_age_seconds = 90}]
