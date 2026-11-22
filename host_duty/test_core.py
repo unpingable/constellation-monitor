@@ -493,6 +493,32 @@ def test_new_assignment_never_renews_old_outstanding_duty_grace(setup):
 
 
 @pytest.mark.parametrize("kind", ["deadline", "grace"])
+@pytest.mark.parametrize("epoch", [0, 1795380000, 253402300000])
+def test_known_transition_expires_under_both_serialized_and_epoch_clocks(tmp_path, kind, epoch):
+    from datetime import datetime, timezone
+    from host_duty.core import status_document
+    clock = [epoch]
+    with Ledger.create(tmp_path / "duty.sqlite", clock=lambda: clock[0]) as ledger:
+        ledger.register("fatbot", "machine-a")
+        ledger.assign("first-due", "work-first", "fatbot", epoch + 1)
+        clock[0] = epoch + 0.000001
+        selected = "duty.deadline" if kind == "deadline" else "duty.availability"
+        observation = concerns(status_document(ledger, "fatbot", grace_seconds=1))[selected]
+        assert observation["local_state"] == "PRESENT"
+        stamp = datetime.fromisoformat(observation["observed_at"])
+        boundary = datetime.fromtimestamp(epoch + 1, timezone.utc)
+        exact_age = (boundary - stamp).total_seconds()
+        epoch_age = (epoch + 1) - stamp.timestamp()
+        lifetime = observation["valid_for_seconds"]
+        assert 0 < lifetime < exact_age
+        assert lifetime < epoch_age
+        assert 0.5 - stamp.timestamp() + epoch < lifetime  # A clearly earlier check remains valid.
+        clock[0] = epoch + 1 - 0.0000001
+        near = concerns(status_document(ledger, "fatbot", grace_seconds=1))[selected]
+        assert near["local_state"] != "PRESENT"
+
+
+@pytest.mark.parametrize("kind", ["deadline", "grace"])
 @pytest.mark.parametrize("query_at,want", [(200.5, "PRESENT"), (200.5000004, "PRESENT"),
     (200.5000006, "PRESENT"), (200.9999998, "UNKNOWN")])
 def test_serialized_positive_confirmation_expires_before_known_transition(tmp_path, kind, query_at, want):

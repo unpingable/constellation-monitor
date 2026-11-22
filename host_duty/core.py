@@ -378,10 +378,12 @@ def status_document(ledger, host_id, freshness_seconds=60, grace_seconds=30):
         observed_at = _timestamp(report["source_observed_at"] if source else now)
         validity = freshness
         if boundary is not None:
-            # Estate expires at age > validity. Account for ISO microsecond
-            # rounding and expire one float before the known state transition.
+            # Consumers use both epoch floats and exact RFC3339 arithmetic.
+            # Reserve one serialized microsecond and a representable step so
+            # neither clock can carry confirmation through the transition.
             serialized_at = datetime.fromisoformat(observed_at).timestamp()
-            validity = min(freshness, math.nextafter(boundary - max(now, serialized_at), 0.0))
+            cutoff = math.nextafter(boundary - 1e-6, -math.inf)
+            validity = min(freshness, math.nextafter(cutoff - max(now, serialized_at), 0.0))
             if validity <= 0:
                 local, domain, validity = "UNKNOWN", "TRANSITION_DUE", freshness
                 reason = "The known duty transition is too near to retain a positive confirmation; query again."
