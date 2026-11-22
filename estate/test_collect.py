@@ -531,6 +531,49 @@ def test_timer_deadline_success_age_and_output_are_distinct(monkeypatch):
     assert c.timer_concern(spec, 1, now=121)['state'] == 'DEGRADED'
 
 
+def test_recurring_oneshot_in_progress_does_not_erase_observed_success(monkeypatch):
+    """A new systemd activation clears the prior exit timestamp, not history."""
+    clock = [1795381361.3655283]
+    monkeypatch.setattr(c.time, "time", lambda: clock[0])
+    timer = "ActiveState=active\nSubState=waiting\nUnit=constellation-host-duty.service\nLastTriggerUSec=Sun 2026-11-22 21:02:41 UTC\n"
+    table = {
+        "systemctl show constellation-host-duty.timer": (0, timer),
+        "systemctl show constellation-host-duty.service": (0,
+            "Result=success\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\nExecMainExitTimestamp=Sun 2026-11-22 21:01:33 UTC\n")}
+    monkeypatch.setattr(c, "run", fake_run(table))
+    spec = {"unit":"constellation-host-duty.timer", "check_result":True,
+        "first_result_due_at":"2026-11-22T20:58:55Z", "max_success_age_seconds":90}
+    service = {"name":"duty-target-observer", "runtime":{"systemd":"constellation-host-duty.timer"}, "timers":[spec]}
+    assert c.evaluate(service, 1)["verdict"] == "OK"
+
+    # Exact service properties captured from Ubuntu 22.04 during the next
+    # real Type=oneshot pass; Result=success and status 0 are not completion.
+    table["systemctl show constellation-host-duty.service"] = (0,
+        "Result=success\nExecMainStartTimestamp=Sun 2026-11-22 21:02:41 UTC\nExecMainExitTimestamp=n/a\nExecMainStatus=0\nActiveState=activating\nSubState=start\n")
+    pending = c.evaluate(service, 1)
+    assert pending["verdict"] == "UNKNOWN"
+    assert pending["concerns"][0]["state"] == "UNKNOWN"
+    assert "in progress" in pending["concerns"][0]["reason"]
+    clock[0] += 300
+    assert c.evaluate(service, 1)["verdict"] == "UNKNOWN"
+
+    # The service's outer timeout supplies the terminal failure; observation
+    # of the active pass must neither fabricate it nor hide it afterward.
+    table["systemctl show constellation-host-duty.service"] = (0,
+        "Result=timeout\nExecMainStatus=15\nActiveState=failed\nSubState=failed\nExecMainExitTimestamp=Sun 2026-11-22 21:07:41 UTC\n")
+    assert c.evaluate(service, 1)["verdict"] == "DEGRADED"
+
+
+def test_timer_missing_terminal_completion_still_breaches_first_result_deadline(monkeypatch):
+    table = {
+        "systemctl show demo-job.timer": (0, "ActiveState=active\nSubState=waiting\nUnit=demo-job.service\n"),
+        "systemctl show demo-job.service": (0, "ActiveState=inactive\nSubState=dead\nResult=success\nExecMainStatus=0\nExecMainExitTimestamp=n/a\n")}
+    monkeypatch.setattr(c, "run", fake_run(table))
+    concern = c.timer_concern({"unit":"demo-job.timer", "first_result_due_at":100, "max_success_age_seconds":90}, 1, now=101)
+    assert concern["state"] == "DEGRADED"
+    assert concern["reason"] == "first successful result overdue"
+
+
 def test_false_path_declaration_is_drift(tmp_path, monkeypatch):
     monkeypatch.setattr(c, 'runtime_state', lambda *a: {'up': True})
     svc = {'name': 'demo', 'runtime': {'docker': 'demo'}, '_has_declaration': True,

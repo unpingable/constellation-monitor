@@ -249,7 +249,11 @@ def timer_concern(spec, timeout, now=None):
         exited = timestamp(svc.get("ExecMainExitTimestamp"))
         success = exited if svc.get("Result") == "success" and svc.get("ExecMainStatus") in ok_status else None
         due = deadline_timestamp(spec.get("first_result_due_at"))
-        if success is None:
+        if success is None and svc.get("ActiveState") == "activating":
+            # Starting a recurring oneshot clears its previous exit timestamp;
+            # that snapshot establishes neither missing history nor completion.
+            state, reason = "UNKNOWN", "run in progress; successful completion history unavailable"
+        elif success is None:
             state = "DEGRADED" if due is not None and now >= due else "UNKNOWN"
             reason = "first successful result overdue" if state == "DEGRADED" else "armed; no successful result observed"
         elif success > now:

@@ -420,7 +420,13 @@ workload coverage still runs. `--declaration-root` is render-only: collection al
 Timers can add `first_result_due_at = "2026-10-20T12:00:00Z"` and
 `max_success_age_seconds = 3600` (the latter requires a first deadline). Armed
 without an observed successful completion is UNKNOWN before that deadline and
-DEGRADED at or after it. Success means systemd reports `Result=success`, an
+DEGRADED at or after it when the service is not starting a run. During an
+`activating` oneshot pass, systemd may clear the previous exit timestamp. If
+no successful completion can then be observed, the timer concern is UNKNOWN,
+including after the first-result deadline: that in-progress snapshot cannot
+establish missing completion history or successful completion. Configure the
+service's outer timeout to end a stalled pass; its terminal failure remains
+DEGRADED. Success means systemd reports `Result=success`, an
 accepted exit status and `ExecMainExitTimestamp`; the maximum age expires strictly
 after its limit. A failed run remains DEGRADED. Output existence/mtime is a separate
 probe and cannot establish successful execution. Legacy timers without these
