@@ -96,3 +96,29 @@ def test_package_records_exact_payload_and_git_context(installed):
     assert not (installed / "etc/constellation-host-duty/probes.json").exists()
     assert not (installed / "var/lib/constellation-host-duty").exists()
     assert not (installed / "etc/systemd/system/timers.target.wants").exists()
+
+
+def test_optional_custody_recipe_is_shipped_as_documentation_and_prepares_null_source_time(installed, tmp_path):
+    import sqlite3
+    examples = installed / "usr/share/doc/constellation-host-duty/examples"
+    names = {"snapshot_custody.py", "capture-once.sh", "constellation-host-duty-custody.service.example", "constellation-host-duty-custody.timer.example"}
+    assert {path.name for path in examples.iterdir()} == names
+    for name in names:
+        assert (examples/name).read_bytes() == (ROOT/"host_duty/examples"/name).read_bytes()
+    ast.parse((examples/"snapshot_custody.py").read_text(), feature_version=(3, 10))
+    assert not (installed/"lib/systemd/system/constellation-host-duty-custody.service").exists()
+    assert not (installed/"lib/systemd/system/constellation-host-duty-custody.timer").exists()
+    vector = json.loads((ROOT/"host_duty/fixtures/host-duty-row-custody-v1.json").read_text())
+    missing = next(case for case in vector["cases"] if case["name"] == "missing")
+    snapshot = tmp_path/"public.sqlite"
+    with sqlite3.connect(snapshot) as connection:
+        connection.execute("CREATE TABLE host_duty_observations (schema TEXT,host_id TEXT,instance_id TEXT,boot_id TEXT,source_observed_at REAL,source_state TEXT,source_sha256 TEXT,source_detail TEXT,telemetry_json TEXT,exported_at REAL)")
+        connection.execute("INSERT INTO host_duty_observations VALUES (?,?,?,?,?,?,?,?,?,?)", missing["values"])
+    snapshot.chmod(0o444)
+    run = subprocess.run(["/usr/bin/python3", "-I", str(examples/"snapshot_custody.py"), "prepare",
+        "--snapshot", str(snapshot), "--host", "fatbot", "--instance", "machine-a", "--reference", "fatbot-custody",
+        "--evaluation-id", "capture-a", "--directory", str(tmp_path/"capture-a")], capture_output=True, text=True, timeout=5)
+    assert run.returncode == 0, run.stderr
+    expected = json.loads((tmp_path/"capture-a/expected.json").read_text())
+    assert expected["values"][4] is None
+    assert json.loads(run.stdout)["publication_assertion"] == "1970-01-01T00:16:45.500000+00:00"

@@ -1,0 +1,25 @@
+[Unit]
+Description=Retain one ordinary host-duty snapshot through NQ
+After=constellation-host-duty.service time-sync.target
+
+[Service]
+Type=oneshot
+User=nq
+Group=nq
+UMask=0077
+StateDirectory=constellation-host-duty-custody
+StateDirectoryMode=0700
+# Edit the exact snapshot, logical host/incarnation, reference and NQ config.
+ExecStart=/bin/bash /usr/share/doc/constellation-host-duty/examples/capture-once.sh /var/lib/constellation-host-duty-export/duty-target.sqlite duty-target target-incarnation-a duty-target-snapshot-custody /etc/nq/duty-proof.toml /var/lib/constellation-host-duty-custody
+TimeoutStartSec=60s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/var/lib/constellation-host-duty-export
+ReadWritePaths=/var/lib/nq-ops
+TasksMax=32
+MemoryMax=256M
+CPUQuota=25%
+IOWeight=10
+

@@ -153,6 +153,22 @@ the declaration with the estate collector's `--render-registry` flow and use
 the approved Attention and incident routes. The Monitor checkout's
 `estate/README.md` documents registry rendering and timer evaluation.
 
+The observer's Estate cadence must leave enough of each source observation's
+validity window for Attention to acquire it. Account for the oldest target
+sample at Estate collection, the Estate pass duration and the time until
+Attention reads the result. For the scoped two-host observer, use a 30-second
+Estate interval and verify that routine passes fit this budget. The empty
+timer assignment clears inherited timers before the scoped schedule is set.
+
+```sh
+sudo install -d -m 0755 /etc/systemd/system/constellation-estate-collect.timer.d
+printf '[Timer]\nOnUnitInactiveSec=\nOnBootSec=10s\nOnUnitInactiveSec=30s\nAccuracySec=1s\n' | \
+    sudo tee /etc/systemd/system/constellation-estate-collect.timer.d/host-duty.conf
+sudo systemctl daemon-reload
+sudo systemctl restart constellation-estate-collect.timer
+systemctl list-timers constellation-estate-collect.timer
+```
+
 The status document uses `project.ops.status/v1` and emits three required
 concerns. The defaults are 60 seconds of source freshness and 30 seconds of
 grace from assignment. Query time does not extend the life of a reachability
@@ -307,3 +323,93 @@ existing store custody, backup and retirement procedures. Select only this
 bounded tuple and set a deliberate cadence. Raw telemetry frequency does not
 require an equally frequent NQ custody record, and Monitor adds no retention
 daemon or NQ scheduler.
+
+## Optional snapshot-custody operating recipe
+
+The package includes an optional recipe under
+`/usr/share/doc/constellation-host-duty/examples`. It needs the reviewed NQ
+candidate that supports `row_evidence: "selected_rows_v1"`, an already configured
+NQ store, and the separate read-only snapshot described above. It reads no private
+duty ledger and grants no SSH, host-action or settlement authority. The scripts
+and systemd samples are documentation files; installation does not activate them.
+
+Run one occurrence as the NQ account after creating its output directory. Supply
+the exact host, incarnation, definition reference and approved NQ configuration:
+
+```sh
+sudo install -d -o nq -g nq -m 0700 /var/lib/constellation-host-duty-custody
+sudo -u nq /bin/bash \
+    /usr/share/doc/constellation-host-duty/examples/capture-once.sh \
+    /var/lib/constellation-host-duty-export/duty-target.sqlite \
+    duty-target target-incarnation-a duty-target-snapshot-custody \
+    /etc/nq/duty-proof.toml /var/lib/constellation-host-duty-custody
+```
+
+The fixed shell sequence prepares one fresh occurrence directory and evaluation
+ID, then calls `nq saved-check install`, `evaluate` and `result`. Its definition
+selects the complete ten-column tuple with `row_evidence: "selected_rows_v1"`.
+`source_identity` names the snapshot schema, logical host and incarnation. The
+caller assertion is formatted from that snapshot's `exported_at`, including when
+the original `source_observed_at` is NULL. It never substitutes current time for
+the original target observation. A new incarnation needs its exact identity and
+a new definition reference; do not silently rebind a retained occurrence.
+
+`snapshot_custody.py` supplies preparation and post-read inspection. It relies on
+NQ's `row_evidence_inspection: {"state":"valid"}` for native claim and digest
+verification, then compares the retained request binding and complete ordered
+typed row with the pre-read publication tuple. The receipt stores one values
+tuple; inspection derives both its typed cells and publication assertion from
+that same tuple before rendering it. It does not implement another
+custody or canonical-hash verifier. An atomic replacement between preparation
+and NQ's read becomes `indeterminate`, even if NQ's predicate outcome is `passed`.
+Missing rows, absent/corrupt row evidence, refusals and unsettled outcomes also
+remain indeterminate. Original time, state, boot, source digest and telemetry
+remain in the retained tuple and occurrence JSON.
+
+**`custody_confirmed` means ordinary observer snapshot custody. It does not mean
+host healthy, target evidence fresh, work completed or action authorized.** The
+60-second definition bound applies to the asserted snapshot publication; Monitor
+continues to evaluate target availability using the original source age and duty.
+The native NQ terminal-detail bound may refuse larger captures; this is a custody
+failure, not a host diagnosis.
+
+Each occurrence retains `expected.json`, `definition.json`, `install.json`,
+`evaluate.json`, `result.json` and terminal `inspection.json` under its fresh ID.
+The last file and the journal carry the caller disposition; exit 3 means
+indeterminate inspection. A command error or timeout fails the one-shot and can
+leave a partial transcript or an unsettled NQ claim. Inspect that original
+evaluation with `saved-check result --evaluation-id ID` before a manual retry or
+retirement. The recipe does not reclaim claims, retry them or overwrite earlier
+occurrences. NQ owns retained history; keep and retire occurrence outputs through
+the operator's existing backup, evidence-custody and retention procedures.
+
+After the manual drill, optionally copy and edit the two samples. Set the exact
+snapshot, logical identities, NQ config and its writable store parent in the
+service before starting it:
+
+```sh
+sudo install -m 0644 \
+    /usr/share/doc/constellation-host-duty/examples/constellation-host-duty-custody.service.example \
+    /etc/systemd/system/constellation-host-duty-custody.service
+sudo install -m 0644 \
+    /usr/share/doc/constellation-host-duty/examples/constellation-host-duty-custody.timer.example \
+    /etc/systemd/system/constellation-host-duty-custody.timer
+sudoedit /etc/systemd/system/constellation-host-duty-custody.service
+sudo systemctl daemon-reload
+sudo systemctl start constellation-host-duty-custody.service
+systemctl show constellation-host-duty-custody.service -p Result -p ExecMainStatus
+journalctl -u constellation-host-duty-custody.service -n 20
+# Enable only after inspecting that occurrence's native result and caller JSON.
+sudo systemctl enable --now constellation-host-duty-custody.timer
+```
+
+The ordinary systemd one-shot serializes its timer; the sample schedules a fresh
+acquisition about 60 seconds after each completed pass. Observe two scheduled
+occurrences and their exact IDs, and declare the activated timer/result in the
+existing estate inventory. A successful one-shot returns inactive between runs.
+The sample limits CPU to 25%, memory to 256 MiB and tasks to 32, with a 60-second
+start timeout. `IOWeight=10` gives it a low relative I/O scheduling priority; it
+is not a bandwidth ceiling. Snapshot reads remain bounded to 64 KiB and NQ's
+selected-row limits. A timeout or unsettled occurrence leaves custody unknown.
+No background worker, claim-recovery state machine or automatic enablement is
+introduced. Stop the timer before changing the caller, store or source identity.

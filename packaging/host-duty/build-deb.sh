@@ -25,12 +25,13 @@ share=$d/usr/share/constellation-host-duty
 doc=$d/usr/share/doc/constellation-host-duty
 units=$d/lib/systemd/system
 
-install -d -m 0755 "$d/DEBIAN" "$d/usr/bin" "$lib" "$share" "$doc/fixtures" "$units"
+install -d -m 0755 "$d/DEBIAN" "$d/usr/bin" "$lib" "$share" "$doc/fixtures" "$doc/examples" "$units"
 install -m 0755 "$source/constellation-host-duty" "$source/constellation-host-sample" "$d/usr/bin/"
 install -m 0644 "$root"/host_duty/{__init__,core,cli,probe,sample,snapshot}.py "$lib/"
 install -m 0644 "$root"/host_duty/{concerns.toml,probes.example.json} "$source/estate.example.toml" "$share/"
 install -m 0644 "$root/host_duty/README.md" "$doc/"
 install -m 0644 "$root/host_duty/fixtures/host-duty-row-custody-v1.json" "$doc/fixtures/"
+install -m 0644 "$root"/host_duty/examples/{snapshot_custody.py,capture-once.sh,constellation-host-duty-custody.service.example,constellation-host-duty-custody.timer.example} "$doc/examples/"
 install -m 0644 "$source"/constellation-host-duty.{service,timer} "$units/"
 install -m 0755 "$source"/{postinst,prerm,postrm} "$d/DEBIAN/"
 cat > "$d/DEBIAN/control" <<EOF

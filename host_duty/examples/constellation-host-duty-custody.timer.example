@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule optional snapshot custody once per minute
+
+[Timer]
+OnBootSec=60s
+OnUnitInactiveSec=60s
+AccuracySec=1s
+Unit=constellation-host-duty-custody.service
+
+[Install]
+WantedBy=timers.target
