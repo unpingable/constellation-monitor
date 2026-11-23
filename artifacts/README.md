@@ -42,8 +42,19 @@ The local crash-fault campaign adds:
 - `crash-reactor-live-linux.json`: six real monotonic timer samples, controlled
   scheduler delay, CPU load, write-path delay, restart scans, escalation
   deduplication, `SIGKILL`, and corruption injections; and
-- `crash-reactor-qualification.json`: the machine-readable check/test index and
-  required gate commands.
+- `crash-reactor-qualification.json`: the original campaign's check index and
+  required gate commands. Its `pass` labels were generated from the declared
+  test list. Evidence of execution comes from a retained run log.
+
+Generate the current requirements manifest at a new path with:
+
+```sh
+cargo run --locked -p pulse-runtime --bin pulse-crash-campaign -- \
+  qualification /path/to/new-qualification.json
+```
+
+The command lists the required checks as `not_exercised`. Report a test pass
+only with its observed result and retained log for the tested source revision.
 
 The live timings describe one local run. Concurrent artifact generation placed
 additional CPU and filesystem load on that run; the measurements are evidence

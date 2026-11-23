@@ -34,19 +34,16 @@ Owning issue: [MO-01](https://github.com/unpingable/constellation-monitor/issues
 
 ## MO-02: Make Pulse journal qualification observations deterministic
 
-`QUALIFICATION_INFRASTRUCTURE` · **Useful during beta; not gating** · Project: Ready.
+`QUALIFICATION_INFRASTRUCTURE` · **Useful during beta; not gating** · Implemented.
 
-Problem: Existing issue separates startup timing sensitivity and an artifact that reports pass without an observed result from product behavior.
+The journal-exhaustion test waits for the terminal `JournalFailure`, checks the
+record-count refusal, and scans the journal to verify the complete prefix. This
+works if the transient `Operational` snapshot elapses before the test reads it.
+The original deadline and durability settings still apply.
 
-Intended outcome: Plan a deterministic journal-exhaustion test and evidence writer that reports only executed results; preserve raw certificate expiry versus live-support distinction.
-
-Scope/exclusions: Limit changes to the named outcome; preserve existing semantic and authority boundaries.
-
-Dependencies: Program release scope and current component contracts.
-
-Acceptance/evidence: Loaded-filesystem deterministic boundary and observed result readback; no product timing relaxation merely to make a test pass.
-
-Owner decisions: None beyond a bounded work order.
+The current `pulse-crash-campaign qualification` command emits a requirements
+manifest. See the [artifact guide](../artifacts/README.md) for the distinction
+between a listed check and an observed run.
 
 Owning issue: [MO-02](https://github.com/unpingable/constellation-monitor/issues/11).
 
